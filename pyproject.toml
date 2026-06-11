@@ -11,6 +11,7 @@ dependencies = [
   "argon2-cffi>=23.1",
   "psycopg[binary]>=3.2",
   "temporalio>=1.28",
+  "prometheus-client>=0.25",
   "uvicorn>=0.34",
   "python-multipart>=0.0.20",
 ]
@@ -28,3 +29,10 @@ addopts = "-q"
 
 [tool.ruff]
 line-length = 100
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["apps*", "packages*"]
