@@ -135,3 +135,22 @@ label，processing 类 animate-spin）、InfiniteScrollSentinel、AudioPlayer/Vi
 两次验收干预：① 打回 2059 行 LibraryPage 单文件，返工拆为 LibraryLayout + 四 tab + 13 共享组件（最大 375 行）——这正是原版 Templates.tsx 6453 行教训的防复发；② 修复内部 `local://` URI 泄漏进 img/audio src（加 toDisplayUrl 边界净化 + 占位回退）。
 
 待办：R4 发布中心、R5 概览/数据统计/账户中心。
+
+---
+
+## R4 改动清单（发布中心）
+
+信息架构对齐原版：独立 `/publish-center(/:batchId)` + 工作台内嵌 `/studio/:caseId/publish` 双形态，
+FlowStepper 三步（选来源 → 编辑 → 发布）。消费新系统 publish API（packages/batches/items/attempts）。
+
+- R4-A 选来源步：从成片创建批次（勾选可发布成片，即时加入批次池）+ 外部视频上传（UploadSession）
+  + 批次池汇总（计数/清空/单条移出）→ 创建批次；最近批次侧栏（状态/更新时间/切换/删除带确认）。
+- R4-B 编辑步：批次默认设置折叠面板（平台 chips 多选、立即/定时、标签、地区）+「应用默认到选中」；
+  逐条草稿编辑：标题（按平台最严字数上限实时计数+超限红色+自动截断）、正文、跳过/恢复、删除、
+  重置编辑、保存单条、重试生成；本地 drafts 独立于服务端可回滚。
+- R4-C 封面：视频抓帧（选帧秒数+预览帧+用当前画面）、上传封面（UploadSession）；
+  AI 生成封面如后端能力未修真则「待接入（依赖 M6c/M6d）」禁用态。
+- R4-D 发布步：确认清单（全选/单选、状态 pill、平台 chips）、半自动/全自动发布双按钮、
+  失败条目重试；发布结果按 PublishAttempt 状态呈现（sandbox 语义如实标注「沙箱发布」）。
+- R4-E 横切：批次详情自适应轮询（活跃态 3s/静态 8s）；小V猫平台状态条「待接入（M6c）」；
+  所有计费/不可逆操作后果说明式确认。
