@@ -8,7 +8,7 @@ import { AnalyticsKpiCards } from "../components/analytics/AnalyticsKpiCards";
 import { CostUsageTab } from "../components/analytics/CostUsageTab";
 import { TaskStatsTab } from "../components/analytics/TaskStatsTab";
 import { YieldFunnelTab } from "../components/analytics/YieldFunnelTab";
-import { rangeWindow, summarizeWorkflowStats, type AnalyticsTab, type TimeRange } from "../components/analytics/analyticsModel";
+import { rangeWindow, summarizeWorkflowStats, usageHasData, type AnalyticsTab, type TimeRange } from "../components/analytics/analyticsModel";
 import { usePageVisible } from "../hooks/usePageVisible";
 
 export default function AnalyticsPage() {
@@ -42,8 +42,11 @@ export default function AnalyticsPage() {
 
   const usageData = usage.data ?? dashboard.data?.usage;
   const funnelData = yieldFunnel.data ?? dashboard.data?.yield_funnel;
+  const rollups = costRollups.data?.items ?? dashboard.data?.cost_rollups ?? [];
   const stats = summarizeWorkflowStats(funnelData?.events ?? []);
   const isFetching = dashboard.isFetching || usage.isFetching || costRollups.isFetching || yieldFunnel.isFetching;
+  const dataWaiting =
+    !isFetching && stats.total === 0 && !usageHasData(usageData) && rollups.length === 0 && (funnelData?.events.length ?? 0) === 0;
 
   function refreshAll() {
     void queryClient.invalidateQueries({ queryKey: ["analytics"] });
@@ -71,9 +74,15 @@ export default function AnalyticsPage() {
       {yieldFunnel.error ? <ErrorState error={yieldFunnel.error} /> : null}
 
       <AnalyticsKpiCards stats={stats} usage={usageData} funnel={funnelData} />
+      {dataWaiting ? (
+        <section className="rounded-[24px] border border-dashed border-border bg-white/45 px-6 py-8">
+          <h2 className="font-semibold text-text-primary">数据等待中</h2>
+          <p className="mt-1 text-sm text-text-secondary">平台指标尚未回流，当前时间范围内没有可统计的成本、用量或成品率事件。</p>
+        </section>
+      ) : null}
       <AnalyticsTabs value={tab} onChange={setTab} />
 
-      {tab === "cost" ? <CostUsageTab usage={usageData} rollups={costRollups.data?.items ?? dashboard.data?.cost_rollups ?? []} days={window.days} /> : null}
+      {tab === "cost" ? <CostUsageTab usage={usageData} rollups={rollups} days={window.days} /> : null}
       {tab === "yield" ? <YieldFunnelTab funnel={funnelData} /> : null}
       {tab === "tasks" ? <TaskStatsTab funnel={funnelData} /> : null}
     </div>

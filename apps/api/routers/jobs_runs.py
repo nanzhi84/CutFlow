@@ -24,6 +24,17 @@ def create_digital_human_job(
     return service.create_digital_human_job(payload, request)
 
 
+@router.post(
+    "/api/jobs/digital-human-video/estimate-cost",
+    response_model=c.DigitalHumanVideoCostEstimateResponse,
+)
+def estimate_digital_human_video_cost(
+    payload: c.CreateDigitalHumanVideoJobRequest, request: Request
+) -> c.DigitalHumanVideoCostEstimateResponse:
+    require_role(request, c.UserRole.operator)
+    return service.estimate_digital_human_video_cost(payload, request)
+
+
 @router.get("/api/jobs/{job_id}", response_model=c.JobDetailResponse)
 def job_detail(request: Request, job_id: str) -> c.JobDetailResponse:
 
@@ -40,6 +51,12 @@ def create_run(job_id: str, payload: c.CreateRunRequest, request: Request) -> c.
 def run_detail(request: Request, run_id: str) -> c.RunDetailResponse:
 
     return service.run_detail(request, run_id)
+
+
+@router.delete("/api/runs/{run_id}", response_model=c.OkResponse)
+def delete_run_record(run_id: str, request: Request) -> c.OkResponse:
+    require_role(request, c.UserRole.operator)
+    return service.delete_run_record(run_id, request)
 
 
 @router.post("/api/runs/{run_id}/cancel", response_model=c.RunActionResponse, status_code=202)

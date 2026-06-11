@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, Eye, Image as ImageIcon, Play, RotateCw } from "lucide-react";
+import { Ban, Eye, Image as ImageIcon, OctagonX, Play, RotateCw, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type RunCard } from "../../api/client";
@@ -18,6 +18,7 @@ import {
 } from "../../components/runs/runModel";
 import { useToast } from "../../components/Toast";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
+import { InfiniteScrollSentinel } from "../../components/ui/InfiniteScrollSentinel";
 import { useRunEvents } from "../../hooks/useRunEvents";
 import { usePageVisible } from "../../hooks/usePageVisible";
 import { shortId } from "../../lib/format";
@@ -30,20 +31,22 @@ export default function RunsPage() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const pageVisible = usePageVisible();
+  const [runLimit, setRunLimit] = useState(50);
+  const finishedVideoLimit = 50;
   const caseDetail = useQuery({
     queryKey: ["case", caseId],
     queryFn: () => api.cases.detail(caseId),
     enabled: Boolean(caseId),
   });
   const runs = useQuery({
-    queryKey: ["case-runs", caseId],
-    queryFn: () => api.cases.runs(caseId, { limit: 100 }),
+    queryKey: ["case-runs", caseId, runLimit],
+    queryFn: () => api.cases.runs(caseId, { limit: runLimit }),
     enabled: Boolean(caseId),
     refetchInterval: pageVisible ? 10000 : false,
   });
   const finishedVideos = useQuery({
-    queryKey: ["finished-videos", caseId],
-    queryFn: () => api.finishedVideos.list(caseId),
+    queryKey: ["finished-videos", caseId, finishedVideoLimit],
+    queryFn: () => api.finishedVideos.list(caseId, { limit: finishedVideoLimit }),
     enabled: Boolean(caseId),
     refetchInterval: pageVisible ? 10000 : false,
   });
@@ -88,9 +91,10 @@ export default function RunsPage() {
   }
 
   const cancelRun = useMutation({
-    mutationFn: (runId: string) => api.runs.cancel(runId, { reason: "用户在前端取消", force: false }),
-    onSuccess: async () => {
-      toast.success("已发送中断请求");
+    mutationFn: ({ runId, force }: { runId: string; force: boolean }) =>
+      api.runs.cancel(runId, { reason: force ? "用户在前端强制终止" : "用户在前端取消", force }),
+    onSuccess: async (_, variables) => {
+      toast.success(variables.force ? "已发送强制终止请求" : "已发送中断请求");
       await queryClient.invalidateQueries({ queryKey: ["case-runs", caseId] });
       if (selectedCard?.runId) await queryClient.invalidateQueries({ queryKey: ["run-detail", selectedCard.runId] });
     },
@@ -114,22 +118,37 @@ export default function RunsPage() {
       await queryClient.invalidateQueries({ queryKey: ["case-runs", caseId] });
     },
   });
+  const deleteRun = useMutation({
+    mutationFn: (runId: string) => api.runs.delete(runId),
+    onSuccess: async () => {
+      toast.success("任务记录已删除", "成片文件未删除");
+      setSelectedRunId(null);
+      setSearchParams({});
+      await queryClient.invalidateQueries({ queryKey: ["case-runs", caseId] });
+      await queryClient.invalidateQueries({ queryKey: ["finished-videos", caseId] });
+    },
+    onError: (error: ApiError) => toast.error("删除任务记录失败", error),
+  });
 
   const items = runs.data?.items ?? [];
   const nodeRuns = runDetail.data?.node_runs ?? [];
+  const hasMoreRuns = Boolean(runs.data && items.length >= runLimit);
   const confirmLoading =
-    (pendingAction?.type === "cancel" && cancelRun.isPending) ||
+    ((pendingAction?.type === "cancel" || pendingAction?.type === "forceCancel") && cancelRun.isPending) ||
     (pendingAction?.type === "retry" && retryRun.isPending) ||
-    (pendingAction?.type === "resume" && resumeRun.isPending);
+    (pendingAction?.type === "resume" && resumeRun.isPending) ||
+    (pendingAction?.type === "delete" && deleteRun.isPending);
 
   async function confirmRunAction() {
     if (!pendingAction) return;
-    if (pendingAction.type === "cancel") {
-      await cancelRun.mutateAsync(pendingAction.run.runId);
+    if (pendingAction.type === "cancel" || pendingAction.type === "forceCancel") {
+      await cancelRun.mutateAsync({ runId: pendingAction.run.runId, force: pendingAction.type === "forceCancel" });
     } else if (pendingAction.type === "retry") {
       await retryRun.mutateAsync(pendingAction.run.runId);
-    } else {
+    } else if (pendingAction.type === "resume") {
       await resumeRun.mutateAsync(pendingAction.run.runId);
+    } else {
+      await deleteRun.mutateAsync(pendingAction.run.runId);
     }
     setPendingAction(null);
   }
@@ -208,38 +227,63 @@ export default function RunsPage() {
                       <button className="rounded-lg p-2 text-text-tertiary hover:bg-surface hover:text-text-primary" type="button" onClick={() => openRunDetail(run)} title="查看详情">
                         <Eye className="h-4 w-4" />
                       </button>
-                  <button
-                    className="rounded-lg p-2 text-text-tertiary hover:bg-status-error/10 hover:text-status-error"
-                    type="button"
-                    disabled={run.status !== "running" && run.status !== "admitted"}
-                    onClick={() => setPendingAction({ type: "cancel", run })}
-                    title="中断生成任务"
-                  >
-                    <Ban className="h-4 w-4" />
-                  </button>
-                  <button
-                    className="rounded-lg p-2 text-text-tertiary hover:bg-surface hover:text-text-primary"
-                    type="button"
-                    disabled={!run.canRetry}
-                    onClick={() => setPendingAction({ type: "retry", run })}
-                    title="重试"
-                  >
-                    <RotateCw className="h-4 w-4" />
-                  </button>
-                  <button
-                    className="rounded-lg p-2 text-text-tertiary hover:bg-surface hover:text-text-primary"
-                    type="button"
-                    disabled={!run.canResume}
-                    onClick={() => setPendingAction({ type: "resume", run })}
-                    title="续跑"
-                  >
-                    <Play className="h-4 w-4" />
-                  </button>
+                      <button
+                        className="rounded-lg p-2 text-text-tertiary hover:bg-status-error/10 hover:text-status-error"
+                        type="button"
+                        disabled={run.status !== "running" && run.status !== "admitted"}
+                        onClick={() => setPendingAction({ type: "cancel", run })}
+                        title="中断生成任务"
+                      >
+                        <Ban className="h-4 w-4" />
+                      </button>
+                      <button
+                        className="rounded-lg p-2 text-text-tertiary hover:bg-status-error/10 hover:text-status-error"
+                        type="button"
+                        disabled={!isProcessingStatus(run.status)}
+                        onClick={() => setPendingAction({ type: "forceCancel", run })}
+                        title="强制终止"
+                      >
+                        <OctagonX className="h-4 w-4" />
+                      </button>
+                      <button
+                        className="rounded-lg p-2 text-text-tertiary hover:bg-surface hover:text-text-primary"
+                        type="button"
+                        disabled={!run.canRetry}
+                        onClick={() => setPendingAction({ type: "retry", run })}
+                        title="重试"
+                      >
+                        <RotateCw className="h-4 w-4" />
+                      </button>
+                      <button
+                        className="rounded-lg p-2 text-text-tertiary hover:bg-surface hover:text-text-primary"
+                        type="button"
+                        disabled={!run.canResume}
+                        onClick={() => setPendingAction({ type: "resume", run })}
+                        title="续跑"
+                      >
+                        <Play className="h-4 w-4" />
+                      </button>
+                      <button
+                        className="rounded-lg p-2 text-text-tertiary hover:bg-status-error/10 hover:text-status-error"
+                        type="button"
+                        disabled={isProcessingStatus(run.status)}
+                        onClick={() => setPendingAction({ type: "delete", run })}
+                        title="删除任务记录"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
                     </div>
                   </div>
                 </div>
               </article>
             ))}
+            <div className="xl:col-span-2">
+              <InfiniteScrollSentinel
+                enabled={hasMoreRuns && !runs.isFetching}
+                onVisible={() => setRunLimit((current) => current + 50)}
+                label="继续加载任务记录"
+              />
+            </div>
           </div>
 
           <aside className="surface timelinePanel">
@@ -290,7 +334,7 @@ export default function RunsPage() {
         onClose={() => setPendingAction(null)}
         onConfirm={confirmRunAction}
         isLoading={confirmLoading}
-        type={pendingAction?.type === "cancel" ? "danger" : "warning"}
+        type={["cancel", "forceCancel", "delete"].includes(pendingAction?.type ?? "") ? "danger" : "warning"}
         title={confirmTitle(pendingAction)}
         message={confirmMessage(pendingAction)}
         consequences={confirmConsequences(pendingAction)}
@@ -298,6 +342,10 @@ export default function RunsPage() {
       />
     </section>
   );
+}
+
+function isProcessingStatus(status: RunCard["status"]) {
+  return status === "created" || status === "admitted" || status === "running" || status === "cancelling";
 }
 
 function RunThumbnail({ run }: { run: RunCard }) {

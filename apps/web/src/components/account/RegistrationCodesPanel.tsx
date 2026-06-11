@@ -8,11 +8,12 @@ import { codeStatusLabel, codeStatusOptions, displayTime, fromDateTimeLocal, rol
 
 type CodeDraft = {
   status: RegistrationCodePreview["status"];
+  purpose: string;
   expires_at: string;
 };
 
 function draftFromCode(code: RegistrationCodePreview): CodeDraft {
-  return { status: code.status, expires_at: toDateTimeLocal(code.expires_at) };
+  return { status: code.status, purpose: code.purpose ?? "", expires_at: toDateTimeLocal(code.expires_at) };
 }
 
 function remainingUses(code: RegistrationCodePreview) {
@@ -28,6 +29,8 @@ export function RegistrationCodesPanel() {
   const [issuedCode, setIssuedCode] = useState("");
   const [createForm, setCreateForm] = useState({
     role: "viewer" as AuthUser["role"],
+    custom_code: "",
+    purpose: "",
     max_uses: "1",
     expires_at: "",
   });
@@ -40,7 +43,7 @@ export function RegistrationCodesPanel() {
     onSuccess: async (created) => {
       setIssuedCode(created.plaintext_code);
       toast.success("注册码已生成", "明文码仅本次展示");
-      setCreateForm({ role: "viewer", max_uses: "1", expires_at: "" });
+      setCreateForm({ role: "viewer", custom_code: "", purpose: "", max_uses: "1", expires_at: "" });
       await queryClient.invalidateQueries({ queryKey: ["auth", "registration-codes"] });
     },
   });
@@ -48,6 +51,7 @@ export function RegistrationCodesPanel() {
     mutationFn: ({ codeId, draft }: { codeId: string; draft: CodeDraft }) =>
       api.auth.patchRegistrationCode(codeId, {
         status: draft.status,
+        purpose: draft.purpose.trim() || null,
         expires_at: fromDateTimeLocal(draft.expires_at),
       }),
     onSuccess: async () => {
@@ -71,6 +75,8 @@ export function RegistrationCodesPanel() {
     setIssuedCode("");
     createMutation.mutate({
       role: createForm.role,
+      custom_code: createForm.custom_code.trim() || null,
+      purpose: createForm.purpose.trim() || null,
       max_uses: maxUses,
       expires_at: fromDateTimeLocal(createForm.expires_at),
     });
@@ -120,12 +126,28 @@ export function RegistrationCodesPanel() {
           </button>
         </div>
 
-        <form className="mt-6 grid gap-4 md:grid-cols-[180px_180px_1fr_auto]" onSubmit={submitCreate}>
+        <form className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-[150px_180px_minmax(180px,1fr)_180px_1fr_auto]" onSubmit={submitCreate}>
           <label>
             <span>注册角色</span>
             <select value={createForm.role} onChange={(event) => setCreateForm((current) => ({ ...current, role: event.target.value as AuthUser["role"] }))}>
               {roleOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
+          </label>
+          <label>
+            <span>自定义码</span>
+            <input
+              value={createForm.custom_code}
+              onChange={(event) => setCreateForm((current) => ({ ...current, custom_code: event.target.value }))}
+              placeholder="留空自动生成"
+            />
+          </label>
+          <label>
+            <span>用途备注</span>
+            <input
+              value={createForm.purpose}
+              onChange={(event) => setCreateForm((current) => ({ ...current, purpose: event.target.value }))}
+              placeholder="例如：交付团队入职"
+            />
           </label>
           <label>
             <span>可用次数</span>
@@ -181,7 +203,7 @@ export function RegistrationCodesPanel() {
             const draft = drafts[code.id] ?? draftFromCode(code);
             return (
               <div className="rounded-[22px] border border-border/70 bg-white/55 p-4" key={code.id}>
-                <div className="grid gap-3 xl:grid-cols-[minmax(180px,1fr)_130px_170px_1fr_auto] xl:items-end">
+                <div className="grid gap-3 xl:grid-cols-[minmax(180px,1fr)_130px_170px_minmax(180px,1fr)_1fr_auto] xl:items-end">
                   <div className="min-w-0">
                     <p className="truncate font-mono font-semibold text-text-primary">{code.id}</p>
                     <p className="mt-1 text-xs text-text-tertiary">
@@ -198,6 +220,10 @@ export function RegistrationCodesPanel() {
                     <select value={draft.status} onChange={(event) => updateDraft(code.id, { status: event.target.value as RegistrationCodePreview["status"] })}>
                       {codeStatusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
+                  </label>
+                  <label>
+                    <span>用途备注</span>
+                    <input value={draft.purpose} onChange={(event) => updateDraft(code.id, { purpose: event.target.value })} placeholder="未填写" />
                   </label>
                   <label>
                     <span>过期时间</span>

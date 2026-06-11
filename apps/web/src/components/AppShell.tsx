@@ -4,6 +4,7 @@ import {
   KeyRound,
   Library,
   LogOut,
+  MessageSquareText,
   Send,
   Sparkles,
   UserCircle2,
@@ -22,6 +23,7 @@ const mainNav = [
   { to: routes.analytics(), label: "数据统计", icon: BarChart3 },
   { to: routes.account(), label: "账户中心", icon: UserCircle2 },
   { to: routes.settings(), label: "设置", icon: KeyRound },
+  { to: routes.promptOps(), label: "提示词", icon: MessageSquareText },
 ] satisfies Array<{ to: string; label: string; icon: ComponentType<{ className?: string }>; end?: boolean }>;
 
 const mobilePrimaryPaths = [routes.overview(), routes.studio(), routes.library(), routes.account()];
@@ -54,6 +56,8 @@ function Breadcrumbs() {
     parts.push("数据统计");
   } else if (location.pathname.startsWith("/account")) {
     parts.push("账户中心");
+  } else if (location.pathname.startsWith("/ops/prompts")) {
+    parts.push("提示词");
   }
   return <div className="text-xs font-medium text-text-tertiary">{parts.join(" / ")}</div>;
 }

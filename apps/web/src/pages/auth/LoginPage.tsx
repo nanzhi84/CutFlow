@@ -14,7 +14,7 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const state = location.state as LocationState | null;
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -28,7 +28,7 @@ export default function LoginPage() {
     setSubmitting(true);
     setError(null);
     try {
-      await login({ email, password });
+      await login({ identifier: identifier.trim(), password });
       navigate(state?.from?.pathname ?? routes.studio(), { replace: true });
     } catch (nextError) {
       setError(nextError);
@@ -48,13 +48,13 @@ export default function LoginPage() {
           <p>进入 Case-first 前端工作台</p>
         </div>
         <label>
-          <span>邮箱</span>
+          <span>邮箱/用户名</span>
           <input
-            autoComplete="email"
-            name="email"
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
+            autoComplete="username"
+            name="identifier"
+            type="text"
+            value={identifier}
+            onChange={(event) => setIdentifier(event.target.value)}
             required
           />
         </label>

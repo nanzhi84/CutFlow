@@ -1,8 +1,8 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Loader2, Play } from "lucide-react";
+import { Calculator, ChevronLeft, ChevronRight, Loader2, Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { api, type ApiError } from "../../api/client";
+import { api, type ApiError, type DigitalHumanVideoCostEstimateResponse } from "../../api/client";
 import { ErrorState, LoadingState } from "../../components/State";
 import { StudioTabs } from "../../components/StudioTabs";
 import { useToast } from "../../components/Toast";
@@ -14,6 +14,7 @@ import {
   SubmitStep,
   TemplateStep,
 } from "../../components/studio-create/StudioCreateSteps";
+import { CostEstimateModal } from "../../components/studio-create/CostEstimateModal";
 import {
   STORAGE_KEY,
   loadStoredForm,
@@ -48,6 +49,8 @@ export default function StudioCreatePage() {
   const [scriptGenerateOpen, setScriptGenerateOpen] = useState(false);
   const [candidatePoolOpen, setCandidatePoolOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [costEstimateOpen, setCostEstimateOpen] = useState(false);
+  const [costEstimate, setCostEstimate] = useState<DigitalHumanVideoCostEstimateResponse | null>(null);
   const appliedAgentSource = useRef<string | null>(null);
   const adoptedAgentScript = (location.state as AdoptedAgentScriptState | null)?.adoptedAgentScript;
   const scriptToolbox = useScriptToolbox(caseId);
@@ -155,6 +158,14 @@ export default function StudioCreatePage() {
     },
     onError: (error: ApiError) => setFormError(error),
   });
+  const estimateCost = useMutation({
+    mutationFn: () => api.jobs.estimateDigitalHumanVideoCost(buildJobPayload(form.script, form.title)),
+    onSuccess: (data) => {
+      setCostEstimate(data);
+      setCostEstimateOpen(true);
+    },
+    onError: (error: ApiError) => setFormError(error),
+  });
 
   function setField<Key extends keyof FormState>(key: Key, value: FormState[Key]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -218,6 +229,17 @@ export default function StudioCreatePage() {
     }
     setFormError(null);
     createJob.mutate();
+  }
+
+  function estimate() {
+    const invalid = validateAll(form, selectedVoice);
+    if (invalid) {
+      setStep(invalid.step);
+      toast.warning("无法预估", invalid.message);
+      return;
+    }
+    setFormError(null);
+    estimateCost.mutate();
   }
 
   if (caseDetail.isLoading) {
@@ -308,10 +330,16 @@ export default function StudioCreatePage() {
                 <ChevronRight className="h-4 w-4" />
               </button>
             ) : (
-              <button className="btn-primary" type="submit" disabled={createJob.isPending}>
-                {createJob.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                <span>提交成片任务</span>
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button className="btn-secondary" type="button" disabled={estimateCost.isPending || createJob.isPending} onClick={estimate}>
+                  {estimateCost.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Calculator className="h-4 w-4" />}
+                  <span>预估成本</span>
+                </button>
+                <button className="btn-primary" type="submit" disabled={createJob.isPending}>
+                  {createJob.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                  <span>提交成片任务</span>
+                </button>
+              </div>
             )}
           </div>
         </section>
@@ -346,6 +374,7 @@ export default function StudioCreatePage() {
         onBatchCreate={(items) => batchCreateJobs.mutate(items)}
       />
       <ScriptHistoryModal isOpen={historyOpen} history={scriptToolbox.history} onClose={() => setHistoryOpen(false)} onInsert={insertHistoryItem} />
+      <CostEstimateModal isOpen={costEstimateOpen} estimate={costEstimate} onClose={() => setCostEstimateOpen(false)} />
     </section>
   );
 }

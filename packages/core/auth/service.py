@@ -89,8 +89,15 @@ class AuthService:
             )
         return self._auth_response(user)
 
-    def login(self, email: str, password: str) -> tuple[AuthResponse, str]:
-        user = next((item for item in self.repository.users.values() if item.email == email), None)
+    def login(self, identifier: str, password: str) -> tuple[AuthResponse, str]:
+        user = next(
+            (
+                item
+                for item in self.repository.users.values()
+                if item.email == identifier or item.display_name == identifier
+            ),
+            None,
+        )
         if user is None or not self.verify_password(user.id, password):
             raise NodeExecutionError(ErrorCode.auth_invalid_credentials, "Invalid credentials.")
         if user.status == "disabled":

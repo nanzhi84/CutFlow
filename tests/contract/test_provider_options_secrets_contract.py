@@ -6,6 +6,7 @@ from packages.core.contracts import (
     BgmOptions,
     BrollOptions,
     CoverOptions,
+    DegradationCode,
     DigitalHumanVideoRequest,
     ErrorCode,
     LipSyncOptions,
@@ -107,11 +108,12 @@ def test_warning_code_is_single_spec_enum_and_degradation_notice_shape():
     assert {item.value for item in WarningCode} == {
         "broll.skipped_no_material",
         "bgm.skipped_library_unannotated",
-        "font_default_used",
+        "font.default_used",
         "cover.frame_fallback",
         "timestamp.estimated",
         "cost.unpriced",
     }
+    assert DegradationCode.font_default_used.value == "font.default_used"
 
 
 def test_request_options_use_spec_field_names_without_escape_hatches():

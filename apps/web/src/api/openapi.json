@@ -1064,6 +1064,60 @@
             }
           }
         }
+      },
+      "delete": {
+        "summary": "Delete Case",
+        "operationId": "delete_case_api_cases__case_id__delete",
+        "parameters": [
+          {
+            "name": "case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Case Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DeleteCaseRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/cases/{case_id}/runs": {
@@ -1136,6 +1190,44 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CreateJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/digital-human-video/estimate-cost": {
+      "post": {
+        "summary": "Estimate Digital Human Video Cost",
+        "operationId": "estimate_digital_human_video_cost_api_jobs_digital_human_video_estimate_cost_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DigitalHumanVideoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DigitalHumanVideoCostEstimateResponse"
                 }
               }
             }
@@ -1263,6 +1355,43 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RunDetailResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Run Record",
+        "operationId": "delete_run_record_api_runs__run_id__delete",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
                 }
               }
             }
@@ -7418,6 +7547,15 @@
             "title": "Active Memory Count",
             "default": 0
           },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "archived"
+            ],
+            "title": "Status",
+            "default": "active"
+          },
           "description": {
             "anyOf": [
               {
@@ -7635,6 +7773,15 @@
             "type": "integer",
             "title": "Active Memory Count",
             "default": 0
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "archived"
+            ],
+            "title": "Status",
+            "default": "active"
           }
         },
         "additionalProperties": false,
@@ -7925,6 +8072,55 @@
           "request_id"
         ],
         "title": "CompleteUploadResponse"
+      },
+      "CostEstimateLine": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "capability_id": {
+            "type": "string",
+            "title": "Capability Id"
+          },
+          "quantity": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Quantity"
+          },
+          "unit": {
+            "type": "string",
+            "title": "Unit"
+          },
+          "unit_price": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money-Output"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "estimated_cost": {
+            "$ref": "#/components/schemas/Money-Output"
+          },
+          "unpriced": {
+            "type": "boolean",
+            "title": "Unpriced",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "label",
+          "capability_id",
+          "quantity",
+          "unit",
+          "estimated_cost"
+        ],
+        "title": "CostEstimateLine"
       },
       "CostRollup": {
         "properties": {
@@ -8649,6 +8845,28 @@
           "role": {
             "$ref": "#/components/schemas/UserRole"
           },
+          "custom_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Code"
+          },
+          "purpose": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purpose"
+          },
           "max_uses": {
             "anyOf": [
               {
@@ -8811,6 +9029,17 @@
           "used_count": {
             "type": "integer",
             "title": "Used Count"
+          },
+          "purpose": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purpose"
           },
           "expires_at": {
             "anyOf": [
@@ -9023,7 +9252,7 @@
         "enum": [
           "broll.skipped_no_material",
           "bgm.skipped_library_unannotated",
-          "font_default_used",
+          "font.default_used",
           "cover.frame_fallback"
         ],
         "title": "DegradationCode"
@@ -9068,6 +9297,24 @@
           "message"
         ],
         "title": "DegradationNotice"
+      },
+      "DeleteCaseRequest": {
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "DeleteCaseRequest"
       },
       "DeletePublishResourceRequest": {
         "properties": {
@@ -9116,6 +9363,42 @@
           "prompt"
         ],
         "title": "DesignVoiceRequest"
+      },
+      "DigitalHumanVideoCostEstimateResponse": {
+        "properties": {
+          "tts_characters": {
+            "type": "integer",
+            "title": "Tts Characters"
+          },
+          "estimated_video_seconds": {
+            "type": "integer",
+            "title": "Estimated Video Seconds"
+          },
+          "tts": {
+            "$ref": "#/components/schemas/CostEstimateLine"
+          },
+          "video": {
+            "$ref": "#/components/schemas/CostEstimateLine"
+          },
+          "total": {
+            "$ref": "#/components/schemas/CostEstimateLine"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tts_characters",
+          "estimated_video_seconds",
+          "tts",
+          "video",
+          "total",
+          "request_id"
+        ],
+        "title": "DigitalHumanVideoCostEstimateResponse"
       },
       "DigitalHumanVideoRequest": {
         "properties": {
@@ -9253,6 +9536,7 @@
           "validation.missing_voice",
           "validation.missing_script",
           "validation.invalid_options",
+          "validation.conflict",
           "auth.unauthorized",
           "auth.forbidden",
           "auth.invalid_credentials",
@@ -9913,8 +10197,26 @@
       },
       "LoginRequest": {
         "properties": {
+          "identifier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identifier"
+          },
           "email": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Email"
           },
           "password": {
@@ -9925,7 +10227,6 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "email",
           "password"
         ],
         "title": "LoginRequest"
@@ -12079,6 +12380,21 @@
               }
             ],
             "title": "Target Audience"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "archived"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
           }
         },
         "additionalProperties": false,
@@ -14784,6 +15100,17 @@
             "type": "integer",
             "title": "Used Count"
           },
+          "purpose": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purpose"
+          },
           "expires_at": {
             "anyOf": [
               {
@@ -15861,6 +16188,17 @@
             ],
             "title": "Status"
           },
+          "purpose": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purpose"
+          },
           "expires_at": {
             "anyOf": [
               {
@@ -16380,7 +16718,7 @@
         "enum": [
           "broll.skipped_no_material",
           "bgm.skipped_library_unannotated",
-          "font_default_used",
+          "font.default_used",
           "cover.frame_fallback",
           "timestamp.estimated",
           "cost.unpriced"

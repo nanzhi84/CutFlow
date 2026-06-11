@@ -1,13 +1,16 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, BarChart3, RefreshCw, Sparkles } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { api, type RunCard } from "../api/client";
 import { ErrorState } from "../components/State";
+import { useToast } from "../components/Toast";
 import { OverviewSidePanel } from "../components/overview/OverviewSidePanel";
 import { OverviewStatCards } from "../components/overview/OverviewStatCards";
 import { RecentRunsList } from "../components/overview/RecentRunsList";
 import { buildOverviewStats, sortRecentRuns } from "../components/overview/overviewModel";
 import { usePageVisible } from "../hooks/usePageVisible";
+import { shortId } from "../lib/format";
 import { routes } from "../routes";
 
 async function loadRecentRuns() {
@@ -20,6 +23,8 @@ async function loadRecentRuns() {
 export default function OverviewPage() {
   const queryClient = useQueryClient();
   const pageVisible = usePageVisible();
+  const toast = useToast();
+  const previousStatuses = useRef<Map<string, RunCard["status"]>>(new Map());
   const dashboard = useQuery({
     queryKey: ["ops", "dashboard"],
     queryFn: () => api.ops.dashboard({}),
@@ -32,6 +37,20 @@ export default function OverviewPage() {
   });
   const runs = recentRuns.data ?? [];
   const stats = buildOverviewStats(dashboard.data, runs);
+
+  useEffect(() => {
+    if (!recentRuns.data) return;
+    const previous = previousStatuses.current;
+    recentRuns.data.forEach((run) => {
+      const lastStatus = previous.get(run.runId);
+      if (lastStatus && lastStatus !== run.status && isTerminalStatus(run.status)) {
+        const message = `${run.title} · ${shortId(run.runId)}`;
+        if (run.status === "succeeded") toast.success("任务已完成", message);
+        else toast.error(run.status === "cancelled" ? "任务已取消" : "任务失败", message);
+      }
+      previous.set(run.runId, run.status);
+    });
+  }, [recentRuns.data, toast]);
 
   function refreshAll() {
     void queryClient.invalidateQueries({ queryKey: ["ops", "dashboard"] });
@@ -92,4 +111,8 @@ export default function OverviewPage() {
       ) : null}
     </div>
   );
+}
+
+function isTerminalStatus(status: RunCard["status"]) {
+  return status === "succeeded" || status === "failed" || status === "cancelled";
 }

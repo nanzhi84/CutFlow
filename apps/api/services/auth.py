@@ -46,7 +46,8 @@ def register(request: Request, payload: c.RegisterRequest, response: Response) -
 
 def login(request: Request, payload: c.LoginRequest, response: Response) -> c.AuthResponse:
 
-    auth_response, token = auth(request).login(payload.email, payload.password)
+    identifier = (payload.identifier or payload.email or "").strip()
+    auth_response, token = auth(request).login(identifier, payload.password)
     response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax")
     return auth_response.model_copy(update={"request_id": request_id()})
 
@@ -136,18 +137,24 @@ def create_registration_code(
 ) -> c.CreatedRegistrationCode:
     if isinstance(auth(request), SqlAlchemyAuthService):
         return auth(request).create_registration_code(payload)
-    plaintext_code = new_id("reg_code")
+    plaintext_code = payload.custom_code.strip() if payload.custom_code else new_id("reg_code")
+    if not plaintext_code:
+        raise NodeExecutionError(c.ErrorCode.validation_invalid_options, "Registration code cannot be empty.")
+    code_hash = hash_registration_code(plaintext_code)
+    if code_hash in repository(request).registration_code_hashes:
+        raise NodeExecutionError(c.ErrorCode.validation_conflict, "Registration code already exists.")
     code = c.RegistrationCodePreview(
         id=new_id("reg"),
         role=payload.role,
         status="active",
         max_uses=payload.max_uses,
         used_count=0,
+        purpose=payload.purpose,
         expires_at=payload.expires_at,
         created_at=c.utcnow(),
     )
     repository(request).registration_codes[code.id] = code
-    repository(request).registration_code_hashes[hash_registration_code(plaintext_code)] = code.id
+    repository(request).registration_code_hashes[code_hash] = code.id
     return c.CreatedRegistrationCode(**code.model_dump(), plaintext_code=plaintext_code)
 
 

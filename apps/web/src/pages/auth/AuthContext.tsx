@@ -1,14 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { api, type AuthUser } from "../../api/client";
+import { api, type AuthUser, type LoginRequest } from "../../api/client";
 import { routes } from "../../routes";
 
 type AuthContextValue = {
   user: AuthUser | null;
   isLoading: boolean;
   isAuthenticated: boolean;
-  login: (payload: { email: string; password: string }) => Promise<void>;
+  login: (payload: LoginRequest) => Promise<void>;
   logout: () => Promise<void>;
 };
 
@@ -57,7 +57,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   });
 
   const login = useCallback(
-    async (payload: { email: string; password: string }) => {
+    async (payload: LoginRequest) => {
       await loginMutation.mutateAsync(payload);
     },
     [loginMutation],

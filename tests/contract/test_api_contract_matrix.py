@@ -30,6 +30,11 @@ BODY_OVERRIDES = {
         "script": "contract matrix body",
         "voice": {"voice_id": "voice_sandbox"},
     },
+    ("POST", "/api/jobs/digital-human-video/estimate-cost"): {
+        "case_id": "case_demo",
+        "script": "contract matrix body",
+        "voice": {"voice_id": "voice_sandbox"},
+    },
 }
 PATH_VALUES = {
     "user_id": "usr_admin",

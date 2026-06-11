@@ -71,6 +71,7 @@ def seed_rows(repository: Repository | None = None) -> list[object]:
                 id=case.id,
                 name=case.name,
                 owner_user_id=case.owner_user_id,
+                status=case.status,
                 description=case.description,
                 industry=case.industry,
                 product=case.product,

@@ -6,7 +6,7 @@ from datetime import timedelta
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from packages.core.auth.service import ROLE_RANK, create_password_hasher
@@ -53,6 +53,7 @@ def registration_code_row_to_contract(row: RegistrationCodeRow) -> RegistrationC
         status=row.status,
         max_uses=row.max_uses,
         used_count=row.used_count,
+        purpose=row.purpose,
         expires_at=row.expires_at,
         created_at=row.created_at,
     )
@@ -188,15 +189,22 @@ class SqlAlchemyAuthService:
     def create_registration_code(
         self, payload: CreateRegistrationCodeRequest
     ) -> CreatedRegistrationCode:
-        plaintext_code = new_id("reg_code")
+        plaintext_code = payload.custom_code.strip() if payload.custom_code else new_id("reg_code")
+        if not plaintext_code:
+            raise NodeExecutionError(ErrorCode.validation_invalid_options, "Registration code cannot be empty.")
+        code_hash = hash_registration_code(plaintext_code)
         with self.session_factory() as session:
+            existing = session.scalar(select(RegistrationCodeRow).where(RegistrationCodeRow.code_hash == code_hash))
+            if existing is not None:
+                raise NodeExecutionError(ErrorCode.validation_conflict, "Registration code already exists.")
             row = RegistrationCodeRow(
                 id=new_id("reg"),
-                code_hash=hash_registration_code(plaintext_code),
+                code_hash=code_hash,
                 role=payload.role.value,
                 status="active",
                 max_uses=payload.max_uses,
                 used_count=0,
+                purpose=payload.purpose,
                 expires_at=payload.expires_at,
             )
             session.add(row)
@@ -219,9 +227,11 @@ class SqlAlchemyAuthService:
             session.refresh(row)
             return registration_code_row_to_contract(row)
 
-    def login(self, email: str, password: str) -> tuple[AuthResponse, str]:
+    def login(self, identifier: str, password: str) -> tuple[AuthResponse, str]:
         with self.session_factory() as session:
-            row = session.scalar(select(UserRow).where(UserRow.email == email))
+            row = session.scalar(
+                select(UserRow).where(or_(UserRow.email == identifier, UserRow.display_name == identifier))
+            )
             if row is None or not self._verify_hash(row.password_hash, password):
                 raise NodeExecutionError(ErrorCode.auth_invalid_credentials, "Invalid credentials.")
             if row.status == "disabled":

@@ -37,6 +37,13 @@ from packages.core.storage.object_store import parse_local_uri
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 
+ACTIVE_RUN_STATUSES = {
+    c.RunStatus.created,
+    c.RunStatus.admitted,
+    c.RunStatus.running,
+    c.RunStatus.cancelling,
+}
+
 def list_cases(
     request: Request,
     limit: int = 50,
@@ -80,3 +87,30 @@ def patch_case(case_id: str, payload: c.PatchCaseRequest, request: Request) -> c
         return case
     get_case(request, case_id)
     return repository(request).patch(repository(request).cases, case_id, payload.model_dump(exclude_none=True))
+
+
+def delete_case(case_id: str, request: Request) -> c.OkResponse:
+    if case_repository(request) is not None:
+        deleted = case_repository(request).delete_case(case_id)
+        if deleted is None:
+            raise NodeExecutionError(c.ErrorCode.validation_missing_case, f"Case {case_id} does not exist.")
+        if not deleted:
+            raise NodeExecutionError(
+                c.ErrorCode.validation_conflict,
+                "Case cannot be deleted while active runs or finished videos still reference it.",
+            )
+        return c.OkResponse(request_id=request_id())
+
+    get_case(request, case_id)
+    repo = repository(request)
+    has_active_run = any(
+        run.case_id == case_id and run.status in ACTIVE_RUN_STATUSES for run in repo.runs.values()
+    )
+    has_finished_video = any(video.case_id == case_id for video in repo.finished_videos.values())
+    if has_active_run or has_finished_video:
+        raise NodeExecutionError(
+            c.ErrorCode.validation_conflict,
+            "Case cannot be deleted while active runs or finished videos still reference it.",
+        )
+    del repo.cases[case_id]
+    return c.OkResponse(request_id=request_id())

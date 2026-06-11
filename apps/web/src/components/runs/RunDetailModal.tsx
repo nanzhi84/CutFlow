@@ -1,4 +1,4 @@
-import { Ban, Download, Play, RotateCw } from "lucide-react";
+import { Ban, Download, OctagonX, Play, RotateCw, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import type { FinishedVideo, NodeRun, RunCard, RunDetailResponse } from "../../api/client";
 import { EmptyState, ErrorState, LoadingState } from "../State";
@@ -53,6 +53,15 @@ export function RunDetailModal({
                 <Ban className="h-4 w-4" />
                 <span>中断</span>
               </button>
+              <button
+                className="btn-secondary compactButton"
+                type="button"
+                disabled={!isProcessingStatus(card.status)}
+                onClick={() => onAction("forceCancel", card)}
+              >
+                <OctagonX className="h-4 w-4" />
+                <span>强制</span>
+              </button>
               <button className="btn-secondary compactButton" type="button" disabled={!card.canRetry} onClick={() => onAction("retry", card)}>
                 <RotateCw className="h-4 w-4" />
                 <span>重试</span>
@@ -60,6 +69,10 @@ export function RunDetailModal({
               <button className="btn-secondary compactButton" type="button" disabled={!card.canResume} onClick={() => onAction("resume", card)}>
                 <Play className="h-4 w-4" />
                 <span>续跑</span>
+              </button>
+              <button className="btn-secondary compactButton" type="button" disabled={isProcessingStatus(card.status)} onClick={() => onAction("delete", card)}>
+                <Trash2 className="h-4 w-4" />
+                <span>删记录</span>
               </button>
             </div>
           </div>
@@ -128,6 +141,10 @@ export function RunDetailModal({
       ) : null}
     </Modal>
   );
+}
+
+function isProcessingStatus(status: RunCard["status"]) {
+  return status === "created" || status === "admitted" || status === "running" || status === "cancelling";
 }
 
 function DetailMetric({ label, value }: { label: string; value: ReactNode }) {

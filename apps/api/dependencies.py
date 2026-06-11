@@ -48,7 +48,7 @@ def node_error_response(exc: NodeExecutionError, *, status_override: int | None 
         status = 401
     elif error.code in {c.ErrorCode.auth_forbidden, c.ErrorCode.auth_user_disabled}:
         status = 403
-    elif error.code == c.ErrorCode.idempotency_conflict:
+    elif error.code in {c.ErrorCode.idempotency_conflict, c.ErrorCode.validation_conflict}:
         status = 409
     elif error.code in {c.ErrorCode.artifact_missing, c.ErrorCode.validation_missing_case}:
         status = 404

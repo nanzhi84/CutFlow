@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Mic2, Upload, Wand2 } from "lucide-react";
+import { Mic2, Upload, Wand2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type VoiceProfile } from "../../api/client";
@@ -9,14 +9,15 @@ import { VoiceCard } from "../../components/library/VoiceCard";
 import { VoiceGeneratorPanel } from "../../components/library/VoiceGeneratorPanel";
 import { VoiceGridSkeleton } from "../../components/library/VoiceGridSkeleton";
 import { CloneVoiceModal, DesignVoiceModal, EditVoiceModal } from "../../components/library/VoiceModals";
-import { PAGE_SIZE, type VoiceSourceFilter } from "../../components/library/libraryModel";
+import { type VoiceSourceFilter } from "../../components/library/libraryModel";
+import { InfiniteScrollSentinel } from "../../components/ui/InfiniteScrollSentinel";
 
 export function VoicesTab() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [search, setSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState<VoiceSourceFilter>("all");
-  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(50);
   const [cloneOpen, setCloneOpen] = useState(false);
   const [designOpen, setDesignOpen] = useState(false);
   const [editVoice, setEditVoice] = useState<VoiceProfile | null>(null);
@@ -27,10 +28,10 @@ export function VoicesTab() {
   const [previewDuration, setPreviewDuration] = useState<number | null>(null);
 
   const voicesQuery = useQuery({
-    queryKey: ["library", "voices", sourceFilter],
+    queryKey: ["library", "voices", sourceFilter, limit],
     queryFn: () =>
       api.voices.list({
-        limit: 200,
+        limit,
         source: sourceFilter === "all" ? null : sourceFilter,
       }),
   });
@@ -48,11 +49,10 @@ export function VoicesTab() {
     });
   }, [search, voices]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredVoices.length / PAGE_SIZE));
-  const pageItems = filteredVoices.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const hasMore = Boolean(voicesQuery.data && voices.length >= limit);
 
   useEffect(() => {
-    setPage(1);
+    setLimit(50);
   }, [search, sourceFilter]);
 
   const previewMutation = useMutation({
@@ -127,7 +127,7 @@ export function VoicesTab() {
             </p>
           ) : null}
 
-          {!voicesQuery.isLoading && pageItems.length === 0 ? (
+          {!voicesQuery.isLoading && filteredVoices.length === 0 ? (
             <div className="rounded-[24px] border border-dashed border-border bg-white/55 p-8 text-center">
               <Mic2 className="mx-auto h-8 w-8 text-text-tertiary" />
               <p className="mt-3 text-sm font-medium text-text-primary">没有匹配的音色</p>
@@ -136,7 +136,7 @@ export function VoicesTab() {
           ) : null}
 
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {pageItems.map((voice) => (
+            {filteredVoices.map((voice) => (
               <VoiceCard
                 key={voice.id}
                 voice={voice}
@@ -149,21 +149,11 @@ export function VoicesTab() {
             ))}
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/70 pt-3 text-sm text-text-secondary">
-            <span>
-              共 {filteredVoices.length} 个音色，第 {page} / {totalPages} 页
-            </span>
-            <div className="flex gap-2">
-              <button className="btn-secondary min-h-9 px-3" type="button" disabled={page <= 1} onClick={() => setPage((current) => current - 1)}>
-                <ChevronLeft className="h-4 w-4" />
-                <span>上一页</span>
-              </button>
-              <button className="btn-secondary min-h-9 px-3" type="button" disabled={page >= totalPages} onClick={() => setPage((current) => current + 1)}>
-                <span>下一页</span>
-                <ChevronRight className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
+          <InfiniteScrollSentinel
+            enabled={hasMore && !voicesQuery.isFetching}
+            onVisible={() => setLimit((current) => current + 50)}
+            label={`继续加载音色（已显示 ${filteredVoices.length} 个）`}
+          />
         </div>
 
         <VoiceGeneratorPanel

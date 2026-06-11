@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Request, Response, UploadFile
+from fastapi import APIRouter, Body, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from apps.api.dependencies import require_role
@@ -37,3 +37,13 @@ def case_detail(request: Request, case_id: str) -> c.CaseDetail:
 def patch_case(case_id: str, payload: c.PatchCaseRequest, request: Request) -> c.CaseDetail:
     require_role(request, c.UserRole.operator)
     return service.patch_case(case_id, payload, request)
+
+
+@router.delete("/api/cases/{case_id}", response_model=c.OkResponse)
+def delete_case(
+    case_id: str,
+    request: Request,
+    payload: c.DeleteCaseRequest | None = Body(default=None),
+) -> c.OkResponse:
+    require_role(request, c.UserRole.operator)
+    return service.delete_case(case_id, request)

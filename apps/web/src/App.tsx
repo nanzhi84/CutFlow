@@ -14,6 +14,7 @@ import PlaceholderPage from "./pages/PlaceholderPage";
 import OverviewPage from "./pages/OverviewPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import AccountPage from "./pages/AccountPage";
+import PromptManagementPage from "./pages/ops/PromptManagementPage";
 import { routePatterns, routes } from "./routes";
 
 export default function App() {
@@ -37,6 +38,7 @@ export default function App() {
           <Route path={routePatterns.library} element={<LibraryLayout />} />
           <Route path={routePatterns.analytics} element={<AnalyticsPage />} />
           <Route path={routePatterns.account} element={<AccountPage />} />
+          <Route path={routePatterns.promptOps} element={<PromptManagementPage />} />
           <Route path={routePatterns.ops} element={<Navigate to={routes.analytics()} replace />} />
         </Route>
       </Route>

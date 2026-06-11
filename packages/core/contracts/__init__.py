@@ -24,6 +24,7 @@ class ErrorCode(str, Enum):
     validation_missing_voice = "validation.missing_voice"
     validation_missing_script = "validation.missing_script"
     validation_invalid_options = "validation.invalid_options"
+    validation_conflict = "validation.conflict"
     auth_unauthorized = "auth.unauthorized"
     auth_forbidden = "auth.forbidden"
     auth_invalid_credentials = "auth.invalid_credentials"
@@ -63,7 +64,7 @@ class ErrorCode(str, Enum):
 class WarningCode(str, Enum):
     broll_skipped_no_material = "broll.skipped_no_material"
     bgm_skipped_library_unannotated = "bgm.skipped_library_unannotated"
-    font_default_used = "font_default_used"
+    font_default_used = "font.default_used"
     cover_frame_fallback = "cover.frame_fallback"
     timestamp_estimated = "timestamp.estimated"
     cost_unpriced = "cost.unpriced"
@@ -72,7 +73,7 @@ class WarningCode(str, Enum):
 class DegradationCode(str, Enum):
     broll_skipped_no_material = "broll.skipped_no_material"
     bgm_skipped_library_unannotated = "bgm.skipped_library_unannotated"
-    font_default_used = "font_default_used"
+    font_default_used = "font.default_used"
     cover_frame_fallback = "cover.frame_fallback"
 
 
@@ -600,11 +601,20 @@ class SessionInfo(ContractModel):
 
 
 class LoginRequest(ContractModel):
-    email: str
+    identifier: str | None = None
+    email: str | None = None
     password: str
 
+    @model_validator(mode="after")
+    def require_identifier(self) -> "LoginRequest":
+        if not (self.identifier or self.email):
+            raise ValueError("identifier or email is required")
+        return self
 
-class RegisterRequest(LoginRequest):
+
+class RegisterRequest(ContractModel):
+    email: str
+    password: str
     display_name: str
     registration_code: str | None = None
 
@@ -648,6 +658,7 @@ class RegistrationCodePreview(ContractModel):
     status: Literal["active", "disabled", "expired"]
     max_uses: int | None = None
     used_count: int
+    purpose: str | None = None
     expires_at: datetime | None = None
     created_at: datetime
 
@@ -658,12 +669,15 @@ class CreatedRegistrationCode(RegistrationCodePreview):
 
 class CreateRegistrationCodeRequest(ContractModel):
     role: UserRole
+    custom_code: str | None = None
+    purpose: str | None = None
     max_uses: int | None = None
     expires_at: datetime | None = None
 
 
 class UpdateRegistrationCodeRequest(ContractModel):
     status: Literal["active", "disabled", "expired"] | None = None
+    purpose: str | None = None
     expires_at: datetime | None = None
 
 
@@ -779,12 +793,18 @@ class PatchCaseRequest(ContractModel):
     description: str | None = None
     product: str | None = None
     target_audience: str | None = None
+    status: Literal["active", "archived"] | None = None
+
+
+class DeleteCaseRequest(ContractModel):
+    reason: str | None = None
 
 
 class CaseListItem(EntityMeta):
     name: str
     owner_user_id: str | None = None
     active_memory_count: int = 0
+    status: Literal["active", "archived"] = "active"
 
 
 class CaseDetail(CaseListItem):
@@ -1293,6 +1313,25 @@ class ProviderUsageReport(ContractModel):
     estimated_cost: Money
     actual_cost: Money | None = None
     unpriced_invocation_count: int
+
+
+class CostEstimateLine(ContractModel):
+    label: str
+    capability_id: str
+    quantity: Decimal
+    unit: str
+    unit_price: Money | None = None
+    estimated_cost: Money
+    unpriced: bool = False
+
+
+class DigitalHumanVideoCostEstimateResponse(ContractModel):
+    tts_characters: int
+    estimated_video_seconds: int
+    tts: CostEstimateLine
+    video: CostEstimateLine
+    total: CostEstimateLine
+    request_id: str
 
 
 class GovernedActionRequest(ContractModel):

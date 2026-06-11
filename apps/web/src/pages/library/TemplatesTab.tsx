@@ -11,6 +11,7 @@ import { DropZone } from "../../components/ui/DropZone";
 import { Modal } from "../../components/ui/Modal";
 import { SearchInput } from "../../components/ui/SearchInput";
 import { useToast } from "../../components/ui/Toast";
+import { InfiniteScrollSentinel } from "../../components/ui/InfiniteScrollSentinel";
 import { usePageVisible } from "../../hooks/usePageVisible";
 import { useUpload } from "../../hooks/useUpload";
 import { shortId } from "../../lib/format";
@@ -22,6 +23,7 @@ export function TemplatesTab() {
   const [caseSearch, setCaseSearch] = useState("");
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [kind, setKind] = useState<TemplateKind>("portrait");
+  const [assetLimit, setAssetLimit] = useState(50);
   const [assetSearch, setAssetSearch] = useState("");
   const [sceneFilter, setSceneFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<"all" | MediaAssetRecord["annotation_status"]>("all");
@@ -42,23 +44,27 @@ export function TemplatesTab() {
   useEffect(() => {
     if (!selectedCaseId && cases[0]?.id) setSelectedCaseId(cases[0].id);
   }, [cases, selectedCaseId]);
+  useEffect(() => {
+    setAssetLimit(50);
+  }, [kind, selectedCaseId]);
 
   const portraitQuery = useQuery({
-    queryKey: ["library", "media", selectedCaseId, "portrait"],
-    queryFn: () => api.mediaAssets.list({ limit: 200, case_id: selectedCaseId, kind: "portrait" }),
+    queryKey: ["library", "media", selectedCaseId, "portrait", assetLimit],
+    queryFn: () => api.mediaAssets.list({ limit: assetLimit, case_id: selectedCaseId, kind: "portrait" }),
     enabled: Boolean(selectedCaseId),
     refetchInterval: pageVisible ? 10_000 : false,
   });
 
   const brollQuery = useQuery({
-    queryKey: ["library", "media", selectedCaseId, "broll"],
-    queryFn: () => api.mediaAssets.list({ limit: 200, case_id: selectedCaseId, kind: "broll" }),
+    queryKey: ["library", "media", selectedCaseId, "broll", assetLimit],
+    queryFn: () => api.mediaAssets.list({ limit: assetLimit, case_id: selectedCaseId, kind: "broll" }),
     enabled: Boolean(selectedCaseId),
     refetchInterval: pageVisible ? 10_000 : false,
   });
 
   const activeQuery = kind === "portrait" ? portraitQuery : brollQuery;
   const activeItems = activeQuery.data?.items ?? [];
+  const hasMoreAssets = Boolean(activeQuery.data && activeItems.length >= assetLimit);
   const selectedCase = cases.find((item) => item.id === selectedCaseId) ?? null;
   const scenes = useMemo(() => {
     const values = new Set<string>();
@@ -234,6 +240,11 @@ export function TemplatesTab() {
             />
           ))}
         </div>
+        <InfiniteScrollSentinel
+          enabled={hasMoreAssets && !activeQuery.isFetching}
+          onVisible={() => setAssetLimit((current) => current + 50)}
+          label={`继续加载${templateKindLabels[kind]}`}
+        />
 
         {!activeQuery.isLoading && visiblePlaceholders.length === 0 && filteredItems.length === 0 ? (
           <div className="rounded-[24px] border border-dashed border-border bg-white/55 p-8 text-center">

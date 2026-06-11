@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta
+from decimal import Decimal, ROUND_CEILING
 
 from fastapi import Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -62,6 +63,12 @@ NODE_LABELS = {
     "ExportFinishedVideo": "导出成片",
     "FinalizeRunReport": "生成 Run 报告",
 }
+
+TTS_CAPABILITY_ID = "tts.speech"
+VIDEO_CAPABILITY_ID = "lipsync.video"
+TTS_UNIT = "input_token"
+VIDEO_UNIT = "media_second"
+DELETABLE_RUN_STATUSES = {c.RunStatus.succeeded, c.RunStatus.failed, c.RunStatus.cancelled}
 
 
 def _sync_workflow_snapshot(request: Request, run: c.WorkflowRun) -> None:
@@ -322,6 +329,99 @@ def create_digital_human_job(
     return c.CreateJobResponse(job=repository(request).jobs[job.id], initial_run=run, request_id=request_id())
 
 
+def estimate_digital_human_video_cost(
+    payload: c.CreateDigitalHumanVideoJobRequest, request: Request
+) -> c.DigitalHumanVideoCostEstimateResponse:
+    get_case(request, payload.case_id)
+    tts_characters = len(payload.script.strip())
+    estimated_video_seconds = max(
+        1,
+        int((Decimal(tts_characters) / Decimal("5")).to_integral_value(rounding=ROUND_CEILING)),
+    )
+    price_items = _active_price_items(request)
+    tts = _estimate_line(
+        label="TTS 字符",
+        capability_id=TTS_CAPABILITY_ID,
+        unit=TTS_UNIT,
+        quantity=Decimal(tts_characters),
+        price_items=price_items,
+    )
+    video = _estimate_line(
+        label="视频秒数",
+        capability_id=VIDEO_CAPABILITY_ID,
+        unit=VIDEO_UNIT,
+        quantity=Decimal(estimated_video_seconds),
+        price_items=price_items,
+    )
+    total_amount = tts.estimated_cost.amount + video.estimated_cost.amount
+    total = c.CostEstimateLine(
+        label="总成本",
+        capability_id="digital_human_video",
+        unit="call",
+        quantity=Decimal("1"),
+        estimated_cost=c.Money(amount=total_amount, currency="CNY"),
+        unpriced=tts.unpriced or video.unpriced,
+    )
+    return c.DigitalHumanVideoCostEstimateResponse(
+        tts_characters=tts_characters,
+        estimated_video_seconds=estimated_video_seconds,
+        tts=tts,
+        video=video,
+        total=total,
+        request_id=request_id(),
+    )
+
+
+def _active_price_items(request: Request) -> list[c.ProviderPriceItem]:
+    provider_repo = provider_repository(request)
+    if provider_repo is not None:
+        catalogs = provider_repo.list_price_catalogs(active_only=True, limit=200)
+        values: list[c.ProviderPriceItem] = []
+        for catalog in catalogs:
+            values.extend(provider_repo.list_price_items(catalog_id=catalog.id, limit=500))
+        return values
+    published_catalog_ids = {
+        catalog.id for catalog in repository(request).price_catalogs.values() if catalog.status == "published"
+    }
+    return [item for item in repository(request).price_items.values() if item.catalog_id in published_catalog_ids]
+
+
+def _estimate_line(
+    *,
+    label: str,
+    capability_id: str,
+    unit: str,
+    quantity: Decimal,
+    price_items: list[c.ProviderPriceItem],
+) -> c.CostEstimateLine:
+    price_item = next(
+        (
+            item
+            for item in price_items
+            if item.unit == unit and item.capability_id in {capability_id, "*"}
+        ),
+        None,
+    )
+    if price_item is None:
+        return c.CostEstimateLine(
+            label=label,
+            capability_id=capability_id,
+            quantity=quantity,
+            unit=unit,
+            estimated_cost=c.zero_money(),
+            unpriced=True,
+        )
+    amount = price_item.unit_price.amount * quantity
+    return c.CostEstimateLine(
+        label=label,
+        capability_id=capability_id,
+        quantity=quantity,
+        unit=unit,
+        unit_price=price_item.unit_price,
+        estimated_cost=c.Money(amount=amount, currency=price_item.unit_price.currency),
+    )
+
+
 def job_detail(request: Request, job_id: str) -> c.JobDetailResponse:
 
     if production_repository(request) is not None:
@@ -373,6 +473,53 @@ def cancel_run(run_id: str, payload: c.CancelRunRequest, request: Request) -> c.
     run = run or repository(request).runs[run_id]
     _sync_workflow_snapshot(request, run)
     return c.RunActionResponse(run=run, accepted=True, request_id=request_id())
+
+
+def delete_run_record(run_id: str, request: Request) -> c.OkResponse:
+    if run_id not in repository(request).runs and production_repository(request) is not None:
+        if not production_repository(request).run_exists(run_id):
+            raise NodeExecutionError(c.ErrorCode.artifact_missing, f"Run {run_id} does not exist.")
+        production_repository(request).hydrate_workflow_runtime_snapshot(repository(request), run_id)
+    if run_id not in repository(request).runs:
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, f"Run {run_id} does not exist.")
+    run = repository(request).runs[run_id]
+    if run.status not in DELETABLE_RUN_STATUSES:
+        raise NodeExecutionError(
+            c.ErrorCode.validation_conflict,
+            "Processing runs cannot be deleted. Cancel or wait until the run reaches a terminal status.",
+        )
+    if production_repository(request) is not None:
+        production_repository(request).delete_run_record(run_id)
+    _delete_run_from_memory(repository(request), run)
+    return c.OkResponse(request_id=request_id())
+
+
+def _delete_run_from_memory(repo, run: c.WorkflowRun) -> None:
+    repo.runs.pop(run.id, None)
+    repo.node_runs.pop(run.id, None)
+    for artifact_id, artifact in list(repo.artifacts.items()):
+        if artifact.run_id == run.id:
+            repo.artifacts[artifact_id] = artifact.model_copy(update={"run_id": None, "node_run_id": None})
+    for video_id, video in list(repo.finished_videos.items()):
+        if video.run_id == run.id:
+            repo.finished_videos[video_id] = video.model_copy(update={"run_id": None, "updated_at": c.utcnow()})
+    for invocation_id, invocation in list(repo.provider_invocations.items()):
+        if invocation.run_id == run.id:
+            repo.provider_invocations[invocation_id] = invocation.model_copy(
+                update={"run_id": None, "node_run_id": None, "updated_at": c.utcnow()}
+            )
+    job = repo.jobs.get(run.job_id)
+    if job is None:
+        return
+    remaining_runs = sorted(
+        [item for item in repo.runs.values() if item.job_id == job.id],
+        key=lambda item: item.created_at,
+    )
+    if remaining_runs:
+        latest = remaining_runs[-1]
+        repo.jobs[job.id] = job.model_copy(update={"active_run_id": latest.id, "updated_at": c.utcnow()})
+    else:
+        repo.jobs.pop(job.id, None)
 
 
 def retry_run(run_id: str, payload: c.RetryRunRequest, request: Request) -> c.RetryRunResponse:

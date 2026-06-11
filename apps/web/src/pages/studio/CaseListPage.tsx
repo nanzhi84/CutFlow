@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, FolderOpen, Plus } from "lucide-react";
+import { ArrowRight, FolderOpen, Plus, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, type ApiError } from "../../api/client";
 import { EmptyState, ErrorState, LoadingState } from "../../components/State";
 import { Modal } from "../../components/Modal";
+import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { SearchInput } from "../../components/ui/SearchInput";
 import { useToast } from "../../components/Toast";
 import { TimeText } from "../../components/TimeText";
@@ -29,6 +30,7 @@ const emptyForm: CaseForm = {
 export default function CaseListPage() {
   const [search, setSearch] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [form, setForm] = useState<CaseForm>(emptyForm);
   const [formError, setFormError] = useState<unknown>(null);
   const queryClient = useQueryClient();
@@ -55,6 +57,16 @@ export default function CaseListPage() {
       navigate(routes.caseStudio(created.id));
     },
     onError: (error: ApiError) => setFormError(error),
+  });
+  const deleteCase = useMutation({
+    mutationFn: (caseId: string) => api.cases.delete(caseId),
+    onSuccess: async () => {
+      const deletedName = deleteTarget?.name;
+      setDeleteTarget(null);
+      await queryClient.invalidateQueries({ queryKey: ["cases"] });
+      toast.success("案例已删除", deletedName);
+    },
+    onError: (error: ApiError) => toast.error("删除失败", error),
   });
 
   const items = useMemo(() => cases.data?.items ?? [], [cases.data?.items]);
@@ -85,7 +97,7 @@ export default function CaseListPage() {
       {items.length > 0 ? (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {items.map((item) => (
-            <Link className="card card-hover grid gap-5 no-underline" to={routes.caseStudio(item.id)} key={item.id}>
+            <article className="card card-hover grid gap-5" key={item.id}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="mb-3 inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-accent/10 text-accent">
@@ -94,9 +106,9 @@ export default function CaseListPage() {
                   <h2 className="truncate text-lg font-semibold text-text-primary">{item.name}</h2>
                   <p className="mt-1 text-sm">最近更新 <TimeText value={item.updated_at} /></p>
                 </div>
-                <span className="icon-button">
+                <Link className="icon-button no-underline" to={routes.caseStudio(item.id)} aria-label={`进入 ${item.name}`}>
                   <ArrowRight className="h-4 w-4" />
-                </span>
+                </Link>
               </div>
               <div className="grid grid-cols-3 gap-2">
                 <span className="rounded-2xl border border-border/70 bg-white/60 px-3 py-2">
@@ -112,7 +124,21 @@ export default function CaseListPage() {
                   <span className="text-xs text-text-tertiary">负责人</span>
                 </span>
               </div>
-            </Link>
+              <div className="flex items-center justify-between gap-3 border-t border-border/70 pt-4">
+                <Link className="btn-secondary no-underline" to={routes.caseStudio(item.id)}>
+                  <ArrowRight className="h-4 w-4" />
+                  <span>进入工作台</span>
+                </Link>
+                <button
+                  className="btn-danger"
+                  type="button"
+                  onClick={() => setDeleteTarget({ id: item.id, name: item.name })}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  <span>删除</span>
+                </button>
+              </div>
+            </article>
           ))}
         </div>
       ) : null}
@@ -179,6 +205,24 @@ export default function CaseListPage() {
           </form>
         </Modal>
       ) : null}
+
+      <ConfirmDialog
+        isOpen={deleteTarget !== null}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (deleteTarget) deleteCase.mutate(deleteTarget.id);
+        }}
+        title="删除案例"
+        message={`确认删除「${deleteTarget?.name ?? ""}」？`}
+        consequences={[
+          "仅无活跃任务且没有成片引用的案例会被删除。",
+          "已生成成片、历史运行或发布准备仍引用该案例时，系统会阻止删除。",
+          "删除后案例工作台不会再出现在列表中。",
+        ]}
+        confirmText="删除案例"
+        type="danger"
+        isLoading={deleteCase.isPending}
+      />
     </section>
   );
 }

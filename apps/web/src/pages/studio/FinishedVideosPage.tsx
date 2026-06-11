@@ -11,6 +11,7 @@ import { routes } from "../../routes";
 import { TimeText } from "../../components/TimeText";
 import { toDisplayUrl } from "../../lib/url";
 import { EditorHandoffActions } from "../../components/editor-handoff/EditorHandoffActions";
+import { InfiniteScrollSentinel } from "../../components/ui/InfiniteScrollSentinel";
 
 export default function FinishedVideosPage() {
   const { caseId = "" } = useParams();
@@ -19,14 +20,15 @@ export default function FinishedVideosPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [limit, setLimit] = useState(50);
   const caseDetail = useQuery({
     queryKey: ["case", caseId],
     queryFn: () => api.cases.detail(caseId),
     enabled: Boolean(caseId),
   });
   const videos = useQuery({
-    queryKey: ["finished-videos", caseId],
-    queryFn: () => api.finishedVideos.list(caseId),
+    queryKey: ["finished-videos", caseId, limit],
+    queryFn: () => api.finishedVideos.list(caseId, { limit }),
     enabled: Boolean(caseId),
   });
   const preview = useMutation({
@@ -55,6 +57,7 @@ export default function FinishedVideosPage() {
   });
 
   const items = videos.data?.items ?? [];
+  const hasMore = Boolean(videos.data && items.length >= limit);
 
   return (
     <section className="pageStack">
@@ -120,6 +123,11 @@ export default function FinishedVideosPage() {
               </span>
             </div>
           ))}
+          <InfiniteScrollSentinel
+            enabled={hasMore && !videos.isFetching}
+            onVisible={() => setLimit((current) => current + 50)}
+            label="继续加载成片"
+          />
         </div>
       ) : null}
     </section>

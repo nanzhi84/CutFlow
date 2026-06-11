@@ -105,6 +105,7 @@ class RegistrationCodeRow(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String, nullable=False)
     max_uses: Mapped[int | None] = mapped_column(Integer)
     used_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    purpose: Mapped[str | None] = mapped_column(Text)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
@@ -144,6 +145,7 @@ class CaseRow(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active")
     description: Mapped[str | None] = mapped_column(Text)
     industry: Mapped[str | None] = mapped_column(String)
     product: Mapped[str | None] = mapped_column(String)

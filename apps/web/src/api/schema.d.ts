@@ -377,7 +377,8 @@ export interface paths {
         get: operations["case_detail_api_cases__case_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** Delete Case */
+        delete: operations["delete_case_api_cases__case_id__delete"];
         options?: never;
         head?: never;
         /** Patch Case */
@@ -412,6 +413,23 @@ export interface paths {
         put?: never;
         /** Create Digital Human Job */
         post: operations["create_digital_human_job_api_jobs_digital_human_video_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/digital-human-video/estimate-cost": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Estimate Digital Human Video Cost */
+        post: operations["estimate_digital_human_video_cost_api_jobs_digital_human_video_estimate_cost_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -463,7 +481,8 @@ export interface paths {
         get: operations["run_detail_api_runs__run_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** Delete Run Record */
+        delete: operations["delete_run_record_api_runs__run_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2449,6 +2468,12 @@ export interface components {
              * @default 0
              */
             active_memory_count: number;
+            /**
+             * Status
+             * @default active
+             * @enum {string}
+             */
+            status: "active" | "archived";
             /** Description */
             description?: string | null;
             /** Industry */
@@ -2543,6 +2568,12 @@ export interface components {
              * @default 0
              */
             active_memory_count: number;
+            /**
+             * Status
+             * @default active
+             * @enum {string}
+             */
+            status: "active" | "archived";
         };
         /** CaseMemory */
         CaseMemory: {
@@ -2641,6 +2672,24 @@ export interface components {
             publish_package?: components["schemas"]["PublishPackage"] | null;
             /** Request Id */
             request_id: string;
+        };
+        /** CostEstimateLine */
+        CostEstimateLine: {
+            /** Label */
+            label: string;
+            /** Capability Id */
+            capability_id: string;
+            /** Quantity */
+            quantity: string;
+            /** Unit */
+            unit: string;
+            unit_price?: components["schemas"]["Money-Output"] | null;
+            estimated_cost: components["schemas"]["Money-Output"];
+            /**
+             * Unpriced
+             * @default false
+             */
+            unpriced: boolean;
         };
         /** CostRollup */
         CostRollup: {
@@ -2894,6 +2943,10 @@ export interface components {
         /** CreateRegistrationCodeRequest */
         CreateRegistrationCodeRequest: {
             role: components["schemas"]["UserRole"];
+            /** Custom Code */
+            custom_code?: string | null;
+            /** Purpose */
+            purpose?: string | null;
             /** Max Uses */
             max_uses?: number | null;
             /** Expires At */
@@ -2950,6 +3003,8 @@ export interface components {
             max_uses?: number | null;
             /** Used Count */
             used_count: number;
+            /** Purpose */
+            purpose?: string | null;
             /** Expires At */
             expires_at?: string | null;
             /**
@@ -3052,7 +3107,7 @@ export interface components {
          * DegradationCode
          * @enum {string}
          */
-        DegradationCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font_default_used" | "cover.frame_fallback";
+        DegradationCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback";
         /** DegradationNotice */
         DegradationNotice: {
             code: components["schemas"]["WarningCode"];
@@ -3070,6 +3125,11 @@ export interface components {
                 [key: string]: components["schemas"]["JsonValue"];
             };
         };
+        /** DeleteCaseRequest */
+        DeleteCaseRequest: {
+            /** Reason */
+            reason?: string | null;
+        };
         /** DeletePublishResourceRequest */
         DeletePublishResourceRequest: {
             /** Reason */
@@ -3083,6 +3143,18 @@ export interface components {
             prompt: string;
             /** Provider Profile Id */
             provider_profile_id?: string | null;
+        };
+        /** DigitalHumanVideoCostEstimateResponse */
+        DigitalHumanVideoCostEstimateResponse: {
+            /** Tts Characters */
+            tts_characters: number;
+            /** Estimated Video Seconds */
+            estimated_video_seconds: number;
+            tts: components["schemas"]["CostEstimateLine"];
+            video: components["schemas"]["CostEstimateLine"];
+            total: components["schemas"]["CostEstimateLine"];
+            /** Request Id */
+            request_id: string;
         };
         /** DigitalHumanVideoRequest */
         DigitalHumanVideoRequest: {
@@ -3137,7 +3209,7 @@ export interface components {
          * ErrorCode
          * @enum {string}
          */
-        ErrorCode: "validation.missing_case" | "validation.missing_voice" | "validation.missing_script" | "validation.invalid_options" | "auth.unauthorized" | "auth.forbidden" | "auth.invalid_credentials" | "auth.registration_closed" | "auth.user_disabled" | "upload.invalid_state" | "upload.expired" | "upload.size_mismatch" | "upload.sha256_mismatch" | "upload.unsupported_type" | "material.insufficient.portrait" | "material.insufficient.broll" | "material.annotation_failed" | "prompt.render_error" | "prompt.output_invalid" | "prompt.version_not_published" | "provider.unsupported_option" | "provider.quota_exceeded" | "provider.timeout" | "provider.remote_failed" | "provider.auth_failed" | "provider.cost_unpriced" | "artifact.missing" | "artifact.integrity_failed" | "artifact.schema_mismatch" | "workflow.invalid_transition" | "workflow.cancelled" | "workflow.resume_not_allowed" | "render.invalid_timeline" | "render.failed" | "render.subtitle_failed" | "publish.failed" | "import.failed" | "idempotency.conflict";
+        ErrorCode: "validation.missing_case" | "validation.missing_voice" | "validation.missing_script" | "validation.invalid_options" | "validation.conflict" | "auth.unauthorized" | "auth.forbidden" | "auth.invalid_credentials" | "auth.registration_closed" | "auth.user_disabled" | "upload.invalid_state" | "upload.expired" | "upload.size_mismatch" | "upload.sha256_mismatch" | "upload.unsupported_type" | "material.insufficient.portrait" | "material.insufficient.broll" | "material.annotation_failed" | "prompt.render_error" | "prompt.output_invalid" | "prompt.version_not_published" | "provider.unsupported_option" | "provider.quota_exceeded" | "provider.timeout" | "provider.remote_failed" | "provider.auth_failed" | "provider.cost_unpriced" | "artifact.missing" | "artifact.integrity_failed" | "artifact.schema_mismatch" | "workflow.invalid_transition" | "workflow.cancelled" | "workflow.resume_not_allowed" | "render.invalid_timeline" | "render.failed" | "render.subtitle_failed" | "publish.failed" | "import.failed" | "idempotency.conflict";
         /** EventStreamTokenResponse */
         EventStreamTokenResponse: {
             /** Stream Url */
@@ -3371,8 +3443,10 @@ export interface components {
         };
         /** LoginRequest */
         LoginRequest: {
+            /** Identifier */
+            identifier?: string | null;
             /** Email */
-            email: string;
+            email?: string | null;
             /** Password */
             password: string;
         };
@@ -4052,6 +4126,8 @@ export interface components {
             product?: string | null;
             /** Target Audience */
             target_audience?: string | null;
+            /** Status */
+            status?: ("active" | "archived") | null;
         };
         /** PatchPromptBindingRequest */
         PatchPromptBindingRequest: {
@@ -5181,6 +5257,8 @@ export interface components {
             max_uses?: number | null;
             /** Used Count */
             used_count: number;
+            /** Purpose */
+            purpose?: string | null;
             /** Expires At */
             expires_at?: string | null;
             /**
@@ -5635,6 +5713,8 @@ export interface components {
         UpdateRegistrationCodeRequest: {
             /** Status */
             status?: ("active" | "disabled" | "expired") | null;
+            /** Purpose */
+            purpose?: string | null;
             /** Expires At */
             expires_at?: string | null;
         };
@@ -5848,7 +5928,7 @@ export interface components {
          * WarningCode
          * @enum {string}
          */
-        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font_default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced";
+        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced";
         /** WorkflowRun */
         WorkflowRun: {
             /** Id */
@@ -6799,6 +6879,41 @@ export interface operations {
             };
         };
     };
+    delete_case_api_cases__case_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DeleteCaseRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OkResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     patch_case_api_cases__case_id__patch: {
         parameters: {
             query?: never;
@@ -6900,6 +7015,39 @@ export interface operations {
             };
         };
     };
+    estimate_digital_human_video_cost_api_jobs_digital_human_video_estimate_cost_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DigitalHumanVideoRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DigitalHumanVideoCostEstimateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     job_detail_api_jobs__job_id__get: {
         parameters: {
             query?: never;
@@ -6984,6 +7132,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_run_record_api_runs__run_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OkResponse"];
                 };
             };
             /** @description Validation Error */

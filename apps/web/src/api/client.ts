@@ -67,7 +67,7 @@ function buildUrl(path: string, query?: FetchOptions["query"]) {
 
 function readErrorMessage(code: string | undefined, fallback: string) {
   if (code === "auth.invalid_credentials") {
-    return "邮箱或密码不正确";
+    return "邮箱、用户名或密码不正确";
   }
   if (code === "auth.unauthorized") {
     return "登录已失效，请重新登录";
@@ -223,10 +223,84 @@ export const api = {
       }),
     detail: (caseId: string) =>
       fetchJson<JsonResponse<operations["case_detail_api_cases__case_id__get"]>>(`/api/cases/${enc(caseId)}`),
+    delete: (caseId: string) =>
+      fetchJson<JsonResponse<operations["delete_case_api_cases__case_id__delete"]>>(`/api/cases/${enc(caseId)}`, {
+        method: "DELETE",
+        idempotencyKey: createIdempotencyKey("case_delete"),
+      }),
     runs: (caseId: string, query: QueryParams<operations["case_run_cards_api_cases__case_id__runs_get"]> = {}) =>
       fetchJson<JsonResponse<operations["case_run_cards_api_cases__case_id__runs_get"]>>(
         `/api/cases/${enc(caseId)}/runs`,
         { query },
+      ),
+  },
+  prompts: {
+    list: (query: QueryParams<operations["list_prompts_api_prompts_get"]> = {}) =>
+      fetchJson<JsonResponse<operations["list_prompts_api_prompts_get"]>>("/api/prompts", { query }),
+    create: (payload: JsonRequest<operations["create_prompt_api_prompts_post"]>) =>
+      fetchJson<JsonResponse<operations["create_prompt_api_prompts_post"]>>("/api/prompts", {
+        method: "POST",
+        body: payload,
+        idempotencyKey: createIdempotencyKey("prompt_template"),
+      }),
+    versions: (
+      templateId: string,
+      query: QueryParams<operations["prompt_versions_api_prompts__template_id__versions_get"]> = {},
+    ) =>
+      fetchJson<JsonResponse<operations["prompt_versions_api_prompts__template_id__versions_get"]>>(
+        `/api/prompts/${enc(templateId)}/versions`,
+        { query },
+      ),
+    createVersion: (
+      templateId: string,
+      payload: JsonRequest<operations["create_prompt_version_api_prompts__template_id__versions_post"]>,
+    ) =>
+      fetchJson<JsonResponse<operations["create_prompt_version_api_prompts__template_id__versions_post"]>>(
+        `/api/prompts/${enc(templateId)}/versions`,
+        { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("prompt_version") },
+      ),
+    approveVersion: (
+      templateId: string,
+      versionId: string,
+      payload: JsonRequest<operations["approve_prompt_version_api_prompts__template_id__versions__version_id__approve_post"]>,
+    ) =>
+      fetchJson<JsonResponse<operations["approve_prompt_version_api_prompts__template_id__versions__version_id__approve_post"]>>(
+        `/api/prompts/${enc(templateId)}/versions/${enc(versionId)}/approve`,
+        { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("prompt_approve") },
+      ),
+    publishVersion: (
+      templateId: string,
+      versionId: string,
+      payload: JsonRequest<operations["publish_prompt_version_api_prompts__template_id__versions__version_id__publish_post"]>,
+    ) =>
+      fetchJson<JsonResponse<operations["publish_prompt_version_api_prompts__template_id__versions__version_id__publish_post"]>>(
+        `/api/prompts/${enc(templateId)}/versions/${enc(versionId)}/publish`,
+        { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("prompt_publish") },
+      ),
+    rollback: (
+      templateId: string,
+      payload: JsonRequest<operations["rollback_prompt_api_prompts__template_id__rollback_post"]>,
+    ) =>
+      fetchJson<JsonResponse<operations["rollback_prompt_api_prompts__template_id__rollback_post"]>>(
+        `/api/prompts/${enc(templateId)}/rollback`,
+        { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("prompt_rollback") },
+      ),
+    bindings: (query: QueryParams<operations["prompt_bindings_api_prompts_bindings_get"]> = {}) =>
+      fetchJson<JsonResponse<operations["prompt_bindings_api_prompts_bindings_get"]>>("/api/prompts/bindings", {
+        query,
+      }),
+    createBinding: (payload: JsonRequest<operations["create_prompt_binding_api_prompts_bindings_post"]>) =>
+      fetchJson<JsonResponse<operations["create_prompt_binding_api_prompts_bindings_post"]>>(
+        "/api/prompts/bindings",
+        { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("prompt_binding") },
+      ),
+    patchBinding: (
+      bindingId: string,
+      payload: JsonRequest<operations["patch_prompt_binding_api_prompts_bindings__binding_id__patch"]>,
+    ) =>
+      fetchJson<JsonResponse<operations["patch_prompt_binding_api_prompts_bindings__binding_id__patch"]>>(
+        `/api/prompts/bindings/${enc(bindingId)}`,
+        { method: "PATCH", body: payload, idempotencyKey: createIdempotencyKey("prompt_binding_patch") },
       ),
   },
   voices: {
@@ -335,6 +409,13 @@ export const api = {
         "/api/jobs/digital-human-video",
         { method: "POST", body: payload, idempotencyKey },
       ),
+    estimateDigitalHumanVideoCost: (
+      payload: JsonRequest<operations["estimate_digital_human_video_cost_api_jobs_digital_human_video_estimate_cost_post"]>,
+    ) =>
+      fetchJson<JsonResponse<operations["estimate_digital_human_video_cost_api_jobs_digital_human_video_estimate_cost_post"]>>(
+        "/api/jobs/digital-human-video/estimate-cost",
+        { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("video_cost_estimate") },
+      ),
   },
   runs: {
     detail: (runId: string) =>
@@ -356,11 +437,20 @@ export const api = {
       ),
     events: (runId: string) =>
       fetchJson<JsonResponse<operations["run_events_api_runs__run_id__events_get"]>>(`/api/runs/${enc(runId)}/events`),
+    delete: (runId: string) =>
+      fetchJson<JsonResponse<operations["delete_run_record_api_runs__run_id__delete"]>>(`/api/runs/${enc(runId)}`, {
+        method: "DELETE",
+        idempotencyKey: createIdempotencyKey("delete_run"),
+      }),
   },
   finishedVideos: {
-    list: (caseId: string) =>
+    list: (
+      caseId: string,
+      query: QueryParams<operations["case_finished_videos_api_cases__case_id__finished_videos_get"]> = {},
+    ) =>
       fetchJson<JsonResponse<operations["case_finished_videos_api_cases__case_id__finished_videos_get"]>>(
         `/api/cases/${enc(caseId)}/finished-videos`,
+        { query },
       ),
     previewUrl: (id: string) =>
       fetchJson<JsonResponse<operations["finished_video_preview_api_finished_videos__id__preview_url_get"]>>(
@@ -553,10 +643,15 @@ export const api = {
 } as const;
 
 export type AuthUser = components["schemas"]["AuthUser"];
+export type LoginRequest = components["schemas"]["LoginRequest"];
 export type CreatedRegistrationCode = components["schemas"]["CreatedRegistrationCode"];
 export type RegistrationCodePreview = components["schemas"]["RegistrationCodePreview"];
 export type CaseListItem = components["schemas"]["CaseListItem"];
 export type CaseDetail = components["schemas"]["CaseDetail"];
+export type PromptTemplateView = components["schemas"]["PromptTemplateView"];
+export type PromptVersionView = components["schemas"]["PromptVersionView"];
+export type PromptBindingView = components["schemas"]["PromptBindingView"];
+export type DigitalHumanVideoCostEstimateResponse = components["schemas"]["DigitalHumanVideoCostEstimateResponse"];
 export type WorkflowRun = components["schemas"]["WorkflowRun"];
 export type NodeRun = components["schemas"]["NodeRun"];
 export type RunCard = components["schemas"]["RunCard"];

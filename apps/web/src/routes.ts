@@ -15,6 +15,7 @@ export const routePatterns = {
   library: "/library/*",
   analytics: "/analytics/*",
   account: "/account/*",
+  promptOps: "/ops/prompts",
   ops: "/ops/*",
 } as const;
 
@@ -37,5 +38,6 @@ export const routes = {
   library: () => "/library",
   analytics: () => "/analytics",
   account: () => "/account",
+  promptOps: () => "/ops/prompts",
   ops: () => "/ops",
 } as const;

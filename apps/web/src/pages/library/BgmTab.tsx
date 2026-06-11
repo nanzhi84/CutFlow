@@ -9,6 +9,7 @@ import { TemplateGridSkeleton } from "../../components/library/TemplateGridSkele
 import { collectUsefulTags, toDisplayUrl } from "../../components/library/libraryModel";
 import { SearchInput } from "../../components/ui/SearchInput";
 import { useToast } from "../../components/ui/Toast";
+import { InfiniteScrollSentinel } from "../../components/ui/InfiniteScrollSentinel";
 import { shortId } from "../../lib/format";
 
 export function BgmTab() {
@@ -20,13 +21,15 @@ export function BgmTab() {
   const [annotationAssetId, setAnnotationAssetId] = useState<string | null>(null);
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
   const [playing, setPlaying] = useState<{ asset: MediaAssetRecord; url: string } | null>(null);
+  const [limit, setLimit] = useState(50);
 
   const bgmQuery = useQuery({
-    queryKey: ["library", "media", "bgm"],
-    queryFn: () => api.mediaAssets.list({ limit: 200, kind: "bgm" }),
+    queryKey: ["library", "media", "bgm", limit],
+    queryFn: () => api.mediaAssets.list({ limit, kind: "bgm" }),
   });
 
   const items = bgmQuery.data?.items ?? [];
+  const hasMore = Boolean(bgmQuery.data && items.length >= limit);
   const styles = useMemo(() => collectUsefulTags(items, ["bgm", "upload"]), [items]);
   const filteredItems = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -115,6 +118,12 @@ export function BgmTab() {
           <p className="mt-1 text-xs text-text-secondary">上传音频后可在线试听并进入标注流程。</p>
         </div>
       ) : null}
+
+      <InfiniteScrollSentinel
+        enabled={hasMore && !bgmQuery.isFetching}
+        onVisible={() => setLimit((current) => current + 50)}
+        label={`继续加载 BGM（已显示 ${filteredItems.length} 条）`}
+      />
 
       {playing ? (
         <div className="sticky bottom-4 z-20 rounded-[24px] border border-border/80 bg-white/92 p-4 shadow-glow backdrop-blur-xl">

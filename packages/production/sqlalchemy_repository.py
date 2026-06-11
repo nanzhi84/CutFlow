@@ -117,6 +117,7 @@ NODE_LABELS = {
     "ExportFinishedVideo": "导出成片",
     "FinalizeRunReport": "生成 Run 报告",
 }
+DELETABLE_RUN_STATUSES = {RunStatus.succeeded, RunStatus.failed, RunStatus.cancelled}
 
 
 def _node_label(node_id: str | None) -> str | None:
@@ -236,6 +237,7 @@ def case_row_to_contract(row: CaseRow) -> CaseDetail:
         id=row.id,
         name=row.name,
         owner_user_id=row.owner_user_id,
+        status=row.status,
         description=row.description,
         industry=row.industry,
         product=row.product,
@@ -661,6 +663,69 @@ class SqlAlchemyProductionRepository:
             ]
             return RunArtifactsResponse(run_id=run_id, artifacts=artifacts, request_id=request_id)
 
+    def delete_run_record(self, run_id: str) -> bool:
+        with self.session_factory() as session:
+            run = session.get(WorkflowRunRow, run_id)
+            if run is None:
+                return False
+            if RunStatus(run.status) not in DELETABLE_RUN_STATUSES:
+                raise NodeExecutionError(
+                    ErrorCode.validation_conflict,
+                    "Processing runs cannot be deleted.",
+                )
+            job_id = run.job_id
+            now = utcnow()
+            node_ids = [
+                row.id for row in session.scalars(select(NodeRunRow).where(NodeRunRow.run_id == run_id))
+            ]
+
+            for row in session.scalars(select(FinishedVideoRow).where(FinishedVideoRow.run_id == run_id)):
+                row.run_id = None
+                row.updated_at = now
+            for row in session.scalars(select(ArtifactRow).where(ArtifactRow.run_id == run_id)):
+                row.run_id = None
+                if row.node_run_id in node_ids:
+                    row.node_run_id = None
+                row.updated_at = now
+            if node_ids:
+                for row in session.scalars(select(MediaAssetRow).where(MediaAssetRow.node_run_id.in_(node_ids))):
+                    row.node_run_id = None
+                    row.updated_at = now
+            for row in session.scalars(select(ProviderInvocationRow).where(ProviderInvocationRow.run_id == run_id)):
+                row.run_id = None
+                if row.node_run_id in node_ids:
+                    row.node_run_id = None
+                row.updated_at = now
+            for row in session.scalars(select(PromptInvocationRow).where(PromptInvocationRow.run_id == run_id)):
+                row.run_id = None
+                if row.node_run_id in node_ids:
+                    row.node_run_id = None
+                row.updated_at = now
+            for row in session.scalars(select(YieldFunnelEventRow).where(YieldFunnelEventRow.run_id == run_id)):
+                row.run_id = None
+
+            for row in session.scalars(select(NodeRunRow).where(NodeRunRow.run_id == run_id)):
+                session.delete(row)
+            session.delete(run)
+
+            job = session.get(JobRow, job_id)
+            if job is not None:
+                remaining_runs = list(
+                    session.scalars(
+                        select(WorkflowRunRow)
+                        .where(WorkflowRunRow.job_id == job_id)
+                        .where(WorkflowRunRow.id != run_id)
+                        .order_by(WorkflowRunRow.created_at.asc())
+                    )
+                )
+                if remaining_runs:
+                    job.active_run_id = remaining_runs[-1].id
+                    job.updated_at = now
+                else:
+                    session.delete(job)
+            session.commit()
+            return True
+
     def list_finished_videos(self, *, case_id: str, limit: int = 50) -> list[FinishedVideo]:
         with self.session_factory() as session:
             statement = (
@@ -897,6 +962,7 @@ class SqlAlchemyProductionRepository:
                     id=internal_id,
                     name=str(row.get("name", "Imported case")),
                     owner_user_id=str(row.get("owner_user_id", "usr_admin")),
+                    status=str(row.get("status", "active")),
                     description=str(row.get("description", "")),
                     industry=str(row.get("industry")) if row.get("industry") else None,
                     product=str(row.get("product")) if row.get("product") else None,
