@@ -98,3 +98,15 @@ cancel/resume 成为真实语义；修复 resume 复用契约。
 4. resume：删中间 artifact 后 resume，新 run 复用合法前缀并从缺失节点重跑（对照 D1）。
 5. 领域包 grep 无 temporalio import（packages/production、packages/planning、packages/media、packages/creative）。
 6. 全量 + DB 集成 + temporal 集成测试三套全绿。
+
+---
+
+## 验收记录（2026-06-11，验收官：Claude）
+
+**判定：通过**（merge `d998d48`）。证据：78 单测 + 22 DB 集成 + 3 条真 Temporal 集成全绿；提交立即返回非终态、worker 真执行并落库（Temporal UI 可见）、中途 cancel 最终 cancelled 无成片、删中间 artifact 后 resume 从该节点重跑；领域包 grep 无 temporalio import。
+
+核销：A1-E2 全部 done。`_reuse_prefix` 静默吞节点的 bug 已由 `compute_reuse_plan` 纯函数替换并有六情形单测。
+
+验收修复（3 处实弹 bug，codex sandbox 连不上 Temporal 测不出）：同步 activity 需要 Worker 配 `activity_executor`；workflow 沙箱确定性校验需要领域 import 走 `workflow.unsafe.imports_passed_through()`；`TemporalRuntimeAdapter._run` 桥接改为事件循环安全（已有 loop 时用私有线程跑）。
+
+遗留（记入 M4+）：adapter 每次调用都 `Client.connect`，应复用连接；workflow 启动经 `_template_from_run` 重建模板的路径待收紧。
