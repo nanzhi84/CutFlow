@@ -135,7 +135,7 @@ def patch_annotation(asset_id: str, payload: c.PatchAnnotationRequest, request: 
         if editor is None:
             raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
         return editor
-    editor = get_annotation(asset_id)
+    editor = get_annotation(request, asset_id)
     updated = editor.model_copy(update={"etag": new_id("etag")})
     repository(request).annotations[asset_id] = updated
     repository(request).media_assets[asset_id] = repository(request).media_assets[asset_id].model_copy(

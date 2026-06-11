@@ -1554,6 +1554,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/publish/batches/{batch_id}/items/{item_id}/retry-publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Publish Item */
+        post: operations["retry_publish_item_api_publish_batches__batch_id__items__item_id__retry_publish_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/publish/items/{item_id}": {
         parameters: {
             query?: never;
@@ -5339,6 +5356,11 @@ export interface components {
              * @default false
              */
             dry_run: boolean;
+            /**
+             * Simulate Publish Failure
+             * @default false
+             */
+            simulate_publish_failure: boolean;
         };
         /** SubtitleOptions */
         SubtitleOptions: {
@@ -9286,6 +9308,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PublishBatchVm"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_publish_item_api_publish_batches__batch_id__items__item_id__retry_publish_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishBatchItemVm"];
                 };
             };
             /** @description Validation Error */

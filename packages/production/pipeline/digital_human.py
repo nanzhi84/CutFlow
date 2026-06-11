@@ -1269,6 +1269,8 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             ),
         )
         subtitle_uri = f"sandbox://subtitle/{run.id}.ass"
+        if not state.request.subtitle.enabled:
+            return NodeOutput(status=NodeStatus.skipped, artifacts=[final])
         subtitle = self._artifact(
             run,
             node_run,
@@ -1279,8 +1281,6 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             sha256="dev-unpinned",
             media_info=MediaInfo(media_type="subtitle", codec="ass", format="ass"),
         )
-        if not state.request.subtitle.enabled:
-            return NodeOutput(status=NodeStatus.skipped, artifacts=[final, subtitle])
         return NodeOutput(artifacts=[final, subtitle])
 
     def _export_finished_video(
@@ -1327,7 +1327,11 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             title=state.request.title or script.title,
             video_artifact=self.repository.artifact_ref(video_artifact.id),
             cover_artifact=self.repository.artifact_ref(cover_artifact.id),
-            subtitle_artifact=self.repository.artifact_ref(state.require(ArtifactKind.subtitle_ass).id),
+            subtitle_artifact=(
+                self.repository.artifact_ref(state.artifacts[ArtifactKind.subtitle_ass].id)
+                if ArtifactKind.subtitle_ass in state.artifacts
+                else None
+            ),
             duration_sec=float((timeline.payload or {}).get("total_frames", 0))
             / float((timeline.payload or {}).get("fps", 30) or 30),
         )

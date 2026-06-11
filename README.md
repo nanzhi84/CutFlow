@@ -2,7 +2,7 @@
 
 This is a clean-room implementation of the Case-first digital human content production system described in:
 
-`C:\Users\Nanzhi\Desktop\树影_Cutagent_CleanSlate重写Spec_v3_2026-06-11.md`
+`树影_Cutagent_CleanSlate重写Spec_v3_2026-06-11.md`
 
 The first implementation slice is contract-first:
 
@@ -22,19 +22,19 @@ Local seed accounts:
 
 Run locally:
 
-```powershell
+```bash
 python -m uvicorn apps.api.main:app --reload --port 8000
 ```
 
 Run tests:
 
-```powershell
-python -m pytest
+```bash
+timeout -k 5 600 python -m pytest -q
 ```
 
 Prepare infrastructure:
 
-```powershell
+```bash
 docker compose up -d postgres redis minio temporal temporal-ui
 python scripts/bootstrap_database.py
 ```
@@ -43,26 +43,50 @@ The bundled PostgreSQL service binds to host port `55432` by default so it does 
 
 Run API with the SQLAlchemy backend initialized:
 
-```powershell
-$env:CUTAGENT_STORAGE_BACKEND='sqlalchemy'
+```bash
+export CUTAGENT_STORAGE_BACKEND=sqlalchemy
+export CUTAGENT_DATABASE_URL=postgresql+psycopg://cutagent:cutagent@localhost:55432/cutagent
 python -m uvicorn apps.api.main:app --reload --port 8000
 ```
 
 Database integration tests:
 
-```powershell
-$env:CUTAGENT_RUN_DB_TESTS='1'
-$env:CUTAGENT_STORAGE_BACKEND='sqlalchemy'
-python -m pytest tests/integration
+```bash
+export CUTAGENT_RUN_DB_TESTS=1
+export CUTAGENT_STORAGE_BACKEND=sqlalchemy
+export CUTAGENT_DATABASE_URL=postgresql+psycopg://cutagent:cutagent@localhost:55432/cutagent
+timeout -k 5 600 python -m pytest -q tests/integration
+```
+
+Temporal integration tests:
+
+```bash
+export CUTAGENT_RUN_TEMPORAL_TESTS=1
+export CUTAGENT_STORAGE_BACKEND=sqlalchemy
+export CUTAGENT_DATABASE_URL=postgresql+psycopg://cutagent:cutagent@localhost:55432/cutagent
+export CUTAGENT_WORKFLOW_RUNTIME=temporal
+export CUTAGENT_TEMPORAL_ADDRESS=localhost:7233
+timeout -k 5 600 python -m pytest -q tests/temporal
 ```
 
 Refresh frontend API types:
 
-```powershell
+```bash
+python scripts/export_openapi.py
 cd apps/web
 npm run generate:api
 npm run build
 ```
+
+Run the M5 local acceptance gate after docker compose services are up:
+
+```bash
+scripts/ci_gate.sh
+```
+
+The gate runs the default pytest suite, verifies committed OpenAPI output, regenerates frontend API types,
+builds the frontend, then runs the database and Temporal integration suites with explicit opt-in environment
+variables. Every pytest invocation is wrapped with `timeout -k 5 600`.
 
 Current important gaps before production completion:
 

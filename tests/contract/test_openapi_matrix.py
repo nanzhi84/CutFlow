@@ -90,6 +90,7 @@ EXPECTED_PATHS = {
     "/api/publish/batches",
     "/api/publish/batches/{batch_id}",
     "/api/publish/batches/{batch_id}/submit",
+    "/api/publish/batches/{batch_id}/items/{item_id}/retry-publish",
     "/api/publish/items/{item_id}",
     "/api/publish/attempts/{attempt_id}",
     "/api/ops/dashboard",
@@ -122,4 +123,3 @@ def test_every_write_endpoint_has_a_declared_success_response():
             if method.lower() in {"post", "patch", "put", "delete"}:
                 statuses = set(operation["responses"])
                 assert statuses & {"200", "201", "202"}, f"{method.upper()} {path}"
-

@@ -4978,6 +4978,54 @@
         }
       }
     },
+    "/api/publish/batches/{batch_id}/items/{item_id}/retry-publish": {
+      "post": {
+        "summary": "Retry Publish Item",
+        "operationId": "retry_publish_item_api_publish_batches__batch_id__items__item_id__retry_publish_post",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishBatchItemVm"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/publish/items/{item_id}": {
       "patch": {
         "summary": "Patch Publish Item",
@@ -14884,6 +14932,11 @@
           "dry_run": {
             "type": "boolean",
             "title": "Dry Run",
+            "default": false
+          },
+          "simulate_publish_failure": {
+            "type": "boolean",
+            "title": "Simulate Publish Failure",
             "default": false
           }
         },

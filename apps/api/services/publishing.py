@@ -118,14 +118,20 @@ def submit_publish_batch(
         if not payload.dry_run:
             assert_transition("publish_item", current_item_status, "publishing")
             current_item_status = "publishing"
-            assert_transition("publish_item", current_item_status, "published")
-            current_item_status = "published"
+            if payload.simulate_publish_failure:
+                assert_transition("publish_item", current_item_status, "publish_failed")
+                current_item_status = "publish_failed"
+            else:
+                assert_transition("publish_item", current_item_status, "published")
+                current_item_status = "published"
         new_items.append(
             item.model_copy(
                 update={"status": c.PublishItemStatus(current_item_status), "updated_at": c.utcnow()}
             )
         )
-        attempt_status = "manual_review_ready" if payload.dry_run else "published"
+        attempt_status = "manual_review_ready" if payload.dry_run else (
+            "failed" if payload.simulate_publish_failure else "published"
+        )
         assert_transition("publish_attempt", "created", attempt_status)
         attempt = c.PublishAttempt(
             id=new_id("pub_attempt"),
@@ -136,6 +142,15 @@ def submit_publish_batch(
             status=c.PublishAttemptStatus(attempt_status),
             adapter_id="sandbox.publish",
             results=[],
+            error=(
+                c.NodeError(
+                    code=c.ErrorCode.publish_failed,
+                    message="Sandbox publish adapter simulated a failed publish.",
+                    retryable=True,
+                )
+                if payload.simulate_publish_failure
+                else None
+            ),
             finished_at=c.utcnow() if attempt_status == "published" else None,
         )
         repository(request).publish_attempts[attempt.id] = attempt
@@ -145,13 +160,61 @@ def submit_publish_batch(
     next_batch_status = "review_ready" if payload.dry_run else "publishing"
     assert_transition("publish_batch", "processing", next_batch_status)
     if not payload.dry_run:
-        assert_transition("publish_batch", next_batch_status, "completed")
-        next_batch_status = "completed"
+        if payload.simulate_publish_failure:
+            assert_transition("publish_batch", next_batch_status, "partial_failed")
+            next_batch_status = "partial_failed"
+        else:
+            assert_transition("publish_batch", next_batch_status, "completed")
+            next_batch_status = "completed"
     batch = batch.model_copy(
         update={"status": c.PublishBatchStatus(next_batch_status), "items": new_items, "updated_at": c.utcnow()}
     )
     repository(request).publish_batches[batch.id] = batch
     return batch
+
+
+def retry_publish_item(batch_id: str, item_id: str, request: Request) -> c.PublishBatchItemVm | JSONResponse:
+    if publishing_repository(request) is not None:
+        return not_found_response("retry-publish is only implemented by the local sandbox adapter")
+    batch = repository(request).publish_batches.get(batch_id)
+    if batch is None:
+        return not_found_response("Publish batch not found")
+    for index, item in enumerate(batch.items):
+        if item.id != item_id:
+            continue
+        if item.status != c.PublishItemStatus.publish_failed:
+            raise NodeExecutionError(c.ErrorCode.validation_invalid_options, "Publish item is not failed.")
+        current_item_status = item.status
+        assert_transition("publish_item", current_item_status, "publishing")
+        current_item_status = "publishing"
+        assert_transition("publish_item", current_item_status, "published")
+        updated = item.model_copy(update={"status": c.PublishItemStatus.published, "updated_at": c.utcnow()})
+        items = list(batch.items)
+        items[index] = updated
+        next_batch_status = batch.status
+        if next_batch_status == c.PublishBatchStatus.partial_failed:
+            assert_transition("publish_batch", next_batch_status, "publishing")
+            next_batch_status = c.PublishBatchStatus.publishing
+        if all(existing.status == c.PublishItemStatus.published for existing in items):
+            assert_transition("publish_batch", next_batch_status, "completed")
+            next_batch_status = c.PublishBatchStatus.completed
+        repository(request).publish_batches[batch.id] = batch.model_copy(
+            update={"status": next_batch_status, "items": items, "updated_at": c.utcnow()}
+        )
+        attempt = c.PublishAttempt(
+            id=new_id("pub_attempt"),
+            batch_id=batch.id,
+            item_id=item.id,
+            platforms=[item.platform],
+            manual_review=False,
+            status=c.PublishAttemptStatus.published,
+            adapter_id="sandbox.publish",
+            results=[{"retry": True}],
+            finished_at=c.utcnow(),
+        )
+        repository(request).publish_attempts[attempt.id] = attempt
+        return updated
+    return not_found_response("Publish item not found")
 
 
 def patch_publish_item(

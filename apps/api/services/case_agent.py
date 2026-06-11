@@ -314,6 +314,19 @@ def case_insights(request: Request, case_id: str, limit: int = 50) -> c.PageResp
             body=f"{len([item for item in repository(request).memory_proposals.values() if item.case_id == case_id])} proposal(s) waiting for review.",
         )
     ]
+    performance_count = len(
+        [item for item in repository(request).performance_observations.values() if item.case_id == case_id]
+    )
+    if performance_count:
+        cards.append(
+            c.CaseInsightCard(
+                id=new_id("insight"),
+                case_id=case_id,
+                title="Performance imports",
+                body=f"{performance_count} performance observation(s) available for analysis.",
+                severity="success",
+            )
+        )
     return page(cards, limit)
 
 

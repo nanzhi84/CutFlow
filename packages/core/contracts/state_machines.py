@@ -15,7 +15,7 @@ JOB_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.queued: frozenset({JobStatus.running, JobStatus.cancelled}),
     JobStatus.running: frozenset({JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled}),
     JobStatus.succeeded: frozenset({JobStatus.queued, JobStatus.archived}),
-    JobStatus.failed: frozenset({JobStatus.archived}),
+    JobStatus.failed: frozenset({JobStatus.queued, JobStatus.archived}),
     JobStatus.cancelled: frozenset({JobStatus.archived}),
     JobStatus.archived: frozenset(),
 }
@@ -102,7 +102,7 @@ PUBLISH_BATCH_TRANSITIONS: dict[str, frozenset[str]] = {
     "review_ready": frozenset({"publishing"}),
     "publishing": frozenset({"completed", "partial_failed"}),
     "completed": frozenset(),
-    "partial_failed": frozenset(),
+    "partial_failed": frozenset({"publishing", "completed"}),
 }
 
 PUBLISH_ITEM_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -116,7 +116,7 @@ PUBLISH_ITEM_TRANSITIONS: dict[str, frozenset[str]] = {
     "publishing": frozenset({"published", "publish_failed"}),
     "published": frozenset(),
     "generation_failed": frozenset(),
-    "publish_failed": frozenset(),
+    "publish_failed": frozenset({"publishing", "excluded"}),
     "excluded": frozenset(),
 }
 

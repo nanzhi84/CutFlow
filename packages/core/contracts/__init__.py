@@ -1640,6 +1640,7 @@ class CreatePublishBatchRequest(ContractModel):
 
 class SubmitPublishBatchRequest(ContractModel):
     dry_run: bool = False
+    simulate_publish_failure: bool = False
 
 
 class PatchPublishItemRequest(ContractModel):

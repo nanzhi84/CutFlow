@@ -49,6 +49,15 @@ def submit_publish_batch(
     return service.submit_publish_batch(batch_id, payload, request)
 
 
+@router.post(
+    "/api/publish/batches/{batch_id}/items/{item_id}/retry-publish",
+    response_model=c.PublishBatchItemVm,
+)
+def retry_publish_item(batch_id: str, item_id: str, request: Request) -> c.PublishBatchItemVm | JSONResponse:
+    require_role(request, c.UserRole.operator)
+    return service.retry_publish_item(batch_id, item_id, request)
+
+
 @router.patch("/api/publish/items/{item_id}", response_model=c.PublishBatchItemVm)
 def patch_publish_item(
     item_id: str, payload: c.PatchPublishItemRequest, request: Request

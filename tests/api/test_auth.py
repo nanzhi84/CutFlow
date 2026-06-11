@@ -77,7 +77,7 @@ def test_idempotency_key_replays_successful_write_and_rejects_conflict():
     first = client.post("/api/cases", json={"name": "Idempotent Case"}, headers=headers)
     assert first.status_code == 201, first.text
     replayed = client.post("/api/cases", json={"name": "Idempotent Case"}, headers=headers)
-    assert replayed.status_code == 200, replayed.text
+    assert replayed.status_code == 200, replayed.text  # spec 32.11: replay -> 200
     assert replayed.headers["Idempotency-Replayed"] == "true"
     assert replayed.json()["id"] == first.json()["id"]
 

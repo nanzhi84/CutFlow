@@ -75,6 +75,14 @@ def _admit_run(
     ):
         assert_transition("job", next_job_status, c.JobStatus.queued)
         next_job_status = c.JobStatus.queued
+    elif (
+        next_job_status == c.JobStatus.failed
+        and mode == "resume"
+        and from_run_id is not None
+        and _run_has_retryable_failure(repo, from_run_id)
+    ):
+        assert_transition("job", next_job_status, c.JobStatus.queued)
+        next_job_status = c.JobStatus.queued
     elif next_job_status not in {c.JobStatus.queued, c.JobStatus.running}:
         assert_transition("job", next_job_status, c.JobStatus.running)
 
@@ -110,6 +118,16 @@ def _admit_run(
         message="Run admitted.",
     )
     return job, run, template
+
+
+def _run_has_retryable_failure(repo, run_id: str) -> bool:
+    if repo.runs[run_id].status != c.RunStatus.failed:
+        return False
+    return any(
+        bool(node.error and node.error.retryable)
+        for node in repo.node_runs.get(run_id, [])
+        if node.status == c.NodeStatus.failed
+    )
 
 
 def _empty_reuse_plan(source_run_id: str, template: c.WorkflowTemplate) -> ReusePlan:

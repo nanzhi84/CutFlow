@@ -1,9 +1,29 @@
 from fastapi.testclient import TestClient
 
+from apps.api.app import create_app
 from apps.api.main import app
 
 
 client = TestClient(app)
+
+
+def login_admin(active_client):
+    login = active_client.post(
+        "/api/auth/login",
+        json={"email": "admin@local.cutagent", "password": "local-admin"},
+    )
+    assert login.status_code == 200, login.text
+
+
+def import_one(active_client, import_type: str, row: dict):
+    response = active_client.post(
+        "/api/import/batches",
+        json={"import_type": import_type, "rows": [row]},
+    )
+    assert response.status_code == 202, response.text
+    report = response.json()
+    assert report["status"] == "completed"
+    return report["results"][0]["internal_id"]
 
 
 def test_fresh_import_accepts_all_spec_types():
@@ -32,6 +52,128 @@ def test_fresh_import_accepts_all_spec_types():
         report = response.json()
         assert report["status"] == "completed"
         assert report["created_count"] == 1
+
+
+def test_spec_20_2_13_imported_case_script_and_media_are_frontend_visible():
+    """Spec 20.2 #13: imported Case + ScriptVersion + MediaAsset are visible through frontend read APIs."""
+    with TestClient(create_app()) as active_client:
+        login_admin(active_client)
+        case_id = import_one(
+            active_client,
+            "case",
+            {"external_id": "case_ext", "name": "Imported showcase case", "description": "Imported"},
+        )
+        script_id = import_one(
+            active_client,
+            "script",
+            {
+                "external_id": "script_ext",
+                "case_id": case_id,
+                "title": "Imported script",
+                "script": "导入脚本可以进入知识页。",
+            },
+        )
+        media_id = import_one(
+            active_client,
+            "media",
+            {"external_id": "media_ext", "case_id": case_id, "title": "Imported media", "kind": "broll"},
+        )
+
+        case_detail = active_client.get(f"/api/cases/{case_id}")
+        assert case_detail.status_code == 200, case_detail.text
+        assert case_detail.json()["name"] == "Imported showcase case"
+        knowledge = active_client.get(f"/api/cases/{case_id}/knowledge")
+        assert knowledge.status_code == 200, knowledge.text
+        assert any(item["id"] == script_id for item in knowledge.json()["recent_script_versions"])
+        media = active_client.get(f"/api/media/assets?case_id={case_id}")
+        assert media.status_code == 200, media.text
+        assert any(item["asset"]["id"] == media_id for item in media.json()["items"])
+
+
+def test_spec_20_2_14_imported_media_can_rerun_annotation_open_editor_and_save_patch():
+    """Spec 20.2 #14: imported MediaAsset can be annotated, opened in editor, and patched."""
+    with TestClient(create_app()) as active_client:
+        login_admin(active_client)
+        media_id = import_one(
+            active_client,
+            "media",
+            {"external_id": "media_annotate", "case_id": "case_demo", "title": "Patch me", "kind": "broll"},
+        )
+        rerun = active_client.post(f"/api/annotations/{media_id}/rerun", json={"force": True})
+        assert rerun.status_code == 202, rerun.text
+        assert rerun.json()["status"] == "completed"
+        editor = active_client.get(f"/api/annotations/{media_id}")
+        assert editor.status_code == 200, editor.text
+        patch = active_client.patch(
+            f"/api/annotations/{media_id}",
+            json={
+                "etag": editor.json()["etag"],
+                "patch": {"operations": [{"op": "replace", "path": "/usable", "value": True}]},
+            },
+        )
+        assert patch.status_code == 200, patch.text
+        assert patch.json()["etag"] != editor.json()["etag"]
+        detail = active_client.get(f"/api/media/assets/{media_id}")
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["asset"]["annotation_status"] == "annotated"
+
+
+def test_spec_20_2_15_imported_finished_publish_performance_reaches_insights():
+    """Spec 20.2 #15: imported finished video, publish record, and performance data reach insights."""
+    with TestClient(create_app()) as active_client:
+        login_admin(active_client)
+        finished_video_id = import_one(
+            active_client,
+            "finished_video",
+            {
+                "external_id": "finished_ext",
+                "case_id": "case_demo",
+                "title": "Imported finished",
+                "duration_sec": 12,
+            },
+        )
+        video_version_id = import_one(
+            active_client,
+            "video_version",
+            {
+                "external_id": "version_ext",
+                "case_id": "case_demo",
+                "finished_video_id": finished_video_id,
+            },
+        )
+        publish_record_id = import_one(
+            active_client,
+            "publish_record",
+            {
+                "external_id": "publish_ext",
+                "case_id": "case_demo",
+                "video_version_id": video_version_id,
+                "platform": "xiaovmao",
+                "status": "published",
+            },
+        )
+        performance_id = import_one(
+            active_client,
+            "performance",
+            {
+                "external_id": "performance_ext",
+                "case_id": "case_demo",
+                "publish_record_id": publish_record_id,
+                "metric_name": "views",
+                "metric_value": 1200,
+            },
+        )
+
+        detail = active_client.get(f"/api/finished-videos/{finished_video_id}")
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["video_version"]["id"] == video_version_id
+        assert detail.json()["publish_records"][0]["id"] == publish_record_id
+        attribution = active_client.get(f"/api/videos/{video_version_id}/performance-attribution")
+        assert attribution.status_code == 200, attribution.text
+        assert any(item["id"] == performance_id for item in attribution.json()["observations"])
+        insights = active_client.get("/api/cases/case_demo/insights")
+        assert insights.status_code == 200, insights.text
+        assert any("performance" in item["body"].lower() for item in insights.json()["items"])
 
 
 def test_prometheus_metrics_contract_is_exposed():

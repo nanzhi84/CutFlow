@@ -144,6 +144,8 @@ async def authenticate_api_request(request: Request, call_next):
                     status_code = response.status_code
                     return response
                 replay = JSONResponse(
+                    # Spec 32.11: Idempotency-Key hit replays the original
+                    # body with HTTP 200, regardless of the original status.
                     status_code=200,
                     content=existing["content"],
                     headers={"Idempotency-Replayed": "true"},
