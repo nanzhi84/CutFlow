@@ -1,39 +1,18 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-
-from fastapi import Request, Response, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi import Request
 
 from apps.api.common import (
-    auth,
     case_learning_repository,
-    case_repository,
-    ensure_artifact_ref,
     get_case,
-    media_repository,
-    object_store,
-    ops_repository,
     page,
     production_repository,
-    prompt_repository,
-    provider_repository,
-    publishing_repository,
     repository,
     request_id,
-    secret_repository,
-    secret_store,
-    signed,
-    upload_repository,
-    workflow_runtime,
 )
-from apps.api.dependencies import SESSION_COOKIE, current_user, not_found_response
+from apps.api.services.case_agent_llm import generate_script_with_llm
 from packages.core import contracts as c
-from packages.core.auth import SqlAlchemyAuthService
 from packages.core.contracts.state_machines import assert_transition
-from packages.core.observability import metric_snapshot
-from packages.core.registration_codes import hash_registration_code
-from packages.core.storage.object_store import parse_local_uri
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 
@@ -373,19 +352,25 @@ def creative_patterns(request: Request, case_id: str, limit: int = 50) -> c.Page
 def generate_script_with_memory(
     case_id: str, payload: c.GenerateScriptWithMemoryRequest, request: Request
 ) -> c.ScriptDraft:
+    repo = repository(request)
     if case_learning_repository(request) is not None:
         get_case(request, case_id)
+        knowledge = case_learning_repository(request).knowledge(case_id=case_id)
+        memories = [memory.insight for memory in knowledge.memories if memory.id in payload.memory_ids]
+        provider_script = generate_script_with_llm(case_id, payload.brief, payload.memory_ids, memories, request)
         return case_learning_repository(request).generate_script_with_memory(
             case_id=case_id,
             payload=payload,
+            script_override=provider_script,
         )
-    memories = [repository(request).memories[mid].insight for mid in payload.memory_ids if mid in repository(request).memories]
+    memories = [repo.memories[mid].insight for mid in payload.memory_ids if mid in repo.memories]
+    provider_script = generate_script_with_llm(case_id, payload.brief, payload.memory_ids, memories, request)
     draft = c.ScriptDraft(
         id=new_id("draft"),
         case_id=case_id,
         title="Memory-guided draft",
-        script=f"{payload.brief}\n\n参考记忆：{' / '.join(memories) if memories else '暂无'}",
+        script=provider_script or f"{payload.brief}\n\n参考记忆：{' / '.join(memories) if memories else '暂无'}",
         memory_ids=payload.memory_ids,
     )
-    repository(request).drafts[draft.id] = draft
+    repo.drafts[draft.id] = draft
     return draft

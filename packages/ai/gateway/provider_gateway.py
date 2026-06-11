@@ -24,9 +24,11 @@ from packages.core.contracts import (
 )
 from packages.core.contracts.state_machines import assert_transition
 from packages.core.observability import record_provider_invocation
+from packages.core.storage import ObjectStore, get_object_store
 from packages.core.storage import Repository
 from packages.core.storage.repository import new_id
 from packages.core.storage.secret_store import SecretStore
+from packages.ai.gateway.provider_context import ProviderInvocationContext
 
 
 class ProviderCall(BaseModel):
@@ -69,6 +71,13 @@ class ProviderRuntimeReader(Protocol):
 
     def secret_is_active(self, secret_ref: str) -> bool:
         ...
+
+
+class ProviderRuntimeError(Exception):
+    def __init__(self, code: ErrorCode, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
 
 class SandboxProvider:
@@ -116,21 +125,23 @@ class SandboxProvider:
         return ProviderResult(output={"ok": True, "capability": call.capability_id})
 
 
-class ProviderRuntimeError(Exception):
-    def __init__(self, code: ErrorCode, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-
-
 @dataclass
 class ProviderGateway:
     repository: Repository
     provider_reader: ProviderRuntimeReader | None = None
     secret_store: SecretStore | None = None
+    object_store: ObjectStore | None = None
+    http_client: object | None = None
+    auto_register_real_plugins: bool = True
 
     def __post_init__(self) -> None:
+        if self.object_store is None:
+            self.object_store = get_object_store()
         self.plugins: dict[str, ProviderPlugin] = {"sandbox": SandboxProvider()}
+        if self.auto_register_real_plugins:
+            from packages.ai.providers import register_real_provider_plugins
+
+            register_real_provider_plugins(self)
 
     def register(self, plugin: ProviderPlugin) -> None:
         self.plugins[plugin.provider_id] = plugin
@@ -175,16 +186,29 @@ class ProviderGateway:
         self.repository.provider_invocations[invocation.id] = invocation
         plugin = self.plugins[profile.provider_id]
         try:
-            result = plugin.invoke(call)
+            context = ProviderInvocationContext(
+                repository=self.repository,
+                profile=profile,
+                invocation_id=invocation.id,
+                secret_store=self.secret_store,
+                object_store=self.object_store,
+            )
+            contextual_invoke = getattr(plugin, "invoke_with_context", None)
+            if callable(contextual_invoke):
+                result = contextual_invoke(call, context)
+            else:
+                result = plugin.invoke(call)
             duration_ms = int((perf_counter() - started) * 1000)
-            price_item_id = self._find_price_item_id(
+            price_items = self._matching_price_items(
                 provider_id=profile.provider_id,
                 model_id=profile.model_id,
                 capability_id=call.capability_id,
             )
+            price_item_id = price_items[0].id if price_items else None
             cost_unpriced = price_item_id is None
             if cost_unpriced:
                 self._record_unpriced_alert(invocation)
+            estimated_cost = self._estimated_cost_from_usage(result, price_items)
             usage = UsageMeterRecord(
                 id=new_id("usage"),
                 provider_invocation_id=invocation.id,
@@ -200,8 +224,9 @@ class ProviderGateway:
                 provider_credits=result.provider_credits,
                 raw_usage=result.raw_usage,
             )
-            assert_transition("provider", invocation.status, ProviderStatus.succeeded)
-            invocation = invocation.model_copy(
+            current_invocation = self.repository.provider_invocations[invocation.id]
+            assert_transition("provider", current_invocation.status, ProviderStatus.succeeded)
+            invocation = current_invocation.model_copy(
                 update={
                     "status": ProviderStatus.succeeded,
                     "usage": usage,
@@ -210,7 +235,7 @@ class ProviderGateway:
                     "duration_ms": duration_ms,
                     "input_tokens": result.input_tokens,
                     "output_tokens": result.output_tokens,
-                    "estimated_cost": result.estimated_cost,
+                    "estimated_cost": estimated_cost,
                     "finished_at": utcnow(),
                     "updated_at": utcnow(),
                 }
@@ -223,8 +248,9 @@ class ProviderGateway:
             status = ProviderStatus.failed
             if exc.code == ErrorCode.provider_timeout:
                 status = ProviderStatus.timed_out
-            assert_transition("provider", invocation.status, status)
-            invocation = invocation.model_copy(
+            current_invocation = self.repository.provider_invocations[invocation.id]
+            assert_transition("provider", current_invocation.status, status)
+            invocation = current_invocation.model_copy(
                 update={
                     "status": status,
                     "duration_ms": int((perf_counter() - started) * 1000),
@@ -271,20 +297,38 @@ class ProviderGateway:
             )
         return None
 
-    def _find_price_item_id(self, *, provider_id: str, model_id: str, capability_id: str) -> str | None:
+    def _matching_price_items(self, *, provider_id: str, model_id: str, capability_id: str) -> list[ProviderPriceItem]:
         items = (
             self.provider_reader.list_price_items()
             if self.provider_reader is not None
             else self.repository.price_items.values()
         )
+        matches: list[ProviderPriceItem] = []
         for item in items:
             if item.provider_id != provider_id:
                 continue
             model_matches = item.model_id in {model_id, "*"}
             capability_matches = item.capability_id in {capability_id, "*"}
             if model_matches and capability_matches:
-                return item.id
-        return None
+                matches.append(item)
+        return matches
+
+    def _estimated_cost_from_usage(self, result: ProviderResult, items: list[ProviderPriceItem]) -> Money:
+        if result.estimated_cost.amount:
+            return result.estimated_cost
+        amount = Decimal("0")
+        for item in items:
+            if item.unit == "input_token":
+                amount += item.unit_price.amount * Decimal(result.input_tokens)
+            elif item.unit == "output_token":
+                amount += item.unit_price.amount * Decimal(result.output_tokens)
+            elif item.unit == "media_second":
+                amount += item.unit_price.amount * Decimal(str(result.audio_seconds + result.video_seconds))
+            elif item.unit == "call":
+                amount += item.unit_price.amount
+        if amount:
+            return Money(amount=amount, currency=items[0].unit_price.currency)
+        return result.estimated_cost
 
     def _secret_is_active(self, secret_ref: str) -> bool:
         if self.secret_store is not None:

@@ -51,6 +51,16 @@ def test_seed_provider_profiles_and_prompt_binding_are_ready_for_workflow():
     prompt_versions = {row.id for row in rows if isinstance(row, PromptVersionRow)}
     bindings = [row for row in rows if isinstance(row, PromptBindingRow)]
     assert {"sandbox.tts.default", "runninghub.heygem.default", "sandbox.llm.default"} <= profile_ids
+    assert {
+        "minimax.tts.prod",
+        "dashscope.asr.prod",
+        "dashscope.vlm.prod",
+        "dashscope.llm.prod",
+        "runninghub.heygem.prod",
+    } <= profile_ids
     assert "prompt_creative_intent_v1" in prompt_versions
+    assert "prompt_case_agent_script_v1" in prompt_versions
+    assert "prompt_vlm_annotation_v1" in prompt_versions
     assert any(row.node_id == "ResolveCreativeIntent" for row in bindings)
-
+    assert any(row.node_id == "CaseAgentScriptGenerate" for row in bindings)
+    assert any(row.node_id == "MediaAssetAnnotation" for row in bindings)

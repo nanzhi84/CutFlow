@@ -841,20 +841,23 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             if existing is None:
                 raise NodeExecutionError(ErrorCode.artifact_missing, "Creative intent artifact missing.")
             return NodeOutput(artifacts=[existing], status=NodeStatus.skipped)
+        profile = self._first_available_provider_profile("llm.chat", include_sandbox=False)
+        if profile is None:
+            profile = self.repository.provider_profiles["sandbox.llm.default"]
         prompt_invocation, rendered = self.prompt_registry.render(
             node_id="ResolveCreativeIntent",
             variables={"script": state.request.script},
             case_id=run.case_id,
             run_id=run.id,
             node_run_id=node_run.id,
-            provider_profile_id="sandbox.llm.default",
+            provider_profile_id=profile.id,
         )
         invocation, result = self.provider_gateway.invoke(
             ProviderCall(
                 case_id=run.case_id,
                 run_id=run.id,
                 node_run_id=node_run.id,
-                provider_profile_id="sandbox.llm.default",
+                provider_profile_id=profile.id,
                 capability_id="llm.chat",
                 prompt_version_id=prompt_invocation.prompt_version_id,
                 input={"prompt": rendered, "script": state.request.script},
@@ -900,6 +903,12 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                 invocation.error.code if invocation.error else ErrorCode.provider_remote_failed,
                 invocation.error.message if invocation.error else "TTS provider failed.",
                 retryable=True,
+            )
+        provider_artifact_id = result.output.get("audio_artifact_id")
+        if isinstance(provider_artifact_id, str) and provider_artifact_id in self.repository.artifacts:
+            return NodeOutput(
+                artifacts=[self.repository.artifacts[provider_artifact_id]],
+                provider_invocation_ids=[invocation.id],
             )
         object_store = get_object_store()
         try:
@@ -1004,6 +1013,62 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
     ) -> NodeOutput:
         tts = state.require(ArtifactKind.audio_tts)
         duration = float(tts.media_info.duration_sec if tts.media_info and tts.media_info.duration_sec else 1)
+        asr_profile = self._first_available_provider_profile("asr.transcribe")
+        if asr_profile is not None and tts.uri:
+            invocation, result = self.provider_gateway.invoke(
+                ProviderCall(
+                    case_id=run.case_id,
+                    run_id=run.id,
+                    node_run_id=node_run.id,
+                    provider_profile_id=asr_profile.id,
+                    capability_id="asr.transcribe",
+                    input={"audio_uri": tts.uri, "language_hints": ["zh"]},
+                )
+            )
+            if result is None or invocation.error:
+                raise NodeExecutionError(
+                    invocation.error.code if invocation.error else ErrorCode.provider_remote_failed,
+                    invocation.error.message if invocation.error else "ASR provider failed.",
+                    retryable=True,
+                )
+            units = self._narration_units_from_segments(result.output.get("segments", []), duration)
+            alignment = AlignmentArtifact(
+                audio_artifact_id=tts.id,
+                segments=[
+                    AlignmentSegment(
+                        text=unit.text,
+                        start_sec=unit.start,
+                        end_sec=unit.end,
+                        word_confidence=unit.confidence,
+                    )
+                    for unit in units
+                ],
+            )
+            narration = NarrationUnitsArtifact(
+                source="asr",
+                units=units,
+                strict=True,
+                warnings=[],
+            )
+            return NodeOutput(
+                artifacts=[
+                    self._artifact(
+                        run,
+                        node_run,
+                        ArtifactKind.audio_alignment,
+                        alignment.model_dump(mode="json"),
+                        "AlignmentArtifact.v1",
+                    ),
+                    self._artifact(
+                        run,
+                        node_run,
+                        ArtifactKind.narration_units,
+                        narration.model_dump(mode="json"),
+                        "NarrationUnitsArtifact.v1",
+                    ),
+                ],
+                provider_invocation_ids=[invocation.id],
+            )
         parts = [part.strip() for part in re.split(r"[。！？.!?；;]+", state.request.script) if part.strip()]
         if not parts:
             parts = [state.request.script]
@@ -1067,6 +1132,54 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                 ),
             ]
         )
+
+    def _first_available_provider_profile(self, capability: str, *, include_sandbox: bool = True):
+        for profile in self.repository.provider_profiles.values():
+            if profile.capability != capability or not profile.enabled:
+                continue
+            if not include_sandbox and profile.provider_id == "sandbox":
+                continue
+            if profile.provider_id not in self.provider_gateway.plugins:
+                continue
+            if profile.secret_ref and not self.provider_gateway._secret_is_active(profile.secret_ref):
+                continue
+            return profile
+        return None
+
+    def _narration_units_from_segments(self, segments, fallback_duration: float) -> list[NarrationUnit]:
+        units: list[NarrationUnit] = []
+        if not isinstance(segments, list):
+            segments = []
+        for index, segment in enumerate(segments, start=1):
+            if not isinstance(segment, dict):
+                continue
+            text = str(segment.get("text") or "").strip()
+            if not text:
+                continue
+            start = float(segment.get("start") or segment.get("start_sec") or 0)
+            end = float(segment.get("end") or segment.get("end_sec") or start)
+            if end <= start:
+                end = start + 0.3
+            units.append(
+                NarrationUnit(
+                    unit_id=f"unit_{index}",
+                    text=text,
+                    start=round(start, 3),
+                    end=round(end, 3),
+                    confidence=float(segment.get("confidence") or segment.get("word_confidence") or 0.8),
+                )
+            )
+        if units:
+            return units
+        return [
+            NarrationUnit(
+                unit_id="unit_1",
+                text="",
+                start=0,
+                end=round(fallback_duration, 3),
+                confidence=0.5,
+            )
+        ]
 
     def _portrait_planning(self, run: WorkflowRun, node_run: NodeRun, state: RunState) -> NodeOutput:
         material = state.require(ArtifactKind.plan_material_pack).payload or {}
@@ -1428,6 +1541,18 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
     def _broll_planning(self, run: WorkflowRun, node_run: NodeRun, state: RunState) -> NodeOutput:
         material = state.require(ArtifactKind.plan_material_pack).payload or {}
         broll = [item.get("asset_id") for item in material.get("broll_candidates", []) if item.get("asset_id")]
+        if not state.request.broll.enabled:
+            return NodeOutput(
+                artifacts=[
+                    self._artifact(
+                        run,
+                        node_run,
+                        ArtifactKind.plan_broll,
+                        BrollPlanArtifact(enabled=False, segments=[]).model_dump(mode="json"),
+                        "BrollPlanArtifact.v1",
+                    )
+                ]
+            )
         if state.request.broll.enabled and not broll:
             artifact = self._artifact(
                 run,
@@ -1763,6 +1888,23 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                 invocation.error.message if invocation.error else "LipSync provider failed.",
                 retryable=True,
             )
+        provider_artifact_id = result.output.get("video_artifact_id")
+        if isinstance(provider_artifact_id, str) and provider_artifact_id in self.repository.artifacts:
+            artifact = self.repository.artifacts[provider_artifact_id]
+            report = self._artifact(
+                run,
+                node_run,
+                ArtifactKind.lipsync_report,
+                LipSyncReportArtifact(
+                    provider_invocation_id=invocation.id,
+                    provider_profile_id=state.request.lipsync.provider_profile_id,
+                    input_video_artifact_id=portrait.id,
+                    input_audio_artifact_id=audio.id,
+                    output_video_artifact_id=artifact.id,
+                ).model_dump(mode="json"),
+                "LipSyncReportArtifact.v1",
+            )
+            return NodeOutput(artifacts=[artifact, report], provider_invocation_ids=[invocation.id])
         artifact = self._artifact(
             run,
             node_run,

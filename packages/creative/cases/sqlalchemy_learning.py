@@ -350,7 +350,11 @@ class SqlAlchemyCaseLearningRepository:
         ][:limit]
 
     def generate_script_with_memory(
-        self, *, case_id: str, payload: GenerateScriptWithMemoryRequest
+        self,
+        *,
+        case_id: str,
+        payload: GenerateScriptWithMemoryRequest,
+        script_override: str | None = None,
     ) -> ScriptDraft:
         with self.session_factory() as session:
             memories = []
@@ -362,7 +366,7 @@ class SqlAlchemyCaseLearningRepository:
                 id=new_id("draft"),
                 case_id=case_id,
                 title="Memory-guided draft",
-                script=f"{payload.brief}\n\n参考记忆：{' / '.join(memories) if memories else '暂无'}",
+                script=script_override or f"{payload.brief}\n\n参考记忆：{' / '.join(memories) if memories else '暂无'}",
                 status="draft",
                 memory_ids=payload.memory_ids,
             )

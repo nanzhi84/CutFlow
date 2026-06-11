@@ -8,6 +8,7 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from packages.core.registration_codes import hash_registration_code
+from packages.core.storage.provider_seed import seed_real_provider_configuration
 from packages.core.contracts import (
     AnnotationEditorVm,
     Artifact,
@@ -220,6 +221,7 @@ class Repository:
             concurrency_key="sandbox:llm.chat",
             options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.llm.options"),
         )
+        seed_real_provider_configuration(self)
         for profile in self.provider_profiles.values():
             cap = ProviderCapability(
                 id=f"cap_{profile.id.replace('.', '_')}",

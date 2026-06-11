@@ -35,7 +35,7 @@ export function VoiceGeneratorPanel({
     <aside className="card grid content-start gap-4">
       <div>
         <h2 className="text-lg font-semibold text-text-primary">生成音频</h2>
-        <p className="mt-1 text-sm text-text-secondary">当前后端提供试听生成；语速与情绪待接入。</p>
+        <p className="mt-1 text-sm text-text-secondary">使用音色绑定的 provider 配置生成试听。</p>
       </div>
       <label>
         <span>试听文本</span>
@@ -51,20 +51,6 @@ export function VoiceGeneratorPanel({
           ))}
         </select>
       </label>
-      <div className="grid grid-cols-2 gap-3">
-        <label>
-          <span>语速</span>
-          <select disabled value="pending">
-            <option value="pending">待接入 M6b/M6d</option>
-          </select>
-        </label>
-        <label>
-          <span>情绪</span>
-          <select disabled value="pending">
-            <option value="pending">待接入 M6b/M6d</option>
-          </select>
-        </label>
-      </div>
       <button className="btn-primary w-full" type="button" disabled={!selectedVoice || isPreviewing} onClick={() => selectedVoice && onPreview(selectedVoice)}>
         {isPreviewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
         <span>{isPreviewing ? "生成中" : "试听生成"}</span>
@@ -81,9 +67,6 @@ export function VoiceGeneratorPanel({
           </div>
         </div>
       ) : null}
-      <div className="rounded-2xl border border-status-info/20 bg-status-info/10 p-3 text-xs leading-5 text-status-info">
-        语速、情绪与稳定下载地址依赖媒体处理增强，当前显示为待接入（依赖 M6b/M6d）。
-      </div>
     </aside>
   );
 }

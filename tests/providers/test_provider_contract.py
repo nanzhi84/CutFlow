@@ -1,7 +1,11 @@
+from decimal import Decimal
+
 from packages.ai.gateway.provider_gateway import ProviderCall, ProviderGateway
 from packages.core.contracts import (
     ErrorCode,
+    Money,
     ProviderOptionsSchemaRef,
+    ProviderPriceItem,
     ProviderProfile,
     ProviderStatus,
 )
@@ -20,6 +24,11 @@ def test_provider_capability_schema_is_registered():
     assert ("sandbox", "tts.speech") in capabilities
     assert ("sandbox", "lipsync.video") in capabilities
     assert ("sandbox", "llm.chat") in capabilities
+    assert ("minimax.tts", "tts.speech") in capabilities
+    assert ("dashscope.asr", "asr.transcribe") in capabilities
+    assert ("dashscope.vlm", "vlm.annotation") in capabilities
+    assert ("dashscope.llm", "llm.chat") in capabilities
+    assert ("runninghub.heygem", "lipsync.video") in capabilities
 
 
 def test_provider_option_validation_rejects_capability_mismatch():
@@ -126,3 +135,30 @@ def test_provider_cost_unpriced_is_recorded_without_blocking_result():
     usage = next(item for item in repository.usage_records.values() if item.provider_invocation_id == invocation.id)
     assert invocation.usage == usage
     assert any(alert.code == "provider.cost_unpriced" for alert in repository.alerts.values())
+
+
+def test_provider_usage_is_estimated_from_price_items_when_result_has_no_cost():
+    repository, gw = gateway()
+    repository.price_items.clear()
+    repository.price_items["price_tts_chars"] = ProviderPriceItem(
+        id="price_tts_chars",
+        catalog_id="price_sandbox",
+        provider_id="sandbox",
+        model_id="tts.local",
+        capability_id="tts.speech",
+        unit="input_token",
+        unit_price=Money(currency="CNY", amount=Decimal("0.01")),
+    )
+
+    invocation, result = gw.invoke(
+        ProviderCall(
+            provider_profile_id="sandbox.tts.default",
+            capability_id="tts.speech",
+            input={"text": "hello"},
+        )
+    )
+
+    assert result is not None
+    assert invocation.status == ProviderStatus.succeeded
+    assert invocation.price_item_id == "price_tts_chars"
+    assert invocation.estimated_cost.amount == Decimal("0.05")
