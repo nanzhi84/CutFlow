@@ -65,3 +65,11 @@
 1. Playwright：建 Case→删 Case（有引用走归档）；Prompt 管理页新建版本→发布→回滚；创作页预估成本弹窗；
    强制终止/任务删除/无限滚动；用户名登录。
 2. 全量 + DB + Temporal 三套绿；OpenAPI 无意外删改。
+
+---
+
+## 验收记录（2026-06-12，验收官：Claude）
+
+**判定：通过**（merge 见 git log）。证据：126 单测 + 23 DB 集成（重建 schema 含 registration_codes.purpose）+ tsc/build 三绿；用户名登录、Prompt 管理页（/ops/prompts，模板/版本/变量chip/binding）Playwright 实测；estimate-cost（TTS+视频三段，sandbox unpriced）与 DELETE case（删后 404）curl 实测。A-F 全核销。
+
+DB 集成首跑 22 失败=表结构新增 registration_codes.purpose 需重建 schema（M2 起的已知模式：契约改表后验收先 DROP+bootstrap）。

@@ -1,0 +1,182 @@
+- generic [ref=e26]:
+  - complementary [ref=e27]:
+    - link "树影 Cutagent" [ref=e28] [cursor=pointer]:
+      - /url: /
+      - img [ref=e30]
+      - generic [ref=e32]:
+        - generic [ref=e33]: 树影
+        - generic [ref=e34]: Cutagent
+    - navigation "主导航" [ref=e36]:
+      - link "概览" [ref=e37] [cursor=pointer]:
+        - /url: /
+        - img [ref=e39]
+        - generic [ref=e42]: 概览
+      - link "案例中心" [ref=e43] [cursor=pointer]:
+        - /url: /studio
+        - img [ref=e45]
+        - generic [ref=e47]: 案例中心
+      - link "素材库" [ref=e48] [cursor=pointer]:
+        - /url: /library
+        - img [ref=e50]
+        - generic [ref=e52]: 素材库
+      - link "发布中心" [ref=e53] [cursor=pointer]:
+        - /url: /publish-center
+        - img [ref=e55]
+        - generic [ref=e58]: 发布中心
+      - link "数据统计" [ref=e59] [cursor=pointer]:
+        - /url: /analytics
+        - img [ref=e61]
+        - generic [ref=e63]: 数据统计
+      - link "账户中心" [ref=e64] [cursor=pointer]:
+        - /url: /account
+        - img [ref=e66]
+        - generic [ref=e70]: 账户中心
+      - link "设置" [ref=e71] [cursor=pointer]:
+        - /url: /settings
+        - img [ref=e73]
+        - generic [ref=e76]: 设置
+      - link "提示词" [ref=e77] [cursor=pointer]:
+        - /url: /ops/prompts
+        - img [ref=e79]
+        - generic [ref=e81]: 提示词
+    - generic [ref=e82]:
+      - generic "网络在线" [ref=e83]:
+        - img [ref=e84]
+        - generic [ref=e88]: 实时连接待命
+      - generic [ref=e89]:
+        - generic [ref=e90]: L
+        - generic [ref=e91]:
+          - paragraph [ref=e92]: Local Admin
+          - paragraph [ref=e93]: 管理员
+        - button "退出登录" [ref=e94] [cursor=pointer]:
+          - img [ref=e95]
+  - main [ref=e98]:
+    - generic [ref=e100]: 树影 / 案例中心
+    - generic [ref=e101]:
+      - generic [ref=e102]:
+        - generic [ref=e103]:
+          - heading "案例中心" [level=1] [ref=e104]
+          - paragraph [ref=e105]: 4 个案例工作空间，统一管理创作、成片和发布准备。
+        - button "新建案例" [ref=e106] [cursor=pointer]:
+          - img [ref=e107]
+          - generic [ref=e108]: 新建案例
+      - generic [ref=e110]:
+        - img
+        - textbox "搜索案例名称" [ref=e111]
+      - generic [ref=e112]:
+        - article [ref=e113]:
+          - generic [ref=e114]:
+            - generic [ref=e115]:
+              - img [ref=e117]
+              - heading "Imported Case 12392663" [level=2] [ref=e119]
+              - paragraph [ref=e120]:
+                - text: 最近更新
+                - time [ref=e121]: 2分钟前
+            - link "进入 Imported Case 12392663" [ref=e122] [cursor=pointer]:
+              - /url: /studio/case_4591f799f2c1
+              - img [ref=e123]
+          - generic [ref=e125]:
+            - generic [ref=e126]:
+              - generic [ref=e127]: "0"
+              - text: 活跃记忆
+            - generic [ref=e128]:
+              - generic [ref=e129]: "1"
+              - text: 版本
+            - generic [ref=e130]:
+              - generic [ref=e131]: 已分配
+              - text: 负责人
+          - generic [ref=e132]:
+            - link "进入工作台" [ref=e133] [cursor=pointer]:
+              - /url: /studio/case_4591f799f2c1
+              - img [ref=e134]
+              - generic [ref=e136]: 进入工作台
+            - button "删除" [ref=e137] [cursor=pointer]:
+              - img [ref=e138]
+              - generic [ref=e141]: 删除
+        - article [ref=e142]:
+          - generic [ref=e143]:
+            - generic [ref=e144]:
+              - img [ref=e146]
+              - heading "Idempotent SQL Case" [level=2] [ref=e148]
+              - paragraph [ref=e149]:
+                - text: 最近更新
+                - time [ref=e150]: 2分钟前
+            - link "进入 Idempotent SQL Case" [ref=e151] [cursor=pointer]:
+              - /url: /studio/case_1d8473bff4b7
+              - img [ref=e152]
+          - generic [ref=e154]:
+            - generic [ref=e155]:
+              - generic [ref=e156]: "0"
+              - text: 活跃记忆
+            - generic [ref=e157]:
+              - generic [ref=e158]: "1"
+              - text: 版本
+            - generic [ref=e159]:
+              - generic [ref=e160]: 已分配
+              - text: 负责人
+          - generic [ref=e161]:
+            - link "进入工作台" [ref=e162] [cursor=pointer]:
+              - /url: /studio/case_1d8473bff4b7
+              - img [ref=e163]
+              - generic [ref=e165]: 进入工作台
+            - button "删除" [ref=e166] [cursor=pointer]:
+              - img [ref=e167]
+              - generic [ref=e170]: 删除
+        - article [ref=e171]:
+          - generic [ref=e172]:
+            - generic [ref=e173]:
+              - img [ref=e175]
+              - heading "Integration Case" [level=2] [ref=e177]
+              - paragraph [ref=e178]:
+                - text: 最近更新
+                - time [ref=e179]: 2分钟前
+            - link "进入 Integration Case" [ref=e180] [cursor=pointer]:
+              - /url: /studio/case_4f4ccb5684e6
+              - img [ref=e181]
+          - generic [ref=e183]:
+            - generic [ref=e184]:
+              - generic [ref=e185]: "0"
+              - text: 活跃记忆
+            - generic [ref=e186]:
+              - generic [ref=e187]: "1"
+              - text: 版本
+            - generic [ref=e188]:
+              - generic [ref=e189]: 已分配
+              - text: 负责人
+          - generic [ref=e190]:
+            - link "进入工作台" [ref=e191] [cursor=pointer]:
+              - /url: /studio/case_4f4ccb5684e6
+              - img [ref=e192]
+              - generic [ref=e194]: 进入工作台
+            - button "删除" [ref=e195] [cursor=pointer]:
+              - img [ref=e196]
+              - generic [ref=e199]: 删除
+        - article [ref=e200]:
+          - generic [ref=e201]:
+            - generic [ref=e202]:
+              - img [ref=e204]
+              - heading "Demo Case" [level=2] [ref=e206]
+              - paragraph [ref=e207]:
+                - text: 最近更新
+                - time [ref=e208]: 2分钟前
+            - link "进入 Demo Case" [ref=e209] [cursor=pointer]:
+              - /url: /studio/case_demo
+              - img [ref=e210]
+          - generic [ref=e212]:
+            - generic [ref=e213]:
+              - generic [ref=e214]: "0"
+              - text: 活跃记忆
+            - generic [ref=e215]:
+              - generic [ref=e216]: "1"
+              - text: 版本
+            - generic [ref=e217]:
+              - generic [ref=e218]: 已分配
+              - text: 负责人
+          - generic [ref=e219]:
+            - link "进入工作台" [ref=e220] [cursor=pointer]:
+              - /url: /studio/case_demo
+              - img [ref=e221]
+              - generic [ref=e223]: 进入工作台
+            - button "删除" [ref=e224] [cursor=pointer]:
+              - img [ref=e225]
+              - generic [ref=e228]: 删除

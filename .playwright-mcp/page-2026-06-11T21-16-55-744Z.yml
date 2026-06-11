@@ -1,0 +1,19 @@
+- main [ref=e3]:
+  - generic [ref=e4]:
+    - img [ref=e6]
+    - generic [ref=e9]:
+      - heading "登录 Cutagent" [level=1] [ref=e10]
+      - paragraph [ref=e11]: 进入 Case-first 前端工作台
+    - generic [ref=e12]:
+      - generic [ref=e13]: 邮箱/用户名
+      - textbox "邮箱/用户名" [ref=e14]
+    - generic [ref=e15]:
+      - generic [ref=e16]: 密码
+      - textbox "密码" [ref=e17]
+    - button "登录" [ref=e18] [cursor=pointer]:
+      - img [ref=e19]
+      - generic [ref=e22]: 登录
+    - generic [ref=e23]:
+      - generic [ref=e24]: 还没有账户？
+      - link "使用注册码注册" [ref=e25] [cursor=pointer]:
+        - /url: /register
