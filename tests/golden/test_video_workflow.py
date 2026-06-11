@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
-from apps.api.main import repo
+from apps.api.main import repository
 from packages.core.contracts import ArtifactKind
 
 
@@ -100,7 +100,7 @@ def test_pipeline_writes_typed_artifact_payloads_with_frame_quantized_timeline()
 
     artifacts = {
         artifact.kind: artifact
-        for artifact in repo.artifacts.values()
+        for artifact in repository().artifacts.values()
         if artifact.run_id == run["id"]
     }
     narration = artifacts[ArtifactKind.narration_units].payload

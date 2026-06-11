@@ -47,9 +47,10 @@ def test_sqlalchemy_secret_create_rotate_disable_flow_is_persisted_without_plain
         with session_factory() as session:
             row = session.get(SecretRow, secret["id"])
             assert row is not None
-            first_digest = row.encrypted_value
-            assert first_digest is not None
-            assert "first-secret-value" not in first_digest
+            first_secret_ref = row.secret_ref
+            assert first_secret_ref
+            assert "first-secret-value" not in first_secret_ref
+            assert not hasattr(row, "encrypted_value")
 
         rotated = client.post(
             f"/api/secrets/{secret['id']}/rotate",
@@ -80,11 +81,11 @@ def test_sqlalchemy_secret_create_rotate_disable_flow_is_persisted_without_plain
         assert old_row is not None
         assert old_row.status == "rotated"
         assert old_row.rotated_at is not None
-        assert old_row.encrypted_value == first_digest
+        assert old_row.secret_ref == first_secret_ref
 
         new_row = session.get(SecretRow, rotated_secret["id"])
         assert new_row is not None
         assert new_row.status == "disabled"
         assert new_row.rotated_from_secret_id == secret["id"]
-        assert new_row.encrypted_value != first_digest
-        assert "second-secret-value" not in new_row.encrypted_value
+        assert new_row.secret_ref != first_secret_ref
+        assert "second-secret-value" not in new_row.secret_ref

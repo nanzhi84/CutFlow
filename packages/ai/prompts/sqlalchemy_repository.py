@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from packages.core.contracts import (
@@ -95,6 +95,54 @@ def prompt_experiment_row_to_contract(row: PromptExperimentRow) -> PromptExperim
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+class SqlAlchemyPromptRuntimeRepository:
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self.session_factory = session_factory
+
+    def resolve_published_version(
+        self,
+        *,
+        node_id: str,
+        case_id: str | None = None,
+        provider_profile_id: str | None = None,
+    ) -> tuple[PromptBinding, PromptVersion]:
+        with self.session_factory() as session:
+            statement = (
+                select(PromptBindingRow, PromptVersionRow)
+                .join(PromptVersionRow, PromptVersionRow.id == PromptBindingRow.prompt_version_id)
+                .where(PromptBindingRow.enabled.is_(True))
+                .where(PromptVersionRow.status == "published")
+                .where(or_(PromptBindingRow.node_id.is_(None), PromptBindingRow.node_id == node_id))
+                .where(or_(PromptBindingRow.case_id.is_(None), PromptBindingRow.case_id == case_id))
+                .where(
+                    or_(
+                        PromptBindingRow.provider_profile_id.is_(None),
+                        PromptBindingRow.provider_profile_id == provider_profile_id,
+                    )
+                )
+                .order_by(PromptBindingRow.priority.asc(), PromptBindingRow.created_at.asc())
+                .limit(1)
+            )
+            row = session.execute(statement).first()
+            if row is None:
+                raise NodeExecutionError(
+                    ErrorCode.prompt_version_not_published,
+                    f"No published prompt version is bound to {node_id}.",
+                )
+            binding_row, version_row = row
+            return prompt_binding_row_to_contract(binding_row), prompt_version_row_to_contract(version_row)
+
+    def get_template_for_version(self, prompt_version_id: str) -> PromptTemplate:
+        with self.session_factory() as session:
+            version = session.get(PromptVersionRow, prompt_version_id)
+            if version is None:
+                raise NodeExecutionError(ErrorCode.prompt_version_not_published, "Prompt version not found.")
+            template = session.get(PromptTemplateRow, version.prompt_template_id)
+            if template is None:
+                raise NodeExecutionError(ErrorCode.prompt_version_not_published, "Prompt template not found.")
+            return prompt_template_row_to_contract(template)
 
 
 class SqlAlchemyPromptRepository:

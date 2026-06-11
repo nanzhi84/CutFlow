@@ -26,6 +26,9 @@ from packages.core.storage.repository import Repository
 def seed_rows(repository: Repository | None = None) -> list[object]:
     source = repository or Repository()
     password_hasher = create_password_hasher()
+    registration_hash_by_id = {
+        code_id: code_hash for code_hash, code_id in source.registration_code_hashes.items()
+    }
     rows: list[object] = []
     rows.extend(
         [
@@ -49,6 +52,7 @@ def seed_rows(repository: Repository | None = None) -> list[object]:
         [
             RegistrationCodeRow(
                 id=code.id,
+                code_hash=registration_hash_by_id[code.id],
                 role=code.role.value,
                 status=code.status,
                 max_uses=code.max_uses,

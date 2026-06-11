@@ -8,8 +8,11 @@ if os.getenv("CUTAGENT_RUN_DB_TESTS") != "1":
     pytest.skip("Set CUTAGENT_RUN_DB_TESTS=1 to run database integration tests.", allow_module_level=True)
 
 from apps.api.main import app
+from packages.ai.gateway import ProviderCall, ProviderGateway
+from packages.ai.gateway.sqlalchemy_repository import SqlAlchemyProviderRuntimeRepository
 from packages.core.storage.bootstrap import get_sqlalchemy_session_factory_if_enabled
 from packages.core.storage.database import ProviderPriceCatalogRow, ProviderPriceItemRow, ProviderProfileRow
+from packages.core.storage.repository import Repository
 
 
 def sqlalchemy_session_factory():
@@ -65,6 +68,36 @@ def test_sqlalchemy_provider_configuration_and_price_catalog_flow_is_persisted()
         )
         assert created.status_code == 201, created.text
         profile = created.json()
+
+        runtime_created = client.post(
+            "/api/providers/profiles",
+            json={
+                "provider_id": "sandbox",
+                "model_id": f"tts-{suffix}",
+                "capability": "tts.speech",
+                "display_name": "Runtime Visible TTS",
+                "environment": "local",
+                "options_schema_ref": {"schema_id": "provider.tts.options", "schema_version": "v1"},
+                "default_options": {},
+            },
+        )
+        assert runtime_created.status_code == 201, runtime_created.text
+        runtime_profile = runtime_created.json()
+
+        runtime_gateway = ProviderGateway(
+            Repository(),
+            provider_reader=SqlAlchemyProviderRuntimeRepository(session_factory),
+        )
+        invocation, result = runtime_gateway.invoke(
+            ProviderCall(
+                provider_profile_id=runtime_profile["id"],
+                capability_id="tts.speech",
+                input={"text": "runtime profile is visible"},
+            )
+        )
+        assert invocation.status == "succeeded"
+        assert result is not None
+        assert result.output["audio_uri"].startswith("sandbox://audio/")
 
         health = client.post(f"/api/providers/profiles/{profile['id']}/test", json={"sample_input": {}})
         assert health.status_code == 200, health.text

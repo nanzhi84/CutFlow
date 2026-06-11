@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 from sqlalchemy import text
 
@@ -8,8 +9,21 @@ from packages.core.storage.database import create_database_engine, create_sessio
 from packages.core.storage.seed import seed_database
 
 
+def storage_backend() -> str:
+    return os.getenv("CUTAGENT_STORAGE_BACKEND", "sqlalchemy").lower()
+
+
 def sqlalchemy_backend_enabled() -> bool:
-    return os.getenv("CUTAGENT_STORAGE_BACKEND", "memory").lower() in {"sqlalchemy", "postgres"}
+    return storage_backend() in {"sqlalchemy", "postgres"}
+
+
+def warn_if_memory_backend() -> None:
+    if storage_backend() != "memory":
+        return
+    print(
+        "WARNING: CUTAGENT_STORAGE_BACKEND=memory is for tests/demo only and is not for production.",
+        file=sys.stderr,
+    )
 
 
 def bootstrap_sqlalchemy_storage() -> int:
@@ -23,6 +37,7 @@ def bootstrap_sqlalchemy_storage() -> int:
 
 def bootstrap_sqlalchemy_storage_if_enabled() -> int:
     if not sqlalchemy_backend_enabled():
+        warn_if_memory_backend()
         return 0
     return bootstrap_sqlalchemy_storage()
 

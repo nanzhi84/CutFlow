@@ -56,6 +56,7 @@ REQUIRED_TABLES = {
     "audit_events",
     "import_batch_reports",
     "outbox_events",
+    "idempotency_records",
 }
 
 
@@ -67,6 +68,9 @@ def test_sqlalchemy_metadata_covers_spec_table_families():
 def test_contract_columns_for_core_boundaries_exist():
     tables = Base.metadata.tables
     assert {"email", "password_hash", "role", "status"} <= set(tables["users"].columns.keys())
+    assert "code_hash" in tables["registration_codes"].columns.keys()
+    assert "secret_ref" in tables["secrets"].columns.keys()
+    assert "encrypted_value" not in tables["secrets"].columns.keys()
     assert {"payload_schema", "schema_version", "payload"} <= set(tables["artifacts"].columns.keys())
     assert {"input_manifest_hash", "output_artifact_ids", "provider_invocation_ids"} <= set(
         tables["node_runs"].columns.keys()
@@ -101,6 +105,16 @@ def test_contract_columns_for_core_boundaries_exist():
     assert {"topic", "aggregate_type", "aggregate_id", "dedupe_key", "payload_schema"} <= set(
         tables["outbox_events"].columns.keys()
     )
+    assert {
+        "key",
+        "method",
+        "path",
+        "request_hash",
+        "response_status",
+        "response_body",
+        "created_at",
+        "expires_at",
+    } <= set(tables["idempotency_records"].columns.keys())
     assert "embedding" in tables["case_memories"].columns.keys()
 
 

@@ -122,6 +122,23 @@ class AnnotationPatchRequest(ContractModel):
     changes: dict[str, Any] = Field(default_factory=dict)
 
 
+class UploadedFileArtifact(ContractModel):
+    upload_session_id: str | None = None
+    filename: str
+    content_type: str
+    size_bytes: int
+    object_uri: str | None = None
+    sha256: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ImportMappingArtifact(ContractModel):
+    import_batch_id: str | None = None
+    import_type: str
+    external_to_internal_ids: dict[str, str] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class CaseContextArtifact(ContractModel):
     case_id: str
     case_profile: dict[str, Any] = Field(default_factory=dict)
@@ -165,10 +182,11 @@ class ValidatedProductionSpecArtifact(ContractModel):
 
 
 class CreativeIntentArtifact(ContractModel):
-    scene_type: Literal["hard_ad", "ip_persona"]
-    style_hint: str
-    density: str
-    closing_cta: str
+    scene_type: Literal["hard_ad", "ip_persona"] = "hard_ad"
+    style_hint: str = ""
+    density: str = "medium"
+    closing_cta: str = ""
+    intent: dict[str, Any] | None = None
     cover_focus: dict[str, Any] = Field(default_factory=dict)
     overlay_events: list[dict[str, Any]] = Field(default_factory=list)
     script_features_hint: dict[str, Any] = Field(default_factory=dict)
@@ -231,9 +249,11 @@ class PortraitSegment(ContractModel):
 
 
 class PortraitPlanArtifact(ContractModel):
-    fps: int
-    total_duration: float
-    segments: list[PortraitSegment]
+    fps: int = 30
+    total_duration: float = 0
+    asset_id: str | None = None
+    duration_sec: float = 0
+    segments: list[dict[str, Any]] = Field(default_factory=list)
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -250,6 +270,7 @@ class BrollOverlay(ContractModel):
 
 class BrollPlanArtifact(ContractModel):
     enabled: bool
+    segments: list[dict[str, Any]] = Field(default_factory=list)
     overlays: list[BrollOverlay] = Field(default_factory=list)
     skipped_reason: str | None = None
 
@@ -258,6 +279,9 @@ class StylePlanArtifact(ContractModel):
     subtitle: SubtitleStylePlan
     bgm: BgmPlan | None = None
     font: FontPlan | None = None
+    font_asset_id: str | None = None
+    bgm_asset_id: str | None = None
+    subtitle_enabled: bool = True
     selection_reservation_ids: list[str] = Field(default_factory=list)
 
 
@@ -367,6 +391,7 @@ class ArtifactSchemaRegistry:
     @classmethod
     def default(cls) -> "ArtifactSchemaRegistry":
         entries: dict[ArtifactKind, type[ContractModel]] = {
+            ArtifactKind.uploaded_file: UploadedFileArtifact,
             ArtifactKind.validated_production_spec: ValidatedProductionSpecArtifact,
             ArtifactKind.case_context: CaseContextArtifact,
             ArtifactKind.case_performance_analysis: PerformanceAnalysisArtifact,
@@ -390,6 +415,7 @@ class ArtifactSchemaRegistry:
             ArtifactKind.run_debug_report: RunDebugReportArtifact,
             ArtifactKind.provider_raw_request: ProviderRawRequestArtifact,
             ArtifactKind.provider_raw_response: ProviderRawResponseArtifact,
+            ArtifactKind.import_mapping: ImportMappingArtifact,
         }
         return cls({(kind, "v1"): model for kind, model in entries.items()})
 

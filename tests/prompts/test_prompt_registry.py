@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from apps.api.main import app, repo
+from apps.api.main import app, repository
 from packages.ai.prompts.registry import PromptRegistry
 from packages.core.contracts import (
     ErrorCode,
@@ -117,7 +117,7 @@ def test_prompt_invocation_links_to_provider_invocation_in_video_workflow():
     run_id = response.json()["initial_run"]["id"]
     linked = [
         invocation
-        for invocation in repo.prompt_invocations.values()
+        for invocation in repository().prompt_invocations.values()
         if invocation.run_id == run_id and invocation.provider_invocation_id
     ]
     assert linked

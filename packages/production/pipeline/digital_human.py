@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from packages.ai.gateway import ProviderCall, ProviderGateway, get_provider_gateway
-from packages.ai.prompts import PromptRegistry, get_prompt_registry
+from packages.ai.gateway import ProviderCall, ProviderGateway
+from packages.ai.prompts import PromptRegistry
 from packages.core.contracts import (
     Artifact,
     ArtifactRef,
@@ -13,6 +13,7 @@ from packages.core.contracts import (
     ErrorCode,
     FinishedVideo,
     Job,
+    MediaInfo,
     NodeRun,
     NodeStatus,
     JobStatus,
@@ -32,15 +33,25 @@ from packages.core.contracts import (
 from packages.core.contracts.artifacts import (
     AlignmentArtifact,
     AlignmentSegment,
+    BgmPlan,
+    BrollPlanArtifact,
+    CaseContextArtifact,
+    CreativeIntentArtifact,
+    FontPlan,
+    MaterialCandidate,
+    MaterialPackArtifact,
     NarrationUnit,
     NarrationUnitsArtifact,
+    PortraitPlanArtifact,
     RenderPlanArtifact,
+    StylePlanArtifact,
+    SubtitleStylePlan,
     TimelinePlanArtifact,
     TimelineTrackSegment,
     TimelineValidationReport,
 )
 from packages.core.contracts.state_machines import assert_transition
-from packages.core.storage import Repository, get_repository
+from packages.core.storage import Repository
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError, NodeOutput, WorkflowRuntimeAdapter, manifest_hash
 
@@ -421,6 +432,8 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
         payload,
         payload_schema: str,
         uri: str | None = None,
+        sha256: str | None = None,
+        media_info: MediaInfo | None = None,
     ) -> Artifact:
         return self.repository.create_artifact(
             kind=kind,
@@ -430,6 +443,8 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
             run_id=run.id,
             node_run_id=node_run.id,
             uri=uri,
+            sha256=sha256,
+            media_info=media_info,
         )
 
     def _validate_request(self, run: WorkflowRun, node_run: NodeRun, state: RunState) -> NodeOutput:
@@ -463,29 +478,27 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
 
     def _load_case_context(self, run: WorkflowRun, node_run: NodeRun, state: RunState) -> NodeOutput:
         case = self.repository.cases[state.request.case_id]
-        payload = {
-            "case": case.model_dump(mode="json"),
-            "active_memories": [
+        payload = CaseContextArtifact(
+            case_id=case.id,
+            case_profile=case.model_dump(mode="json"),
+            active_memories=[
                 memory.model_dump(mode="json")
                 for memory in self.repository.memories.values()
                 if memory.case_id == case.id and memory.status == "active"
             ],
-            "recent_scripts": [
-                script.model_dump(mode="json")
+            recent_script_versions=[
+                script
                 for script in self.repository.scripts.values()
                 if script.case_id == case.id
             ][-10:],
-            "recent_finished_videos": [
-                video.model_dump(mode="json")
-                for video in self.repository.finished_videos.values()
-                if video.case_id == case.id
-            ][-10:],
-            "performance_observations": [
-                obs.model_dump(mode="json")
-                for obs in self.repository.performance_observations.values()
-                if obs.case_id == case.id
-            ][-50:],
-        }
+            performance_summary={
+                "observations": [
+                    obs.model_dump(mode="json")
+                    for obs in self.repository.performance_observations.values()
+                    if obs.case_id == case.id
+                ][-50:]
+            },
+        ).model_dump(mode="json")
         return NodeOutput(
             artifacts=[
                 self._artifact(
@@ -543,7 +556,7 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
             run,
             node_run,
             ArtifactKind.creative_intent,
-            result.output,
+            CreativeIntentArtifact(intent=result.output.get("intent")).model_dump(mode="json"),
             "CreativeIntentArtifact.v1",
         )
         return NodeOutput(artifacts=[artifact], provider_invocation_ids=[invocation.id])
@@ -570,9 +583,16 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
             run,
             node_run,
             ArtifactKind.audio_tts,
-            result.output,
-            "TtsAudioArtifact.v1",
+            None,
+            "uri-only",
             uri=str(result.output.get("audio_uri")),
+            sha256="dev-unpinned",
+            media_info=MediaInfo(
+                media_type="audio",
+                codec="sandbox",
+                format="wav",
+                duration_sec=float(result.output.get("duration_sec", 0) or 0),
+            ),
         )
         return NodeOutput(artifacts=[artifact], provider_invocation_ids=[invocation.id])
 
@@ -611,18 +631,31 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
             for asset in assets
             if asset.usable and asset.kind == "font" and asset.case_id in {None, request.case_id}
         ]
-        payload = {
-            "portrait_candidates": portrait,
-            "broll_candidates": broll,
-            "bgm_candidates": bgm,
-            "font_candidates": fonts,
-            "diagnostics": {
+        payload = MaterialPackArtifact(
+            case_id=request.case_id,
+            portrait_candidates=[
+                MaterialCandidate(asset_id=asset_id, score=1, reason="seeded usable portrait")
+                for asset_id in portrait
+            ],
+            broll_candidates=[
+                MaterialCandidate(asset_id=asset_id, score=1, reason="seeded usable b-roll")
+                for asset_id in broll
+            ],
+            bgm_candidates=[
+                MaterialCandidate(asset_id=asset_id, score=1, reason="seeded usable bgm")
+                for asset_id in bgm
+            ],
+            font_candidates=[
+                MaterialCandidate(asset_id=asset_id, score=1, reason="seeded usable font")
+                for asset_id in fonts
+            ],
+            diagnostics={
                 "portrait_missing": not bool(portrait),
                 "broll_missing": request.broll.enabled and not bool(broll),
                 "bgm_missing": request.bgm.enabled and not bool(bgm),
             },
-            "reservation_ids": [new_id("reserve")],
-        }
+            reservations=[new_id("reserve")],
+        ).model_dump(mode="json")
         return NodeOutput(
             artifacts=[
                 self._artifact(
@@ -639,7 +672,7 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
         self, run: WorkflowRun, node_run: NodeRun, state: RunState
     ) -> NodeOutput:
         tts = state.require(ArtifactKind.audio_tts)
-        duration = float((tts.payload or {}).get("duration_sec", 1))
+        duration = float(tts.media_info.duration_sec if tts.media_info and tts.media_info.duration_sec else 1)
         parts = [part.strip() for part in state.request.script.replace("。", ".").split(".") if part.strip()]
         if not parts:
             parts = [state.request.script]
@@ -699,18 +732,20 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
     def _portrait_planning(self, run: WorkflowRun, node_run: NodeRun, state: RunState) -> NodeOutput:
         material = state.require(ArtifactKind.plan_material_pack).payload or {}
         narration = state.require(ArtifactKind.narration_units).payload or {}
-        portraits = list(material.get("portrait_candidates", []))
+        portraits = [item.get("asset_id") for item in material.get("portrait_candidates", []) if item.get("asset_id")]
         if state.request.strictness.portrait_insufficient_policy == "hard_fail" and not portraits:
             raise NodeExecutionError(
                 ErrorCode.material_insufficient_portrait,
                 "Portrait main track cannot cover the full audio.",
             )
         duration = max([float(unit.get("end", 0)) for unit in narration.get("units", [])] or [1])
-        payload = {
-            "asset_id": portraits[0] if portraits else None,
-            "segments": [{"asset_id": portraits[0] if portraits else None, "start_sec": 0, "end_sec": duration}],
-            "duration_sec": duration,
-        }
+        payload = PortraitPlanArtifact(
+            fps=state.request.output.fps,
+            total_duration=duration,
+            asset_id=portraits[0] if portraits else None,
+            duration_sec=duration,
+            segments=[{"asset_id": portraits[0] if portraits else None, "start_sec": 0, "end_sec": duration}],
+        ).model_dump(mode="json")
         return NodeOutput(
             artifacts=[
                 self._artifact(run, node_run, ArtifactKind.plan_portrait, payload, "PortraitPlanArtifact.v1")
@@ -719,13 +754,17 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
 
     def _broll_planning(self, run: WorkflowRun, node_run: NodeRun, state: RunState) -> NodeOutput:
         material = state.require(ArtifactKind.plan_material_pack).payload or {}
-        broll = list(material.get("broll_candidates", []))
+        broll = [item.get("asset_id") for item in material.get("broll_candidates", []) if item.get("asset_id")]
         if state.request.broll.enabled and not broll:
             artifact = self._artifact(
                 run,
                 node_run,
                 ArtifactKind.plan_broll,
-                {"segments": [], "skipped_reason": WarningCode.broll_skipped_no_material.value},
+                BrollPlanArtifact(
+                    enabled=True,
+                    segments=[],
+                    skipped_reason=WarningCode.broll_skipped_no_material.value,
+                ).model_dump(mode="json"),
                 "BrollPlanArtifact.v1",
             )
             return NodeOutput(
@@ -750,7 +789,7 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
                     run,
                     node_run,
                     ArtifactKind.plan_broll,
-                    {"segments": segments, "skipped_reason": None},
+                    BrollPlanArtifact(enabled=state.request.broll.enabled, segments=segments).model_dump(mode="json"),
                     "BrollPlanArtifact.v1",
                 )
             ]
@@ -758,8 +797,8 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
 
     def _style_planning(self, run: WorkflowRun, node_run: NodeRun, state: RunState) -> NodeOutput:
         material = state.require(ArtifactKind.plan_material_pack).payload or {}
-        bgm_candidates = list(material.get("bgm_candidates", []))
-        font_candidates = list(material.get("font_candidates", []))
+        bgm_candidates = [item.get("asset_id") for item in material.get("bgm_candidates", []) if item.get("asset_id")]
+        font_candidates = [item.get("asset_id") for item in material.get("font_candidates", []) if item.get("asset_id")]
         degradations: list[DegradationNotice] = []
         warnings: list[WarningCode] = []
         bgm_asset_id = state.request.bgm.bgm_id or (bgm_candidates[0] if bgm_candidates else None)
@@ -780,11 +819,25 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
             run,
             node_run,
             ArtifactKind.plan_style,
-            {
-                "font_asset_id": font_asset_id,
-                "bgm_asset_id": bgm_asset_id,
-                "subtitle_enabled": state.request.subtitle.enabled,
-            },
+            StylePlanArtifact(
+                subtitle=SubtitleStylePlan(
+                    enabled=state.request.subtitle.enabled,
+                    style_preset=state.request.subtitle.style_preset,
+                    font_id=state.request.subtitle.font_id,
+                    font_size=state.request.subtitle.font_size,
+                    position=state.request.subtitle.position,
+                ),
+                bgm=BgmPlan(
+                    enabled=state.request.bgm.enabled,
+                    asset_id=bgm_asset_id,
+                    volume=state.request.bgm.volume,
+                    auto_mix=state.request.bgm.auto_mix,
+                ),
+                font=FontPlan(font_id=font_asset_id, size=state.request.subtitle.font_size),
+                font_asset_id=font_asset_id,
+                bgm_asset_id=bgm_asset_id,
+                subtitle_enabled=state.request.subtitle.enabled,
+            ).model_dump(mode="json"),
             "StylePlanArtifact.v1",
         )
         return NodeOutput(
@@ -902,28 +955,42 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
 
     def _portrait_track_build(self, run: WorkflowRun, node_run: NodeRun, state: RunState) -> NodeOutput:
         portrait = state.require(ArtifactKind.plan_portrait).payload or {}
+        duration = float(portrait.get("duration_sec", 0) or 0)
+        uri = f"sandbox://video/portrait-track/{run.id}.mp4"
         artifact = self._artifact(
             run,
             node_run,
             ArtifactKind.video_portrait_track,
-            {"video_uri": f"sandbox://video/portrait-track/{run.id}.mp4", "duration_sec": portrait.get("duration_sec", 0)},
-            "PortraitTrackArtifact.v1",
-            uri=f"sandbox://video/portrait-track/{run.id}.mp4",
+            None,
+            "uri-only",
+            uri=uri,
+            sha256="dev-unpinned",
+            media_info=MediaInfo(
+                media_type="video",
+                codec="sandbox",
+                format="mp4",
+                duration_sec=duration,
+                fps=state.request.output.fps,
+                width=state.request.output.width,
+                height=state.request.output.height,
+            ),
         )
         return NodeOutput(artifacts=[artifact])
 
     def _lipsync(self, run: WorkflowRun, node_run: NodeRun, state: RunState) -> NodeOutput:
         portrait = state.require(ArtifactKind.video_portrait_track)
         audio = state.require(ArtifactKind.audio_tts)
-        duration = float((audio.payload or {}).get("duration_sec", 0))
+        duration = float(audio.media_info.duration_sec if audio.media_info and audio.media_info.duration_sec else 0)
         if not state.request.lipsync.enabled:
             artifact = self._artifact(
                 run,
                 node_run,
                 ArtifactKind.video_lipsync,
-                portrait.payload,
-                "LipSyncVideoArtifact.v1",
+                None,
+                "uri-only",
                 uri=portrait.uri,
+                sha256=portrait.sha256,
+                media_info=portrait.media_info,
             )
             return NodeOutput(status=NodeStatus.skipped, artifacts=[artifact])
         invocation, result = self.provider_gateway.invoke(
@@ -946,9 +1013,19 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
             run,
             node_run,
             ArtifactKind.video_lipsync,
-            result.output,
-            "LipSyncVideoArtifact.v1",
+            None,
+            "uri-only",
             uri=str(result.output.get("video_uri")),
+            sha256="dev-unpinned",
+            media_info=MediaInfo(
+                media_type="video",
+                codec="sandbox",
+                format="mp4",
+                duration_sec=duration,
+                fps=state.request.output.fps,
+                width=state.request.output.width,
+                height=state.request.output.height,
+            ),
         )
         return NodeOutput(artifacts=[artifact], provider_invocation_ids=[invocation.id])
 
@@ -957,17 +1034,24 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
     ) -> NodeOutput:
         lipsync = state.require(ArtifactKind.video_lipsync)
         render_plan = state.require(ArtifactKind.plan_render).payload or {}
+        uri = f"sandbox://video/rendered/{run.id}.mp4"
         artifact = self._artifact(
             run,
             node_run,
             ArtifactKind.video_rendered,
-            {
-                "video_uri": f"sandbox://video/rendered/{run.id}.mp4",
-                "source_lipsync_artifact_id": lipsync.id,
-                "render_plan": render_plan,
-            },
-            "RenderedVideoArtifact.v1",
-            uri=f"sandbox://video/rendered/{run.id}.mp4",
+            None,
+            "uri-only",
+            uri=uri,
+            sha256="dev-unpinned",
+            media_info=MediaInfo(
+                media_type="video",
+                codec="sandbox",
+                format="mp4",
+                duration_sec=lipsync.media_info.duration_sec if lipsync.media_info else None,
+                fps=render_plan.get("fps"),
+                width=render_plan.get("render_size", [None, None])[0],
+                height=render_plan.get("render_size", [None, None])[1],
+            ),
         )
         return NodeOutput(artifacts=[artifact])
 
@@ -975,27 +1059,35 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
         self, run: WorkflowRun, node_run: NodeRun, state: RunState
     ) -> NodeOutput:
         rendered = state.require(ArtifactKind.video_rendered)
-        style = state.require(ArtifactKind.plan_style).payload or {}
+        final_uri = f"sandbox://video/final/{run.id}.mp4"
         final = self._artifact(
             run,
             node_run,
             ArtifactKind.video_final,
-            {
-                "video_uri": f"sandbox://video/final/{run.id}.mp4",
-                "source_rendered_artifact_id": rendered.id,
-                "bgm_asset_id": style.get("bgm_asset_id"),
-                "subtitle_enabled": state.request.subtitle.enabled,
-            },
-            "FinalVideoArtifact.v1",
-            uri=f"sandbox://video/final/{run.id}.mp4",
+            None,
+            "uri-only",
+            uri=final_uri,
+            sha256="dev-unpinned",
+            media_info=MediaInfo(
+                media_type="video",
+                codec="sandbox",
+                format="mp4",
+                duration_sec=rendered.media_info.duration_sec if rendered.media_info else None,
+                fps=rendered.media_info.fps if rendered.media_info else None,
+                width=rendered.media_info.width if rendered.media_info else None,
+                height=rendered.media_info.height if rendered.media_info else None,
+            ),
         )
+        subtitle_uri = f"sandbox://subtitle/{run.id}.ass"
         subtitle = self._artifact(
             run,
             node_run,
             ArtifactKind.subtitle_ass,
-            {"subtitle_uri": f"sandbox://subtitle/{run.id}.ass"},
-            "SubtitleAssArtifact.v1",
-            uri=f"sandbox://subtitle/{run.id}.ass",
+            None,
+            "uri-only",
+            uri=subtitle_uri,
+            sha256="dev-unpinned",
+            media_info=MediaInfo(media_type="subtitle", codec="ass", format="ass"),
         )
         if not state.request.subtitle.enabled:
             return NodeOutput(status=NodeStatus.skipped, artifacts=[final, subtitle])
@@ -1021,17 +1113,22 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
             run,
             node_run,
             ArtifactKind.video_finished,
-            {"video_uri": final.uri, "source_final_artifact_id": final.id},
-            "FinishedVideoArtifact.v1",
+            None,
+            "uri-only",
             uri=final.uri,
+            sha256=final.sha256,
+            media_info=final.media_info,
         )
+        cover_uri = f"sandbox://cover/frame/{run.id}.png"
         cover_artifact = self._artifact(
             run,
             node_run,
             ArtifactKind.cover_image,
-            {"image_uri": f"sandbox://cover/frame/{run.id}.png", "source": "frame"},
-            "CoverImageArtifact.v1",
-            uri=f"sandbox://cover/frame/{run.id}.png",
+            None,
+            "uri-only",
+            uri=cover_uri,
+            sha256="dev-unpinned",
+            media_info=MediaInfo(media_type="image", codec="sandbox", format="png"),
         )
         finished = FinishedVideo(
             id=new_id("fv"),
@@ -1121,12 +1218,14 @@ class DigitalHumanWorkflow(WorkflowRuntimeAdapter):
         return public_artifact, debug_artifact
 
 
-_WORKFLOW = DigitalHumanWorkflow(
-    get_repository(),
-    get_provider_gateway(),
-    get_prompt_registry(),
-)
-
-
-def get_digital_human_workflow() -> DigitalHumanWorkflow:
-    return _WORKFLOW
+def build_digital_human_workflow(
+    repository: Repository,
+    *,
+    provider_gateway: ProviderGateway | None = None,
+    prompt_registry: PromptRegistry | None = None,
+) -> DigitalHumanWorkflow:
+    return DigitalHumanWorkflow(
+        repository,
+        provider_gateway or ProviderGateway(repository),
+        prompt_registry or PromptRegistry(repository),
+    )

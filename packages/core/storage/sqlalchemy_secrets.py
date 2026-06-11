@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -15,6 +13,7 @@ from packages.core.contracts import (
 )
 from packages.core.storage.database import SecretRow
 from packages.core.storage.repository import new_id
+from packages.core.storage.secret_store import SecretStore
 from packages.core.workflow import NodeExecutionError
 
 
@@ -36,14 +35,10 @@ def secret_row_to_contract(row: SecretRow) -> SecretPreview:
     )
 
 
-def local_dev_secret_envelope(value: str) -> str:
-    # TODO(M2): replace this dev-only reversible envelope with an external secret store.
-    return "dev+base64:" + base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii")
-
-
 class SqlAlchemySecretRepository:
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(self, session_factory: sessionmaker[Session], secret_store: SecretStore) -> None:
         self.session_factory = session_factory
+        self.secret_store = secret_store
 
     def list_secrets(self, *, limit: int = 50) -> list[SecretPreview]:
         with self.session_factory() as session:
@@ -53,13 +48,13 @@ class SqlAlchemySecretRepository:
     def create_secret(self, payload: CreateSecretRequest) -> SecretPreview:
         with self.session_factory() as session:
             secret_id = new_id("sec")
+            secret_ref = self.secret_store.put(payload.plaintext_secret, secret_ref=f"{secret_id}.secret")
             row = SecretRow(
                 id=secret_id,
                 provider_id=payload.provider_id,
                 environment=payload.environment,
                 name=payload.name,
-                secret_ref=f"dev://secrets/{secret_id}",
-                encrypted_value=local_dev_secret_envelope(payload.plaintext_secret),
+                secret_ref=secret_ref,
                 status="active",
             )
             session.add(row)
@@ -77,13 +72,13 @@ class SqlAlchemySecretRepository:
             row.rotated_at = rotated_at
             row.updated_at = utcnow()
             new_id_value = new_id("sec")
+            new_secret_ref = self.secret_store.put(payload.plaintext_secret, secret_ref=f"{new_id_value}.secret")
             new_row = SecretRow(
                 id=new_id_value,
                 provider_id=row.provider_id,
                 environment=row.environment,
                 name=row.name,
-                secret_ref=f"dev://secrets/{new_id_value}",
-                encrypted_value=local_dev_secret_envelope(payload.plaintext_secret),
+                secret_ref=new_secret_ref,
                 status="active",
                 rotated_from_secret_id=row.id,
             )
@@ -100,6 +95,7 @@ class SqlAlchemySecretRepository:
             row.status = "disabled"
             row.disabled_at = utcnow()
             row.updated_at = utcnow()
+            self.secret_store.disable(row.secret_ref)
             session.commit()
             session.refresh(row)
             return secret_row_to_contract(row)
