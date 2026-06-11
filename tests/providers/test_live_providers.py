@@ -124,7 +124,7 @@ def test_live_dashscope_vlm_annotation_smoke(tmp_path):
         repository,
         provider_id="dashscope.vlm",
         capability="vlm.annotation",
-        model_id=os.getenv("DASHSCOPE_VLM_MODEL", "qwen-vl-max-latest"),
+        model_id=os.getenv("DASHSCOPE_VLM_MODEL", "qwen-vl-max"),
         secret_ref=secret_ref,
     )
 
