@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
-from apps.api.main import app, repo
+from apps.api.main import app, repository
+from packages.core.auth.service import hash_registration_code
 
 
 def test_login_sets_httponly_cookie_and_session_reads_user():
@@ -96,7 +97,8 @@ def test_logout_revokes_session_cookie():
 
 def test_registration_code_assigns_role_and_tracks_usage():
     client = TestClient(app)
-    before = repo.registration_codes["reg_local_admin"].used_count
+    code_id = repository().registration_code_hashes[hash_registration_code("reg_local_admin")]
+    before = repository().registration_codes[code_id].used_count
     email = f"role-{before}@example.test"
     response = client.post(
         "/api/auth/register",
@@ -109,4 +111,4 @@ def test_registration_code_assigns_role_and_tracks_usage():
     )
     assert response.status_code == 201, response.text
     assert response.json()["user"]["role"] == "admin"
-    assert repo.registration_codes["reg_local_admin"].used_count == before + 1
+    assert repository().registration_codes[code_id].used_count == before + 1

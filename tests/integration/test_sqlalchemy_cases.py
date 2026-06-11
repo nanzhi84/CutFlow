@@ -8,7 +8,7 @@ if os.getenv("CUTAGENT_RUN_DB_TESTS") != "1":
 
 from apps.api.main import app
 from packages.core.storage.bootstrap import get_sqlalchemy_session_factory_if_enabled
-from packages.core.storage.database import CaseRow
+from packages.core.storage.database import CaseRow, IdempotencyRecordRow
 from packages.creative.cases import SqlAlchemyCaseRepository
 
 
@@ -86,3 +86,47 @@ def test_cases_api_persists_created_and_patched_case():
         assert row.owner_user_id == "usr_admin"
         assert row.product == "membership"
         assert row.target_audience == "creator operators"
+
+
+def test_sqlalchemy_idempotency_replays_after_app_reconfiguration():
+    session_factory = get_sqlalchemy_session_factory_if_enabled()
+    assert session_factory is not None
+
+    headers = {"Idempotency-Key": "case-create-after-restart"}
+    payload = {"name": "Idempotent SQL Case"}
+    with TestClient(app) as first_client:
+        login = first_client.post(
+            "/api/auth/login",
+            json={"email": "admin@local.cutagent", "password": "local-admin"},
+        )
+        assert login.status_code == 200, login.text
+        first = first_client.post("/api/cases", json=payload, headers=headers)
+        assert first.status_code == 201, first.text
+        first_case = first.json()
+
+    with TestClient(app) as second_client:
+        login = second_client.post(
+            "/api/auth/login",
+            json={"email": "admin@local.cutagent", "password": "local-admin"},
+        )
+        assert login.status_code == 200, login.text
+        replayed = second_client.post("/api/cases", json=payload, headers=headers)
+        assert replayed.status_code == 200, replayed.text
+        assert replayed.headers["Idempotency-Replayed"] == "true"
+        assert replayed.json()["id"] == first_case["id"]
+
+        conflict = second_client.post(
+            "/api/cases",
+            json={"name": "Different SQL Case"},
+            headers=headers,
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["error"]["code"] == "idempotency.conflict"
+
+    with session_factory() as session:
+        record = session.get(
+            IdempotencyRecordRow,
+            ("usr_admin:case-create-after-restart", "POST", "/api/cases"),
+        )
+        assert record is not None
+        assert record.response_body["id"] == first_case["id"]

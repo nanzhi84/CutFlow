@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from packages.core.auth.service import ROLE_RANK, create_password_hasher
+from packages.core.registration_codes import hash_registration_code
 from packages.core.contracts import (
     AdminCreateUserRequest,
     AdminUpdateUserRequest,
@@ -71,7 +72,11 @@ class SqlAlchemyAuthService:
             role = UserRole.viewer
             code = None
             if payload.registration_code:
-                code = session.get(RegistrationCodeRow, payload.registration_code)
+                code = session.scalar(
+                    select(RegistrationCodeRow).where(
+                        RegistrationCodeRow.code_hash == hash_registration_code(payload.registration_code)
+                    )
+                )
                 if code is None or code.status != "active":
                     raise NodeExecutionError(
                         ErrorCode.auth_registration_closed,
@@ -185,6 +190,7 @@ class SqlAlchemyAuthService:
         with self.session_factory() as session:
             row = RegistrationCodeRow(
                 id=new_id("reg"),
+                code_hash=hash_registration_code(new_id("reg_code")),
                 role=payload.role.value,
                 status="active",
                 max_uses=payload.max_uses,

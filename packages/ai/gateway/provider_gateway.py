@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 from time import perf_counter
@@ -14,14 +15,17 @@ from packages.core.contracts import (
     OpsAlertEvent,
     ProviderError,
     ProviderInvocation,
+    ProviderPriceItem,
+    ProviderProfile,
     ProviderStatus,
     UsageMeterRecord,
     zero_money,
     utcnow,
 )
 from packages.core.contracts.state_machines import assert_transition
-from packages.core.storage import Repository, get_repository
+from packages.core.storage import Repository
 from packages.core.storage.repository import new_id
+from packages.core.storage.secret_store import SecretStore
 
 
 class ProviderCall(BaseModel):
@@ -52,6 +56,17 @@ class ProviderPlugin(Protocol):
     provider_id: str
 
     def invoke(self, call: ProviderCall) -> ProviderResult:
+        ...
+
+
+class ProviderRuntimeReader(Protocol):
+    def get_profile(self, profile_id: str) -> ProviderProfile | None:
+        ...
+
+    def list_price_items(self) -> Iterable[ProviderPriceItem]:
+        ...
+
+    def secret_is_active(self, secret_ref: str) -> bool:
         ...
 
 
@@ -110,6 +125,8 @@ class ProviderRuntimeError(Exception):
 @dataclass
 class ProviderGateway:
     repository: Repository
+    provider_reader: ProviderRuntimeReader | None = None
+    secret_store: SecretStore | None = None
 
     def __post_init__(self) -> None:
         self.plugins: dict[str, ProviderPlugin] = {"sandbox": SandboxProvider()}
@@ -118,7 +135,7 @@ class ProviderGateway:
         self.plugins[plugin.provider_id] = plugin
 
     def invoke(self, call: ProviderCall) -> tuple[ProviderInvocation, ProviderResult | None]:
-        profile = self.repository.provider_profiles[call.provider_profile_id]
+        profile = self._get_profile(call.provider_profile_id)
         started_at = utcnow()
         started = perf_counter()
         invocation = ProviderInvocation(
@@ -216,7 +233,14 @@ class ProviderGateway:
             self.repository.provider_invocations[invocation.id] = invocation
             return invocation, None
 
-    def _validate_profile(self, profile, call: ProviderCall) -> ProviderError | None:
+    def _get_profile(self, profile_id: str) -> ProviderProfile:
+        if self.provider_reader is not None:
+            profile = self.provider_reader.get_profile(profile_id)
+            if profile is not None:
+                return profile
+        return self.repository.provider_profiles[profile_id]
+
+    def _validate_profile(self, profile: ProviderProfile, call: ProviderCall) -> ProviderError | None:
         if not profile.enabled:
             return ProviderError(
                 code=ErrorCode.provider_auth_failed,
@@ -235,10 +259,7 @@ class ProviderGateway:
                 message=f"Provider {profile.provider_id} is not registered.",
                 retryable=False,
             )
-        if profile.secret_ref and profile.secret_ref not in self.repository.secrets and not any(
-            secret.secret_ref == profile.secret_ref and secret.status.value == "active"
-            for secret in self.repository.secrets.values()
-        ):
+        if profile.secret_ref and not self._secret_is_active(profile.secret_ref):
             return ProviderError(
                 code=ErrorCode.provider_auth_failed,
                 message="Provider secret is missing.",
@@ -247,7 +268,12 @@ class ProviderGateway:
         return None
 
     def _find_price_item_id(self, *, provider_id: str, model_id: str, capability_id: str) -> str | None:
-        for item in self.repository.price_items.values():
+        items = (
+            self.provider_reader.list_price_items()
+            if self.provider_reader is not None
+            else self.repository.price_items.values()
+        )
+        for item in items:
             if item.provider_id != provider_id:
                 continue
             model_matches = item.model_id in {model_id, "*"}
@@ -255,6 +281,20 @@ class ProviderGateway:
             if model_matches and capability_matches:
                 return item.id
         return None
+
+    def _secret_is_active(self, secret_ref: str) -> bool:
+        if self.secret_store is not None:
+            if self.secret_store.get(secret_ref) is None:
+                return False
+            if self.provider_reader is None and not self.repository.secrets:
+                return True
+        if self.provider_reader is not None:
+            return self.provider_reader.secret_is_active(secret_ref)
+        for secret in self.repository.secrets.values():
+            status = secret.status.value if hasattr(secret.status, "value") else secret.status
+            if secret.secret_ref == secret_ref and status == "active":
+                return True
+        return False
 
     def _record_unpriced_alert(self, invocation: ProviderInvocation) -> None:
         alert_id = f"alert_unpriced_{invocation.provider_id}_{invocation.model_id}_{invocation.capability_id}"
@@ -267,10 +307,3 @@ class ProviderGateway:
             ),
             severity="warning",
         )
-
-
-_GATEWAY = ProviderGateway(get_repository())
-
-
-def get_provider_gateway() -> ProviderGateway:
-    return _GATEWAY

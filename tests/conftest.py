@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import os
+
 import anyio
 import httpx
 from functools import partial
 from urllib.parse import urlsplit
 import warnings
+
+
+os.environ.setdefault("CUTAGENT_STORAGE_BACKEND", "memory")
 
 
 class _ASGISyncTestClient:

@@ -6,6 +6,7 @@ from packages.core.contracts import (
     ProviderStatus,
 )
 from packages.core.storage.repository import Repository
+from packages.core.storage.secret_store import LocalSecretStore
 
 
 def gateway() -> tuple[Repository, ProviderGateway]:
@@ -54,6 +55,38 @@ def test_provider_secret_missing_is_auth_failure():
     assert result is None
     assert invocation.error
     assert invocation.error.code == ErrorCode.provider_auth_failed
+
+
+def test_provider_secret_store_disable_blocks_profile(tmp_path):
+    repository = Repository()
+    secret_store = LocalSecretStore(tmp_path)
+    secret_ref = secret_store.put("provider-secret")
+    profile = ProviderProfile(
+        id="sandbox.prod.secret.tts",
+        provider_id="sandbox",
+        model_id="tts.local",
+        capability="tts.speech",
+        display_name="Prod Secret TTS",
+        environment="prod",
+        secret_ref=secret_ref,
+        options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.tts.options"),
+    )
+    repository.provider_profiles[profile.id] = profile
+    gw = ProviderGateway(repository, secret_store=secret_store)
+
+    invocation, result = gw.invoke(
+        ProviderCall(provider_profile_id=profile.id, capability_id="tts.speech", input={"text": "hello"})
+    )
+    assert result is not None
+    assert invocation.status == ProviderStatus.succeeded
+
+    secret_store.disable(secret_ref)
+    blocked, blocked_result = gw.invoke(
+        ProviderCall(provider_profile_id=profile.id, capability_id="tts.speech", input={"text": "hello"})
+    )
+    assert blocked_result is None
+    assert blocked.error
+    assert blocked.error.code == ErrorCode.provider_auth_failed
 
 
 def test_provider_quota_timeout_and_remote_failed_are_reported():

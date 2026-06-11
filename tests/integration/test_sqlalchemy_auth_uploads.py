@@ -3,12 +3,14 @@ import os
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 from fastapi.testclient import TestClient
 
 if os.getenv("CUTAGENT_RUN_DB_TESTS") != "1":
     pytest.skip("Set CUTAGENT_RUN_DB_TESTS=1 to run database integration tests.", allow_module_level=True)
 
 from apps.api.main import app
+from packages.core.auth.service import hash_registration_code
 from packages.core.storage.bootstrap import get_sqlalchemy_session_factory_if_enabled
 from packages.core.storage.database import ArtifactRow, RegistrationCodeRow, SessionRow, UploadSessionRow, UserRow
 
@@ -179,6 +181,17 @@ def test_sqlalchemy_auth_admin_users_and_registration_codes_are_persisted():
         assert user_row.status == "disabled"
         assert code_row is not None
         assert code_row.status == "disabled"
+
+
+def test_sqlalchemy_seeded_registration_code_uses_hash_not_plaintext_key():
+    session_factory = sqlalchemy_session_factory()
+    expected_hash = hash_registration_code("reg_local_admin")
+
+    with session_factory() as session:
+        row = session.scalar(select(RegistrationCodeRow).where(RegistrationCodeRow.code_hash == expected_hash))
+        assert row is not None
+        assert row.id != "reg_local_admin"
+        assert row.code_hash != "reg_local_admin"
 
 
 def test_sqlalchemy_auth_me_update_and_change_password_are_persisted():

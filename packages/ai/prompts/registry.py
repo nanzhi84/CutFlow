@@ -1,16 +1,32 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
-from packages.core.contracts import ErrorCode, PromptInvocation
-from packages.core.storage import Repository, get_repository
+from packages.core.contracts import ErrorCode, PromptBinding, PromptInvocation, PromptTemplate, PromptVersion
+from packages.core.storage import Repository
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
+
+
+class PromptRuntimeReader(Protocol):
+    def resolve_published_version(
+        self,
+        *,
+        node_id: str,
+        case_id: str | None = None,
+        provider_profile_id: str | None = None,
+    ) -> tuple[PromptBinding, PromptVersion]:
+        ...
+
+    def get_template_for_version(self, prompt_version_id: str) -> PromptTemplate:
+        ...
 
 
 @dataclass
 class PromptRegistry:
     repository: Repository
+    prompt_reader: PromptRuntimeReader | None = None
 
     def resolve_published_version(
         self,
@@ -19,6 +35,12 @@ class PromptRegistry:
         case_id: str | None = None,
         provider_profile_id: str | None = None,
     ):
+        if self.prompt_reader is not None:
+            return self.prompt_reader.resolve_published_version(
+                node_id=node_id,
+                case_id=case_id,
+                provider_profile_id=provider_profile_id,
+            )
         candidates = [
             binding
             for binding in self.repository.prompt_bindings.values()
@@ -82,8 +104,11 @@ class PromptRegistry:
         return invocation, rendered
 
     def validate_output(self, *, prompt_version_id: str, output: dict) -> None:
-        version = self.repository.prompt_versions[prompt_version_id]
-        template = self.repository.prompt_templates[version.prompt_template_id]
+        if self.prompt_reader is not None:
+            template = self.prompt_reader.get_template_for_version(prompt_version_id)
+        else:
+            version = self.repository.prompt_versions[prompt_version_id]
+            template = self.repository.prompt_templates[version.prompt_template_id]
         schema_id = template.output_schema_ref.schema_id
         if schema_id == "creative_intent.output":
             intent = output.get("intent")
@@ -102,10 +127,3 @@ class PromptRegistry:
                 ErrorCode.prompt_output_invalid,
                 f"Prompt output for schema {schema_id} must be an object.",
             )
-
-
-_REGISTRY = PromptRegistry(get_repository())
-
-
-def get_prompt_registry() -> PromptRegistry:
-    return _REGISTRY

@@ -79,10 +79,28 @@ class SessionRow(TimestampMixin, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class IdempotencyRecordRow(Base):
+    __tablename__ = "idempotency_records"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    method: Mapped[str] = mapped_column(String, primary_key=True)
+    path: Mapped[str] = mapped_column(String, primary_key=True)
+    request_hash: Mapped[str] = mapped_column(String, nullable=False)
+    response_status: Mapped[int] = mapped_column(Integer, nullable=False)
+    response_body: Mapped[dict | list | str | int | float | bool | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (UniqueConstraint("key", "method", "path"),)
+
+
 class RegistrationCodeRow(TimestampMixin, Base):
     __tablename__ = "registration_codes"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    code_hash: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     role: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
     max_uses: Mapped[int | None] = mapped_column(Integer)
@@ -114,7 +132,6 @@ class SecretRow(TimestampMixin, Base):
     environment: Mapped[str] = mapped_column(String, nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     secret_ref: Mapped[str] = mapped_column(String, nullable=False)
-    encrypted_value: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
     rotated_from_secret_id: Mapped[str | None] = mapped_column(String)
     rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -738,9 +755,13 @@ Index("idx_outbox_pending", OutboxEventRow.status, OutboxEventRow.available_at, 
 
 
 def database_url() -> str:
-    return os.getenv(
-        "CUTAGENT_DATABASE_URL",
-        "postgresql+psycopg://cutagent:cutagent@127.0.0.1:55432/cutagent",
+    value = os.getenv("CUTAGENT_DATABASE_URL")
+    if value:
+        return value
+    raise RuntimeError(
+        "CUTAGENT_DATABASE_URL is required when CUTAGENT_STORAGE_BACKEND=sqlalchemy. "
+        "For local development, use "
+        "postgresql+psycopg://cutagent:cutagent@127.0.0.1:55432/cutagent."
     )
 
 

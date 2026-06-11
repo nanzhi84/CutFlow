@@ -19,6 +19,7 @@ from packages.core.contracts import (
 from packages.core.storage import Repository, get_repository
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
+from packages.core.registration_codes import hash_registration_code
 
 
 ROLE_RANK = {
@@ -61,7 +62,8 @@ class AuthService:
         role = UserRole.viewer
         code = None
         if payload.registration_code:
-            code = self.repository.registration_codes.get(payload.registration_code)
+            code_id = self.repository.registration_code_hashes.get(hash_registration_code(payload.registration_code))
+            code = self.repository.registration_codes.get(code_id or "")
             if code is None or code.status != "active":
                 raise NodeExecutionError(ErrorCode.auth_registration_closed, "Registration code is not active.")
             if code.expires_at and code.expires_at < utcnow():

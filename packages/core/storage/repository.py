@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from packages.core.registration_codes import hash_registration_code
 from packages.core.contracts import (
     AnnotationEditorVm,
     Artifact,
@@ -24,6 +25,7 @@ from packages.core.contracts import (
     FinishedVideo,
     ImportBatchReport,
     Job,
+    MediaInfo,
     MediaAssetRecord,
     MemoryProposal,
     Money,
@@ -79,6 +81,7 @@ class Repository:
         self.sessions: dict[str, dict] = {}
         self.password_hashes: dict[str, str] = {}
         self.registration_codes: dict[str, RegistrationCodePreview] = {}
+        self.registration_code_hashes: dict[str, str] = {}
         self.uploads: dict[str, UploadSession] = {}
         self.secrets: dict[str, SecretPreview] = {}
         self.cases: dict[str, CaseDetail] = {}
@@ -143,14 +146,16 @@ class Repository:
         )
         self.users[admin.id] = admin
         self.users[viewer.id] = viewer
-        self.registration_codes["reg_local_admin"] = RegistrationCodePreview(
-            id="reg_local_admin",
+        local_admin_registration_code = RegistrationCodePreview(
+            id="reg_seed_local_admin",
             role=UserRole.admin,
             status="active",
             max_uses=None,
             used_count=0,
             created_at=utcnow(),
         )
+        self.registration_codes[local_admin_registration_code.id] = local_admin_registration_code
+        self.registration_code_hashes[hash_registration_code("reg_local_admin")] = local_admin_registration_code.id
         case = CaseDetail(
             id="case_demo",
             name="Demo Case",
@@ -311,6 +316,7 @@ class Repository:
         node_run_id: str | None = None,
         uri: str | None = None,
         sha256: str | None = None,
+        media_info: MediaInfo | None = None,
     ) -> Artifact:
         artifact = Artifact(
             id=new_id("art"),
@@ -320,6 +326,7 @@ class Repository:
             kind=kind,
             uri=uri,
             sha256=sha256,
+            media_info=media_info,
             payload_schema=payload_schema,
             payload=payload,
             created_by_node_run_id=node_run_id,

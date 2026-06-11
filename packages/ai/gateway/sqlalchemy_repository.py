@@ -26,6 +26,7 @@ from packages.core.storage.database import (
     ProviderPriceCatalogRow,
     ProviderPriceItemRow,
     ProviderProfileRow,
+    SecretRow,
 )
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
@@ -102,6 +103,31 @@ def price_item_row_to_contract(row: ProviderPriceItemRow) -> ProviderPriceItem:
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+class SqlAlchemyProviderRuntimeRepository:
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self.session_factory = session_factory
+
+    def get_profile(self, profile_id: str) -> ProviderProfile | None:
+        with self.session_factory() as session:
+            row = session.get(ProviderProfileRow, profile_id)
+            return provider_profile_row_to_contract(row) if row is not None else None
+
+    def list_price_items(self) -> list[ProviderPriceItem]:
+        with self.session_factory() as session:
+            statement = select(ProviderPriceItemRow)
+            return [price_item_row_to_contract(row) for row in session.scalars(statement)]
+
+    def secret_is_active(self, secret_ref: str) -> bool:
+        with self.session_factory() as session:
+            statement = (
+                select(SecretRow.id)
+                .where(SecretRow.secret_ref == secret_ref)
+                .where(SecretRow.status == "active")
+                .limit(1)
+            )
+            return session.scalar(statement) is not None
 
 
 class SqlAlchemyProviderRepository:

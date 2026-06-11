@@ -6,6 +6,7 @@ from packages.core.contracts.artifacts import ArtifactSchemaRegistry
 
 
 JSON_ARTIFACT_KINDS = {
+    ArtifactKind.uploaded_file,
     ArtifactKind.validated_production_spec,
     ArtifactKind.case_context,
     ArtifactKind.case_performance_analysis,
@@ -29,6 +30,7 @@ JSON_ARTIFACT_KINDS = {
     ArtifactKind.run_debug_report,
     ArtifactKind.provider_raw_request,
     ArtifactKind.provider_raw_response,
+    ArtifactKind.import_mapping,
 }
 
 

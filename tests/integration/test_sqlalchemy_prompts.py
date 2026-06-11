@@ -8,6 +8,8 @@ if os.getenv("CUTAGENT_RUN_DB_TESTS") != "1":
     pytest.skip("Set CUTAGENT_RUN_DB_TESTS=1 to run database integration tests.", allow_module_level=True)
 
 from apps.api.main import app
+from packages.ai.prompts import PromptRegistry
+from packages.ai.prompts.sqlalchemy_repository import SqlAlchemyPromptRuntimeRepository
 from packages.core.storage.bootstrap import get_sqlalchemy_session_factory_if_enabled
 from packages.core.storage.database import (
     PromptBindingRow,
@@ -15,6 +17,7 @@ from packages.core.storage.database import (
     PromptTemplateRow,
     PromptVersionRow,
 )
+from packages.core.storage.repository import Repository
 
 
 def sqlalchemy_session_factory():
@@ -66,7 +69,7 @@ def test_sqlalchemy_prompt_template_version_and_binding_flow_is_persisted():
 
         version_response = client.post(
             f"/api/prompts/{template['id']}/versions",
-            json={"content": "Write a concise script for {{topic}}.", "changelog": "Initial draft"},
+            json={"content": "Write a concise script for {topic}.", "changelog": "Initial draft"},
         )
         assert version_response.status_code == 201, version_response.text
         version = version_response.json()["version"]
@@ -127,6 +130,18 @@ def test_sqlalchemy_prompt_template_version_and_binding_flow_is_persisted():
         assert binding_response.status_code == 201, binding_response.text
         binding = binding_response.json()["binding"]
         assert binding_response.json()["resolved_version"]["id"] == version["id"]
+
+        runtime_registry = PromptRegistry(
+            Repository(),
+            prompt_reader=SqlAlchemyPromptRuntimeRepository(session_factory),
+        )
+        invocation, rendered = runtime_registry.render(
+            node_id="write_script",
+            variables={"topic": "single source DB prompt"},
+            case_id="case_demo",
+        )
+        assert invocation.prompt_version_id == version["id"]
+        assert rendered == "Write a concise script for single source DB prompt."
 
         patched_binding = client.patch(
             f"/api/prompts/bindings/{binding['id']}",
