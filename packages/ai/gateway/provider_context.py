@@ -40,7 +40,7 @@ class ProviderInvocationContext:
         self.repository.provider_invocations[self.invocation_id] = current.model_copy(update=patch)
 
     def local_path_for_uri(self, uri: str) -> Path:
-        if uri.startswith("local://"):
+        if uri.startswith(("local://", "s3://")):
             return local_object_path(self.object_store, uri)
         path = Path(uri)
         if path.exists():
