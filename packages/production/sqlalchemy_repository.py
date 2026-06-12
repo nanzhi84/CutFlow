@@ -91,7 +91,7 @@ from packages.ai.gateway.sqlalchemy_repository import provider_profile_row_to_co
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 from packages.media.assets import local_object_path
-from packages.media.sqlalchemy_repository import voice_row_to_contract
+from packages.media.sqlalchemy_repository import media_asset_row_to_contract, voice_row_to_contract
 from packages.production.editor_handoff import EditorHandoffAsset, EditorHandoffBuilder, EditorHandoffInput
 from packages.production.jianying_draft import JianyingDraftBuilder, JianyingDraftInput
 
@@ -581,6 +581,15 @@ class SqlAlchemyProductionRepository:
             run = workflow_run_row_to_contract(run_row)
             repository.jobs[job.id] = job
             repository.runs[run.id] = run
+            if run.case_id:
+                for row in session.scalars(select(MediaAssetRow).where(MediaAssetRow.case_id == run.case_id)):
+                    asset = media_asset_row_to_contract(row)
+                    repository.media_assets[asset.id] = asset
+                    if asset.source_artifact_id and asset.source_artifact_id not in repository.artifacts:
+                        artifact_row = session.get(ArtifactRow, asset.source_artifact_id)
+                        if artifact_row is not None:
+                            contract = artifact_row_to_contract(artifact_row)
+                            repository.artifacts[contract.id] = contract
             run_ids = {run_id}
             if run.resume_from_run_id:
                 source_row = session.get(WorkflowRunRow, run.resume_from_run_id)

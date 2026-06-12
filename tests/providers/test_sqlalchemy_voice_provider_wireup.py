@@ -21,7 +21,15 @@ from packages.core.contracts import (
     VoiceProfile,
     utcnow,
 )
-from packages.core.storage.database import CaseRow, JobRow, NodeRunRow, VoiceProfileRow, WorkflowRunRow
+from packages.core.storage.database import (
+    ArtifactRow,
+    CaseRow,
+    JobRow,
+    MediaAssetRow,
+    NodeRunRow,
+    VoiceProfileRow,
+    WorkflowRunRow,
+)
 from packages.core.storage.repository import Repository
 from packages.production import SqlAlchemyProductionRepository
 
@@ -304,6 +312,108 @@ def test_hydrate_workflow_runtime_snapshot_loads_db_voice_profiles():
     production_repository.hydrate_workflow_runtime_snapshot(runtime_repository, run.id)
 
     assert runtime_repository.voices["voice_db"].provider_profile_id == "fake.tts.default"
+
+
+def test_hydrate_workflow_runtime_snapshot_loads_case_media_asset_source_artifact():
+    job = _timestamped(
+        JobRow(
+            id="job_db_portrait",
+            type=JobType.digital_human_video.value,
+            status=JobStatus.queued.value,
+            case_id="case_demo",
+            created_by="usr_admin",
+            request_schema="DigitalHumanVideoRequest.v1",
+            request={
+                "case_id": "case_demo",
+                "title": "DB portrait run",
+                "script": "真人素材需要进入 worker。",
+                "voice": {"voice_id": "voice_demo_cn"},
+                "strictness": {"strict_timestamps": False},
+            },
+        )
+    )
+    run = _timestamped(
+        WorkflowRunRow(
+            id="run_db_portrait",
+            job_id=job.id,
+            case_id="case_demo",
+            workflow_template_id="digital_human_video",
+            workflow_version="v1",
+            status=RunStatus.admitted.value,
+            requested_by="usr_admin",
+            run_attempt=1,
+        )
+    )
+    case = _timestamped(
+        CaseRow(
+            id="case_demo",
+            name="Demo Case",
+            owner_user_id="usr_admin",
+            status="active",
+            description=None,
+            industry=None,
+            product=None,
+            target_audience=None,
+        )
+    )
+    source_artifact = _timestamped(
+        ArtifactRow(
+            id="art_realportrait001",
+            case_id="case_demo",
+            run_id=None,
+            node_run_id=None,
+            kind=ArtifactKind.uploaded_file.value,
+            uri="local://cutagent-local/uploads/real-portrait.mp4",
+            local_path=None,
+            oss_uri=None,
+            size_bytes=1024,
+            immutable=True,
+            retention_policy="default",
+            sha256="sha256-real-portrait",
+            media_info={
+                "media_type": "video",
+                "codec": "h264",
+                "format": "mp4",
+                "duration_sec": 3.0,
+            },
+            payload_schema="UploadedFileArtifact.v1",
+            payload={"filename": "real-portrait.mp4"},
+            created_by_node_run_id=None,
+        )
+    )
+    media_asset = _timestamped(
+        MediaAssetRow(
+            id="asset_portrait_demo",
+            case_id="case_demo",
+            title="Real portrait",
+            kind="portrait",
+            source_artifact_id=source_artifact.id,
+            tags=["portrait"],
+            annotation_status="annotated",
+            usable=True,
+        )
+    )
+    rows_by_model = {
+        NodeRunRow: [],
+        VoiceProfileRow: [],
+        MediaAssetRow: [media_asset],
+        ArtifactRow: [],
+    }
+    rows_by_key = {
+        (JobRow, job.id): job,
+        (WorkflowRunRow, run.id): run,
+        (CaseRow, case.id): case,
+        (ArtifactRow, source_artifact.id): source_artifact,
+    }
+    production_repository = SqlAlchemyProductionRepository(
+        lambda: StaticHydrateSession(rows_by_model, rows_by_key)
+    )
+    runtime_repository = Repository()
+
+    production_repository.hydrate_workflow_runtime_snapshot(runtime_repository, run.id)
+
+    assert runtime_repository.media_assets[media_asset.id].source_artifact_id == source_artifact.id
+    assert runtime_repository.artifacts[source_artifact.id].uri == "local://cutagent-local/uploads/real-portrait.mp4"
 
 
 def test_tts_node_uses_voice_provider_profile_when_request_omits_override():
