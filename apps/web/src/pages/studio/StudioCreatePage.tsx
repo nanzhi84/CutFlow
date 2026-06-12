@@ -273,41 +273,43 @@ export default function StudioCreatePage() {
           submit();
         }}
       >
-        <section className="card grid gap-5">
-          {step === 0 ? (
-            <ScriptStep
-              form={form}
-              setField={setField}
-              scriptCount={scriptCount}
-              tools={
-                <ScriptToolBar
-                  candidateCount={scriptToolbox.candidates.length}
-                  historyCount={scriptToolbox.history.length}
-                  onOpenGenerate={(mode) => {
-                    setScriptToolMode(mode);
-                    setScriptGenerateOpen(true);
-                  }}
-                  onOpenCandidates={() => setCandidatePoolOpen(true)}
-                  onOpenHistory={() => setHistoryOpen(true)}
-                />
-              }
-            />
-          ) : step === 1 ? (
-            <TemplateStep form={form} setField={setField} />
-          ) : step === 2 ? (
-            <ProductionStep
-              form={form}
-              setField={setField}
-              selectedVoice={selectedVoice}
-              voiceOptions={voiceOptions}
-            />
-          ) : step === 3 ? (
-            <PostProcessStep form={form} setField={setField} />
-          ) : (
-            <SubmitStep form={form} selectedVoiceLabel={selectedVoiceLabel} scriptCount={scriptCount} />
-          )}
+        <section className="card flex flex-col gap-5">
+          <div className="min-h-[520px] flex-1">
+            {step === 0 ? (
+              <ScriptStep
+                form={form}
+                setField={setField}
+                scriptCount={scriptCount}
+                tools={
+                  <ScriptToolBar
+                    candidateCount={scriptToolbox.candidates.length}
+                    historyCount={scriptToolbox.history.length}
+                    onOpenGenerate={(mode) => {
+                      setScriptToolMode(mode);
+                      setScriptGenerateOpen(true);
+                    }}
+                    onOpenCandidates={() => setCandidatePoolOpen(true)}
+                    onOpenHistory={() => setHistoryOpen(true)}
+                  />
+                }
+              />
+            ) : step === 1 ? (
+              <TemplateStep form={form} setField={setField} />
+            ) : step === 2 ? (
+              <ProductionStep
+                form={form}
+                setField={setField}
+                selectedVoice={selectedVoice}
+                voiceOptions={voiceOptions}
+              />
+            ) : step === 3 ? (
+              <PostProcessStep form={form} setField={setField} />
+            ) : (
+              <SubmitStep form={form} selectedVoiceLabel={selectedVoiceLabel} scriptCount={scriptCount} />
+            )}
 
-          {formError ? <ErrorState error={formError} /> : null}
+            {formError ? <ErrorState error={formError} /> : null}
+          </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/70 pt-4">
             <button

@@ -15,7 +15,7 @@ export function ScriptHistoryModal({ isOpen, history, onClose, onInsert }: Props
   const [copiedId, setCopiedId] = useState<string | null>(null);
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="脚本生成历史（最近 30 条）" size="xl">
-      <div className="grid gap-3">
+      <div className="divide-y divide-border/60">
         {history.length === 0 ? (
           <div className="stateBox">
             <strong>暂无历史</strong>
@@ -23,7 +23,7 @@ export function ScriptHistoryModal({ isOpen, history, onClose, onInsert }: Props
           </div>
         ) : null}
         {history.map((item) => (
-          <article className="rounded-[20px] border border-border/70 bg-white/70 p-4" key={item.id}>
+          <article className="py-4 first:pt-0 last:pb-0" key={item.id}>
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
                 <strong className="truncate text-text-primary">{item.title}</strong>

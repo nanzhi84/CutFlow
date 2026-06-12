@@ -35,13 +35,13 @@ export function RecentRunsList({
         </Link>
       </div>
 
-      <div className="space-y-3">
+      <div className="divide-y divide-border/60">
         {isLoading ? (
           Array.from({ length: 5 }).map((_, index) => <Skeleton key={index} className="h-20 w-full rounded-2xl" />)
         ) : runs.length > 0 ? (
           runs.slice(0, 8).map((run) => (
             <Link
-              className="block rounded-[20px] border border-border/70 bg-white/52 px-4 py-3 transition-colors hover:bg-white/75"
+              className="block py-3 transition-colors hover:bg-hover"
               key={run.runId}
               to={runLink(run)}
             >

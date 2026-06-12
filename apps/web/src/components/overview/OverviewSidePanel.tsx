@@ -52,14 +52,14 @@ export function OverviewSidePanel({
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-2 gap-3">
-          <div className="rounded-[20px] border border-border/70 bg-white/55 p-4">
+        <div className="mt-4 grid grid-cols-2 divide-x divide-border/60 border-y border-border/60">
+          <div className="py-3 pr-3">
             <p className="text-sm text-text-tertiary">供应商调用</p>
             <p className="mt-2 font-mono text-2xl font-semibold tabular-nums text-text-primary">
               {(usage?.invocations ?? 0).toLocaleString("zh-CN")}
             </p>
           </div>
-          <div className="rounded-[20px] border border-border/70 bg-white/55 p-4">
+          <div className="py-3 pl-3">
             <p className="text-sm text-text-tertiary">未定价调用</p>
             <p className="mt-2 font-mono text-2xl font-semibold tabular-nums text-text-primary">
               {(usage?.unpriced_invocation_count ?? 0).toLocaleString("zh-CN")}
@@ -67,14 +67,14 @@ export function OverviewSidePanel({
           </div>
         </div>
 
-        <div className="mt-4 space-y-3 rounded-[22px] border border-border/70 bg-white/50 p-4 text-sm">
-          <div className="flex items-center justify-between gap-3">
+        <div className="mt-4 divide-y divide-border/60 border-t border-border/60 text-sm">
+          <div className="flex items-center justify-between gap-3 py-3">
             <span className="text-text-secondary">估算成本</span>
             <span className="font-mono text-text-primary">
               {formatMoney(usage?.estimated_cost.amount, usage?.estimated_cost.currency)}
             </span>
           </div>
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center justify-between gap-3 py-3">
             <span className="text-text-secondary">活跃告警</span>
             <span className={alertCount > 0 ? "badge-warning" : "badge-success"}>
               {alertCount > 0 ? `${alertCount} 条待处理` : "无告警"}
@@ -90,7 +90,7 @@ export function OverviewSidePanel({
             const Icon = item.icon;
             return (
               <Link
-                className="inline-flex min-h-11 items-center gap-2 rounded-2xl border border-border/70 bg-white/55 px-3 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-white/80 hover:text-text-primary"
+                className="inline-flex min-h-11 items-center gap-2 border-l-2 border-border/60 px-3 py-2 text-sm font-medium text-text-secondary transition-colors hover:border-accent/60 hover:bg-hover hover:text-text-primary"
                 key={item.to}
                 to={item.to}
               >

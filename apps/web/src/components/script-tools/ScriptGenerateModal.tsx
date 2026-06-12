@@ -72,7 +72,7 @@ export function ScriptGenerateModal({
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={mode === "polish" ? "AI 润色脚本" : "AI 生成脚本"} size="2xl">
       <div className="grid gap-4">
-        <div className="grid gap-3 rounded-[20px] border border-border/70 bg-white/60 p-4">
+        <div className="grid gap-3 border-t border-border/60 pt-4">
           <label>
             <span>目标</span>
             <input value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="例如：前三秒给痛点，结尾引导私信" />
@@ -137,7 +137,7 @@ function GeneratedCard({
   onAddCandidate: () => void;
 }) {
   return (
-    <article className="grid gap-3 rounded-[20px] border border-border/70 bg-white/70 p-4">
+    <article className="grid gap-3 border-t border-border/60 pt-4">
       <div className="flex items-center justify-between gap-3">
         <strong className="truncate text-text-primary">{item.title}</strong>
         <span className="badge-warning">沙箱生成</span>

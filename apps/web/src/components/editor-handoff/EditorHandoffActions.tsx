@@ -45,7 +45,7 @@ export function EditorHandoffActions({ finishedVideoId, compact = false }: Props
   }
 
   return (
-    <div className={compact ? "grid gap-2" : "grid gap-3 rounded-[20px] border border-border/70 bg-white/60 p-4"}>
+    <div className={compact ? "grid gap-2" : "grid gap-3 border-t border-border/60 pt-4"}>
       <div className="flex flex-wrap gap-2">
         <button className="btn-secondary compactButton" type="button" disabled={disabled} onClick={() => setPendingAction("jianying")}>
           {isRunning === "jianying" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Scissors className="h-4 w-4" />}

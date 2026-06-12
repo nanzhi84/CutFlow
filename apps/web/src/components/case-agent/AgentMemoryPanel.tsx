@@ -24,12 +24,12 @@ export function AgentMemoryPanel({ proposals, isLoading, busyProposalId, onAppro
       </div>
       {isLoading ? <LoadingState label="加载记忆提案" /> : null}
       {!isLoading && proposals.length === 0 ? <EmptyState title="暂无记忆提案" detail="运行“提出记忆提案”后再处理。" /> : null}
-      <div className="grid gap-3">
+      <div className="divide-y divide-border/60">
         {proposals.map((proposal) => {
           const busy = busyProposalId === proposal.id;
           const actionable = proposal.status === "proposed";
           return (
-            <article className="rounded-[20px] border border-border/70 bg-white/65 p-4" key={proposal.id}>
+            <article className="py-4 first:pt-0 last:pb-0" key={proposal.id}>
               <div className="mb-2 flex items-start justify-between gap-3">
                 <span className="rounded-full border border-border/70 bg-surface px-2.5 py-1 text-xs text-text-secondary">
                   {memoryStatusLabel(proposal.status)}

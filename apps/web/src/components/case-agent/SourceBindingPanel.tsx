@@ -55,7 +55,7 @@ export function SourceBindingPanel({
         <span className="badge-info">{bindings.length} 条</span>
       </div>
 
-      <div className="grid gap-3 rounded-[20px] border border-border/70 bg-white/60 p-4">
+      <div className="grid gap-3 border-t border-border/60 pt-4">
         <label>
           <span>数据源类型</span>
           <select value={sourceType} onChange={(event) => setSourceType(event.target.value as SourceType)}>
@@ -89,9 +89,9 @@ export function SourceBindingPanel({
 
       {isLoading ? <LoadingState label="加载数据源" /> : null}
       {!isLoading && bindings.length === 0 ? <EmptyState title="暂无数据源" detail="先创建一个手动备注或 URL 数据源。" /> : null}
-      <div className="grid gap-3">
+      <div className="divide-y divide-border/60">
         {bindings.map((binding) => (
-          <article className="rounded-[20px] border border-border/70 bg-white/65 p-3" key={binding.id}>
+          <article className="py-3 first:pt-0 last:pb-0" key={binding.id}>
             <div className="flex items-start justify-between gap-3">
               <label className="flex min-w-0 flex-1 items-start gap-3">
                 <input

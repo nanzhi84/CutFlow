@@ -50,9 +50,9 @@ export function CandidatePoolModal({
           </div>
         )}
 
-        <div className="grid max-h-[56vh] gap-3 overflow-y-auto pr-1">
+        <div className="max-h-[56vh] divide-y divide-border/60 overflow-y-auto pr-1">
           {candidates.map((item) => (
-            <article className="rounded-[20px] border border-border/70 bg-white/70 p-4" key={item.id}>
+            <article className="py-4 first:pt-0 last:pb-0" key={item.id}>
               <div className="mb-2 flex items-start gap-3">
                 <input
                   className="mt-1 h-4 w-4 accent-accent"

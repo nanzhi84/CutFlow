@@ -44,7 +44,7 @@ export function AgentRunsPanel({
         <span className="badge-info">{runs.length} 次</span>
       </div>
 
-      <div className="grid gap-3 rounded-[20px] border border-border/70 bg-white/60 p-4 md:grid-cols-[minmax(0,1fr)_auto]">
+      <div className="grid gap-3 border-t border-border/60 pt-4 md:grid-cols-[minmax(0,1fr)_auto]">
         <label>
           <span>运行目标</span>
           <select value={goal} onChange={(event) => onGoalChange(event.target.value as AgentRun["goal"])}>
@@ -67,11 +67,11 @@ export function AgentRunsPanel({
       {isLoading ? <LoadingState label="加载运行历史" /> : null}
       {!isLoading && runs.length === 0 ? <EmptyState title="暂无运行" detail="导入数据源或点击立即运行后会出现记录。" /> : null}
       <div className="grid gap-3 lg:grid-cols-[260px_minmax(0,1fr)]">
-        <div className="grid content-start gap-2">
+        <div className="divide-y divide-border/60 border-y border-border/60">
           {runs.map((run) => (
             <button
-              className={`rounded-2xl border p-3 text-left transition-all ${
-                selectedRunId === run.id ? "border-accent/35 bg-accent/10" : "border-border/70 bg-white/60 hover:bg-white/80"
+              className={`block w-full px-3 py-3 text-left transition-colors ${
+                selectedRunId === run.id ? "bg-accent/10" : "hover:bg-hover"
               }`}
               type="button"
               key={run.id}
@@ -97,8 +97,8 @@ function RunResult({ detail, isLoading }: { detail?: AgentRunDetail; isLoading: 
   if (!detail) return <EmptyState title="未选择运行" detail="选择左侧运行后查看简报、草稿和记忆提案。" />;
   return (
     <div className="grid gap-3">
-      <div className="rounded-[20px] border border-border/70 bg-white/60 p-4">
-        <div className="mb-3 flex items-center justify-between gap-3">
+      <div className="border-b border-border/60 pb-3">
+        <div className="mb-2 flex items-center justify-between gap-3">
           <h3 className="text-base font-semibold text-text-primary">{agentGoalLabel(detail.run.goal)}</h3>
           <StatusPill status={detail.run.status} />
         </div>
@@ -106,14 +106,14 @@ function RunResult({ detail, isLoading }: { detail?: AgentRunDetail; isLoading: 
       </div>
       <ResultGroup title="创意简报" empty="本次运行未产出简报">
         {detail.briefs?.map((brief) => (
-          <p className="whitespace-pre-wrap rounded-2xl bg-surface p-3 text-sm leading-relaxed" key={brief.id}>
+          <p className="whitespace-pre-wrap border-t border-border/40 py-2 text-sm leading-relaxed first:border-t-0" key={brief.id}>
             {brief.summary}
           </p>
         ))}
       </ResultGroup>
       <ResultGroup title="脚本草稿" empty="本次运行未产出脚本草稿">
         {detail.drafts?.map((draft) => (
-          <div className="rounded-2xl bg-surface p-3" key={draft.id}>
+          <div className="border-t border-border/40 py-2 first:border-t-0" key={draft.id}>
             <div className="mb-2 flex items-center justify-between gap-2">
               <strong className="text-sm text-text-primary">{draft.title}</strong>
               <span className="badge-warning">沙箱生成</span>
@@ -124,7 +124,7 @@ function RunResult({ detail, isLoading }: { detail?: AgentRunDetail; isLoading: 
       </ResultGroup>
       <ResultGroup title="记忆提案" empty="本次运行未提出记忆">
         {detail.memory_proposals?.map((proposal) => (
-          <p className="rounded-2xl bg-surface p-3 text-sm leading-relaxed" key={proposal.id}>
+          <p className="border-t border-border/40 py-2 text-sm leading-relaxed first:border-t-0" key={proposal.id}>
             {proposal.insight}
           </p>
         ))}
@@ -137,7 +137,7 @@ function ResultGroup({ title, empty, children }: { title: string; empty: string;
   const content = Array.isArray(children) ? children.filter(Boolean) : children;
   const isEmpty = Array.isArray(content) ? content.length === 0 : !content;
   return (
-    <div className="rounded-[20px] border border-border/70 bg-white/60 p-4">
+    <div className="border-t border-border/60 pt-4">
       <h3 className="mb-3 text-sm font-semibold text-text-primary">{title}</h3>
       {isEmpty ? <p className="text-sm text-text-secondary">{empty}</p> : <div className="grid gap-2">{content}</div>}
     </div>

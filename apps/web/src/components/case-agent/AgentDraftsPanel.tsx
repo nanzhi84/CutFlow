@@ -23,9 +23,9 @@ export function AgentDraftsPanel({ drafts, isLoading, adoptingDraftId, onAdopt }
       </div>
       {isLoading ? <LoadingState label="加载草稿" /> : null}
       {!isLoading && drafts.length === 0 ? <EmptyState title="暂无草稿" detail="运行“生成脚本草稿”后会出现候选。" /> : null}
-      <div className="grid gap-3">
+      <div className="divide-y divide-border/60">
         {drafts.map((draft) => (
-          <article className="rounded-[20px] border border-border/70 bg-white/65 p-4" key={draft.id}>
+          <article className="py-4 first:pt-0 last:pb-0" key={draft.id}>
             <div className="mb-2 flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <h3 className="truncate text-base font-semibold text-text-primary">{draft.title}</h3>

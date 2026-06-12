@@ -11,7 +11,7 @@ type Props = {
 
 export function ScriptToolBar({ candidateCount, historyCount, onOpenGenerate, onOpenCandidates, onOpenHistory }: Props) {
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-[20px] border border-border/70 bg-white/60 p-2">
+    <div className="flex flex-wrap items-center gap-2 border-y border-border/60 py-2">
       <button className="btn-secondary text-sm" type="button" onClick={() => onOpenGenerate("generate")}>
         <Sparkles className="h-4 w-4" />
         <span>AI 生成</span>

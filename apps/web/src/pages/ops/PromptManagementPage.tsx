@@ -1,13 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, GitCompare, Plus, RotateCcw, Send, ToggleLeft, ToggleRight } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import {
-  api,
-  type ApiError,
-  type PromptBindingView,
-  type PromptTemplateView,
-  type PromptVersionView,
-} from "../../api/client";
+import { api, type ApiError, type PromptBindingView, type PromptTemplateView, type PromptVersionView } from "../../api/client";
 import { EmptyState, ErrorState, LoadingState } from "../../components/State";
 import { useToast } from "../../components/Toast";
 import { TimeText } from "../../components/TimeText";
@@ -71,6 +65,13 @@ function schemaText(ref: { schema_id: string; schema_version?: string }) {
   return `${ref.schema_id}@${ref.schema_version ?? "v1"}`;
 }
 
+function bindingSummary(items: PromptBindingView[], templateId: string) {
+  const matched = items.filter((item) => item.binding.prompt_template_id === templateId);
+  if (matched.length === 0) return "未绑定";
+  const first = matched[0].binding.node_id || "全局节点";
+  return matched.length > 1 ? `用于 ${first} 等 ${matched.length} 处` : `用于 ${first}`;
+}
+
 export default function PromptManagementPage() {
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -95,9 +96,10 @@ export default function PromptManagementPage() {
   const templateItems = useMemo(() => templates.data?.items ?? [], [templates.data?.items]);
   const selectedTemplate = templateItems.find((item) => item.template.id === selectedTemplateId) ?? templateItems[0];
   const versionItems = useMemo(() => versions.data?.items ?? [], [versions.data?.items]);
-  const selectedVersion =
-    versionItems.find((item) => item.version.id === selectedVersionId)?.version ?? versionItems[0]?.version;
+  const bindingItems = useMemo(() => bindings.data?.items ?? [], [bindings.data?.items]);
+  const selectedVersion = versionItems.find((item) => item.version.id === selectedVersionId)?.version ?? versionItems[0]?.version;
   const publishedVersion = selectedTemplate?.published_version ?? null;
+  const selectedBindings = bindingItems.filter((item) => item.binding.prompt_template_id === selectedTemplate?.template.id);
   const rows = diffRows(publishedVersion?.content, selectedVersion?.content ?? draftContent);
 
   useEffect(() => {
@@ -212,7 +214,7 @@ export default function PromptManagementPage() {
       <header className="pageHeader">
         <div>
           <h1>提示词</h1>
-          <p>生产环境读取已发布版本；草稿、审批、发布和回滚在这里闭环。</p>
+          <p>每个模板绑定到 pipeline 节点；列表会显示用途，生产环境读取已发布版本。</p>
         </div>
       </header>
 
@@ -229,41 +231,32 @@ export default function PromptManagementPage() {
               createTemplate.mutate();
             }}
           >
-            <label>
-              <span>模板名</span>
-              <input value={templateForm.name} onChange={(event) => setTemplateForm((value) => ({ ...value, name: event.target.value }))} required />
-            </label>
-            <label>
-              <span>能力/用途</span>
-              <input value={templateForm.purpose} onChange={(event) => setTemplateForm((value) => ({ ...value, purpose: event.target.value }))} required />
-            </label>
-            <label>
-              <span>变量 schema</span>
-              <input value={templateForm.variables_schema_id} onChange={(event) => setTemplateForm((value) => ({ ...value, variables_schema_id: event.target.value }))} required />
-            </label>
-            <label>
-              <span>输出 schema</span>
-              <input value={templateForm.output_schema_id} onChange={(event) => setTemplateForm((value) => ({ ...value, output_schema_id: event.target.value }))} required />
-            </label>
+            <label><span>模板名</span><input value={templateForm.name} onChange={(event) => setTemplateForm((value) => ({ ...value, name: event.target.value }))} required /></label>
+            <label><span>能力/用途</span><input value={templateForm.purpose} onChange={(event) => setTemplateForm((value) => ({ ...value, purpose: event.target.value }))} required /></label>
+            <label><span>变量 schema</span><input value={templateForm.variables_schema_id} onChange={(event) => setTemplateForm((value) => ({ ...value, variables_schema_id: event.target.value }))} required /></label>
+            <label><span>输出 schema</span><input value={templateForm.output_schema_id} onChange={(event) => setTemplateForm((value) => ({ ...value, output_schema_id: event.target.value }))} required /></label>
             <button className="primaryButton" type="submit" disabled={createTemplate.isPending || !templateForm.name.trim() || !templateForm.purpose.trim()}>
               <Plus className="h-4 w-4" />
               <span>新建模板</span>
             </button>
           </form>
 
-          <div className="grid gap-2">
+          <div className="card p-0">
+            <div className="divide-y divide-border/60">
             {templateItems.map((item) => (
               <button
-                className={`card card-hover p-4 text-left ${selectedTemplate?.template.id === item.template.id ? "ring-2 ring-accent/40" : ""}`}
+                className={`block w-full px-4 py-3 text-left transition-colors hover:bg-hover ${selectedTemplate?.template.id === item.template.id ? "bg-accent/10" : ""}`}
                 key={item.template.id}
                 type="button"
                 onClick={() => setSelectedTemplateId(item.template.id)}
               >
                 <span className="block truncate font-semibold text-text-primary">{item.template.name}</span>
                 <span className="mt-1 block truncate text-xs text-text-tertiary">{item.template.purpose}</span>
+                <span className="mt-2 block truncate text-xs text-text-secondary">{bindingSummary(bindingItems, item.template.id)}</span>
                 <span className="mt-3 inline-flex rounded-full bg-white/70 px-2.5 py-1 text-xs text-text-secondary">{statusLabel[item.template.status] ?? item.template.status}</span>
               </button>
             ))}
+            </div>
           </div>
         </aside>
 
@@ -295,8 +288,8 @@ export default function PromptManagementPage() {
                   <textarea className="font-mono text-sm" rows={14} value={draftContent} onChange={(event) => setDraftContent(event.target.value)} />
                 </label>
                 <div className="grid content-start gap-3">
-                  <div className="rounded-2xl border border-border/70 bg-white/65 p-3">
-                    <p className="mb-2 text-xs font-semibold text-text-tertiary">变量</p>
+                  <div className="border-t border-border/60 pt-3">
+                    <p className="mb-2 text-xs font-semibold text-text-secondary">变量</p>
                     <div className="flex flex-wrap gap-2">
                       {variableChips(selectedTemplate).map((name) => (
                         <button className="rounded-full bg-accent/10 px-3 py-1 text-xs text-accent" type="button" key={name} onClick={() => setDraftContent((value) => `${value}${value.endsWith(" ") || !value ? "" : " "}{${name}}`)}>
@@ -330,7 +323,7 @@ export default function PromptManagementPage() {
                     </option>
                   ))}
                 </select>
-                <div className="max-h-[360px] overflow-auto rounded-2xl border border-border/70 bg-[#111511] p-3 font-mono text-xs text-white">
+                <div className="min-h-[360px] max-h-[360px] overflow-auto rounded-2xl border border-border/70 bg-[#111511] p-3 font-mono text-xs text-white">
                   {rows.length > 0 ? rows.map((row, index) => (
                     <p key={`${row.kind}-${index}`} className={row.kind === "add" ? "text-status-success" : row.kind === "remove" ? "text-status-error" : "text-white/70"}>
                       {row.kind === "add" ? "+ " : row.kind === "remove" ? "- " : "  "}{row.text}
@@ -375,13 +368,15 @@ export default function PromptManagementPage() {
                     <span>新建绑定</span>
                   </button>
                 </form>
-                <div className="grid gap-2">
-                  {(bindings.data?.items ?? []).filter((item) => item.binding.prompt_template_id === selectedTemplate.template.id).map((item) => (
-                    <div className="rounded-2xl border border-border/70 bg-white/65 p-3" key={item.binding.id}>
+                <div className="divide-y divide-border/60">
+                  {selectedBindings.map((item) => (
+                    <div className="-mx-2 px-2 py-3 first:pt-0 last:pb-0 transition-colors hover:bg-hover" key={item.binding.id}>
                       <div className="flex items-center justify-between gap-3">
                         <div className="min-w-0">
                           <p className="truncate text-sm font-semibold text-text-primary">{item.binding.node_id || "全局节点"} · {item.binding.case_id || "全局 Case"}</p>
-                          <p className="text-xs text-text-tertiary">P{item.binding.priority} · {item.resolved_version?.id ?? item.binding.prompt_version_id} · <TimeText value={item.binding.updated_at} /></p>
+                          <p className="text-xs text-text-tertiary">
+                            P{item.binding.priority} · {item.binding.enabled ? "启用" : "停用"} · {item.resolved_version?.id ?? item.binding.prompt_version_id} · <TimeText value={item.binding.updated_at} />
+                          </p>
                         </div>
                         <button className="icon-button" type="button" onClick={() => patchBinding.mutate(item)} aria-label="切换绑定">
                           {item.binding.enabled ? <ToggleRight className="h-4 w-4" /> : <ToggleLeft className="h-4 w-4" />}

@@ -47,12 +47,12 @@ export function CostUsageTab({
         {bars.length === 0 ? (
           <EmptyPanel label="暂无成本或调用数据" />
         ) : (
-          <div className="space-y-4">
+          <div className="divide-y divide-border/60">
             {bars.map((item) => {
               const costWidth = maxCost > 0 ? (item.cost / maxCost) * 100 : 0;
               const invocationWidth = maxInvocations > 0 ? (item.invocations / maxInvocations) * 100 : 0;
               return (
-                <div className="rounded-[20px] border border-border/70 bg-white/55 p-4" key={item.key}>
+                <div className="py-4 first:pt-0 last:pb-0" key={item.key}>
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="truncate font-medium text-text-primary">{item.label}</p>
@@ -84,16 +84,16 @@ export function CostUsageTab({
             <h2 className="text-xl font-semibold text-text-primary">供应商用量</h2>
           </div>
           {usageHasData(usage) ? (
-            <div className="mt-4 space-y-3 rounded-[22px] border border-border/70 bg-white/50 p-4 text-sm">
-              <div className="flex items-center justify-between gap-3">
+            <div className="mt-4 divide-y divide-border/60 border-t border-border/60 text-sm">
+              <div className="flex items-center justify-between gap-3 py-3">
                 <span className="text-text-secondary">调用次数</span>
                 <span className="font-mono text-text-primary">{usage!.invocations.toLocaleString("zh-CN")}</span>
               </div>
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center justify-between gap-3 py-3">
                 <span className="text-text-secondary">估算成本</span>
                 <span className="font-mono text-text-primary">{formatMoney(usage!.estimated_cost)}</span>
               </div>
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center justify-between gap-3 py-3">
                 <span className="text-text-secondary">实际成本</span>
                 <span className="font-mono text-text-primary">{usage?.actual_cost ? formatMoney(usage.actual_cost) : "暂无"}</span>
               </div>

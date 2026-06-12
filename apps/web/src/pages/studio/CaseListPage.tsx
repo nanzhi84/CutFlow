@@ -110,20 +110,9 @@ export default function CaseListPage() {
                   <ArrowRight className="h-4 w-4" />
                 </Link>
               </div>
-              <div className="grid grid-cols-3 gap-2">
-                <span className="rounded-2xl border border-border/70 bg-white/60 px-3 py-2">
-                  <b className="block font-mono text-lg text-text-primary">{item.active_memory_count}</b>
-                  <span className="text-xs text-text-tertiary">活跃记忆</span>
-                </span>
-                <span className="rounded-2xl border border-border/70 bg-white/60 px-3 py-2">
-                  <b className="block font-mono text-lg text-text-primary">{item.version}</b>
-                  <span className="text-xs text-text-tertiary">版本</span>
-                </span>
-                <span className="rounded-2xl border border-border/70 bg-white/60 px-3 py-2">
-                  <b className="block truncate text-sm text-text-primary">{item.owner_user_id ? "已分配" : "默认"}</b>
-                  <span className="text-xs text-text-tertiary">负责人</span>
-                </span>
-              </div>
+              <p className="text-sm text-text-secondary">
+                {item.active_memory_count} 条活跃记忆 · v{item.version} · {item.owner_user_id ? "已分配负责人" : "默认负责人"}
+              </p>
               <div className="flex items-center justify-between gap-3 border-t border-border/70 pt-4">
                 <Link className="btn-secondary no-underline" to={routes.caseStudio(item.id)}>
                   <ArrowRight className="h-4 w-4" />

@@ -67,14 +67,14 @@ export function TemplateStep({ form, setField }: { form: FormState; setField: Se
   return (
     <div className="grid gap-4">
       <SectionTitle icon={Film} title="模板" description="本阶段沿用 M6a-1 的自动模板策略，指定模板与序列后续接入素材库。" />
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="divide-y divide-border/60 border-y border-border/60 md:grid md:grid-cols-3 md:divide-x md:divide-y-0">
         {options.map((option) => (
           <button
             type="button"
             key={option.value}
             onClick={() => setField("portraitMode", option.value)}
-            className={`rounded-[20px] border p-4 text-left transition-all ${
-              form.portraitMode === option.value ? "border-accent/35 bg-accent/10" : "border-border/70 bg-white/60"
+            className={`px-3 py-4 text-left transition-colors ${
+              form.portraitMode === option.value ? "bg-accent/10 text-accent" : "hover:bg-hover"
             }`}
           >
             <span className="font-semibold text-text-primary">{option.label}</span>
@@ -142,7 +142,7 @@ export function ProductionStep({
       </div>
       <ToggleLine checked={form.lipsyncEnabled} onChange={(checked) => setField("lipsyncEnabled", checked)} label="启用口型同步" />
       {form.lipsyncEnabled ? (
-        <div className="grid gap-3 rounded-[20px] border border-border/70 bg-white/60 p-4">
+        <div className="grid gap-3 border-t border-border/60 pt-4">
           <div className="grid gap-3 md:grid-cols-2">
             {(Object.keys(lipsyncPresets) as LipSyncPreset[]).map((preset) => (
               <button
@@ -152,8 +152,8 @@ export function ProductionStep({
                   setField("lipsyncPreset", preset);
                   setField("lipsyncVideoExtension", lipsyncPresets[preset].videoExtension);
                 }}
-                className={`rounded-2xl border p-3 text-left ${
-                  form.lipsyncPreset === preset ? "border-accent/35 bg-accent/10" : "border-border/70 bg-white/70"
+                className={`border-l-2 px-3 py-2 text-left transition-colors ${
+                  form.lipsyncPreset === preset ? "border-accent bg-accent/10" : "border-border/60 hover:bg-hover"
                 }`}
               >
                 <span className="font-medium text-text-primary">{lipsyncPresets[preset].label}</span>
@@ -211,7 +211,7 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
       ) : null}
       <ToggleLine checked={form.bgmEnabled} onChange={(checked) => setField("bgmEnabled", checked)} label="启用 BGM" />
       {form.bgmEnabled ? (
-        <div className="grid gap-3 rounded-[20px] border border-border/70 bg-white/60 p-4">
+        <div className="grid gap-3 border-t border-border/60 pt-4">
           <VolumeSlider value={form.bgmVolume} onChange={(value) => setField("bgmVolume", value)} />
           <ToggleLine checked={form.bgmAutoMix} onChange={(checked) => setField("bgmAutoMix", checked)} label="自动混音" />
         </div>
@@ -251,14 +251,16 @@ export function ConfigSummary({ form, selectedVoiceLabel, scriptCount }: { form:
         <h2 className="text-lg font-semibold text-text-primary">配置摘要</h2>
         <p className="text-sm">偏好会自动保存，刷新页面后继续沿用。</p>
       </div>
-      <SummaryRow icon={Mic2} label="声音" value={`${selectedVoiceLabel} · ${form.speed.toFixed(1)}x`} />
-      <SummaryRow icon={Film} label="模板" value={`${portraitModeLabel(form.portraitMode)} · ${rhythmLabel(form.rhythmPreset)}`} />
-      <SummaryRow icon={Sparkles} label="口型" value={form.lipsyncEnabled ? lipsyncPresets[form.lipsyncPreset].label : "关闭"} />
-      <SummaryRow icon={Captions} label="字幕" value={form.subtitleEnabled ? `${subtitleLabel(form.subtitleStyle)} · ${form.subtitleSize}px` : "关闭"} />
-      <SummaryRow icon={Music} label="BGM" value={form.bgmEnabled ? `${Math.round(form.bgmVolume * 100)}%` : "关闭"} />
-      <div className="rounded-2xl border border-border/70 bg-white/60 p-3">
-        <p className="text-xs text-text-tertiary">脚本字符数</p>
-        <p className={`mt-1 font-mono text-2xl font-bold ${scriptCount === 0 ? "text-status-error" : "text-text-primary"}`}>{scriptCount}</p>
+      <div className="divide-y divide-border/60">
+        <SummaryRow icon={Mic2} label="声音" value={`${selectedVoiceLabel} · ${form.speed.toFixed(1)}x`} />
+        <SummaryRow icon={Film} label="模板" value={`${portraitModeLabel(form.portraitMode)} · ${rhythmLabel(form.rhythmPreset)}`} />
+        <SummaryRow icon={Sparkles} label="口型" value={form.lipsyncEnabled ? lipsyncPresets[form.lipsyncPreset].label : "关闭"} />
+        <SummaryRow icon={Captions} label="字幕" value={form.subtitleEnabled ? `${subtitleLabel(form.subtitleStyle)} · ${form.subtitleSize}px` : "关闭"} />
+        <SummaryRow icon={Music} label="BGM" value={form.bgmEnabled ? `${Math.round(form.bgmVolume * 100)}%` : "关闭"} />
+        <div className="flex items-baseline justify-between gap-3 py-3">
+          <p className="text-xs text-text-tertiary">脚本字符数</p>
+          <p className={`font-mono text-2xl font-bold ${scriptCount === 0 ? "text-status-error" : "text-text-primary"}`}>{scriptCount}</p>
+        </div>
       </div>
     </aside>
   );
@@ -285,7 +287,7 @@ function ToggleLine({ checked, onChange, label }: { checked: boolean; onChange: 
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className="flex items-center justify-between gap-3 rounded-2xl border border-border/70 bg-white/60 px-4 py-3 text-left"
+      className="-mx-2 flex items-center justify-between gap-3 border-t border-border/60 px-2 py-3 text-left transition-colors first:border-t-0 hover:bg-hover"
     >
       <span className="font-medium text-text-primary">{label}</span>
       <span className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors ${checked ? "bg-accent" : "bg-surface-hover"}`}>
@@ -316,7 +318,7 @@ function VolumeSlider({ value, onChange }: { value: number; onChange: (value: nu
 
 function SummaryRow({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
   return (
-    <div className="flex items-center gap-3 rounded-2xl border border-border/70 bg-white/60 p-3">
+    <div className="flex items-center gap-3 py-3">
       <Icon className="h-4 w-4 text-accent" />
       <div className="min-w-0">
         <p className="text-xs text-text-tertiary">{label}</p>
@@ -328,7 +330,7 @@ function SummaryRow({ icon: Icon, label, value }: { icon: LucideIcon; label: str
 
 function ReviewItem({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-border/70 bg-white/60 p-3">
+    <div className="border-t border-border/60 py-3 first:border-t-0">
       <p className="text-xs text-text-tertiary">{label}</p>
       <p className="mt-1 font-medium text-text-primary">{value}</p>
     </div>
