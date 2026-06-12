@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import tempfile
 from dataclasses import dataclass, field
@@ -91,6 +92,14 @@ NODE_SEQUENCE = [
     "ExportFinishedVideo",
     "FinalizeRunReport",
 ]
+
+_EPHEMERAL_ARTIFACT_KINDS = {
+    ArtifactKind.video_portrait_track,
+    ArtifactKind.video_lipsync,
+    ArtifactKind.video_rendered,
+}
+
+logger = logging.getLogger(__name__)
 
 
 def digital_human_template() -> WorkflowTemplate:
@@ -1894,7 +1903,12 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                         ErrorCode.render_invalid_timeline,
                         "Portrait track duration does not match the plan.",
                     )
-                stored = store_file(get_object_store(), concat_path, purpose="generated-video")
+                stored = store_file(
+                    get_object_store(),
+                    concat_path,
+                    purpose="generated-video",
+                    tier="ephemeral",
+                )
         except FfmpegCommandError as exc:
             raise NodeExecutionError(exc.error_code, "Portrait track build failed.") from exc
         artifact = self._artifact(
@@ -2037,7 +2051,12 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                         ErrorCode.render_invalid_timeline,
                         "Rendered timeline media info does not match the plan.",
                     )
-                stored = store_file(get_object_store(), output_path, purpose="generated-video")
+                stored = store_file(
+                    get_object_store(),
+                    output_path,
+                    purpose="generated-video",
+                    tier="ephemeral",
+                )
         except FfmpegCommandError as exc:
             raise NodeExecutionError(exc.error_code, "Final timeline rendering failed.") from exc
         artifact = self._artifact(
@@ -2236,6 +2255,18 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
 
     def _finalize_run_report(self, run: WorkflowRun, node_run: NodeRun, state: RunState) -> NodeOutput:
         public_artifact, debug_artifact = self._write_report(run, state, failed=False, node_run=node_run)
+        for artifact in state.artifacts.values():
+            if artifact.kind not in _EPHEMERAL_ARTIFACT_KINDS or not artifact.uri:
+                continue
+            try:
+                get_object_store().delete(artifact.uri)
+            except Exception:
+                logger.warning(
+                    "Failed to delete ephemeral artifact %s at %s.",
+                    artifact.id,
+                    artifact.uri,
+                    exc_info=True,
+                )
         return NodeOutput(artifacts=[public_artifact, debug_artifact])
 
     def _write_report(

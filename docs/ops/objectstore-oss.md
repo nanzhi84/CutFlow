@@ -36,6 +36,46 @@ can use true ASR alignment for subtitles instead of estimated local timings.
 MinIO remains the default local S3-compatible target. Leave
 `CUTAGENT_OBJECTSTORE_ADDRESSING_STYLE` unset, or set it to `path`, for MinIO.
 
+## Shared ephemeral tier for workers
+
+The tiered ObjectStore keeps finished video, cover, subtitle, ASR audio, and
+other durable artifacts in the durable backend above. Transitional render
+artifacts such as portrait tracks, lipsync video, and rendered timeline clips use
+the ephemeral tier and are garbage-collected after a successful run.
+
+The ephemeral tier must be reachable by every worker that may pick up the next
+activity or resume the run. A per-worker local `/tmp` directory is safe only for
+single-host worker deployments. In multi-host Temporal worker deployments, the
+next activity can run on another worker and fail to read intermediate artifacts
+written to the previous worker's local disk. Use a shared local volume/NFS mount
+or a local-network MinIO/S3 bucket for ephemeral storage.
+
+Local single-host default:
+
+```bash
+export CUTAGENT_OBJECTSTORE_TIERED=1
+export CUTAGENT_EPHEMERAL_OBJECTSTORE_BACKEND=local
+export CUTAGENT_OBJECTSTORE_EPHEMERAL_PATH=/tmp/cutagent-ephemeral
+```
+
+Shared MinIO/S3 ephemeral tier example:
+
+```bash
+export CUTAGENT_OBJECTSTORE_TIERED=1
+export CUTAGENT_EPHEMERAL_OBJECTSTORE_BACKEND=s3
+export CUTAGENT_EPHEMERAL_OBJECTSTORE_ENDPOINT=http://127.0.0.1:9000
+export CUTAGENT_EPHEMERAL_OBJECTSTORE_BUCKET=cutagent-ephemeral
+export CUTAGENT_EPHEMERAL_OBJECTSTORE_ACCESS_KEY=<minio-access-key>
+export CUTAGENT_EPHEMERAL_OBJECTSTORE_SECRET_KEY=<minio-secret-key>
+export CUTAGENT_EPHEMERAL_OBJECTSTORE_REGION=us-east-1
+export CUTAGENT_EPHEMERAL_OBJECTSTORE_ADDRESSING_STYLE=path
+```
+
+Keep the ephemeral bucket name different from the durable bucket name. The
+tiered store routes `put`, `get`, `exists`, `signed_url`, and `delete` by the
+bucket embedded in the object URI, so durable OSS and ephemeral MinIO can both
+use the S3 backend as long as their buckets are distinct.
+
 ## Multipart transfer tuning
 
 Remote OSS is practical for rendered media only when uploads use multipart

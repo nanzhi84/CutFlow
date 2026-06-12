@@ -57,8 +57,9 @@ class ProviderInvocationContext:
         purpose: str,
         kind: ArtifactKind,
         call,
+        tier: str = "durable",
     ) -> Artifact:
-        ref = self.object_store.prepare_upload(filename, purpose)
+        ref = self.object_store.prepare_upload(filename, purpose, tier=tier)
         stored = self.object_store.put_bytes(ref, content)
         media_info = probe_media(local_object_path(self.object_store, stored.ref.uri))
         return self.repository.create_artifact(

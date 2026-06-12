@@ -14,6 +14,7 @@ from packages.core.storage.object_store import (
     get_object_store,
     LocalObjectStore,
     S3ObjectStore,
+    TieredObjectStore,
     object_store_from_env,
     parse_object_uri,
 )
@@ -32,6 +33,7 @@ class FakeS3Client:
         self.upload_calls: list[tuple[str, str, object]] = []
         self.download_calls: list[tuple[str, str, object]] = []
         self.presign_calls: list[tuple[str, dict[str, str], int]] = []
+        self.delete_calls: list[tuple[str, str]] = []
 
     def head_bucket(self, *, Bucket: str) -> None:
         if not self.bucket_created:
@@ -56,19 +58,87 @@ class FakeS3Client:
         self.presign_calls.append((ClientMethod, Params, ExpiresIn))
         return f"http://minio.local/{Params['Bucket']}/{Params['Key']}?X-Amz-Signature=fake"
 
+    def delete_object(self, *, Bucket: str, Key: str) -> None:
+        self.delete_calls.append((Bucket, Key))
+        self.objects.pop((Bucket, Key), None)
 
-def test_object_store_from_env_defaults_to_local(monkeypatch: pytest.MonkeyPatch, tmp_path):
+
+def test_object_store_from_env_defaults_to_tiered_local(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.delenv("CUTAGENT_OBJECTSTORE_BACKEND", raising=False)
-    monkeypatch.setenv("CUTAGENT_LOCAL_OBJECTSTORE_PATH", str(tmp_path))
+    monkeypatch.delenv("CUTAGENT_OBJECTSTORE_TIERED", raising=False)
+    monkeypatch.delenv("CUTAGENT_OBJECTSTORE_EPHEMERAL_PATH", raising=False)
+    monkeypatch.setenv("CUTAGENT_LOCAL_OBJECTSTORE_PATH", str(tmp_path / "durable"))
     store = object_store_from_env()
 
-    assert isinstance(store, LocalObjectStore)
+    assert isinstance(store, TieredObjectStore)
+    assert isinstance(store.durable, LocalObjectStore)
+    assert isinstance(store.ephemeral, LocalObjectStore)
+    assert store.durable.root == tmp_path / "durable"
+    assert store.ephemeral.bucket == "cutagent-ephemeral"
+    assert store.ephemeral.root == Path(tempfile.gettempdir()) / "cutagent-ephemeral"
     ref = store.prepare_upload("clip.mp4", "generated-video")
     stored = store.put_bytes(ref, b"local-bytes")
 
     assert stored.ref.uri.startswith("local://")
     assert store.exists(ref) is True
     assert store.get_bytes(ref) == b"local-bytes"
+
+
+def test_object_store_from_env_tiered_zero_returns_durable_local(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    monkeypatch.delenv("CUTAGENT_OBJECTSTORE_BACKEND", raising=False)
+    monkeypatch.setenv("CUTAGENT_OBJECTSTORE_TIERED", "0")
+    monkeypatch.setenv("CUTAGENT_LOCAL_OBJECTSTORE_PATH", str(tmp_path / "durable"))
+
+    store = object_store_from_env()
+
+    assert isinstance(store, LocalObjectStore)
+    assert store.root == tmp_path / "durable"
+
+
+def test_tiered_object_store_routes_by_tier_and_bucket(tmp_path):
+    durable = LocalObjectStore(tmp_path / "durable", bucket="cutagent-durable")
+    ephemeral = LocalObjectStore(tmp_path / "ephemeral", bucket="cutagent-ephemeral")
+    store = TieredObjectStore(durable=durable, ephemeral=ephemeral)
+
+    durable_ref = store.prepare_upload("final.mp4", "generated-video", tier="durable")
+    ephemeral_ref = store.prepare_upload("rendered.mp4", "generated-video", tier="ephemeral")
+
+    assert durable_ref.bucket == "cutagent-durable"
+    assert ephemeral_ref.bucket == "cutagent-ephemeral"
+
+    store.put_bytes(durable_ref, b"durable-bytes")
+    store.put_bytes(ephemeral_ref, b"ephemeral-bytes")
+
+    assert (durable.root / durable_ref.key).read_bytes() == b"durable-bytes"
+    assert (ephemeral.root / ephemeral_ref.key).read_bytes() == b"ephemeral-bytes"
+    assert store.exists(durable_ref) is True
+    assert store.exists(ephemeral_ref) is True
+    assert store.get_bytes(durable_ref) == b"durable-bytes"
+    assert store.get_bytes(ephemeral_ref) == b"ephemeral-bytes"
+    assert store.signed_url(durable_ref.uri).url == durable_ref.uri
+    assert store.signed_url(ephemeral_ref.uri).url == ephemeral_ref.uri
+
+    store.delete(ephemeral_ref.uri)
+
+    assert store.exists(ephemeral_ref) is False
+    assert store.exists(durable_ref) is True
+
+    store.delete(durable_ref.uri)
+
+    assert store.exists(durable_ref) is False
+
+
+def test_tiered_object_store_delegates_unparseable_signed_url_to_durable(tmp_path):
+    durable = LocalObjectStore(tmp_path / "durable", bucket="cutagent-durable")
+    ephemeral = LocalObjectStore(tmp_path / "ephemeral", bucket="cutagent-ephemeral")
+    store = TieredObjectStore(durable=durable, ephemeral=ephemeral)
+
+    signed = store.signed_url("https://media.example/tts.mp3")
+
+    assert signed.url == "https://media.example/tts.mp3"
 
 
 def test_prepare_upload_accepts_content_key_for_deterministic_local_key(tmp_path):
@@ -84,14 +154,19 @@ def test_prepare_upload_accepts_content_key_for_deterministic_local_key(tmp_path
 
 def test_get_object_store_uses_pytest_temp_root():
     store = get_object_store()
-    assert isinstance(store, LocalObjectStore)
+    assert isinstance(store, TieredObjectStore)
+    assert isinstance(store.durable, LocalObjectStore)
+    assert isinstance(store.ephemeral, LocalObjectStore)
 
-    root = Path(store.root).resolve()
+    root = Path(store.durable.root).resolve()
+    ephemeral_root = Path(store.ephemeral.root).resolve()
     temp_root = Path(tempfile.gettempdir()).resolve()
     repository_objectstore = (Path(__file__).resolve().parents[2] / ".data" / "objectstore").resolve()
 
     assert root.is_relative_to(temp_root)
+    assert ephemeral_root.is_relative_to(temp_root)
     assert not root.is_relative_to(repository_objectstore)
+    assert not ephemeral_root.is_relative_to(repository_objectstore)
 
 
 def test_parse_object_uri_supports_local_and_s3():
@@ -134,6 +209,12 @@ def test_s3_object_store_put_get_exists_signed_url_and_bucket_creation(tmp_path)
         ("get_object", {"Bucket": "cutagent-demo", "Key": ref.key}, 420)
     ]
     assert (tmp_path / "cache" / ref.key).read_bytes() == b"s3-bytes"
+
+    store.delete(ref.uri)
+
+    assert fake_client.delete_calls == [(ref.bucket, ref.key)]
+    assert (tmp_path / "cache" / ref.key).exists() is False
+    assert store.exists(ref) is False
 
 
 def test_s3_object_store_passes_addressing_style_and_checksum_config_to_client_factory(tmp_path):
@@ -243,20 +324,25 @@ def test_object_store_from_env_passes_s3_addressing_style(
     monkeypatch.setenv("CUTAGENT_OBJECTSTORE_CONNECT_TIMEOUT", "4")
     monkeypatch.setenv("CUTAGENT_OBJECTSTORE_READ_TIMEOUT", "60")
     monkeypatch.setenv("CUTAGENT_OBJECTSTORE_MAX_ATTEMPTS", "8")
+    monkeypatch.delenv("CUTAGENT_OBJECTSTORE_TIERED", raising=False)
+    monkeypatch.setenv("CUTAGENT_OBJECTSTORE_EPHEMERAL_PATH", str(tmp_path / "ephemeral"))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(S3ObjectStore, "_build_client", staticmethod(build_client))
 
     store = object_store_from_env()
 
-    assert isinstance(store, S3ObjectStore)
+    assert isinstance(store, TieredObjectStore)
+    assert isinstance(store.durable, S3ObjectStore)
+    assert isinstance(store.ephemeral, LocalObjectStore)
     assert observed["addressing_style"] == "virtual"
     assert observed["connect_timeout"] == 4
     assert observed["read_timeout"] == 60
     assert observed["max_attempts"] == 8
-    assert store._transfer_config.multipart_threshold == 10 * 1024 * 1024
-    assert store._transfer_config.multipart_chunksize == 12 * 1024 * 1024
-    assert store._transfer_config.max_concurrency == 6
-    assert store._transfer_config.use_threads is True
+    assert store.durable._transfer_config.multipart_threshold == 10 * 1024 * 1024
+    assert store.durable._transfer_config.multipart_chunksize == 12 * 1024 * 1024
+    assert store.durable._transfer_config.max_concurrency == 6
+    assert store.durable._transfer_config.use_threads is True
+    assert store.ephemeral.root == tmp_path / "ephemeral"
 
 
 def test_prepare_upload_accepts_content_key_for_deterministic_s3_key(tmp_path):

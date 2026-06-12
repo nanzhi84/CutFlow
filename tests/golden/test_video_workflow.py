@@ -9,7 +9,7 @@ from apps.api.main import repository
 from packages.ai.gateway.provider_gateway import ProviderRuntimeError, SandboxProvider
 from packages.core.contracts import ArtifactKind
 from packages.core.contracts import ErrorCode
-from packages.core.storage.object_store import get_object_store
+from packages.core.storage.object_store import get_object_store, parse_object_uri
 from packages.media.assets import local_object_path
 from packages.media.video.ffmpeg import probe_media, probe_stream_types, probe_video_frame_count
 
@@ -410,10 +410,7 @@ def test_pipeline_writes_typed_artifact_payloads_with_frame_quantized_timeline()
     assert portrait_track.media_info.media_type == "video"
     assert portrait_track.media_info.width == 1080
     assert portrait_track.media_info.height == 1920
-    assert abs(
-        (probe_media(local_object_path(get_object_store(), portrait_track.uri)).duration_sec or 0)
-        - (portrait_track.media_info.duration_sec or 0)
-    ) <= 1 / 30
+    assert get_object_store().exists(parse_object_uri(portrait_track.uri)) is False
 
     lipsync = artifacts[ArtifactKind.video_lipsync]
     assert lipsync.uri == portrait_track.uri
@@ -440,12 +437,13 @@ def test_pipeline_writes_typed_artifact_payloads_with_frame_quantized_timeline()
     assert rendered.media_info.width == 1080
     assert rendered.media_info.height == 1920
     assert rendered.media_info.fps == 30
-    assert probe_video_frame_count(local_object_path(get_object_store(), rendered.uri)) == timeline["total_frames"]
+    assert get_object_store().exists(parse_object_uri(rendered.uri)) is False
 
     final = artifacts[ArtifactKind.video_final]
     assert final.uri and final.uri.startswith("local://")
     assert final.sha256 and final.sha256 != "dev-unpinned"
     assert final.media_info is not None
+    assert get_object_store().exists(parse_object_uri(final.uri)) is True
     final_path = local_object_path(get_object_store(), final.uri)
     assert {"video", "audio"} <= probe_stream_types(final_path)
     assert probe_video_frame_count(final_path) == timeline["total_frames"]
@@ -453,6 +451,7 @@ def test_pipeline_writes_typed_artifact_payloads_with_frame_quantized_timeline()
     subtitle = artifacts[ArtifactKind.subtitle_ass]
     assert subtitle.uri and subtitle.uri.startswith("local://")
     assert subtitle.sha256 and subtitle.sha256 != "dev-unpinned"
+    assert get_object_store().exists(parse_object_uri(subtitle.uri)) is True
     subtitle_text = local_object_path(get_object_store(), subtitle.uri).read_text(encoding="utf-8")
     assert "[Events]" in subtitle_text
     assert "Dialogue:" in subtitle_text
@@ -466,6 +465,7 @@ def test_pipeline_writes_typed_artifact_payloads_with_frame_quantized_timeline()
     assert cover.sha256 and cover.sha256 != "dev-unpinned"
     assert cover.media_info is not None
     assert cover.media_info.media_type == "image"
+    assert get_object_store().exists(parse_object_uri(cover.uri)) is True
     finished_video = next(
         video for video in repository().finished_videos.values() if video.run_id == run["id"]
     )

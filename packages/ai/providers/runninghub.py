@@ -63,6 +63,7 @@ class RunningHubHeyGemProvider:
             purpose="generated-video",
             kind=ArtifactKind.video_lipsync,
             call=call,
+            tier="ephemeral",
         )
         credits = _decimal_or_none(_nested_get(output_payload, "consumeCoins", "consume_coins", "cost"))
         return ProviderResult(

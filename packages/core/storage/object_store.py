@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import io
-import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
@@ -48,6 +47,7 @@ class ObjectStore:
         purpose: str,
         *,
         content_key: str | None = None,
+        tier: str = "durable",
     ) -> ObjectRef:
         raise NotImplementedError
 
@@ -63,6 +63,9 @@ class ObjectStore:
     def signed_url(self, uri: str, *, expires_in: timedelta = timedelta(minutes=15)) -> SignedUrlResponse:
         raise NotImplementedError
 
+    def delete(self, uri: str) -> None:
+        raise NotImplementedError
+
 
 class LocalObjectStore(ObjectStore):
     def __init__(self, root: Path, bucket: str = "cutagent-local") -> None:
@@ -76,6 +79,7 @@ class LocalObjectStore(ObjectStore):
         purpose: str,
         *,
         content_key: str | None = None,
+        tier: str = "durable",
     ) -> ObjectRef:
         safe_name = filename.replace("\\", "_").replace("/", "_")
         key_segment = content_key if content_key is not None else uuid4().hex
@@ -104,6 +108,21 @@ class LocalObjectStore(ObjectStore):
             expires_at=utcnow() + expires_in,
             request_id="req_local",
         )
+
+    def delete(self, uri: str) -> None:
+        ref = parse_local_uri(uri)
+        path = self._path(ref)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        parent = path.parent
+        while parent != self.root and parent.is_relative_to(self.root):
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
 
     def _path(self, ref: ObjectRef) -> Path:
         if ref.bucket != self.bucket:
@@ -162,6 +181,7 @@ class S3ObjectStore(ObjectStore):
         purpose: str,
         *,
         content_key: str | None = None,
+        tier: str = "durable",
     ) -> ObjectRef:
         safe_name = filename.replace("\\", "_").replace("/", "_")
         key_segment = content_key if content_key is not None else uuid4().hex
@@ -210,6 +230,15 @@ class S3ObjectStore(ObjectStore):
             ExpiresIn=int(expires_in.total_seconds()),
         )
         return SignedUrlResponse(url=url, expires_at=utcnow() + expires_in, request_id="req_s3")
+
+    def delete(self, uri: str) -> None:
+        ref = parse_object_uri(uri)
+        self._validate_ref(ref)
+        self._client.delete_object(Bucket=ref.bucket, Key=ref.key)
+        try:
+            self._cache_path(ref).unlink()
+        except FileNotFoundError:
+            pass
 
     def _path(self, ref: ObjectRef) -> Path:
         self._validate_ref(ref)
@@ -280,37 +309,6 @@ class S3ObjectStore(ObjectStore):
         )
 
 
-def object_store_from_env() -> ObjectStore:
-    backend = os.getenv("CUTAGENT_OBJECTSTORE_BACKEND", "local").lower()
-    root = Path(os.getenv("CUTAGENT_LOCAL_OBJECTSTORE_PATH", ".data/objectstore"))
-    bucket = os.getenv("CUTAGENT_OBJECTSTORE_BUCKET", "cutagent-local")
-    if backend == "local":
-        return LocalObjectStore(root=root, bucket=bucket)
-    if backend == "s3":
-        return S3ObjectStore(
-            endpoint_url=os.getenv("CUTAGENT_OBJECTSTORE_ENDPOINT", "http://127.0.0.1:9000"),
-            bucket=bucket,
-            access_key=os.getenv("CUTAGENT_OBJECTSTORE_ACCESS_KEY", ""),
-            secret_key=os.getenv("CUTAGENT_OBJECTSTORE_SECRET_KEY", ""),
-            region_name=os.getenv("CUTAGENT_OBJECTSTORE_REGION", "us-east-1"),
-            addressing_style=os.getenv("CUTAGENT_OBJECTSTORE_ADDRESSING_STYLE", "path"),
-            multipart_threshold_mb=int(os.getenv("CUTAGENT_OBJECTSTORE_MULTIPART_THRESHOLD_MB", "8")),
-            multipart_chunk_mb=int(os.getenv("CUTAGENT_OBJECTSTORE_MULTIPART_CHUNK_MB", "8")),
-            max_concurrency=int(os.getenv("CUTAGENT_OBJECTSTORE_MAX_CONCURRENCY", "4")),
-            connect_timeout=int(os.getenv("CUTAGENT_OBJECTSTORE_CONNECT_TIMEOUT", "10")),
-            read_timeout=int(os.getenv("CUTAGENT_OBJECTSTORE_READ_TIMEOUT", "120")),
-            max_attempts=int(os.getenv("CUTAGENT_OBJECTSTORE_MAX_ATTEMPTS", "5")),
-        )
-    raise ValueError(f"Unsupported object store backend: {backend}")
-
-
-_OBJECT_STORE = object_store_from_env()
-
-
-def get_object_store() -> ObjectStore:
-    return _OBJECT_STORE
-
-
 def parse_local_uri(uri: str) -> ObjectRef:
     for prefix in ("local://", "s3://"):
         if uri.startswith(prefix):
@@ -340,3 +338,14 @@ def _is_not_found_error(exc: Exception) -> bool:
         code = response.get("Error", {}).get("Code")
         return str(code) in {"404", "NoSuchBucket", "NoSuchKey", "NotFound"}
     return False
+
+
+from packages.core.storage.tiered_object_store import TieredObjectStore  # noqa: E402
+from packages.core.storage.object_store_env import object_store_from_env  # noqa: E402
+
+
+_OBJECT_STORE = object_store_from_env()
+
+
+def get_object_store() -> ObjectStore:
+    return _OBJECT_STORE
