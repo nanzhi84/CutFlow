@@ -90,7 +90,6 @@ class DigitalHumanVideoWorkflow:
                 "run_node",
                 {"run_id": run_id, "node_id": node["node_id"]},
                 start_to_close_timeout=timedelta(seconds=node["timeout_seconds"]),
-                heartbeat_timeout=timedelta(seconds=30),
                 retry_policy=_retry_policy(node["retry_policy"]),
             )
             self.current_status = str(result.get("run_status") or self.current_status)
