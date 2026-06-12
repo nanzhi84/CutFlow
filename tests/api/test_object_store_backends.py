@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from datetime import timedelta
 from io import BytesIO
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
 from packages.core.storage.object_store import (
+    get_object_store,
     LocalObjectStore,
     S3ObjectStore,
     object_store_from_env,
@@ -63,6 +66,29 @@ def test_object_store_from_env_defaults_to_local(monkeypatch: pytest.MonkeyPatch
     assert store.get_bytes(ref) == b"local-bytes"
 
 
+def test_prepare_upload_accepts_content_key_for_deterministic_local_key(tmp_path):
+    store = LocalObjectStore(tmp_path / "objects")
+
+    first = store.prepare_upload("../clip.mp4", "seed-media", content_key="abc123")
+    second = store.prepare_upload("../clip.mp4", "seed-media", content_key="abc123")
+
+    assert first == second
+    assert first.key == "seed-media/abc123/.._clip.mp4"
+    assert first.uri == "local://cutagent-local/seed-media/abc123/.._clip.mp4"
+
+
+def test_get_object_store_uses_pytest_temp_root():
+    store = get_object_store()
+    assert isinstance(store, LocalObjectStore)
+
+    root = Path(store.root).resolve()
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    repository_objectstore = (Path(__file__).resolve().parents[2] / ".data" / "objectstore").resolve()
+
+    assert root.is_relative_to(temp_root)
+    assert not root.is_relative_to(repository_objectstore)
+
+
 def test_parse_object_uri_supports_local_and_s3():
     local_ref = parse_object_uri("local://cutagent-local/uploads/a.txt")
     s3_ref = parse_object_uri("s3://cutagent-demo/generated-video/b.mp4")
@@ -100,6 +126,24 @@ def test_s3_object_store_put_get_exists_signed_url_and_bucket_creation(tmp_path)
         ("get_object", {"Bucket": "cutagent-demo", "Key": ref.key}, 420)
     ]
     assert (tmp_path / "cache" / ref.key).read_bytes() == b"s3-bytes"
+
+
+def test_prepare_upload_accepts_content_key_for_deterministic_s3_key(tmp_path):
+    store = S3ObjectStore(
+        endpoint_url="http://minio.local:9000",
+        bucket="cutagent-demo",
+        access_key="minioadmin",
+        secret_key="minioadmin",
+        client=FakeS3Client(),
+        cache_root=tmp_path / "cache",
+    )
+
+    first = store.prepare_upload("../clip.mp4", "seed-media", content_key="abc123")
+    second = store.prepare_upload("../clip.mp4", "seed-media", content_key="abc123")
+
+    assert first == second
+    assert first.key == "seed-media/abc123/.._clip.mp4"
+    assert first.uri == "s3://cutagent-demo/seed-media/abc123/.._clip.mp4"
 
 
 def test_s3_object_store_roundtrip_with_minio(tmp_path):

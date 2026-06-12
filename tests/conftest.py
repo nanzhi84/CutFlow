@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 import os
+import atexit
+import shutil
+import tempfile
+
+_TEST_OBJECTSTORE_PATH = tempfile.mkdtemp(prefix="cutagent-test-objstore-")
+os.environ.setdefault("CUTAGENT_LOCAL_OBJECTSTORE_PATH", _TEST_OBJECTSTORE_PATH)
+atexit.register(shutil.rmtree, _TEST_OBJECTSTORE_PATH, ignore_errors=True)
 
 import anyio
 import httpx

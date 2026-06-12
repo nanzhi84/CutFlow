@@ -232,7 +232,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                 if not path.exists():
                     spec["generator"](path)
                 media_info = probe_media(path)
-                stored = store_file(get_object_store(), path, purpose="seed-media")
+                stored = store_file(get_object_store(), path, purpose="seed-media", addressed=True)
             except FfmpegCommandError as exc:
                 raise NodeExecutionError(exc.error_code, "Demo seed media generation failed.") from exc
             artifact = self.repository.create_artifact(

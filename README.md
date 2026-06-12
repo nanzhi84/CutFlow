@@ -41,6 +41,8 @@ python scripts/bootstrap_database.py
 
 The bundled PostgreSQL service binds to host port `55432` by default so it does not collide with an existing local Postgres on `5432`.
 
+Operations: run `python scripts/gc_objectstore.py --max-age-hours 24 --apply` periodically to clean old generated ObjectStore artifacts; see `docs/ops/objectstore-gc.md`.
+
 Run API with the SQLAlchemy backend initialized:
 
 ```bash

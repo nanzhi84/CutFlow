@@ -41,7 +41,13 @@ class StoredObject:
 
 
 class ObjectStore:
-    def prepare_upload(self, filename: str, purpose: str) -> ObjectRef:
+    def prepare_upload(
+        self,
+        filename: str,
+        purpose: str,
+        *,
+        content_key: str | None = None,
+    ) -> ObjectRef:
         raise NotImplementedError
 
     def put_bytes(self, ref: ObjectRef, content: bytes) -> StoredObject:
@@ -63,9 +69,16 @@ class LocalObjectStore(ObjectStore):
         self.bucket = bucket
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def prepare_upload(self, filename: str, purpose: str) -> ObjectRef:
+    def prepare_upload(
+        self,
+        filename: str,
+        purpose: str,
+        *,
+        content_key: str | None = None,
+    ) -> ObjectRef:
         safe_name = filename.replace("\\", "_").replace("/", "_")
-        key = f"{purpose}/{uuid4().hex}/{safe_name}"
+        key_segment = content_key if content_key is not None else uuid4().hex
+        key = f"{purpose}/{key_segment}/{safe_name}"
         return ObjectRef(bucket=self.bucket, key=key, uri=f"local://{self.bucket}/{key}")
 
     def put_bytes(self, ref: ObjectRef, content: bytes) -> StoredObject:
@@ -123,9 +136,16 @@ class S3ObjectStore(ObjectStore):
         )
         self._ensure_bucket()
 
-    def prepare_upload(self, filename: str, purpose: str) -> ObjectRef:
+    def prepare_upload(
+        self,
+        filename: str,
+        purpose: str,
+        *,
+        content_key: str | None = None,
+    ) -> ObjectRef:
         safe_name = filename.replace("\\", "_").replace("/", "_")
-        key = f"{purpose}/{uuid4().hex}/{safe_name}"
+        key_segment = content_key if content_key is not None else uuid4().hex
+        key = f"{purpose}/{key_segment}/{safe_name}"
         return ObjectRef(bucket=self.bucket, key=key, uri=f"s3://{self.bucket}/{key}")
 
     def put_bytes(self, ref: ObjectRef, content: bytes) -> StoredObject:
