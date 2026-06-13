@@ -1,0 +1,326 @@
+"""Foundational primitives: base model, shared enums, money, envelopes, and the artifact/error/event core."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from enum import Enum
+from typing import Generic, Literal, TypeVar
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+
+
+T = TypeVar("T")
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class ContractModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class ErrorCode(str, Enum):
+    validation_missing_case = "validation.missing_case"
+    validation_missing_voice = "validation.missing_voice"
+    validation_missing_script = "validation.missing_script"
+    validation_invalid_options = "validation.invalid_options"
+    validation_conflict = "validation.conflict"
+    auth_unauthorized = "auth.unauthorized"
+    auth_forbidden = "auth.forbidden"
+    auth_invalid_credentials = "auth.invalid_credentials"
+    auth_registration_closed = "auth.registration_closed"
+    auth_user_disabled = "auth.user_disabled"
+    upload_invalid_state = "upload.invalid_state"
+    upload_expired = "upload.expired"
+    upload_size_mismatch = "upload.size_mismatch"
+    upload_sha256_mismatch = "upload.sha256_mismatch"
+    upload_unsupported_type = "upload.unsupported_type"
+    material_insufficient_portrait = "material.insufficient.portrait"
+    material_insufficient_broll = "material.insufficient.broll"
+    material_annotation_failed = "material.annotation_failed"
+    prompt_render_error = "prompt.render_error"
+    prompt_output_invalid = "prompt.output_invalid"
+    prompt_version_not_published = "prompt.version_not_published"
+    provider_unsupported_option = "provider.unsupported_option"
+    provider_quota_exceeded = "provider.quota_exceeded"
+    provider_timeout = "provider.timeout"
+    provider_remote_failed = "provider.remote_failed"
+    provider_auth_failed = "provider.auth_failed"
+    provider_cost_unpriced = "provider.cost_unpriced"
+    artifact_missing = "artifact.missing"
+    artifact_integrity_failed = "artifact.integrity_failed"
+    artifact_schema_mismatch = "artifact.schema_mismatch"
+    workflow_invalid_transition = "workflow.invalid_transition"
+    workflow_cancelled = "workflow.cancelled"
+    workflow_resume_not_allowed = "workflow.resume_not_allowed"
+    render_invalid_timeline = "render.invalid_timeline"
+    render_failed = "render.failed"
+    render_subtitle_failed = "render.subtitle_failed"
+    publish_failed = "publish.failed"
+    import_failed = "import.failed"
+    reference_unreachable = "reference.unreachable"
+    reference_unsupported_platform = "reference.unsupported_platform"
+    reference_asr_failed = "reference.asr_failed"
+    idempotency_conflict = "idempotency.conflict"
+
+
+class WarningCode(str, Enum):
+    broll_skipped_no_material = "broll.skipped_no_material"
+    bgm_skipped_library_unannotated = "bgm.skipped_library_unannotated"
+    font_default_used = "font.default_used"
+    cover_frame_fallback = "cover.frame_fallback"
+    timestamp_estimated = "timestamp.estimated"
+    cost_unpriced = "cost.unpriced"
+
+
+class DegradationCode(str, Enum):
+    broll_skipped_no_material = "broll.skipped_no_material"
+    bgm_skipped_library_unannotated = "bgm.skipped_library_unannotated"
+    font_default_used = "font.default_used"
+    cover_frame_fallback = "cover.frame_fallback"
+
+
+class JobStatus(str, Enum):
+    draft = "draft"
+    queued = "queued"
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+    cancelled = "cancelled"
+    archived = "archived"
+
+
+class RunStatus(str, Enum):
+    created = "created"
+    admitted = "admitted"
+    running = "running"
+    cancelling = "cancelling"
+    succeeded = "succeeded"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class NodeStatus(str, Enum):
+    pending = "pending"
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+    skipped = "skipped"
+    degraded = "degraded"
+    cancelled = "cancelled"
+
+
+class ProviderStatus(str, Enum):
+    prepared = "prepared"
+    submitted = "submitted"
+    polling = "polling"
+    succeeded = "succeeded"
+    failed = "failed"
+    timed_out = "timed_out"
+    cancelled = "cancelled"
+
+
+class JobType(str, Enum):
+    digital_human_video = "digital_human_video"
+    case_agent_run = "case_agent_run"
+    publish_batch = "publish_batch"
+    annotation_batch = "annotation_batch"
+
+
+class ArtifactKind(str, Enum):
+    uploaded_file = "uploaded.file"
+    validated_production_spec = "spec.validated_production"
+    case_context = "case.context"
+    case_performance_analysis = "case.performance_analysis"
+    case_reflection = "case.reflection"
+    script_strategy = "script.strategy"
+    creative_intent = "creative.intent"
+    audio_tts = "audio.tts"
+    audio_alignment_raw = "audio.alignment.raw"
+    audio_alignment = "audio.alignment"
+    narration_units = "narration.units"
+    material_pack = "plan.material_pack"
+    plan_material_pack = "plan.material_pack"
+    portrait_plan = "plan.portrait"
+    plan_portrait = "plan.portrait"
+    broll_plan = "plan.broll"
+    plan_broll = "plan.broll"
+    style_plan = "plan.style"
+    plan_style = "plan.style"
+    timeline_plan = "plan.timeline"
+    plan_timeline = "plan.timeline"
+    render_plan = "plan.render"
+    plan_render = "plan.render"
+    video_portrait_track = "video.portrait_track"
+    video_lipsync = "video.lipsync"
+    lipsync_report = "lipsync.report"
+    video_rendered = "video.rendered"
+    video_final = "video.final"
+    video_finished = "video.finished"
+    subtitle_ass = "subtitle.ass"
+    cover_image = "cover.image"
+    publish_package = "publish.package"
+    run_public_report = "run.report.public"
+    run_report_public = "run.report.public"
+    run_debug_report = "run.report.debug"
+    run_report_debug = "run.report.debug"
+    editor_handoff_package = "editor.handoff_package"
+    editor_handoff = "editor.handoff_package"
+    jianying_draft_package = "editor.jianying_draft_package"
+    jianying_draft = "editor.jianying_draft_package"
+    provider_raw_request = "provider.raw_request"
+    provider_raw_response = "provider.raw_response"
+    import_mapping = "import.mapping"
+
+
+class Money(ContractModel):
+    amount: Decimal
+    currency: str = Field(min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")
+    amount_micro: int | None = None
+
+    @model_validator(mode="after")
+    def _derive_amount_micro(self) -> "Money":
+        # Spec 23.1: persisted money must always carry amount_micro to avoid float drift.
+        if self.amount_micro is None:
+            object.__setattr__(self, "amount_micro", int(self.amount * 1_000_000))
+        return self
+
+
+def zero_money(currency: str = "CNY") -> Money:
+    return Money(amount=Decimal("0"), currency=currency, amount_micro=0)
+
+
+class EntityMeta(ContractModel):
+    id: str
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+    created_by: str | None = None
+    version: int = 1
+    schema_version: str = "v1"
+
+
+class BaseListQuery(ContractModel):
+    limit: int = Field(50, ge=1, le=200)
+    cursor: str | None = None
+
+
+class OkResponse(ContractModel):
+    ok: bool = True
+    request_id: str
+
+
+class PageResponse(ContractModel, Generic[T]):
+    items: list[T]
+    next_cursor: str | None = None
+    total_hint: int | None = None
+    request_id: str
+
+
+class SignedUrlResponse(ContractModel):
+    url: str
+    expires_at: datetime
+    request_id: str
+
+
+class EventStreamTokenResponse(ContractModel):
+    stream_url: str
+    token: str
+    expires_at: datetime
+    request_id: str
+
+
+class RunEvent(ContractModel):
+    event_id: str
+    run_id: str
+    job_id: str
+    event_type: Literal["run_update", "node_update", "artifact_created", "warning", "error"]
+    node_id: str | None = None
+    status: str | None = None
+    progress: float | None = None
+    message: str
+    created_at: datetime
+
+
+class NodeError(ContractModel):
+    code: ErrorCode
+    message: str
+    retryable: bool = False
+    severity: Literal["info", "warning", "error", "fatal"] = "error"
+    details: dict[str, JsonValue] = Field(default_factory=dict)
+    request_id: str | None = None
+    job_id: str | None = None
+    run_id: str | None = None
+    node_run_id: str | None = None
+
+
+class DegradationNotice(ContractModel):
+    code: WarningCode
+    message: str
+    node_id: str | None = None
+    affects_true_yield: bool = False
+    details: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class ErrorEnvelope(ContractModel):
+    error: NodeError
+
+
+class ArtifactRef(ContractModel):
+    artifact_id: str
+    kind: ArtifactKind
+    uri: str
+    schema_version: str = "v1"
+    sha256: str | None = None
+
+
+class MediaInfo(ContractModel):
+    media_type: Literal["video", "audio", "image", "subtitle", "json"]
+    codec: str
+    format: str
+    mime_type: str | None = None
+    duration_sec: float | None = None
+    width: int | None = None
+    height: int | None = None
+    fps: float | None = None
+    sample_rate: int | None = None
+    channels: int | None = None
+
+
+class Artifact(EntityMeta):
+    case_id: str | None = None
+    run_id: str | None = None
+    node_run_id: str | None = None
+    kind: ArtifactKind
+    uri: str | None = None
+    local_path: str | None = None
+    oss_uri: str | None = None
+    size_bytes: int | None = None
+    immutable: bool = True
+    retention_policy: str = "default"
+    sha256: str | None = None
+    media_info: MediaInfo | None = None
+    payload_schema: str
+    payload: JsonValue | None = None
+    created_by_node_run_id: str | None = None
+
+
+class RetryPolicy(ContractModel):
+    max_attempts: int = Field(1, ge=1, le=10)
+    backoff_seconds: float = Field(0, ge=0)
+    backoff_multiplier: float = Field(2.0, ge=1.0)
+    retryable_error_codes: list[ErrorCode] = Field(default_factory=list)
+
+
+class ResumePolicy(ContractModel):
+    mode: Literal["never", "reuse_if_hash_match", "always_rerun"] = "reuse_if_hash_match"
+    reusable_artifact_kinds: list[ArtifactKind] = Field(default_factory=list)
+    side_effect_replay: Literal["forbidden", "idempotent_only"] = "idempotent_only"
+
+
+def signed_local_url(path: str, minutes: int = 15) -> SignedUrlResponse:
+    return SignedUrlResponse(
+        url=f"local://{path}",
+        expires_at=utcnow() + timedelta(minutes=minutes),
+        request_id="req_local",
+    )

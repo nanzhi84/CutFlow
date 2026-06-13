@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import timedelta
 
 from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerifyMismatchError
 
+from packages.core.config import build_settings
 from packages.core.contracts import (
     AuthResponse,
     AuthUser,
@@ -58,7 +58,7 @@ class AuthService:
             return False
 
     def register(self, payload: RegisterRequest) -> tuple[AuthResponse, str]:
-        registration_open = os.getenv("CUTAGENT_REGISTRATION_OPEN", "true").lower() == "true"
+        registration_open = build_settings().auth.registration_open
         role = UserRole.viewer
         code = None
         if payload.registration_code:

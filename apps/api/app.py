@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import asyncio
-import os
 
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -34,6 +33,7 @@ from apps.api.routers import (
 from packages.ai.gateway import ProviderGateway, SqlAlchemyProviderRepository, SqlAlchemyProviderRuntimeRepository
 from packages.ai.prompts import PromptRegistry, SqlAlchemyPromptRepository, SqlAlchemyPromptRuntimeRepository
 from packages.core.auth import AuthService, create_sqlalchemy_auth_service
+from packages.core.config import build_settings
 from packages.core.observability import (
     EventStreamTokenStore,
     InProcessFanoutHub,
@@ -85,7 +85,7 @@ async def lifespan(app: FastAPI):
     session_factory = get_sqlalchemy_session_factory_if_enabled()
     configure_app_state(app, session_factory=session_factory)
     dispatcher_task = None
-    if os.getenv("CUTAGENT_DISABLE_BACKGROUND_DISPATCHER") != "1":
+    if not app.state.settings.api.disable_background_dispatcher:
         dispatcher_task = asyncio.create_task(app.state.outbox_dispatcher.run())
     try:
         yield
@@ -100,6 +100,7 @@ async def lifespan(app: FastAPI):
 
 
 def configure_app_state(app: FastAPI, *, session_factory=None) -> None:
+    app.state.settings = build_settings()
     runtime_repository = Repository()
     app.state.repository = runtime_repository
     app.state.event_hub = InProcessFanoutHub()

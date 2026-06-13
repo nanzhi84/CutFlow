@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from decimal import Decimal
 
@@ -24,6 +23,8 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.types import UserDefinedType
+
+from packages.core.config import build_settings
 
 
 NAMING_CONVENTION = {
@@ -806,7 +807,7 @@ Index("idx_outbox_pending", OutboxEventRow.status, OutboxEventRow.available_at, 
 
 
 def database_url() -> str:
-    value = os.getenv("CUTAGENT_DATABASE_URL")
+    value = build_settings().storage.database_url
     if value:
         return value
     raise RuntimeError(

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
+from packages.core.config import build_settings
 from packages.core.contracts import (
     Artifact,
     DegradationNotice,
@@ -65,11 +65,12 @@ class WorkflowRuntimeSettings(BaseModel):
 
 
 def load_workflow_runtime_settings() -> WorkflowRuntimeSettings:
+    workflow = build_settings().workflow
     return WorkflowRuntimeSettings(
-        runtime=os.getenv("CUTAGENT_WORKFLOW_RUNTIME", "local").lower(),
-        temporal_address=os.getenv("CUTAGENT_TEMPORAL_ADDRESS", "127.0.0.1:7233"),
-        temporal_namespace=os.getenv("CUTAGENT_TEMPORAL_NAMESPACE", "default"),
-        temporal_task_queue=os.getenv("CUTAGENT_TEMPORAL_TASK_QUEUE", "cutagent-production"),
+        runtime=workflow.runtime,
+        temporal_address=workflow.temporal_address,
+        temporal_namespace=workflow.temporal_namespace,
+        temporal_task_queue=workflow.temporal_task_queue,
     )
 
 

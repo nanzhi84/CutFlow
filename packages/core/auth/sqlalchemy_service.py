@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -10,6 +9,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from packages.core.auth.service import ROLE_RANK, create_password_hasher
+from packages.core.config import build_settings
 from packages.core.registration_codes import hash_registration_code
 from packages.core.contracts import (
     AdminCreateUserRequest,
@@ -69,7 +69,7 @@ class SqlAlchemyAuthService:
         return self.password_hasher.hash(password)
 
     def register(self, payload: RegisterRequest) -> tuple[AuthResponse, str]:
-        registration_open = os.getenv("CUTAGENT_REGISTRATION_OPEN", "true").lower() == "true"
+        registration_open = build_settings().auth.registration_open
         with self.session_factory() as session:
             role = UserRole.viewer
             code = None
