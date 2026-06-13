@@ -104,6 +104,24 @@ def seed_real_provider_configuration(repository) -> None:
                 "poll_max_attempts": 180,
             },
         ),
+        ProviderProfile(
+            id="openai.image.prod",
+            provider_id="openai.image",
+            model_id="gpt-image-2-all",
+            capability="image.generate",
+            display_name="OpenAI gpt-image (neuromash mirror) Production",
+            environment="prod",
+            secret_ref="openai_image_prod.secret",
+            concurrency_key="openai:image.generate",
+            timeout_sec=180,
+            options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.image.options"),
+            default_options={
+                "base_url": "https://neuromashv1.cn/v1",
+                "provider_kind": "neuromash",
+                "size": "1024x1536",
+                "n": 1,
+            },
+        ),
     ]
     for profile in profiles:
         repository.provider_profiles[profile.id] = profile
@@ -186,6 +204,7 @@ def _seed_price_catalogs(repository) -> None:
         ProviderPriceCatalog(id="price_dashscope_prod", provider_id="dashscope.llm", status="published"),
         ProviderPriceCatalog(id="price_dashscope_asr_prod", provider_id="dashscope.asr", status="published"),
         ProviderPriceCatalog(id="price_dashscope_vlm_prod", provider_id="dashscope.vlm", status="published"),
+        ProviderPriceCatalog(id="price_openai_image_prod", provider_id="openai.image", status="published"),
     ]
     for catalog in catalogs:
         repository.price_catalogs[catalog.id] = catalog
@@ -242,4 +261,13 @@ def _seed_price_catalogs(repository) -> None:
         capability_id="vlm.annotation",
         unit="output_token",
         unit_price=Money(currency="CNY", amount=Decimal("0.000009")),
+    )
+    repository.price_items["price_openai_image_call"] = ProviderPriceItem(
+        id="price_openai_image_call",
+        catalog_id="price_openai_image_prod",
+        provider_id="openai.image",
+        model_id="gpt-image-2-all",
+        capability_id="image.generate",
+        unit="call",
+        unit_price=Money(currency="CNY", amount=Decimal("0.4")),
     )

@@ -55,9 +55,15 @@ def _profile(
 def test_real_plugins_register_alongside_sandbox(tmp_path):
     repository, gateway = _gateway(tmp_path, httpx.MockTransport(lambda request: httpx.Response(500)))
 
-    assert {"sandbox", "minimax.tts", "dashscope.asr", "dashscope.vlm", "runninghub.heygem", "dashscope.llm"} <= set(
-        gateway.plugins
-    )
+    assert {
+        "sandbox",
+        "minimax.tts",
+        "dashscope.asr",
+        "dashscope.vlm",
+        "runninghub.heygem",
+        "dashscope.llm",
+        "openai.image",
+    } <= set(gateway.plugins)
 
     invocation, result = gateway.invoke(
         ProviderCall(
@@ -1077,3 +1083,144 @@ def test_runninghub_heygem_failed_status_reports_task_id(tmp_path, media_fixture
     assert invocation.error
     assert "rh-job-123" in invocation.error.message
     assert "FAILED" in invocation.error.message
+
+
+_PNG_1x1 = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f"
+    "15c4890000000b49444154789c6360000200000500017a5eab3f00000000"
+    "49454e44ae426082"
+)
+
+
+def test_openai_image_generates_cover_from_b64_json(tmp_path):
+    import base64
+    import json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/v1/images/generations"
+        assert request.headers["authorization"] == "Bearer image-key"
+        body = json.loads(request.content)
+        assert body["model"] == "gpt-image-2-all"
+        assert "封面测试" in body["prompt"]
+        # neuromash mirror -> only size/n forwarded (faithful to origin filter).
+        assert set(body) == {"model", "prompt", "size", "n"}
+        return httpx.Response(
+            200,
+            json={
+                "data": [{"b64_json": base64.b64encode(_PNG_1x1).decode("ascii")}],
+                "usage": {"input_tokens": 12},
+            },
+        )
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+    secret_ref = gateway.secret_store.put("image-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="openai.image",
+        capability="image.generate",
+        model_id="gpt-image-2-all",
+        secret_ref=secret_ref,
+        default_options={"base_url": "https://example.invalid/v1", "provider_kind": "neuromash", "size": "1024x1536"},
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            case_id="case_demo",
+            provider_profile_id=profile.id,
+            capability_id="image.generate",
+            input={"prompt": "封面测试 cover prompt"},
+            idempotency_key="cover-run-1",
+        )
+    )
+
+    assert invocation.status == ProviderStatus.succeeded
+    assert result is not None
+    assert result.image_count == 1
+    artifact = repository.artifacts[result.output["cover_artifact_id"]]
+    assert artifact.kind.value == "cover.image"
+    assert artifact.media_info and artifact.media_info.media_type == "image"
+    object_path = gateway.object_store._path(parse_local_uri(result.output["cover_uri"]))  # type: ignore[union-attr]
+    assert object_path.read_bytes() == _PNG_1x1
+
+
+def test_openai_image_falls_back_to_url_when_no_b64(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/images/generations":
+            return httpx.Response(200, json={"data": [{"url": "https://cdn.invalid/cover.png"}]})
+        assert str(request.url) == "https://cdn.invalid/cover.png"
+        return httpx.Response(200, content=_PNG_1x1)
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+    secret_ref = gateway.secret_store.put("image-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="openai.image",
+        capability="image.generate",
+        model_id="gpt-image-2-all",
+        secret_ref=secret_ref,
+        default_options={"base_url": "https://example.invalid/v1", "provider_kind": "neuromash"},
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            provider_profile_id=profile.id,
+            capability_id="image.generate",
+            input={"prompt": "cover"},
+        )
+    )
+
+    assert invocation.status == ProviderStatus.succeeded
+    assert result is not None
+    object_path = gateway.object_store._path(parse_local_uri(result.output["cover_uri"]))  # type: ignore[union-attr]
+    assert object_path.read_bytes() == _PNG_1x1
+
+
+def test_openai_image_http_errors_map_to_spec_codes(tmp_path):
+    cases = [
+        (httpx.Response(401, text="bad key"), ErrorCode.provider_auth_failed),
+        (httpx.Response(429, text="quota"), ErrorCode.provider_quota_exceeded),
+        (httpx.Response(500, text="boom"), ErrorCode.provider_remote_failed),
+    ]
+    for response, expected_code in cases:
+        repository, gateway = _gateway(tmp_path, httpx.MockTransport(lambda request, response=response: response))
+        secret_ref = gateway.secret_store.put("image-key")  # type: ignore[union-attr]
+        profile = _profile(
+            repository,
+            provider_id="openai.image",
+            capability="image.generate",
+            model_id="gpt-image-2-all",
+            secret_ref=secret_ref,
+            default_options={"base_url": "https://example.invalid/v1"},
+        )
+        invocation, result = gateway.invoke(
+            ProviderCall(
+                provider_profile_id=profile.id,
+                capability_id="image.generate",
+                input={"prompt": "cover"},
+            )
+        )
+        assert result is None
+        assert invocation.error and invocation.error.code == expected_code
+
+
+def test_openai_image_requires_active_secret(tmp_path):
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(lambda request: httpx.Response(200, json={})))
+    profile = _profile(
+        repository,
+        provider_id="openai.image",
+        capability="image.generate",
+        model_id="gpt-image-2-all",
+        secret_ref="missing.secret",
+        default_options={"base_url": "https://example.invalid/v1"},
+    )
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            provider_profile_id=profile.id,
+            capability_id="image.generate",
+            input={"prompt": "cover"},
+        )
+    )
+    # No active secret -> gateway rejects before any network call (no spend).
+    assert result is None
+    assert invocation.error and invocation.error.code == ErrorCode.provider_auth_failed

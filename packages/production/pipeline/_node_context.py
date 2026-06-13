@@ -105,6 +105,9 @@ class NodeContext:
     def tts_provider_profile_id(self, request: DigitalHumanVideoRequest) -> str:
         return self.adapter._tts_provider_profile_id(request)
 
+    def image_cover_profile_id(self, request: DigitalHumanVideoRequest) -> str | None:
+        return self.adapter._image_cover_profile_id(request)
+
     def resolve_lipsync_profile(self, request: DigitalHumanVideoRequest):
         return self.adapter._resolve_lipsync_profile(request)
 

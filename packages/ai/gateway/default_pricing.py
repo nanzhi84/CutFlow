@@ -17,20 +17,24 @@ from packages.core.contracts import Money
 # Capability identifiers shared with the gateway/jobs estimate.
 TTS_CAPABILITY_ID = "tts.speech"
 LIPSYNC_CAPABILITY_ID = "lipsync.video"
+IMAGE_CAPABILITY_ID = "image.generate"
 
 # Unit identifiers. TTS is priced per character (matching the gateway's
 # input_token unit); lip-sync is priced per minute to reproduce the original
-# minutes-based math exactly without repeating decimals.
+# minutes-based math exactly without repeating decimals; image is per call.
 TTS_UNIT = "input_token"
 LIPSYNC_UNIT = "media_minute"
+IMAGE_UNIT = "call"
 
 # Origin fixed rates.
 TTS_COST_PER_1K_CHARS = Decimal("0.15")
 LIPSYNC_COST_PER_MINUTE = Decimal("5.0")
+IMAGE_COST_PER_IMAGE = Decimal("0.4")  # image:gpt-image-2[-all] = 0.4 CNY / image
 
 # Derived per-unit prices.
 TTS_PRICE_PER_CHAR = TTS_COST_PER_1K_CHARS / Decimal(1000)  # 0.00015
 LIPSYNC_PRICE_PER_MINUTE = LIPSYNC_COST_PER_MINUTE  # 5.0
+IMAGE_PRICE_PER_CALL = IMAGE_COST_PER_IMAGE  # 0.4
 
 DEFAULT_PROVIDER_ID = "default"
 DEFAULT_CURRENCY = "CNY"
@@ -60,6 +64,13 @@ DEFAULT_LIPSYNC_PRICE = DefaultPriceItem(
     unit_price=Money(amount=LIPSYNC_PRICE_PER_MINUTE, currency=DEFAULT_CURRENCY),
 )
 
+DEFAULT_IMAGE_PRICE = DefaultPriceItem(
+    provider_id=DEFAULT_PROVIDER_ID,
+    capability_id=IMAGE_CAPABILITY_ID,
+    unit=IMAGE_UNIT,
+    unit_price=Money(amount=IMAGE_PRICE_PER_CALL, currency=DEFAULT_CURRENCY),
+)
+
 
 def default_price_for(capability_id: str) -> DefaultPriceItem | None:
     """Return the fallback price item for a capability, if any."""
@@ -67,22 +78,29 @@ def default_price_for(capability_id: str) -> DefaultPriceItem | None:
         return DEFAULT_TTS_PRICE
     if capability_id == LIPSYNC_CAPABILITY_ID:
         return DEFAULT_LIPSYNC_PRICE
+    if capability_id == IMAGE_CAPABILITY_ID:
+        return DEFAULT_IMAGE_PRICE
     return None
 
 
 __all__ = [
     "TTS_CAPABILITY_ID",
     "LIPSYNC_CAPABILITY_ID",
+    "IMAGE_CAPABILITY_ID",
     "TTS_UNIT",
     "LIPSYNC_UNIT",
+    "IMAGE_UNIT",
     "TTS_COST_PER_1K_CHARS",
     "LIPSYNC_COST_PER_MINUTE",
+    "IMAGE_COST_PER_IMAGE",
     "TTS_PRICE_PER_CHAR",
     "LIPSYNC_PRICE_PER_MINUTE",
+    "IMAGE_PRICE_PER_CALL",
     "DEFAULT_PROVIDER_ID",
     "DEFAULT_CURRENCY",
     "DefaultPriceItem",
     "DEFAULT_TTS_PRICE",
     "DEFAULT_LIPSYNC_PRICE",
+    "DEFAULT_IMAGE_PRICE",
     "default_price_for",
 ]

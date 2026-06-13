@@ -777,6 +777,31 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             return "sandbox.tts.default"
         return profile.id
 
+    def _image_cover_profile_id(self, request: DigitalHumanVideoRequest) -> str | None:
+        """Return a real ``image.generate`` ProviderProfile id only when AI cover
+        is requested AND an enabled real profile + active secret exist. Otherwise
+        ``None`` -> the cover node uses the existing frame-based cover. AI cover is
+        PAID, so without a configured+secret-active image profile we never call it."""
+        explicit_profile_id = request.cover.template_id
+        if explicit_profile_id:
+            profile = self._provider_profile_by_id(explicit_profile_id)
+            return profile.id if self._is_real_image_profile(profile) else None
+        for profile in self.repository.provider_profiles.values():
+            if self._is_real_image_profile(profile):
+                return profile.id
+        return None
+
+    def _is_real_image_profile(self, profile) -> bool:
+        if profile is None or profile.capability != "image.generate" or not profile.enabled:
+            return False
+        if profile.provider_id == "sandbox":
+            return False
+        if profile.provider_id not in self.provider_gateway.plugins:
+            return False
+        if profile.secret_ref and not self.provider_gateway._secret_is_active(profile.secret_ref):
+            return False
+        return True
+
     def _provider_profile_by_id(self, profile_id: str):
         reader = getattr(self.provider_gateway, "provider_reader", None)
         if reader is not None:

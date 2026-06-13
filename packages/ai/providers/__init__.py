@@ -6,6 +6,7 @@ from packages.ai.gateway.provider_gateway import ProviderGateway
 
 from .dashscope import DashScopeASRProvider, DashScopeLLMProvider, DashScopeVLMProvider
 from .minimax import MiniMaxTTSProvider
+from .openai_image import OpenAIImageProvider
 from .runninghub import RunningHubHeyGemProvider
 from .videoretalk import DashScopeVideoReTalkProvider
 
@@ -22,5 +23,6 @@ def register_real_provider_plugins(gateway: ProviderGateway) -> None:
         DashScopeLLMProvider(client),
         RunningHubHeyGemProvider(client),
         DashScopeVideoReTalkProvider(client),
+        OpenAIImageProvider(client),
     ):
         gateway.register(plugin)
