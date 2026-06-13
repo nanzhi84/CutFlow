@@ -24,7 +24,6 @@ from packages.core.contracts import (
     RunPublicReportArtifact,
     RunStatus,
     ScriptVersion,
-    SelectionLedgerEntry,
     ValidatedProductionSpec,
     VideoVersion,
     WarningCode,
@@ -72,6 +71,26 @@ from packages.media.video.ffmpeg import (
     probe_video_frame_count,
 )
 from packages.production.pipeline.reuse import ReusePlan, ReuseSourceRun, compute_reuse_plan
+from packages.production.pipeline import render_ops
+from packages.production.pipeline._helpers import (
+    _candidate_keywords,
+    _candidate_metadata,
+    _candidate_scene_name,
+    _selection_entries_from_state,
+    degradation_notice,
+)
+
+__all__ = [
+    "_candidate_keywords",
+    "_candidate_metadata",
+    "_candidate_scene_name",
+    "_selection_entries_from_state",
+    "degradation_notice",
+    "RunState",
+    "LocalRuntimeAdapter",
+    "digital_human_template",
+    "build_digital_human_workflow",
+]
 
 
 NODE_SEQUENCE = [
@@ -178,91 +197,6 @@ class RunState:
         if kind not in self.artifacts:
             raise NodeExecutionError(ErrorCode.artifact_missing, f"Missing artifact {kind.value}.")
         return self.artifacts[kind]
-
-
-def degradation_notice(
-    code: WarningCode,
-    message: str,
-    *,
-    node_id: str | None = None,
-    affects_true_yield: bool = False,
-) -> DegradationNotice:
-    return DegradationNotice(
-        code=code,
-        message=message,
-        node_id=node_id,
-        affects_true_yield=affects_true_yield,
-    )
-
-
-def _candidate_metadata(asset) -> dict:
-    tags = list(getattr(asset, "tags", []) or [])
-    return {"matched_keywords": tags} if tags else {}
-
-
-def _candidate_keywords(candidate: dict | None) -> list[str]:
-    metadata = candidate.get("metadata") if isinstance(candidate, dict) else None
-    if not isinstance(metadata, dict):
-        return []
-    values = metadata.get("matched_keywords") or metadata.get("keywords") or metadata.get("tags")
-    if not isinstance(values, list):
-        return []
-    return [str(value) for value in values if str(value).strip()]
-
-
-def _candidate_scene_name(candidate: dict | None) -> str | None:
-    metadata = candidate.get("metadata") if isinstance(candidate, dict) else None
-    if not isinstance(metadata, dict):
-        return None
-    value = metadata.get("scene_name") or metadata.get("scene")
-    return str(value) if isinstance(value, str) and value.strip() else None
-
-
-def _selection_entries_from_state(run: WorkflowRun, state: RunState) -> list[SelectionLedgerEntry]:
-    case_id = run.case_id or state.request.case_id
-    entries: list[SelectionLedgerEntry] = []
-
-    def add(medium: str, asset_id, slot_phase: str, diversity_key=None) -> None:
-        if isinstance(asset_id, str) and asset_id:
-            entries.append(
-                SelectionLedgerEntry(
-                    case_id=case_id,
-                    run_id=run.id,
-                    medium=medium,
-                    asset_id=asset_id,
-                    slot_phase=slot_phase,
-                    diversity_key=diversity_key if isinstance(diversity_key, str) else None,
-                )
-            )
-
-    portrait = state.artifacts.get(ArtifactKind.plan_portrait)
-    portrait_payload = portrait.payload if portrait and isinstance(portrait.payload, dict) else {}
-    add("portrait", portrait_payload.get("asset_id"), "portrait_main")
-
-    broll = state.artifacts.get(ArtifactKind.plan_broll)
-    broll_payload = broll.payload if broll and isinstance(broll.payload, dict) else {}
-    overlays = broll_payload.get("overlays")
-    segments = broll_payload.get("segments")
-    broll_items = overlays if isinstance(overlays, list) and overlays else segments
-    if isinstance(broll_items, list):
-        for index, item in enumerate(broll_items):
-            if not isinstance(item, dict):
-                continue
-            slot_phase = str(item.get("overlay_id") or item.get("segment_id") or f"broll_{index + 1}")
-            add("broll", item.get("asset_id"), slot_phase, item.get("diversity_key"))
-
-    style = state.artifacts.get(ArtifactKind.plan_style)
-    style_payload = style.payload if style and isinstance(style.payload, dict) else {}
-    bgm = style_payload.get("bgm") if isinstance(style_payload.get("bgm"), dict) else {}
-    font = style_payload.get("font") if isinstance(style_payload.get("font"), dict) else {}
-    subtitle = style_payload.get("subtitle") if isinstance(style_payload.get("subtitle"), dict) else {}
-    add("bgm", style_payload.get("bgm_asset_id") or bgm.get("asset_id"), "bgm")
-    add(
-        "font",
-        style_payload.get("font_asset_id") or font.get("font_id") or subtitle.get("font_id"),
-        "font",
-    )
-    return entries
 
 
 class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
@@ -1429,65 +1363,18 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         height: int,
         fps: int,
     ) -> None:
-        FfmpegRunner().run(
-            [
-                ffmpeg_bin(),
-                "-y",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-ss",
-                f"{source_start:.3f}",
-                "-t",
-                f"{duration:.3f}",
-                "-i",
-                str(source_path),
-                "-an",
-                "-vf",
-                (
-                    f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-                    f"crop={width}:{height},fps={fps},setsar=1"
-                ),
-                "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
-                "-pix_fmt",
-                "yuv420p",
-                "-r",
-                str(fps),
-                "-movflags",
-                "+faststart",
-                str(output_path),
-            ]
+        render_ops.transcode_video_segment(
+            source_path,
+            output_path,
+            source_start=source_start,
+            duration=duration,
+            width=width,
+            height=height,
+            fps=fps,
         )
 
     def _concat_video_segments(self, segments: list[Path], output_path: Path) -> None:
-        concat_list = output_path.with_suffix(".txt")
-        concat_list.write_text(
-            "\n".join(f"file '{str(path).replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'" for path in segments),
-            encoding="utf-8",
-        )
-        FfmpegRunner().run(
-            [
-                ffmpeg_bin(),
-                "-y",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                str(concat_list),
-                "-c",
-                "copy",
-                "-movflags",
-                "+faststart",
-                str(output_path),
-            ]
-        )
+        render_ops.concat_video_segments(segments, output_path)
 
     def _render_video_timeline(
         self,
@@ -1500,15 +1387,8 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         height: int,
         fps: int,
     ) -> None:
-        args = [
-            ffmpeg_bin(),
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            str(main_path),
-        ]
+        # Resolve + source-window-validate each overlay (needs adapter state),
+        # then delegate the mechanical filtergraph/ffmpeg build to render_ops.
         overlay_inputs: list[tuple[dict, Path]] = []
         for segment in broll_segments:
             source_artifact = self._source_artifact_for_asset(segment.get("asset_id"))
@@ -1520,65 +1400,16 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             if source_start < 0 or source_end <= source_start or source_end > source_duration + (1 / fps):
                 raise NodeExecutionError(ErrorCode.render_invalid_timeline, "B-roll source window is out of bounds.")
             overlay_inputs.append((segment, source_path))
-            args.extend(["-i", str(source_path)])
 
-        filters = [
-            (
-                f"[0:v]fps={fps},scale={width}:{height}:force_original_aspect_ratio=increase,"
-                f"crop={width}:{height},trim=start_frame=0:end_frame={total_frames},"
-                "setpts=PTS-STARTPTS,setsar=1[base0]"
-            )
-        ]
-        previous_label = "base0"
-        total_duration = total_frames / fps
-        for index, (segment, _) in enumerate(overlay_inputs, start=1):
-            timeline_start = float(segment.get("start_sec", 0) or 0)
-            timeline_end = float(segment.get("end_sec", 0) or 0)
-            if timeline_start < 0 or timeline_end <= timeline_start or timeline_end > total_duration + (1 / fps):
-                raise NodeExecutionError(ErrorCode.render_invalid_timeline, "B-roll timeline window is out of bounds.")
-            source_start = float(segment.get("source_start", 0) or 0)
-            source_end = float(segment.get("source_end", 0) or 0)
-            overlay_label = f"ov{index}"
-            next_label = f"base{index}"
-            filters.append(
-                (
-                    f"[{index}:v]trim=start={source_start:.3f}:end={source_end:.3f},"
-                    "setpts=PTS-STARTPTS,"
-                    f"fps={fps},scale={width}:{height}:force_original_aspect_ratio=increase,"
-                    f"crop={width}:{height},setsar=1,"
-                    f"setpts=PTS-STARTPTS+{timeline_start:.3f}/TB[{overlay_label}]"
-                )
-            )
-            filters.append(
-                (
-                    f"[{previous_label}][{overlay_label}]overlay="
-                    f"enable='between(t,{timeline_start:.3f},{timeline_end:.3f})':"
-                    f"x=0:y=0:eof_action=pass[{next_label}]"
-                )
-            )
-            previous_label = next_label
-
-        args.extend(
-            [
-                "-filter_complex",
-                ";".join(filters),
-                "-map",
-                f"[{previous_label}]",
-                "-an",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
-                "-pix_fmt",
-                "yuv420p",
-                "-r",
-                str(fps),
-                "-movflags",
-                "+faststart",
-                str(output_path),
-            ]
+        render_ops.render_video_timeline(
+            main_path=main_path,
+            output_path=output_path,
+            overlay_inputs=overlay_inputs,
+            total_frames=total_frames,
+            width=width,
+            height=height,
+            fps=fps,
         )
-        FfmpegRunner(timeout_sec=60).run(args)
 
     def _write_ass_subtitles(
         self,
@@ -1589,45 +1420,13 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         width: int,
         height: int,
     ) -> None:
-        subtitle = style.get("subtitle", {}) if isinstance(style.get("subtitle"), dict) else {}
-        font_size = int(subtitle.get("font_size") or 64)
-        margin_v = int(height * 0.12)
-        position = subtitle.get("position")
-        if isinstance(position, dict) and "y" in position:
-            margin_v = max(20, int(height * (1 - float(position["y"]))))
-        lines = [
-            "[Script Info]",
-            "ScriptType: v4.00+",
-            "WrapStyle: 0",
-            "ScaledBorderAndShadow: yes",
-            f"PlayResX: {width}",
-            f"PlayResY: {height}",
-            "",
-            "[V4+ Styles]",
-            (
-                "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
-                "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
-                "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"
-            ),
-            (
-                f"Style: Default,Arial,{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H64000000,"
-                f"1,0,0,0,100,100,0,0,1,4,1,2,80,80,{margin_v},1"
-            ),
-            "",
-            "[Events]",
-            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-        ]
-        for unit in narration.get("units", []):
-            text = self._ass_escape(str(unit.get("text", "")))
-            if not text:
-                continue
-            lines.append(
-                "Dialogue: 0,"
-                f"{self._ass_time(float(unit.get('start', 0) or 0))},"
-                f"{self._ass_time(float(unit.get('end', 0) or 0))},"
-                f"Default,,0,0,0,,{text}"
-            )
-        output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        render_ops.write_ass_subtitles(
+            output_path,
+            narration=narration,
+            style=style,
+            width=width,
+            height=height,
+        )
 
     def _render_final_media(
         self,
@@ -1641,75 +1440,16 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         duration: float,
         fps: int,
     ) -> None:
-        args = [
-            ffmpeg_bin(),
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            str(rendered_path),
-            "-i",
-            str(audio_path),
-        ]
-        if bgm_path is not None:
-            args.extend(["-stream_loop", "-1", "-i", str(bgm_path)])
-        escaped_subtitle = str(subtitle_path).replace("\\", "\\\\").replace(":", "\\:") if subtitle_path else None
-        video_filters = "[0:v]"
-        if escaped_subtitle:
-            video_filters += f"subtitles={escaped_subtitle},"
-        video_filters += f"fps={fps},format=yuv420p[v]"
-        if bgm_path is None:
-            audio_filters = (
-                f"[1:a]aresample=48000,apad=pad_dur=1,atrim=0:{duration:.3f},"
-                "asetpts=PTS-STARTPTS[a]"
-            )
-        else:
-            audio_filters = (
-                f"[1:a]aresample=48000,volume=1.0,apad=pad_dur=1,atrim=0:{duration:.3f},"
-                "asetpts=PTS-STARTPTS[voice];"
-                f"[2:a]aresample=48000,volume={bgm_volume:.3f},atrim=0:{duration:.3f},"
-                "asetpts=PTS-STARTPTS[bgm];"
-                "[voice][bgm]amix=inputs=2:duration=first:dropout_transition=0[a]"
-            )
-        args.extend(
-            [
-                "-filter_complex",
-                f"{video_filters};{audio_filters}",
-                "-map",
-                "[v]",
-                "-map",
-                "[a]",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
-                "-pix_fmt",
-                "yuv420p",
-                "-r",
-                str(fps),
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-                "-movflags",
-                "+faststart",
-                str(output_path),
-            ]
+        render_ops.render_final_media(
+            rendered_path=rendered_path,
+            audio_path=audio_path,
+            output_path=output_path,
+            subtitle_path=subtitle_path,
+            bgm_path=bgm_path,
+            bgm_volume=bgm_volume,
+            duration=duration,
+            fps=fps,
         )
-        FfmpegRunner(timeout_sec=60).run(args)
-
-    @staticmethod
-    def _ass_time(seconds: float) -> str:
-        centiseconds = round(max(seconds, 0) * 100)
-        hours, remainder = divmod(centiseconds, 3600 * 100)
-        minutes, remainder = divmod(remainder, 60 * 100)
-        secs, cs = divmod(remainder, 100)
-        return f"{hours}:{minutes:02d}:{secs:02d}.{cs:02d}"
-
-    @staticmethod
-    def _ass_escape(text: str) -> str:
-        return text.replace("{", "").replace("}", "").replace("\n", r"\N")
 
     def _broll_planning(self, run: WorkflowRun, node_run: NodeRun, state: RunState) -> NodeOutput:
         material = state.require(ArtifactKind.plan_material_pack).payload or {}
