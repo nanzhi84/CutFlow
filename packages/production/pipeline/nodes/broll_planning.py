@@ -1,25 +1,50 @@
-"""BrollPlanning node: select b-roll inserts and their timeline windows."""
+"""BrollPlanning node: place real b-roll inserts inside narration windows.
+
+Real planning (no seeded ``start_sec = index * 3``): ranks the material pack's
+annotated b-roll clips against the *real* narration beats (jieba keyword
+similarity + usage-window coverage + recency demotion) and anchors each insert
+inside the narration window it matched. When b-roll is enabled but no annotated
+material clears the relevance floor, the node soft-degrades with
+``broll.skipped_no_material`` (honest — never a fabricated pick).
+"""
 
 from __future__ import annotations
 
 from packages.core.contracts import ArtifactKind, NodeStatus, WarningCode
-from packages.core.contracts.artifacts import BrollPlanArtifact
+from packages.core.contracts.artifacts import BrollOverlay, BrollPlanArtifact, NarrationUnit
+from packages.planning.material import (
+    ScriptSegment,
+    extract_keywords,
+    plan_insertions,
+    rank_broll_candidates,
+)
 from packages.core.workflow import NodeOutput
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
-from packages.production.pipeline._selection import candidate_keywords, candidate_scene_name
+
+
+def _narration_segments(units: list[NarrationUnit]) -> list[ScriptSegment]:
+    """Real narration beats as matchable script segments (text + true timing).
+
+    Each beat carries its jieba-extracted keywords so the matcher can compute a
+    real keyword overlap against the b-roll clip retrieval keywords.
+    """
+    return [
+        ScriptSegment(
+            text=unit.text,
+            start=float(unit.start),
+            end=float(unit.end),
+            keywords=tuple(extract_keywords(unit.text)),
+        )
+        for unit in units
+        if unit.end > unit.start
+    ]
 
 
 def run(ctx: NodeContext) -> NodeOutput:
     state = ctx.state
     node_run = ctx.node_run
-    material = state.require(ArtifactKind.plan_material_pack).payload or {}
-    broll_candidates = [
-        item for item in material.get("broll_candidates", [])
-        if isinstance(item, dict) and item.get("asset_id")
-    ]
-    broll = [item.get("asset_id") for item in broll_candidates]
-    candidate_by_id = {item["asset_id"]: item for item in broll_candidates}
+
     if not state.request.broll.enabled:
         return NodeOutput(
             artifacts=[
@@ -30,7 +55,40 @@ def run(ctx: NodeContext) -> NodeOutput:
                 )
             ]
         )
-    if state.request.broll.enabled and not broll:
+
+    material = state.require(ArtifactKind.plan_material_pack).payload or {}
+    candidate_asset_ids = [
+        item.get("asset_id")
+        for item in material.get("broll_candidates", [])
+        if isinstance(item, dict) and item.get("asset_id")
+    ]
+
+    narration = state.require(ArtifactKind.narration_units).payload or {}
+    units = [NarrationUnit.model_validate(unit) for unit in narration.get("units", [])]
+    segments = _narration_segments(units)
+
+    # Re-rank the candidate assets against the *real* narration beats so matched
+    # keywords and the anchor beat come from true narration timing.
+    annotations = {
+        asset_id: annotation
+        for asset_id in dict.fromkeys(candidate_asset_ids)
+        if (annotation := ctx.repository.annotation_v4_for_asset(asset_id)) is not None
+    }
+    ledger_entries = ctx.repository.recent_selections(
+        case_id=state.request.case_id, medium="broll"
+    )
+    candidates = rank_broll_candidates(
+        annotations=annotations,
+        segments=segments,
+        ledger_entries=ledger_entries,
+    )
+    insertions = plan_insertions(
+        candidates=candidates,
+        units=units,
+        max_inserts=state.request.broll.max_inserts,
+    )
+
+    if not insertions:
         artifact = ctx.artifact(
             ArtifactKind.plan_broll,
             BrollPlanArtifact(
@@ -46,52 +104,50 @@ def run(ctx: NodeContext) -> NodeOutput:
             degradations=[
                 degradation_notice(
                     WarningCode.broll_skipped_no_material,
-                    "No b-roll material available.",
+                    "No annotated b-roll material matched the narration.",
                     node_id=node_run.node_id,
                     affects_true_yield=True,
                 )
             ],
         )
-    segments = []
-    for index, asset_id in enumerate(broll[: state.request.broll.max_inserts]):
-        start_sec = index * 3
-        end_sec = start_sec + 2
-        candidate = candidate_by_id.get(asset_id)
-        segments.append(
-            {
-                "asset_id": asset_id,
-                "start_sec": start_sec,
-                "end_sec": end_sec,
-                "source_start": 0,
-                "source_end": end_sec - start_sec,
-                "reason": "seeded usable b-roll",
-                "confidence": 1,
-                "matched_keywords": candidate_keywords(candidate),
-                "scene_name": candidate_scene_name(candidate),
-            }
+
+    segments_payload = [
+        {
+            "asset_id": ins.asset_id,
+            "start_sec": ins.timeline_start,
+            "end_sec": ins.timeline_end,
+            "source_start": ins.source_start,
+            "source_end": ins.source_end,
+            "reason": ins.reason,
+            "confidence": ins.confidence,
+            "matched_keywords": list(ins.matched_keywords),
+            "scene_name": ins.scene_name,
+        }
+        for ins in insertions
+    ]
+    overlays = [
+        BrollOverlay(
+            overlay_id=f"broll_{index + 1}",
+            asset_id=ins.asset_id,
+            timeline_start=ins.timeline_start,
+            timeline_end=ins.timeline_end,
+            source_start=ins.source_start,
+            source_end=ins.source_end,
+            reason=ins.reason,
+            confidence=ins.confidence,
+            matched_keywords=list(ins.matched_keywords),
+            scene_name=ins.scene_name,
         )
+        for index, ins in enumerate(insertions)
+    ]
     return NodeOutput(
         artifacts=[
             ctx.artifact(
                 ArtifactKind.plan_broll,
                 BrollPlanArtifact(
-                    enabled=state.request.broll.enabled,
-                    segments=segments,
-                    overlays=[
-                        {
-                            "overlay_id": f"broll_{index + 1}",
-                            "asset_id": segment["asset_id"],
-                            "timeline_start": segment["start_sec"],
-                            "timeline_end": segment["end_sec"],
-                            "source_start": segment["source_start"],
-                            "source_end": segment["source_end"],
-                            "reason": segment["reason"],
-                            "confidence": segment["confidence"],
-                            "matched_keywords": segment["matched_keywords"],
-                            "scene_name": segment["scene_name"],
-                        }
-                        for index, segment in enumerate(segments)
-                    ],
+                    enabled=True,
+                    segments=segments_payload,
+                    overlays=overlays,
                 ).model_dump(mode="json"),
                 "BrollPlanArtifact.v1",
             )

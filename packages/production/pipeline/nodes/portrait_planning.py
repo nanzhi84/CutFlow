@@ -19,14 +19,24 @@ def run(ctx: NodeContext) -> NodeOutput:
             "Portrait main track cannot cover the full audio.",
         )
     duration = max([float(unit.get("end", 0)) for unit in narration.get("units", [])] or [1])
-    asset_id = portraits[0] if portraits else None
-    source_artifact = ctx.source_artifact_for_asset(asset_id) if asset_id else None
-    source_duration = (
-        float(source_artifact.media_info.duration_sec or 0)
-        if source_artifact and source_artifact.media_info
-        else 0
-    )
-    if asset_id and source_duration + (1 / state.request.output.fps) < duration:
+    min_source = duration - (1 / state.request.output.fps)
+
+    # Candidates arrive ranked by the material pack (score desc). Pick the
+    # best-ranked one whose source actually covers the full audio rather than
+    # blindly taking the top pick — a high-scored but too-short portrait must
+    # not silently truncate the main track.
+    asset_id: str | None = None
+    for candidate_id in portraits:
+        source_artifact = ctx.source_artifact_for_asset(candidate_id)
+        source_duration = (
+            float(source_artifact.media_info.duration_sec or 0)
+            if source_artifact and source_artifact.media_info
+            else 0
+        )
+        if source_duration >= min_source:
+            asset_id = candidate_id
+            break
+    if portraits and asset_id is None:
         raise NodeExecutionError(
             ErrorCode.material_insufficient_portrait,
             "Portrait source window cannot cover the full audio.",

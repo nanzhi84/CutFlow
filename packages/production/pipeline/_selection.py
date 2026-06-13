@@ -1,7 +1,7 @@
-"""Pure helpers that turn plan artifacts into selection-ledger entries.
+"""Pure helper that turns plan artifacts into selection-ledger entries.
 
-Used by the FinalizeRunReport node (to record which assets a run consumed) and
-by MaterialPackPlanning (to surface matched-keyword metadata on candidates).
+Used by the FinalizeRunReport node to record which assets a run consumed (the
+diversity ledger that drives usage-aware recency demotion on the next run).
 """
 
 from __future__ import annotations
@@ -9,29 +9,6 @@ from __future__ import annotations
 from packages.core.contracts import SelectionLedgerEntry, WorkflowRun
 from packages.core.contracts.artifacts import ArtifactKind
 from packages.production.pipeline._run_state import RunState
-
-
-def candidate_metadata(asset) -> dict:
-    tags = list(getattr(asset, "tags", []) or [])
-    return {"matched_keywords": tags} if tags else {}
-
-
-def candidate_keywords(candidate: dict | None) -> list[str]:
-    metadata = candidate.get("metadata") if isinstance(candidate, dict) else None
-    if not isinstance(metadata, dict):
-        return []
-    values = metadata.get("matched_keywords") or metadata.get("keywords") or metadata.get("tags")
-    if not isinstance(values, list):
-        return []
-    return [str(value) for value in values if str(value).strip()]
-
-
-def candidate_scene_name(candidate: dict | None) -> str | None:
-    metadata = candidate.get("metadata") if isinstance(candidate, dict) else None
-    if not isinstance(metadata, dict):
-        return None
-    value = metadata.get("scene_name") or metadata.get("scene")
-    return str(value) if isinstance(value, str) and value.strip() else None
 
 
 def selection_entries_from_state(run: WorkflowRun, state: RunState) -> list[SelectionLedgerEntry]:

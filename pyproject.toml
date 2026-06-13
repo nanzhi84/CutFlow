@@ -21,6 +21,7 @@ dependencies = [
   "numpy>=2.0",
   "scenedetect>=0.7",
   "pysilero-vad>=2.0",
+  "jieba>=0.42",
 ]
 
 [project.optional-dependencies]

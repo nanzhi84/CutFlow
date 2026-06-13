@@ -13,6 +13,7 @@ from packages.core.storage.provider_seed import seed_real_provider_configuration
 from packages.core.storage.selection_ledger import material_usage_ranking_from_entries
 from packages.core.contracts import (
     AnnotationEditorVm,
+    AnnotationV4,
     Artifact,
     ArtifactKind,
     ArtifactRef,
@@ -357,6 +358,43 @@ class Repository:
             case_id=case_id,
             top_n=top_n,
         )
+
+    def recent_selections(
+        self,
+        *,
+        case_id: str | None,
+        medium: SelectionMedium,
+        limit: int = 12,
+    ) -> list[SelectionLedgerEntry]:
+        """Return this case's recent selections for ``medium``, most-recent first.
+
+        Drives usage-aware recency demotion: a clip selected in an earlier run is
+        demoted below a fresh one on the next run.
+        """
+        entries = [
+            entry
+            for entry in self.selection_ledger.values()
+            if entry.medium == medium and (case_id is None or entry.case_id == case_id)
+        ]
+        entries.sort(key=lambda entry: entry.created_at, reverse=True)
+        return entries[: max(0, limit)]
+
+    def annotation_v4_for_asset(self, asset_id: str | None) -> AnnotationV4 | None:
+        """Parse the stored canonical annotation for ``asset_id`` into AnnotationV4.
+
+        Returns ``None`` when there is no annotation, the canonical is not a V4
+        payload, or parsing fails — so material planning sees "no real
+        annotation" and soft-degrades rather than fabricating a pick.
+        """
+        if not asset_id:
+            return None
+        vm = self.annotations.get(asset_id)
+        if vm is None or not isinstance(vm.canonical, dict):
+            return None
+        try:
+            return AnnotationV4.model_validate(vm.canonical)
+        except Exception:
+            return None
 
     def artifact_ref(self, artifact_id: str) -> ArtifactRef:
         artifact = self.artifacts[artifact_id]
