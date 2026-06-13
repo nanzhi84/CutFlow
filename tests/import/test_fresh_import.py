@@ -26,6 +26,100 @@ def import_one(active_client, import_type: str, row: dict):
     return report["results"][0]["internal_id"]
 
 
+def test_media_import_with_uri_creates_uploaded_file_source_artifact():
+    with TestClient(create_app()) as active_client:
+        login_admin(active_client)
+        row = {
+            "external_id": "media_uri_ext",
+            "case_id": "case_demo",
+            "title": "Imported URI media",
+            "kind": "broll",
+            "uri": "s3://cutagent-durable/legacy/case_demo/broll.mp4",
+            "mime": "video/mp4",
+            "sha256": "abc123",
+            "duration_sec": 12.5,
+            "width": 1920,
+            "height": 1080,
+        }
+
+        response = active_client.post("/api/import/batches", json={"import_type": "media", "rows": [row]})
+
+        assert response.status_code == 202, response.text
+        report = response.json()
+        assert report["created_count"] == 1
+        asset_id = report["results"][0]["internal_id"]
+        repo = active_client.app.state.repository
+        asset = repo.media_assets[asset_id]
+        assert asset.source_artifact_id is not None
+        artifact = repo.artifacts[asset.source_artifact_id]
+        assert artifact.kind.value == "uploaded.file"
+        assert artifact.payload_schema == "UploadedFileArtifact.v1"
+        assert artifact.uri == row["uri"]
+        assert artifact.sha256 == row["sha256"]
+        assert artifact.payload["content_type"] == row["mime"]
+        assert artifact.payload["sha256"] == row["sha256"]
+        assert artifact.payload["metadata"]["duration_sec"] == row["duration_sec"]
+        assert artifact.payload["metadata"]["width"] == row["width"]
+        assert artifact.payload["metadata"]["height"] == row["height"]
+
+
+def test_media_import_with_uri_is_idempotent_by_sha256_or_uri():
+    with TestClient(create_app()) as active_client:
+        login_admin(active_client)
+        row = {
+            "external_id": "media_uri_idempotent",
+            "case_id": "case_demo",
+            "title": "Imported URI media",
+            "kind": "broll",
+            "uri": "s3://cutagent-durable/legacy/case_demo/reused.mp4",
+            "mime": "video/mp4",
+            "sha256": "dedupe-sha",
+        }
+
+        first = active_client.post(
+            "/api/import/batches",
+            json={"import_type": "media", "rows": [row, {**row, "external_id": "media_uri_idempotent_2"}]},
+        )
+        second = active_client.post("/api/import/batches", json={"import_type": "media", "rows": [row]})
+
+        assert first.status_code == 202, first.text
+        assert second.status_code == 202, second.text
+        assert first.json()["created_count"] == 1
+        assert first.json()["skipped_count"] == 1
+        assert first.json()["results"][1]["status"] == "skipped"
+        assert second.json()["created_count"] == 0
+        assert second.json()["skipped_count"] == 1
+        repo = active_client.app.state.repository
+        matching_assets = [
+            asset
+            for asset in repo.media_assets.values()
+            if asset.case_id == row["case_id"] and asset.kind == row["kind"] and asset.title == row["title"]
+        ]
+        assert len(matching_assets) == 1
+        matching_artifacts = [
+            artifact
+            for artifact in repo.artifacts.values()
+            if artifact.kind.value == "uploaded.file" and artifact.sha256 == row["sha256"] and artifact.uri == row["uri"]
+        ]
+        assert len(matching_artifacts) == 1
+
+
+def test_media_import_without_uri_keeps_legacy_asset_only_behavior():
+    with TestClient(create_app()) as active_client:
+        login_admin(active_client)
+        repo = active_client.app.state.repository
+        artifact_count = len(repo.artifacts)
+
+        media_id = import_one(
+            active_client,
+            "media",
+            {"external_id": "media_no_uri", "case_id": "case_demo", "title": "Imported media", "kind": "broll"},
+        )
+
+        assert repo.media_assets[media_id].source_artifact_id is None
+        assert len(repo.artifacts) == artifact_count
+
+
 def test_fresh_import_accepts_all_spec_types():
     login = client.post(
         "/api/auth/login",
