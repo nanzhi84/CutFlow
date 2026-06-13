@@ -20,6 +20,8 @@ VIEWER_FORBIDDEN_EXEMPTIONS = {
     ("POST", "/api/auth/logout"): "self-service endpoint",
     ("PATCH", "/api/auth/me"): "self-service endpoint",
     ("POST", "/api/auth/me/change-password"): "self-service endpoint",
+    ("POST", "/api/tts/estimate-cost"): "read-only catalog math, viewer-accessible",
+    ("POST", "/api/video/estimate-cost"): "read-only catalog math, viewer-accessible",
 }
 INVALID_BODY_EXEMPTIONS = {
     ("PUT", "/api/uploads/{upload_session_id}/file"): "optional multipart upload body reaches domain state",

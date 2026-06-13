@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import mimetypes
 import re
 import time
@@ -18,6 +19,7 @@ from packages.ai.gateway.provider_gateway import (
 from packages.ai.gateway.provider_context import ProviderInvocationContext
 from packages.ai.providers.common import money_cny, option, request, require_secret, response_json
 from packages.core.contracts import ArtifactKind, ErrorCode
+from packages.media.audio import split_text_into_lines, subtitle_segments_to_asr_shape
 
 
 class MiniMaxTTSProvider:
@@ -77,6 +79,19 @@ class MiniMaxTTSProvider:
         emotion = str(call.input.get("emotion") or option(context, "emotion", "neutral"))
         if emotion and emotion != "neutral":
             payload["voice_setting"]["emotion"] = emotion
+        # Opt-in TTS-native precise subtitles. MiniMax splits subtitle segments
+        # on NEWLINES (not punctuation) and ignores ``\n`` for speech, so the
+        # synthesized audio is byte-identical; only the subtitle text is the
+        # one-sentence-per-line split. If the split yields nothing, keep the
+        # original text and skip subtitles.
+        subtitle_requested = bool(call.input.get("subtitle"))
+        if subtitle_requested:
+            split_text = split_text_into_lines(text)
+            if split_text:
+                payload["text"] = split_text
+                payload["subtitle_enable"] = True
+            else:
+                subtitle_requested = False
         response = request(
             self.client,
             "POST",
@@ -107,18 +122,47 @@ class MiniMaxTTSProvider:
         if artifact.media_info and artifact.media_info.duration_sec:
             duration = artifact.media_info.duration_sec
         estimated = (Decimal(len(text)) / Decimal(1000)) * self.cost_per_1k_chars
+        output: dict[str, Any] = {
+            "audio_artifact_id": artifact.id,
+            "audio_uri": artifact.uri,
+            "duration_sec": duration,
+            "voice_id": voice_id,
+        }
+        if subtitle_requested:
+            subtitle_segments = self._fetch_subtitle_segments(data, context)
+            if subtitle_segments:
+                output["subtitle_segments"] = subtitle_segments
         return ProviderResult(
-            output={
-                "audio_artifact_id": artifact.id,
-                "audio_uri": artifact.uri,
-                "duration_sec": duration,
-                "voice_id": voice_id,
-            },
+            output=output,
             input_tokens=len(text),
             audio_seconds=duration,
             raw_usage={"characters": len(text), "provider_response": _usage_safe(result)},
             estimated_cost=money_cny(estimated),
         )
+
+    def _fetch_subtitle_segments(
+        self, data: dict[str, Any], context: ProviderInvocationContext
+    ) -> list[dict[str, Any]]:
+        """Best-effort fetch + parse of the TTS-native subtitle file.
+
+        ANY failure returns an empty list and never breaks the audio synthesis
+        that already succeeded. The file is served as application/octet-stream,
+        so we read text then ``json.loads`` (not ``response.json()``).
+        """
+        sub_url = data.get("subtitle_file")
+        if not isinstance(sub_url, str) or not sub_url:
+            return []
+        try:
+            response = request(
+                self.client,
+                "GET",
+                sub_url,
+                timeout=float(context.profile.timeout_sec),
+            )
+            parsed = json.loads(response.text)
+        except (ProviderRuntimeError, json.JSONDecodeError, ValueError):
+            return []
+        return subtitle_segments_to_asr_shape(parsed)
 
     def _clone(self, call: ProviderCall, context: ProviderInvocationContext) -> ProviderResult:
         api_key = require_secret(context)

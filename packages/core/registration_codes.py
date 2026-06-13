@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import os
+
+from packages.core.config import build_settings
 
 
 def registration_code_salt() -> str:
-    return os.getenv("CUTAGENT_REGISTRATION_CODE_SALT", "local-dev-registration-code-salt")
+    return build_settings().auth.registration_code_salt
 
 
 def hash_registration_code(code: str) -> str:

@@ -16,6 +16,9 @@ from packages.core.storage.database import (
     PublishRecordRow,
     VideoVersionRow,
 )
+from packages.media.assets import local_object_path
+
+FINISHED_VIDEO_URI = "local://cutagent-local/imported/sqlalchemy-finished-video.mp4"
 
 
 def sqlalchemy_session_factory():
@@ -25,8 +28,9 @@ def sqlalchemy_session_factory():
     return session_factory
 
 
-def test_sqlalchemy_finished_video_publish_record_and_performance_flow_are_persisted():
+def test_sqlalchemy_finished_video_publish_record_and_performance_flow_are_persisted(media_fixture_factory):
     session_factory = sqlalchemy_session_factory()
+    sample_video = media_fixture_factory.video(duration_sec=2, filename="sqlalchemy-finished-video.mp4")
 
     with TestClient(app) as client:
         admin_login = client.post(
@@ -34,6 +38,13 @@ def test_sqlalchemy_finished_video_publish_record_and_performance_flow_are_persi
             json={"email": "admin@local.cutagent", "password": "local-admin"},
         )
         assert admin_login.status_code == 200, admin_login.text
+
+        # The import API only registers the URI; the bytes must already exist in the
+        # object store for editor-handoff (copies the file) and jianying-draft
+        # (ffprobes it) to read. Materialize a real, probe-able mp4 at that URI.
+        materialized = local_object_path(app.state.object_store, FINISHED_VIDEO_URI)
+        materialized.parent.mkdir(parents=True, exist_ok=True)
+        materialized.write_bytes(sample_video.read_bytes())
 
         imported_finished = client.post(
             "/api/import/batches",
@@ -44,7 +55,7 @@ def test_sqlalchemy_finished_video_publish_record_and_performance_flow_are_persi
                         "case_id": "case_demo",
                         "external_id": "finished-video-db-flow",
                         "title": "Imported SQLAlchemy finished video",
-                        "uri": "local://cutagent-local/imported/sqlalchemy-finished-video.mp4",
+                        "uri": FINISHED_VIDEO_URI,
                         "duration_sec": 42,
                         "qc_status": "passed",
                     }

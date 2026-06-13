@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -11,6 +10,7 @@ from sqlalchemy import engine_from_config, pool
 ROOT = Path(__file__).resolve().parents[5]
 sys.path.insert(0, str(ROOT))
 
+from packages.core.config import build_settings  # noqa: E402
 from packages.core.storage.database import Base  # noqa: E402
 
 config = context.config
@@ -21,9 +21,10 @@ target_metadata = Base.metadata
 
 
 def _database_url() -> str:
-    return os.getenv(
-        "CUTAGENT_DATABASE_URL",
-        config.get_main_option("sqlalchemy.url"),
+    # Prefer the central infra Settings (CUTAGENT_DATABASE_URL); fall back to the
+    # alembic.ini sqlalchemy.url for offline/CI migration runs without env.
+    return build_settings().storage.database_url or config.get_main_option(
+        "sqlalchemy.url"
     )
 
 

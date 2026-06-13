@@ -255,7 +255,11 @@ def test_strict_alignment_uses_available_asr_provider(media_fixture_factory):
         assert narration.payload["warnings"] == []
 
 
-def test_annotation_rerun_uses_vlm_provider_output():
+def test_annotation_rerun_degrades_without_source_video():
+    """A real vlm.annotation profile but a videoless seed asset must NOT burn a paid
+    call: the gated runner degrades to a sensor-only ``vlm_unconfigured`` AnnotationV4
+    (never fabricated semantics), the run still completes, and the editor canonical is
+    the V4 schema (meta/clips/usage_windows), not a thin labels dict."""
     with TestClient(create_app()) as client:
         _login_admin(client)
         repository = client.app.state.repository
@@ -264,7 +268,7 @@ def test_annotation_rerun_uses_vlm_provider_output():
         repository.provider_profiles[profile.id] = profile
         asset_id = "asset_broll_demo"
         repository.media_assets[asset_id] = repository.media_assets[asset_id].model_copy(
-            update={"annotation_status": "pending", "usable": True}
+            update={"annotation_status": "pending", "usable": True, "source_artifact_id": None}
         )
 
         rerun = client.post(
@@ -276,8 +280,22 @@ def test_annotation_rerun_uses_vlm_provider_output():
         assert rerun.json()["status"] == "completed"
         editor = client.get(f"/api/annotations/{asset_id}")
         assert editor.status_code == 200, editor.text
-        assert editor.json()["canonical"]["labels"] == ["provider-vlm", "usable-shot"]
-        assert repository.media_assets[asset_id].annotation_status == "annotated"
+        canonical = editor.json()["canonical"]
+        assert canonical["meta"]["annotation_version"] == "annotation_v4"
+        assert canonical["clips"] == []
+        assert canonical["usage_windows"] == []
+        assert canonical["quality_report"]["vlm_status"] == "vlm_unconfigured"
+        assert editor.json()["projection"]["vlm_configured"] is False
+        # The typed MediaAssetRecord.annotation_status must stay inside its public
+        # contract enum (pending/annotated/annotation_failed). The precise
+        # "unconfigured" reason lives in quality_report (asserted above) and the
+        # projection's vlm_configured flag -- not in this typed field.
+        assert repository.media_assets[asset_id].annotation_status == "annotation_failed"
+        # A persisted AnnotationV4 artifact must exist for the asset's case.
+        assert any(
+            art.kind == ArtifactKind.material_annotation
+            for art in repository.artifacts.values()
+        )
 
 
 def test_voice_preview_uses_tts_provider_artifact(media_fixture_factory):

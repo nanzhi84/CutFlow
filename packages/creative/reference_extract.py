@@ -15,13 +15,13 @@ from urllib.parse import urlparse
 from packages.core import contracts as c
 from packages.core.storage.object_store import ObjectStore, ObjectRef
 from packages.core.storage.secret_store import SecretStore
+from packages.creative.reference_cookies import stored_cookie_header
 
 AsrInvoke = Callable[[str, str], str | dict[str, Any] | Awaitable[str | dict[str, Any]]]
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 )
-DOUYIN_COOKIE_SECRET_REF = "douyin_cookie"
 
 class ReferenceExtractError(Exception):
     def __init__(
@@ -47,6 +47,9 @@ async def extract_reference(
     parsed = _supported_url(url)
     platform = _platform_from_host(parsed.netloc)
     headers = {"User-Agent": USER_AGENT}
+    cookie_header = stored_cookie_header(secret_store)
+    if cookie_header:
+        headers["Cookie"] = cookie_header
     douyin_title: str | None = None
     douyin_duration: float | None = None
 
@@ -125,7 +128,7 @@ class _DouyinExtract:
 
 async def _extract_douyin_share(url: str, secret_store: SecretStore) -> _DouyinExtract:
     headers = {"User-Agent": USER_AGENT}
-    cookie = _secret_value(secret_store, DOUYIN_COOKIE_SECRET_REF)
+    cookie = stored_cookie_header(secret_store)
     if cookie:
         headers["Cookie"] = cookie
     try:
@@ -152,13 +155,6 @@ async def _extract_douyin_share(url: str, secret_store: SecretStore) -> _DouyinE
         duration_sec=_duration_from_value(item.get("duration")),
         resolved_url=resolved,
     )
-
-
-def _secret_value(secret_store: SecretStore, secret_ref: str) -> str | None:
-    try:
-        return secret_store.get(secret_ref)
-    except Exception:
-        return None
 
 
 def _parse_router_data(page: str) -> dict[str, Any] | None:
@@ -206,6 +202,31 @@ async def _extract_info(url: str, *, headers: dict[str, str]) -> dict[str, Any]:
     if not isinstance(info, dict):
         raise ReferenceExtractError(c.ErrorCode.reference_unreachable, "yt-dlp returned no video info.")
     return info
+
+
+async def fetch_metadata(url: str, *, cookie_header: str | None = None) -> dict[str, Any]:
+    """Run a single yt-dlp metadata fetch (no media download) for cookie tests.
+
+    Validates the URL, attaches the cookie header if provided, and returns a
+    compact metadata dict ({title, platform, resolved_url, duration_sec}).
+    Raises :class:`ReferenceExtractError` on any reachability/extractor error.
+    """
+    parsed = _supported_url(url)
+    headers = {"User-Agent": USER_AGENT}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    info = await _extract_info(url, headers=headers)
+    if info.get("_type") == "playlist":
+        entries = info.get("entries") or []
+        first = next((entry for entry in entries if isinstance(entry, dict)), None)
+        if first:
+            info = first
+    return {
+        "title": _clean_optional_text(info.get("title")),
+        "platform": _platform_from_info(info, fallback=_platform_from_host(parsed.netloc)),
+        "resolved_url": _clean_optional_text(info.get("webpage_url")) or url,
+        "duration_sec": _duration_from_value(info.get("duration")),
+    }
 
 
 async def _subtitle_from_info(info: dict[str, Any], *, language: str, headers: dict[str, str]) -> str | None:

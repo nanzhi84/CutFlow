@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 import subprocess
 import tempfile
@@ -11,6 +10,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Sequence
 
+from packages.core.config import build_settings
 from packages.core.contracts import ErrorCode, MediaInfo
 
 
@@ -51,15 +51,14 @@ class ThumbnailResult:
 
 
 def ffmpeg_bin() -> str:
-    return _resolve_bin("CUTAGENT_FFMPEG_BIN", "ffmpeg")
+    return _resolve_bin(build_settings().media.ffmpeg_bin, "ffmpeg")
 
 
 def ffprobe_bin() -> str:
-    return _resolve_bin("CUTAGENT_FFPROBE_BIN", "ffprobe")
+    return _resolve_bin(build_settings().media.ffprobe_bin, "ffprobe")
 
 
-def _resolve_bin(env_name: str, executable: str) -> str:
-    configured = os.getenv(env_name)
+def _resolve_bin(configured: str | None, executable: str) -> str:
     if configured:
         return configured
     found = shutil.which(executable)

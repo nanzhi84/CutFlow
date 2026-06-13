@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import os
 import sys
 
 from sqlalchemy import text
 
+from packages.core.config import build_settings
 from packages.core.storage.database import create_database_engine, create_session_factory
 from packages.core.storage.seed import seed_database
 
 
 def storage_backend() -> str:
-    return os.getenv("CUTAGENT_STORAGE_BACKEND", "sqlalchemy").lower()
+    return build_settings().storage.backend
 
 
 def sqlalchemy_backend_enabled() -> bool:
