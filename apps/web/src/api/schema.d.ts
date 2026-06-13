@@ -402,6 +402,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/creative/reference-extractor/import-cookies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import Reference Cookies */
+        post: operations["import_reference_cookies_api_creative_reference_extractor_import_cookies_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/creative/reference-extractor/test-cookies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test Reference Cookies */
+        post: operations["test_reference_cookies_api_creative_reference_extractor_test_cookies_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/creative/reference-extractor/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Reference Extractor Status */
+        get: operations["reference_extractor_status_api_creative_reference_extractor_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/creative/reference-extractor/refresh-cookies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Refresh Reference Cookies */
+        post: operations["refresh_reference_cookies_api_creative_reference_extractor_refresh_cookies_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tts/estimate-cost": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Estimate Tts Cost */
+        post: operations["estimate_tts_cost_api_tts_estimate_cost_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/video/estimate-cost": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Estimate Lipsync Cost */
+        post: operations["estimate_lipsync_cost_api_video_estimate_cost_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cases/{case_id}/runs": {
         parameters: {
             query?: never;
@@ -2226,7 +2328,7 @@ export interface components {
          * ArtifactKind
          * @enum {string}
          */
-        ArtifactKind: "uploaded.file" | "spec.validated_production" | "case.context" | "case.performance_analysis" | "case.reflection" | "script.strategy" | "creative.intent" | "audio.tts" | "audio.alignment.raw" | "audio.alignment" | "narration.units" | "plan.material_pack" | "plan.material_pack" | "plan.portrait" | "plan.portrait" | "plan.broll" | "plan.broll" | "plan.style" | "plan.style" | "plan.timeline" | "plan.timeline" | "plan.render" | "plan.render" | "video.portrait_track" | "video.lipsync" | "lipsync.report" | "video.rendered" | "video.final" | "video.finished" | "subtitle.ass" | "cover.image" | "publish.package" | "run.report.public" | "run.report.public" | "run.report.debug" | "run.report.debug" | "editor.handoff_package" | "editor.handoff_package" | "editor.jianying_draft_package" | "editor.jianying_draft_package" | "provider.raw_request" | "provider.raw_response" | "import.mapping";
+        ArtifactKind: "uploaded.file" | "spec.validated_production" | "case.context" | "case.performance_analysis" | "case.reflection" | "script.strategy" | "creative.intent" | "audio.tts" | "audio.alignment.raw" | "audio.alignment" | "narration.units" | "plan.material_pack" | "plan.material_pack" | "plan.portrait" | "plan.portrait" | "plan.broll" | "plan.broll" | "plan.style" | "plan.style" | "plan.timeline" | "plan.timeline" | "plan.render" | "plan.render" | "video.portrait_track" | "video.lipsync" | "lipsync.report" | "video.rendered" | "video.final" | "video.finished" | "subtitle.ass" | "cover.image" | "publish.package" | "run.report.public" | "run.report.public" | "run.report.debug" | "run.report.debug" | "editor.handoff_package" | "editor.handoff_package" | "editor.jianying_draft_package" | "editor.jianying_draft_package" | "provider.raw_request" | "provider.raw_response" | "import.mapping" | "material.annotation";
         /** ArtifactRef */
         ArtifactRef: {
             /** Artifact Id */
@@ -3394,7 +3496,7 @@ export interface components {
          * ErrorCode
          * @enum {string}
          */
-        ErrorCode: "validation.missing_case" | "validation.missing_voice" | "validation.missing_script" | "validation.invalid_options" | "validation.conflict" | "auth.unauthorized" | "auth.forbidden" | "auth.invalid_credentials" | "auth.registration_closed" | "auth.user_disabled" | "upload.invalid_state" | "upload.expired" | "upload.size_mismatch" | "upload.sha256_mismatch" | "upload.unsupported_type" | "material.insufficient.portrait" | "material.insufficient.broll" | "material.annotation_failed" | "prompt.render_error" | "prompt.output_invalid" | "prompt.version_not_published" | "provider.unsupported_option" | "provider.quota_exceeded" | "provider.timeout" | "provider.remote_failed" | "provider.auth_failed" | "provider.cost_unpriced" | "artifact.missing" | "artifact.integrity_failed" | "artifact.schema_mismatch" | "workflow.invalid_transition" | "workflow.cancelled" | "workflow.resume_not_allowed" | "render.invalid_timeline" | "render.failed" | "render.subtitle_failed" | "publish.failed" | "import.failed" | "reference.unreachable" | "reference.unsupported_platform" | "reference.asr_failed" | "idempotency.conflict";
+        ErrorCode: "validation.missing_case" | "validation.missing_voice" | "validation.missing_script" | "validation.invalid_options" | "validation.conflict" | "auth.unauthorized" | "auth.forbidden" | "auth.invalid_credentials" | "auth.registration_closed" | "auth.user_disabled" | "upload.invalid_state" | "upload.expired" | "upload.size_mismatch" | "upload.sha256_mismatch" | "upload.unsupported_type" | "material.insufficient.portrait" | "material.insufficient.broll" | "material.annotation_failed" | "prompt.render_error" | "prompt.output_invalid" | "prompt.version_not_published" | "provider.unsupported_option" | "provider.quota_exceeded" | "provider.timeout" | "provider.remote_failed" | "provider.auth_failed" | "provider.cost_unpriced" | "artifact.missing" | "artifact.integrity_failed" | "artifact.schema_mismatch" | "workflow.invalid_transition" | "workflow.cancelled" | "workflow.resume_not_allowed" | "render.invalid_timeline" | "render.failed" | "render.subtitle_failed" | "publish.failed" | "import.failed" | "reference.unreachable" | "reference.unsupported_platform" | "reference.asr_failed" | "reference.cookie_invalid" | "reference.cookie_missing" | "idempotency.conflict";
         /** EventStreamTokenResponse */
         EventStreamTokenResponse: {
             /** Stream Url */
@@ -3625,6 +3727,28 @@ export interface components {
              * @default 30
              */
             timeout_minutes: number;
+        };
+        /** LipsyncCostEstimateRequest */
+        LipsyncCostEstimateRequest: {
+            /** Video Duration Sec */
+            video_duration_sec: number;
+            /** Provider Profile Id */
+            provider_profile_id?: string | null;
+        };
+        /** LipsyncCostEstimateResponse */
+        LipsyncCostEstimateResponse: {
+            /** Video Duration Sec */
+            video_duration_sec: number;
+            /** Video Duration Min */
+            video_duration_min: number;
+            estimate: components["schemas"]["CostEstimateLine"];
+            /**
+             * Pricing Source
+             * @enum {string}
+             */
+            pricing_source: "catalog" | "default";
+            /** Request Id */
+            request_id: string;
         };
         /** LoginRequest */
         LoginRequest: {
@@ -5506,6 +5630,69 @@ export interface components {
             /** Request Id */
             request_id: string;
         };
+        /** ReferenceCookieImportRequest */
+        ReferenceCookieImportRequest: {
+            /** Cookie Text */
+            cookie_text: string;
+            /**
+             * Format
+             * @default auto
+             * @enum {string}
+             */
+            format: "auto" | "header" | "netscape" | "json";
+            /** Source */
+            source?: string | null;
+        };
+        /** ReferenceCookieImportResponse */
+        ReferenceCookieImportResponse: {
+            /** Success */
+            success: boolean;
+            /** Message */
+            message: string;
+            status: components["schemas"]["ReferenceCookieStatus"];
+            /** Request Id */
+            request_id: string;
+        };
+        /** ReferenceCookieStatus */
+        ReferenceCookieStatus: {
+            /** Cookie Present */
+            cookie_present: boolean;
+            /**
+             * Cookie Count
+             * @default 0
+             */
+            cookie_count: number;
+            /** Earliest Expiry */
+            earliest_expiry?: string | null;
+            /**
+             * Expired
+             * @default false
+             */
+            expired: boolean;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Source */
+            source?: string | null;
+        };
+        /** ReferenceCookieTestRequest */
+        ReferenceCookieTestRequest: {
+            /** Url */
+            url?: string | null;
+        };
+        /** ReferenceCookieTestResponse */
+        ReferenceCookieTestResponse: {
+            /** Success */
+            success: boolean;
+            /** Message */
+            message: string;
+            /** Test Url */
+            test_url?: string | null;
+            /** Title */
+            title?: string | null;
+            status: components["schemas"]["ReferenceCookieStatus"];
+            /** Request Id */
+            request_id: string;
+        };
         /** ReferenceExtractRequest */
         ReferenceExtractRequest: {
             /** Url */
@@ -5533,6 +5720,29 @@ export interface components {
             duration_sec?: number | null;
             /** Resolved Url */
             resolved_url: string;
+        };
+        /** ReferenceExtractorStatusResponse */
+        ReferenceExtractorStatusResponse: {
+            cookie: components["schemas"]["ReferenceCookieStatus"];
+            /**
+             * Chrome Available
+             * @default false
+             */
+            chrome_available: boolean;
+            /** Chrome Path */
+            chrome_path?: string | null;
+            /**
+             * Playwright Available
+             * @default false
+             */
+            playwright_available: boolean;
+            /**
+             * Auto Refresh Supported
+             * @default false
+             */
+            auto_refresh_supported: boolean;
+            /** Request Id */
+            request_id: string;
         };
         /** ReflectionRun */
         ReflectionRun: {
@@ -6073,6 +6283,30 @@ export interface components {
             artifact: components["schemas"]["ArtifactRef"];
             /** Valid Duration Sec */
             valid_duration_sec: number;
+            /** Request Id */
+            request_id: string;
+        };
+        /** TtsCostEstimateRequest */
+        TtsCostEstimateRequest: {
+            /** Text */
+            text: string;
+            /** Provider Profile Id */
+            provider_profile_id?: string | null;
+        };
+        /** TtsCostEstimateResponse */
+        TtsCostEstimateResponse: {
+            /** Text Length */
+            text_length: number;
+            /** Estimated Chars */
+            estimated_chars: number;
+            /** Estimated Duration Sec */
+            estimated_duration_sec: number;
+            estimate: components["schemas"]["CostEstimateLine"];
+            /**
+             * Pricing Source
+             * @enum {string}
+             */
+            pricing_source: "catalog" | "default";
             /** Request Id */
             request_id: string;
         };
@@ -7351,6 +7585,178 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReferenceExtractResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_reference_cookies_api_creative_reference_extractor_import_cookies_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReferenceCookieImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReferenceCookieImportResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_reference_cookies_api_creative_reference_extractor_test_cookies_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReferenceCookieTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReferenceCookieTestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reference_extractor_status_api_creative_reference_extractor_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReferenceExtractorStatusResponse"];
+                };
+            };
+        };
+    };
+    refresh_reference_cookies_api_creative_reference_extractor_refresh_cookies_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    estimate_tts_cost_api_tts_estimate_cost_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TtsCostEstimateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TtsCostEstimateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    estimate_lipsync_cost_api_video_estimate_cost_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LipsyncCostEstimateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LipsyncCostEstimateResponse"];
                 };
             };
             /** @description Validation Error */

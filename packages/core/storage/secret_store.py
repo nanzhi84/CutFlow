@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import base64
-import os
 from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
+
+from packages.core.config import build_settings
 
 
 class SecretStore(Protocol):
@@ -31,7 +32,7 @@ def open_local_dev_secret_envelope(value: str) -> str:
 
 class LocalSecretStore:
     def __init__(self, root: Path | str | None = None) -> None:
-        self.root = Path(root or os.getenv("CUTAGENT_SECRET_STORE_DIR", ".data/secrets"))
+        self.root = Path(root or build_settings().secret_store.dir)
 
     def put(self, plaintext: str, *, secret_ref: str | None = None) -> str:
         ref = secret_ref or f"sec_{uuid4().hex}.secret"

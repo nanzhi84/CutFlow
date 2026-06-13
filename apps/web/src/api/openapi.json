@@ -1158,6 +1158,192 @@
         }
       }
     },
+    "/api/creative/reference-extractor/import-cookies": {
+      "post": {
+        "summary": "Import Reference Cookies",
+        "operationId": "import_reference_cookies_api_creative_reference_extractor_import_cookies_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReferenceCookieImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReferenceCookieImportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/creative/reference-extractor/test-cookies": {
+      "post": {
+        "summary": "Test Reference Cookies",
+        "operationId": "test_reference_cookies_api_creative_reference_extractor_test_cookies_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReferenceCookieTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReferenceCookieTestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/creative/reference-extractor/status": {
+      "get": {
+        "summary": "Reference Extractor Status",
+        "operationId": "reference_extractor_status_api_creative_reference_extractor_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReferenceExtractorStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/creative/reference-extractor/refresh-cookies": {
+      "post": {
+        "summary": "Refresh Reference Cookies",
+        "operationId": "refresh_reference_cookies_api_creative_reference_extractor_refresh_cookies_post",
+        "responses": {
+          "410": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tts/estimate-cost": {
+      "post": {
+        "summary": "Estimate Tts Cost",
+        "operationId": "estimate_tts_cost_api_tts_estimate_cost_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TtsCostEstimateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TtsCostEstimateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/video/estimate-cost": {
+      "post": {
+        "summary": "Estimate Lipsync Cost",
+        "operationId": "estimate_lipsync_cost_api_video_estimate_cost_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LipsyncCostEstimateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LipsyncCostEstimateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cases/{case_id}/runs": {
       "get": {
         "summary": "Case Run Cards",
@@ -7172,7 +7358,8 @@
           "editor.jianying_draft_package",
           "provider.raw_request",
           "provider.raw_response",
-          "import.mapping"
+          "import.mapping",
+          "material.annotation"
         ],
         "title": "ArtifactKind"
       },
@@ -10118,6 +10305,8 @@
           "reference.unreachable",
           "reference.unsupported_platform",
           "reference.asr_failed",
+          "reference.cookie_invalid",
+          "reference.cookie_missing",
           "idempotency.conflict"
         ],
         "title": "ErrorCode"
@@ -10742,6 +10931,69 @@
         "additionalProperties": false,
         "type": "object",
         "title": "LipSyncOptions"
+      },
+      "LipsyncCostEstimateRequest": {
+        "properties": {
+          "video_duration_sec": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Video Duration Sec"
+          },
+          "provider_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Profile Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "video_duration_sec"
+        ],
+        "title": "LipsyncCostEstimateRequest"
+      },
+      "LipsyncCostEstimateResponse": {
+        "properties": {
+          "video_duration_sec": {
+            "type": "number",
+            "title": "Video Duration Sec"
+          },
+          "video_duration_min": {
+            "type": "number",
+            "title": "Video Duration Min"
+          },
+          "estimate": {
+            "$ref": "#/components/schemas/CostEstimateLine"
+          },
+          "pricing_source": {
+            "type": "string",
+            "enum": [
+              "catalog",
+              "default"
+            ],
+            "title": "Pricing Source"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "video_duration_sec",
+          "video_duration_min",
+          "estimate",
+          "pricing_source",
+          "request_id"
+        ],
+        "title": "LipsyncCostEstimateResponse"
       },
       "LoginRequest": {
         "properties": {
@@ -15844,6 +16096,198 @@
         ],
         "title": "ReconcileBillingResponse"
       },
+      "ReferenceCookieImportRequest": {
+        "properties": {
+          "cookie_text": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Cookie Text"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "header",
+              "netscape",
+              "json"
+            ],
+            "title": "Format",
+            "default": "auto"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "cookie_text"
+        ],
+        "title": "ReferenceCookieImportRequest"
+      },
+      "ReferenceCookieImportResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ReferenceCookieStatus"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "message",
+          "status",
+          "request_id"
+        ],
+        "title": "ReferenceCookieImportResponse"
+      },
+      "ReferenceCookieStatus": {
+        "properties": {
+          "cookie_present": {
+            "type": "boolean",
+            "title": "Cookie Present"
+          },
+          "cookie_count": {
+            "type": "integer",
+            "title": "Cookie Count",
+            "default": 0
+          },
+          "earliest_expiry": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Earliest Expiry"
+          },
+          "expired": {
+            "type": "boolean",
+            "title": "Expired",
+            "default": false
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "cookie_present"
+        ],
+        "title": "ReferenceCookieStatus"
+      },
+      "ReferenceCookieTestRequest": {
+        "properties": {
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ReferenceCookieTestRequest"
+      },
+      "ReferenceCookieTestResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "test_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Test Url"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ReferenceCookieStatus"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "message",
+          "status",
+          "request_id"
+        ],
+        "title": "ReferenceCookieTestResponse"
+      },
       "ReferenceExtractRequest": {
         "properties": {
           "url": {
@@ -15918,6 +16362,50 @@
           "resolved_url"
         ],
         "title": "ReferenceExtractResult"
+      },
+      "ReferenceExtractorStatusResponse": {
+        "properties": {
+          "cookie": {
+            "$ref": "#/components/schemas/ReferenceCookieStatus"
+          },
+          "chrome_available": {
+            "type": "boolean",
+            "title": "Chrome Available",
+            "default": false
+          },
+          "chrome_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chrome Path"
+          },
+          "playwright_available": {
+            "type": "boolean",
+            "title": "Playwright Available",
+            "default": false
+          },
+          "auto_refresh_supported": {
+            "type": "boolean",
+            "title": "Auto Refresh Supported",
+            "default": false
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "cookie",
+          "request_id"
+        ],
+        "title": "ReferenceExtractorStatusResponse"
       },
       "ReflectionRun": {
         "properties": {
@@ -17209,6 +17697,74 @@
           "request_id"
         ],
         "title": "TrimAnnotationResponse"
+      },
+      "TtsCostEstimateRequest": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Text"
+          },
+          "provider_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Profile Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "TtsCostEstimateRequest"
+      },
+      "TtsCostEstimateResponse": {
+        "properties": {
+          "text_length": {
+            "type": "integer",
+            "title": "Text Length"
+          },
+          "estimated_chars": {
+            "type": "integer",
+            "title": "Estimated Chars"
+          },
+          "estimated_duration_sec": {
+            "type": "number",
+            "title": "Estimated Duration Sec"
+          },
+          "estimate": {
+            "$ref": "#/components/schemas/CostEstimateLine"
+          },
+          "pricing_source": {
+            "type": "string",
+            "enum": [
+              "catalog",
+              "default"
+            ],
+            "title": "Pricing Source"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "text_length",
+          "estimated_chars",
+          "estimated_duration_sec",
+          "estimate",
+          "pricing_source",
+          "request_id"
+        ],
+        "title": "TtsCostEstimateResponse"
       },
       "UpdateMeRequest": {
         "properties": {

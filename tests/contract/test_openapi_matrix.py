@@ -118,10 +118,20 @@ def test_spec_34_paths_are_registered_in_openapi():
     assert not missing
 
 
+# Endpoints that intentionally have no 2xx success: deliberate "Gone"/not-supported stubs.
+NO_SUCCESS_RESPONSE_EXEMPTIONS = {
+    ("POST", "/api/creative/reference-extractor/refresh-cookies"): (
+        "browser-profile auto-refresh is not supported; endpoint is a 410/Gone stub"
+    ),
+}
+
+
 def test_every_write_endpoint_has_a_declared_success_response():
     spec = app.openapi()
     for path, methods in spec["paths"].items():
         for method, operation in methods.items():
             if method.lower() in {"post", "patch", "put", "delete"}:
+                if (method.upper(), path) in NO_SUCCESS_RESPONSE_EXEMPTIONS:
+                    continue
                 statuses = set(operation["responses"])
                 assert statuses & {"200", "201", "202"}, f"{method.upper()} {path}"

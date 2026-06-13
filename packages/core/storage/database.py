@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from decimal import Decimal
 
@@ -24,6 +23,8 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.types import UserDefinedType
+
+from packages.core.config import build_settings
 
 
 NAMING_CONVENTION = {
@@ -808,7 +809,7 @@ Index("idx_outbox_pending", OutboxEventRow.status, OutboxEventRow.available_at, 
 
 
 def database_url() -> str:
-    value = os.getenv("CUTAGENT_DATABASE_URL")
+    value = build_settings().storage.database_url
     if value:
         return value
     raise RuntimeError(
@@ -818,26 +819,20 @@ def database_url() -> str:
     )
 
 
-def _pool_int_from_env(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
-        return default
-    return int(raw)
-
-
 def create_database_engine(url: str | None = None) -> Engine:
     resolved = url or database_url()
     if make_url(resolved).get_backend_name() == "sqlite":
         # sqlite uses StaticPool/no pooling; pool sizing args do not apply and
         # would break in-memory unit-test engines, so keep the original behavior.
         return create_engine(resolved, pool_pre_ping=True)
+    pool = build_settings().storage
     return create_engine(
         resolved,
         pool_pre_ping=True,
-        pool_size=_pool_int_from_env("CUTAGENT_DB_POOL_SIZE", 5),
-        max_overflow=_pool_int_from_env("CUTAGENT_DB_MAX_OVERFLOW", 10),
-        pool_recycle=_pool_int_from_env("CUTAGENT_DB_POOL_RECYCLE", 1800),
-        pool_timeout=_pool_int_from_env("CUTAGENT_DB_POOL_TIMEOUT", 30),
+        pool_size=pool.pool_size,
+        max_overflow=pool.max_overflow,
+        pool_recycle=pool.pool_recycle,
+        pool_timeout=pool.pool_timeout,
     )
 
 

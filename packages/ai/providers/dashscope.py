@@ -60,7 +60,7 @@ class DashScopeASRProvider:
         if not task_id:
             raise ProviderRuntimeError(ErrorCode.provider_remote_failed, "DashScope ASR submit response missing task ID.")
         context.mark_polling(task_id)
-        task_payload, attempts = _poll_dashscope_task(
+        task_payload, attempts = poll_dashscope_task(
             client=self.client,
             base_url=base_url,
             api_key=api_key,
@@ -240,13 +240,17 @@ def _usage(result: dict[str, Any], key: str) -> int:
     return 0
 
 
-def _task_id_from_payload(payload: dict[str, Any]) -> str:
+def task_id_from_payload(payload: dict[str, Any]) -> str:
     output = payload.get("output") if isinstance(payload.get("output"), dict) else payload
     value = first_value(output, "task_id", "taskId", "id")
     return str(value) if value else ""
 
 
-def _poll_dashscope_task(
+# Backwards-compatible private alias (existing call sites use the underscore name).
+_task_id_from_payload = task_id_from_payload
+
+
+def poll_dashscope_task(
     *,
     client: httpx.Client,
     base_url: str,
@@ -270,10 +274,15 @@ def _poll_dashscope_task(
         if status in {"succeeded", "success", "completed", "finish", "finished"}:
             return payload, attempt
         if status in {"failed", "fail", "error", "canceled", "cancelled"}:
-            raise ProviderRuntimeError(ErrorCode.provider_remote_failed, f"DashScope ASR task failed: {status}.")
+            output = payload.get("output") if isinstance(payload.get("output"), dict) else payload
+            detail = str(output.get("message") or "").strip() if isinstance(output, dict) else ""
+            suffix = f": {detail}" if detail else "."
+            raise ProviderRuntimeError(
+                ErrorCode.provider_remote_failed, f"DashScope task {task_id} failed with status {status}{suffix}"
+            )
         if interval > 0:
             time.sleep(interval)
-    raise ProviderRuntimeError(ErrorCode.provider_timeout, "DashScope ASR task timed out.")
+    raise ProviderRuntimeError(ErrorCode.provider_timeout, f"DashScope task {task_id} timed out.")
 
 
 def _task_status(payload: dict[str, Any]) -> str:

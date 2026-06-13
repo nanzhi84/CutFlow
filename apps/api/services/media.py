@@ -14,8 +14,7 @@ from apps.api.common import (
 from packages.core import contracts as c
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
-from packages.ai.gateway import ProviderCall
-from apps.api.services import media_processing
+from apps.api.services import asset_annotation, media_processing
 
 def list_media_assets(
     request: Request,
@@ -211,59 +210,17 @@ def rerun_annotation(
         if response is None:
             raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
         return response
+    repo = repository(request)
+    if asset_id not in repo.media_assets:
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
     if payload.provider_profile_id:
-        repo = repository(request)
-        asset = repo.media_assets[asset_id]
         profile = repo.provider_profiles.get(payload.provider_profile_id)
         if profile is None or profile.capability != "vlm.annotation":
-            raise NodeExecutionError(c.ErrorCode.provider_unsupported_option, "Annotation provider profile is invalid.")
-        source_uri = ""
-        if asset.source_artifact_id and asset.source_artifact_id in repo.artifacts:
-            source_uri = repo.artifacts[asset.source_artifact_id].uri or ""
-        prompt_invocation, rendered = request.app.state.prompt_registry.render(
-            node_id="MediaAssetAnnotation",
-            variables={"asset_id": asset.id, "asset_kind": asset.kind},
-            case_id=asset.case_id,
-            provider_profile_id=profile.id,
-        )
-        invocation, result = request.app.state.provider_gateway.invoke(
-            ProviderCall(
-                case_id=asset.case_id,
-                provider_profile_id=profile.id,
-                capability_id="vlm.annotation",
-                prompt_version_id=prompt_invocation.prompt_version_id,
-                input={
-                    "asset_id": asset.id,
-                    "asset_kind": asset.kind,
-                    "asset_uri": source_uri,
-                    "prompt": rendered,
-                },
+            raise NodeExecutionError(
+                c.ErrorCode.provider_unsupported_option, "Annotation provider profile is invalid."
             )
-        )
-        if result is None or invocation.error:
-            repo.media_assets[asset_id] = asset.model_copy(
-                update={"annotation_status": "annotation_failed", "usable": False, "updated_at": c.utcnow()}
-            )
-            return c.AnnotationRunResponse(asset_id=asset_id, run_id=None, status="failed")
-        repo.prompt_invocations[prompt_invocation.id] = prompt_invocation.model_copy(
-            update={"provider_invocation_id": invocation.id, "updated_at": c.utcnow()}
-        )
-        canonical = result.output.get("canonical")
-        if not isinstance(canonical, dict):
-            canonical = {"labels": asset.tags, "kind": asset.kind}
-        usable = bool((canonical.get("quality") or {}).get("valid", True)) if isinstance(canonical.get("quality"), dict) else True
-        repo.annotations[asset_id] = c.AnnotationEditorVm(
-            asset=asset,
-            etag=new_id("etag"),
-            canonical=canonical,
-            projection={"title": asset.title, "usable": usable},
-            editable_paths=["/labels", "/usable", "/title"],
-        )
-        repo.media_assets[asset_id] = asset.model_copy(
-            update={"annotation_status": "annotated", "usable": usable, "updated_at": c.utcnow()}
-        )
-        return c.AnnotationRunResponse(asset_id=asset_id, run_id=None, status="completed")
-    repository(request).media_assets[asset_id] = repository(request).media_assets[asset_id].model_copy(
-        update={"annotation_status": "annotated", "updated_at": c.utcnow()}
-    )
-    return c.AnnotationRunResponse(asset_id=asset_id, run_id=None, status="completed")
+    # The gated runner drives the full sensors + (gated) VLM -> AnnotationV4 path,
+    # persists the AnnotationV4 artifact, and projects it into the editor. Without a
+    # real vlm.annotation profile + active secret it degrades to a sensor-only
+    # vlm_unconfigured result (never fabricated semantics).
+    return asset_annotation.run_inmemory_asset_annotation(request, asset_id, payload)

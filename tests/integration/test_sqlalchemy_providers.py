@@ -130,6 +130,12 @@ def test_sqlalchemy_provider_configuration_and_price_catalog_flow_is_persisted()
         assert capabilities.status_code == 200, capabilities.text
         assert len(capabilities.json()) > 0
 
+        # Balances serve persisted snapshots; with the periodic poller OFF (default),
+        # populate them via an explicit refresh. No real network is hit because every
+        # profile is unconfigured without an active secret, so the just-created
+        # provider lands in the report as an unconfigured/unsupported snapshot.
+        refreshed = client.post("/api/providers/balances/refresh")
+        assert refreshed.status_code == 200, refreshed.text
         balances = client.get("/api/providers/balances", params={"provider_id": profile["provider_id"]})
         assert balances.status_code == 200, balances.text
         assert balances.json()["items"][0]["provider_id"] == profile["provider_id"]

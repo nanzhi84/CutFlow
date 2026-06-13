@@ -12,11 +12,12 @@ from packages.core.contracts import (
     CaseMemory,
     ContractModel,
     DegradationNotice,
+    EditorHandoffPackageArtifact,
+    JianyingDraftPackageArtifact,
     MediaInfo,
     NodeError,
-    NodeRun,
-    ProviderInvocation,
-    RunStatus,
+    RunDebugReportArtifact,
+    RunPublicReportArtifact,
     ScriptVersion,
     VideoVersion,
     utcnow,
@@ -57,21 +58,6 @@ class TimelineValidationReport(ContractModel):
     errors: list[NodeError] = Field(default_factory=list)
     warnings: list[DegradationNotice] = Field(default_factory=list)
     checks: dict[str, bool] = Field(default_factory=dict)
-
-
-class CostSummary(ContractModel):
-    currency: str = "CNY"
-    estimated_amount: str = "0"
-    actual_amount: str | None = None
-    unpriced_invocations: int = 0
-
-
-class NodeSummary(ContractModel):
-    node_id: str
-    status: str
-    duration_ms: int | None = None
-    warning_count: int = 0
-    error: NodeError | None = None
 
 
 class AnnotationTimelineRow(ContractModel):
@@ -210,6 +196,17 @@ class NarrationUnit(ContractModel):
     start: float
     end: float
     confidence: float
+    # Boundary-planning fields (additive, all defaulted so existing callers are
+    # unaffected). The editing-agent boundary planner reads these to decide where
+    # portrait cuts may land; the narration splitter populates them.
+    duration: float | None = None
+    intent: str = "explain"
+    pause_after_ms: int = 0
+    hard_end: bool = False
+    boundary_score: float = 0.0
+    portrait_cut_allowed: bool = False
+    broll_overlay_allowed: bool = False
+    boundary_reason: str = ""
 
 
 class NarrationUnitsArtifact(ContractModel):
@@ -260,6 +257,10 @@ class BrollOverlay(ContractModel):
     confidence: float
     matched_keywords: list[str] = Field(default_factory=list)
     scene_name: str | None = None
+    # Diversity cluster (scene_type/narrative_role) carried so FinalizeRunReport
+    # can persist it into the selection ledger and cluster-level recency demotion
+    # can fire on the next run. Not part of the public OpenAPI surface.
+    diversity_key: str | None = None
 
 
 class BrollPlanArtifact(ContractModel):
@@ -312,20 +313,10 @@ class LipSyncReportArtifact(ContractModel):
     input_video_artifact_id: str
     input_audio_artifact_id: str
     output_video_artifact_id: str
+    fallback_from: str | None = None
+    fallback_to: str | None = None
+    fallback_reason: str | None = None
     warnings: list[str] = Field(default_factory=list)
-
-
-class EditorHandoffPackageArtifact(ContractModel):
-    finished_video_id: str
-    manifest_version: str = "v1"
-    artifact_ids: list[str] = Field(default_factory=list)
-
-
-class JianyingDraftPackageArtifact(ContractModel):
-    finished_video_id: str
-    manifest_version: str = "v1"
-    draft_uri: str | None = None
-    artifact_ids: list[str] = Field(default_factory=list)
 
 
 class PublishPackageArtifact(ContractModel):
@@ -336,25 +327,6 @@ class PublishPackageArtifact(ContractModel):
     title: str
     description: str
     platform_targets: list[str] = Field(default_factory=list)
-
-
-class RunPublicReportArtifact(ContractModel):
-    run_id: str
-    job_id: str
-    status: RunStatus
-    finished_video_id: str | None = None
-    preview_url: str | None = None
-    warnings: list[DegradationNotice] = Field(default_factory=list)
-    cost_summary: CostSummary = Field(default_factory=CostSummary)
-    node_summaries: list[NodeSummary] = Field(default_factory=list)
-
-
-class RunDebugReportArtifact(ContractModel):
-    run_id: str
-    node_runs: list[NodeRun] = Field(default_factory=list)
-    artifacts: list[ArtifactRef] = Field(default_factory=list)
-    provider_invocations: list[ProviderInvocation] = Field(default_factory=list)
-    traces: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProviderRawRequestArtifact(ContractModel):

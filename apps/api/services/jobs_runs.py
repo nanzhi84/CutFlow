@@ -325,7 +325,7 @@ def estimate_digital_human_video_cost(
         unit=TTS_UNIT,
         quantity=Decimal(tts_characters),
         price_items=price_items,
-        preferred_provider_id=_provider_id_from_profile(payload.voice.provider_profile_id),
+        preferred_provider_id=_provider_id_from_profile(request, payload.voice.provider_profile_id),
     )
     video = _estimate_line(
         label="视频秒数",
@@ -333,7 +333,7 @@ def estimate_digital_human_video_cost(
         unit=VIDEO_UNIT,
         quantity=Decimal(estimated_video_seconds),
         price_items=price_items,
-        preferred_provider_id=_provider_id_from_profile(payload.lipsync.provider_profile_id),
+        preferred_provider_id=_provider_id_from_profile(request, payload.lipsync.provider_profile_id),
     )
     total_amount = tts.estimated_cost.amount + video.estimated_cost.amount
     total = c.CostEstimateLine(
@@ -368,14 +368,34 @@ def _active_price_items(request: Request) -> list[c.ProviderPriceItem]:
     return [item for item in repository(request).price_items.values() if item.catalog_id in published_catalog_ids]
 
 
-def _provider_id_from_profile(profile_id: str | None) -> str:
-    # Profile ids follow the "{provider}.{capability}.{env}" convention
-    # (e.g. minimax.tts.prod, runninghub.heygem.default, sandbox.tts.default).
-    # The estimate must price against the provider the run will actually call,
-    # not whichever catalog entry happens to match the capability first.
+def _provider_id_from_profile(request: Request, profile_id: str | None) -> str:
+    # Resolve the catalog provider_id via the STORED ProviderProfile.provider_id (the
+    # same value the gateway bills against), so this is correct for BOTH profile-id
+    # conventions: real profiles like minimax.tts.prod -> minimax.tts, and sandbox
+    # seeds like sandbox.tts.default (whose provider_id is just "sandbox") -> sandbox.
+    # Fall back to stripping the trailing env segment only when the profile is not
+    # found. Mirrors cost_estimate.py::_provider_id_from_profile.
     if not profile_id:
         return "sandbox"
-    return profile_id.split(".", 1)[0] or "sandbox"
+    profile = _lookup_profile(request, profile_id)
+    if profile is not None and profile.provider_id:
+        return profile.provider_id
+    return profile_id.rsplit(".", 1)[0] or "sandbox"
+
+
+def _lookup_profile(request: Request, profile_id: str):
+    # Resolve via the gateway's provider_reader (the runtime repo that exposes
+    # get_profile in the DB-backed config -- the same source the gateway bills
+    # against), falling back to the in-memory repository. Mirrors
+    # digital_human._provider_profile_by_id. NOTE: do NOT use provider_repository()
+    # here -- that returns SqlAlchemyProviderRepository, which has no get_profile.
+    gateway = getattr(request.app.state, "provider_gateway", None)
+    reader = getattr(gateway, "provider_reader", None) if gateway is not None else None
+    if reader is not None:
+        profile = reader.get_profile(profile_id)
+        if profile is not None:
+            return profile
+    return repository(request).provider_profiles.get(profile_id)
 
 
 def _estimate_line(

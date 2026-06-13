@@ -15,7 +15,7 @@ from apps.api.common import (
 )
 from packages.core import contracts as c
 from packages.core.storage.repository import new_id
-from packages.ai.providers.balance import query_provider_balance
+from packages.ops.balance import BalancePollerService, refresh_balances
 
 
 def _balance_item_from_snapshot(snapshot: c.ProviderBalanceSnapshot) -> c.ProviderBalanceItem:
@@ -219,27 +219,69 @@ def provider_balances(
     )
 
 
-def refresh_all_balances(request: Request, http_client: httpx.Client | None = None) -> c.ProviderBalanceReport:
+def _list_provider_profiles(request: Request) -> list[c.ProviderProfile]:
     repo = provider_repository(request)
-    profiles = (
-        repo.list_profiles(limit=200)
-        if repo is not None
-        else list(repository(request).provider_profiles.values())
-    )
+    if repo is not None:
+        return repo.list_profiles(limit=200)
+    return list(repository(request).provider_profiles.values())
+
+
+def _persist_balance_snapshot(request: Request, item: c.ProviderBalanceItem) -> None:
+    repo = provider_repository(request)
+    snapshot = _snapshot_from_item(item)
+    if repo is not None:
+        repo.upsert_balance_snapshot(snapshot)
+    else:
+        repository(request).provider_balance_snapshots[snapshot.id] = snapshot
+
+
+def refresh_all_balances(request: Request, http_client: httpx.Client | None = None) -> c.ProviderBalanceReport:
+    profiles = _list_provider_profiles(request)
+    timeout = request.app.state.settings.balance.request_timeout_seconds
     close_client = http_client is None
-    client = http_client or httpx.Client(timeout=10.0)
+    client = http_client or httpx.Client(trust_env=False, timeout=timeout)
     try:
-        for profile in profiles:
-            item = query_provider_balance(profile, secret_store=secret_store(request), http_client=client)
+        items = refresh_balances(
+            profiles,
+            secret_store=secret_store(request),
+            client=client,
+        )
+    finally:
+        if close_client:
+            client.close()
+    for item in items:
+        _persist_balance_snapshot(request, item)
+    return provider_balances(request)
+
+
+def build_balance_poller_service(app) -> BalancePollerService:
+    """Build the OPTIONAL periodic balance poller from ``app.state``.
+
+    Gated by ``settings.balance.poller_enabled`` (default OFF). Each tick polls
+    every configured provider profile and persists the resulting snapshots so the
+    auth-gated GET /api/providers/balances serves fresh values."""
+
+    def profiles_provider() -> list[c.ProviderProfile]:
+        repo = getattr(app.state, "sqlalchemy_provider_repository", None)
+        if repo is not None:
+            return repo.list_profiles(limit=200)
+        return list(app.state.repository.provider_profiles.values())
+
+    def on_results(items: list[c.ProviderBalanceItem]) -> None:
+        repo = getattr(app.state, "sqlalchemy_provider_repository", None)
+        for item in items:
             snapshot = _snapshot_from_item(item)
             if repo is not None:
                 repo.upsert_balance_snapshot(snapshot)
             else:
-                repository(request).provider_balance_snapshots[snapshot.id] = snapshot
-    finally:
-        if close_client:
-            client.close()
-    return provider_balances(request)
+                app.state.repository.provider_balance_snapshots[snapshot.id] = snapshot
+
+    return BalancePollerService(
+        profiles_provider=profiles_provider,
+        secret_store=app.state.secret_store,
+        on_results=on_results,
+        settings=app.state.settings.balance,
+    )
 
 
 def reconcile_billing(payload: c.ReconcileBillingRequest, request: Request) -> c.ReconcileBillingResponse:
