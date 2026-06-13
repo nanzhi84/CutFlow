@@ -144,6 +144,65 @@ def concat_video_segments(segments: list[Path], output_path: Path) -> None:
     )
 
 
+def fit_video_to_exact_duration(
+    source_path: Path,
+    output_path: Path,
+    *,
+    duration: float,
+    width: int,
+    height: int,
+    fps: int,
+) -> None:
+    """Force a rendered track to be exactly ``duration`` seconds long.
+
+    Per-segment ``-t`` ms-quantization, fps resampling and ``concat -c copy``
+    accumulate sub-frame timing drift that, for longer tracks, exceeds the
+    one-frame tolerance of the portrait-track sanity check. This re-encodes the
+    concatenated track to a deterministic length so the check passes reliably:
+
+    - ``tpad=stop_mode=clone`` clones the final frame to *pad* a short track
+      past the target (the clone padding is generous: it always exceeds
+      ``duration`` so the subsequent trim is what sets the exact length).
+    - ``-t {duration:.3f}`` then *trims* to exactly ``duration``.
+
+    The result is guaranteed ``>=`` the plan duration (no end freeze/black for a
+    track that was already long enough) and never materially longer. One extra
+    ffmpeg pass; the track is short, so re-encoding is cheap.
+    """
+    pad_duration = max(duration, 0.0) + 1.0
+    FfmpegRunner().run(
+        [
+            ffmpeg_bin(),
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(source_path),
+            "-an",
+            "-vf",
+            (
+                f"tpad=stop_mode=clone:stop_duration={pad_duration:.3f},"
+                f"fps={fps},scale={width}:{height}:force_original_aspect_ratio=increase,"
+                f"crop={width}:{height},setsar=1"
+            ),
+            "-t",
+            f"{duration:.3f}",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-r",
+            str(fps),
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+    )
+
+
 def render_video_timeline(
     *,
     main_path: Path,

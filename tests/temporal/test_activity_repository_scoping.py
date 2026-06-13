@@ -220,9 +220,14 @@ def _scoped_context(monkeypatch, production: _FakeProductionRepository) -> tuple
         production_repository=production,
     )
     built_repo_ids: list[int] = []
+    # Hold strong references to every built repository for the lifetime of the
+    # test. Without this, a freed repo's address can be recycled by CPython for
+    # the next one, making id()-based identity checks flaky (~1/5 runs).
+    built_repos: list[Repository] = []
 
     def fake_build_runtime() -> tuple[Repository, _FakeRuntime]:
         repo = Repository()
+        built_repos.append(repo)
         built_repo_ids.append(id(repo))
         return repo, _FakeRuntime(repo)
 

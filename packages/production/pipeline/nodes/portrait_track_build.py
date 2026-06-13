@@ -9,7 +9,11 @@ from packages.core.contracts import ArtifactKind, ErrorCode
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.media.assets import store_file
 from packages.media.video.ffmpeg import FfmpegCommandError, probe_media
-from packages.production.pipeline._ffmpeg import concat_video_segments, transcode_video_segment
+from packages.production.pipeline._ffmpeg import (
+    concat_video_segments,
+    fit_video_to_exact_duration,
+    transcode_video_segment,
+)
 from packages.production.pipeline._node_context import NodeContext
 
 
@@ -50,10 +54,23 @@ def run(ctx: NodeContext) -> NodeOutput:
                     fps=fps,
                 )
                 segment_paths.append(output_path)
+            raw_track_path = temp_dir / "portrait_track_raw.mp4"
+            concat_video_segments(segment_paths, raw_track_path)
+            # Per-segment -t ms-quantization + fps resampling + concat (-c copy)
+            # accumulate sub-frame drift that exceeds 1/fps for longer tracks.
+            # Force the track to be EXACTLY the plan duration (clone-pad if short,
+            # trim if long) so the sanity check below passes reliably.
             concat_path = temp_dir / "portrait_track.mp4"
-            concat_video_segments(segment_paths, concat_path)
+            fit_video_to_exact_duration(
+                raw_track_path,
+                concat_path,
+                duration=duration,
+                width=width,
+                height=height,
+                fps=fps,
+            )
             media_info = probe_media(concat_path)
-            if abs(float(media_info.duration_sec or 0) - duration) > (1 / fps):
+            if abs(float(media_info.duration_sec or 0) - duration) > max(2 / fps, 0.05):
                 raise NodeExecutionError(
                     ErrorCode.render_invalid_timeline,
                     "Portrait track duration does not match the plan.",

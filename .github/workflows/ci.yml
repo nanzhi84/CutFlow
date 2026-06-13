@@ -63,6 +63,63 @@ jobs:
           python-version: "3.12"
       - name: Install Python dependencies
         run: python -m pip install -e ".[dev]"
+      - name: Start MinIO (S3-compatible object store)
+        # The Temporal step sets CUTAGENT_WORKFLOW_RUNTIME=temporal. The ephemeral
+        # ObjectStore fail-fast (packages/core/storage/object_store_env.py) refuses
+        # to start under Temporal when the ephemeral tier resolves to the
+        # node-local "local" backend, because artifacts written by one worker are
+        # invisible to activities on another worker. The store builder runs at
+        # import time (packages/core/storage/object_store.py:
+        # _OBJECT_STORE = object_store_from_env()), so MinIO must be up *before*
+        # pytest collects tests that import the app. We run minio/minio here (not
+        # as a `services:` container) because the image requires the `server /data`
+        # subcommand, which a GitHub Actions service block cannot append after the
+        # image name. Credentials and path-style addressing mirror the local demo
+        # (docker-compose.yml + .env.example): minioadmin/minioadmin.
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 -p 9001:9001 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:RELEASE.2025-09-07T16-13-09Z \
+            server /data --console-address ":9001"
+          # Wait for the S3 API on :9000 to answer before continuing. MinIO's
+          # /minio/health/live endpoint returns 200 once the server is ready.
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1; then
+              echo "MinIO is ready"; break
+            fi
+            echo "Waiting for MinIO... ($i)"; sleep 2
+            if [ "$i" -eq 30 ]; then echo "MinIO did not become ready" >&2; docker logs minio || true; exit 1; fi
+          done
+      - name: Create MinIO buckets (durable + ephemeral)
+        # The S3ObjectStore auto-creates its bucket on first connect via
+        # _ensure_bucket(), but we pre-create both buckets explicitly so the
+        # configuration is correct by construction and visible in the logs. The
+        # durable and ephemeral tiers must use distinct bucket names (the tiered
+        # store routes by the bucket embedded in each object URI). We reuse boto3,
+        # already installed by the dev extra, so bucket creation uses the same
+        # client config the app uses (path-style, SigV4).
+        run: |
+          python - <<'PY'
+          import boto3
+          from botocore.config import Config
+
+          client = boto3.client(
+              "s3",
+              endpoint_url="http://127.0.0.1:9000",
+              aws_access_key_id="minioadmin",
+              aws_secret_access_key="minioadmin",
+              region_name="us-east-1",
+              config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+          )
+          for bucket in ("cutagent-local", "cutagent-ephemeral"):
+              try:
+                  client.create_bucket(Bucket=bucket)
+                  print(f"created bucket {bucket}")
+              except client.exceptions.BucketAlreadyOwnedByYou:
+                  print(f"bucket {bucket} already exists")
+          PY
       - name: Bootstrap database
         run: python scripts/bootstrap_database.py
       - name: Run database integration tests
@@ -70,9 +127,28 @@ jobs:
           CUTAGENT_RUN_DB_TESTS: "1"
         run: timeout -k 5 600 python -m pytest -q tests/integration
       - name: Run Temporal integration tests
+        # Mirror the local demo: a MinIO-backed durable tier AND a MinIO-backed
+        # ephemeral tier (distinct buckets). The ephemeral S3 config is what
+        # satisfies the fail-fast guard under CUTAGENT_WORKFLOW_RUNTIME=temporal.
+        # MinIO is S3-compatible and uses path-style addressing.
         env:
           CUTAGENT_RUN_TEMPORAL_TESTS: "1"
           CUTAGENT_WORKFLOW_RUNTIME: temporal
+          # Durable tier on shared MinIO (mirrors docker-compose / .env.example).
+          CUTAGENT_OBJECTSTORE_BACKEND: s3
+          CUTAGENT_OBJECTSTORE_ENDPOINT: http://127.0.0.1:9000
+          CUTAGENT_OBJECTSTORE_BUCKET: cutagent-local
+          CUTAGENT_OBJECTSTORE_ACCESS_KEY: minioadmin
+          CUTAGENT_OBJECTSTORE_SECRET_KEY: minioadmin
+          CUTAGENT_OBJECTSTORE_ADDRESSING_STYLE: path
+          # Ephemeral tier on shared MinIO (distinct bucket). Required so the
+          # ephemeral fail-fast guard passes under Temporal.
+          CUTAGENT_EPHEMERAL_OBJECTSTORE_BACKEND: s3
+          CUTAGENT_EPHEMERAL_OBJECTSTORE_ENDPOINT: http://127.0.0.1:9000
+          CUTAGENT_EPHEMERAL_OBJECTSTORE_BUCKET: cutagent-ephemeral
+          CUTAGENT_EPHEMERAL_OBJECTSTORE_ACCESS_KEY: minioadmin
+          CUTAGENT_EPHEMERAL_OBJECTSTORE_SECRET_KEY: minioadmin
+          CUTAGENT_EPHEMERAL_OBJECTSTORE_ADDRESSING_STYLE: path
         run: timeout -k 5 600 python -m pytest -q tests/temporal
 
   frontend:

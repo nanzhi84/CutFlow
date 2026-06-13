@@ -51,6 +51,17 @@ def _env_int(name: str, default: int) -> int:
     return int(value) if value is not None else default
 
 
+def _env_int_blank_default(name: str, default: int) -> int:
+    """Like :func:`_env_int` but an unset OR blank var falls back to ``default``.
+
+    Used for the DB connection-pool knobs, where a present-but-empty env value
+    should behave as "not configured" rather than raising."""
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    return int(value)
+
+
 def _default_ephemeral_local_path() -> str:
     """Default ephemeral object-store root under the OS temp dir.
 
@@ -76,6 +87,13 @@ class StorageSettings(BaseModel):
     # CUTAGENT_DATABASE_URL: required (no default) when the SQLAlchemy backend is
     # active; None here means "unset" so call sites raise their explicit error.
     database_url: str | None = None
+
+    # Engine connection-pool tuning for non-sqlite backends (sqlite ignores these).
+    # CUTAGENT_DB_POOL_SIZE / _MAX_OVERFLOW / _POOL_RECYCLE / _POOL_TIMEOUT.
+    pool_size: int = 5
+    max_overflow: int = 10
+    pool_recycle: int = 1800
+    pool_timeout: int = 30
 
 
 class S3TransportSettings(BaseModel):
@@ -258,6 +276,10 @@ def build_settings() -> Settings:
         storage=StorageSettings(
             backend=_env_str("CUTAGENT_STORAGE_BACKEND", "sqlalchemy").lower(),
             database_url=os.getenv("CUTAGENT_DATABASE_URL"),
+            pool_size=_env_int_blank_default("CUTAGENT_DB_POOL_SIZE", 5),
+            max_overflow=_env_int_blank_default("CUTAGENT_DB_MAX_OVERFLOW", 10),
+            pool_recycle=_env_int_blank_default("CUTAGENT_DB_POOL_RECYCLE", 1800),
+            pool_timeout=_env_int_blank_default("CUTAGENT_DB_POOL_TIMEOUT", 30),
         ),
         object_store=ObjectStoreSettings(
             tiered=os.getenv("CUTAGENT_OBJECTSTORE_TIERED", "1") != "0",
