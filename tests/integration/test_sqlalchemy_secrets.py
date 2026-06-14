@@ -9,7 +9,7 @@ if os.getenv("CUTAGENT_RUN_DB_TESTS") != "1":
 
 from apps.api.main import app
 from packages.core.storage.bootstrap import get_sqlalchemy_session_factory_if_enabled
-from packages.core.storage.database import SecretRow
+from packages.core.storage.database import AuditEventRow, SecretRow
 
 
 def sqlalchemy_session_factory():
@@ -89,3 +89,40 @@ def test_sqlalchemy_secret_create_rotate_disable_flow_is_persisted_without_plain
         assert new_row.rotated_from_secret_id == secret["id"]
         assert new_row.secret_ref != first_secret_ref
         assert "second-secret-value" not in new_row.secret_ref
+
+    # Spec 11.3 / 32.9: create/rotate/disable each append a secret audit event.
+    from sqlalchemy import select
+
+    with session_factory() as session:
+        rows = list(
+            session.scalars(
+                select(AuditEventRow).where(AuditEventRow.resource_type == "secret")
+            )
+        )
+    by_action: dict[str, list[AuditEventRow]] = {}
+    for row in rows:
+        by_action.setdefault(row.action, []).append(row)
+
+    create_events = [r for r in by_action.get("secret.create", []) if r.resource_id == secret["id"]]
+    assert create_events, "missing secret.create audit event"
+    create_event = create_events[0]
+    # Actor is the authenticated admin user (not the bare "system" default).
+    assert create_event.actor
+    assert create_event.actor != "system"
+    assert create_event.details.get("provider_id") == f"sandbox-{suffix}"
+    assert create_event.details.get("environment") == "local"
+
+    rotate_events = [
+        r for r in by_action.get("secret.rotate", []) if r.resource_id == rotated_secret["id"]
+    ]
+    assert rotate_events, "missing secret.rotate audit event"
+
+    disable_events = [
+        r for r in by_action.get("secret.disable", []) if r.resource_id == rotated_secret["id"]
+    ]
+    assert disable_events, "missing secret.disable audit event"
+
+    # No audit detail payload may ever carry the plaintext value.
+    serialized = repr([(r.action, r.details) for r in rows])
+    assert "first-secret-value" not in serialized
+    assert "second-secret-value" not in serialized
