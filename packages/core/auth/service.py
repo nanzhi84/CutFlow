@@ -6,6 +6,7 @@ from datetime import timedelta
 from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerifyMismatchError
 
+from packages.core.auth.password_policy import validate_password
 from packages.core.config import build_settings
 from packages.core.contracts import (
     AuthResponse,
@@ -58,6 +59,12 @@ class AuthService:
             return False
 
     def register(self, payload: RegisterRequest) -> tuple[AuthResponse, str]:
+        # R5: enforce the server-side password strength policy on registration.
+        validate_password(
+            payload.password,
+            email=payload.email,
+            display_name=payload.display_name,
+        )
         registration_open = build_settings().auth.registration_open
         role = UserRole.viewer
         code = None

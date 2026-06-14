@@ -187,6 +187,13 @@ class AuthSettings(BaseModel):
     registration_open: bool = True
     # CUTAGENT_REGISTRATION_CODE_SALT: salt mixed into registration-code hashes.
     registration_code_salt: str = "local-dev-registration-code-salt"
+    # Brute-force rate-limit knobs (R2). Sliding window per client/identifier.
+    # CUTAGENT_AUTH_MAX_LOGIN_ATTEMPTS / _LOGIN_WINDOW_MINUTES /
+    # _MAX_REGISTRATION_ATTEMPTS / _REGISTRATION_WINDOW_MINUTES.
+    max_login_attempts: int = 8
+    login_window_minutes: int = 15
+    max_registration_attempts: int = 5
+    registration_window_minutes: int = 60
 
 
 class SecretStoreSettings(BaseModel):
@@ -344,6 +351,14 @@ def build_settings() -> Settings:
             == "true",
             registration_code_salt=_env_str(
                 "CUTAGENT_REGISTRATION_CODE_SALT", "local-dev-registration-code-salt"
+            ),
+            max_login_attempts=_env_int("CUTAGENT_AUTH_MAX_LOGIN_ATTEMPTS", 8),
+            login_window_minutes=_env_int("CUTAGENT_AUTH_LOGIN_WINDOW_MINUTES", 15),
+            max_registration_attempts=_env_int(
+                "CUTAGENT_AUTH_MAX_REGISTRATION_ATTEMPTS", 5
+            ),
+            registration_window_minutes=_env_int(
+                "CUTAGENT_AUTH_REGISTRATION_WINDOW_MINUTES", 60
             ),
         ),
         secret_store=SecretStoreSettings(

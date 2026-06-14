@@ -12,12 +12,31 @@ from apps.api.common import (
 from apps.api.dependencies import SESSION_COOKIE, current_user
 from packages.core import contracts as c
 from packages.core.auth import SqlAlchemyAuthService
+from packages.core.auth import rate_limit
+from packages.core.auth.password_policy import validate_password
 from packages.core.registration_codes import hash_registration_code
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 
-def register(request: Request, payload: c.RegisterRequest, response: Response) -> c.AuthResponse:
 
+def _client_identity(request: Request) -> str:
+    """Best-effort client identity for rate-limit bucketing.
+
+    Prefers the first ``X-Forwarded-For`` hop (proxy/LB), falling back to the
+    direct peer address, then a constant so the limiter still buckets when the
+    peer is unknown (e.g. the TestClient)."""
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def register(request: Request, payload: c.RegisterRequest, response: Response) -> c.AuthResponse:
+    # R2: throttle registration per client BEFORE doing any work, and count this
+    # attempt toward the window.
+    client_id = _client_identity(request)
+    rate_limit.check_registration_rate_limit(client_id)
+    rate_limit.record_registration_attempt(client_id)
     auth_response, token = auth(request).register(payload)
     response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax")
     return auth_response.model_copy(update={"request_id": request_id()})
@@ -26,7 +45,16 @@ def register(request: Request, payload: c.RegisterRequest, response: Response) -
 def login(request: Request, payload: c.LoginRequest, response: Response) -> c.AuthResponse:
 
     identifier = (payload.identifier or payload.email or "").strip()
-    auth_response, token = auth(request).login(identifier, payload.password)
+    # R2: reject if this client/identifier is already over the failed-login
+    # threshold, then count failures and clear the bucket on success.
+    client_id = _client_identity(request)
+    rate_limit.check_login_rate_limit(client_id, identifier)
+    try:
+        auth_response, token = auth(request).login(identifier, payload.password)
+    except NodeExecutionError:
+        rate_limit.record_login_failure(client_id, identifier)
+        raise
+    rate_limit.record_login_success(client_id, identifier)
     response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax")
     return auth_response.model_copy(update={"request_id": request_id()})
 
@@ -61,13 +89,29 @@ def update_me(payload: c.UpdateMeRequest, request: Request) -> c.AuthUser:
 
 
 def change_password(payload: c.ChangePasswordRequest, request: Request) -> c.OkResponse:
-    current_user = auth(request).authenticate_token(request.cookies.get(SESSION_COOKIE))
+    token = request.cookies.get(SESSION_COOKIE)
+    current_user = auth(request).authenticate_token(token)
     if isinstance(auth(request), SqlAlchemyAuthService):
-        auth(request).change_password(current_user.id, payload)
+        # R5: the DB service validates strength + revokes OTHER sessions, keeping
+        # the caller's session identified by its raw cookie token.
+        auth(request).change_password(current_user.id, payload, keep_token=token)
         return c.OkResponse(request_id=request_id())
     if not auth(request).verify_password(current_user.id, payload.old_password):
         raise NodeExecutionError(c.ErrorCode.auth_invalid_credentials, "Invalid credentials.")
+    # R5: strength policy + revoke OTHER sessions on the in-memory backend too.
+    validate_password(
+        payload.new_password,
+        email=current_user.email,
+        display_name=current_user.display_name,
+    )
     auth(request).repository.password_hashes[current_user.id] = auth(request).hash_password(payload.new_password)
+    sessions = auth(request).repository.sessions
+    for session_id in [
+        sid
+        for sid, session in sessions.items()
+        if session["user_id"] == current_user.id and sid != token
+    ]:
+        sessions.pop(session_id, None)
     return c.OkResponse(request_id=request_id())
 
 
@@ -98,10 +142,37 @@ def patch_user(user_id: str, payload: c.AdminUpdateUserRequest, request: Request
         if user is None:
             raise NodeExecutionError(c.ErrorCode.auth_unauthorized, "User not found.")
         return user
-    if user_id not in repository(request).users:
+    users = repository(request).users
+    if user_id not in users:
         raise NodeExecutionError(c.ErrorCode.auth_unauthorized, "User not found.")
     updates = payload.model_dump(exclude_none=True)
-    return repository(request).patch(repository(request).users, user_id, updates)
+    # R4: never let the last active admin be demoted or disabled (in-memory twin).
+    _guard_last_admin_in_memory(users, user_id, updates)
+    return repository(request).patch(users, user_id, updates)
+
+
+def _guard_last_admin_in_memory(
+    users: dict[str, c.AuthUser], user_id: str, updates: dict
+) -> None:
+    """Reject a patch that would leave zero active admins (in-memory R4 twin)."""
+    row = users[user_id]
+    if row.role != c.UserRole.admin or row.status != "active":
+        return
+    new_role = updates.get("role")
+    demoting = "role" in updates and new_role != c.UserRole.admin
+    disabling = updates.get("status") == "disabled"
+    if not (demoting or disabling):
+        return
+    other_active_admins = sum(
+        1
+        for uid, user in users.items()
+        if uid != user_id and user.role == c.UserRole.admin and user.status == "active"
+    )
+    if not other_active_admins:
+        raise NodeExecutionError(
+            c.ErrorCode.validation_conflict,
+            "Cannot demote or disable the last active admin.",
+        )
 
 
 def registration_codes(request: Request, limit: int = 50) -> c.PageResponse[c.RegistrationCodePreview]:

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import timedelta
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from packages.core.auth.password_policy import validate_password
 from packages.core.auth.service import ROLE_RANK, create_password_hasher
 from packages.core.config import build_settings
 from packages.core.registration_codes import hash_registration_code
@@ -31,6 +33,17 @@ from packages.core.contracts import (
 from packages.core.storage.database import RegistrationCodeRow, SessionRow, UserRow
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
+
+
+def hash_session_token(token: str) -> str:
+    """Return the at-rest lookup key for a raw session token (R3).
+
+    Session tokens are high-entropy random strings (``new_id("sess")``), so a
+    plain SHA-256 hex digest (no salt) is sufficient: an attacker who reads the
+    ``sessions`` table sees only the hash and cannot derive the raw cookie value
+    needed to impersonate a user. The raw token is returned to the client once
+    and never stored; every validation hashes the incoming token before lookup."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def user_row_to_contract(row: UserRow) -> AuthUser:
@@ -69,6 +82,12 @@ class SqlAlchemyAuthService:
         return self.password_hasher.hash(password)
 
     def register(self, payload: RegisterRequest) -> tuple[AuthResponse, str]:
+        # R5: enforce the server-side password strength policy on registration.
+        validate_password(
+            payload.password,
+            email=payload.email,
+            display_name=payload.display_name,
+        )
         registration_open = build_settings().auth.registration_open
         with self.session_factory() as session:
             role = UserRole.viewer
@@ -151,7 +170,10 @@ class SqlAlchemyAuthService:
             row = session.get(UserRow, user_id)
             if row is None:
                 return None
-            for key, value in payload.model_dump(exclude_none=True).items():
+            updates = payload.model_dump(exclude_none=True)
+            # R4: never let the last active admin be demoted or disabled.
+            self._guard_last_admin(session, row, updates)
+            for key, value in updates.items():
                 if key == "role" and isinstance(value, UserRole):
                     value = value.value
                 setattr(row, key, value)
@@ -159,6 +181,37 @@ class SqlAlchemyAuthService:
             session.commit()
             session.refresh(row)
             return user_row_to_contract(row)
+
+    def _guard_last_admin(
+        self, session: Session, row: UserRow, updates: dict[str, object]
+    ) -> None:
+        """Block a patch that would leave zero active admins (R4).
+
+        Only relevant when ``row`` is itself currently an active admin and the
+        patch would either change its role away from admin OR disable it. Counts
+        OTHER active admins; if there are none, the change is rejected with
+        ``ErrorCode.validation_conflict`` (409)."""
+        if row.role != UserRole.admin.value or row.status != "active":
+            return
+        new_role = updates.get("role")
+        if isinstance(new_role, UserRole):
+            new_role = new_role.value
+        demoting = "role" in updates and new_role != UserRole.admin.value
+        disabling = updates.get("status") == "disabled"
+        if not (demoting or disabling):
+            return
+        other_active_admins = session.scalar(
+            select(func.count())
+            .select_from(UserRow)
+            .where(UserRow.role == UserRole.admin.value)
+            .where(UserRow.status == "active")
+            .where(UserRow.id != row.id)
+        )
+        if not other_active_admins:
+            raise NodeExecutionError(
+                ErrorCode.validation_conflict,
+                "Cannot demote or disable the last active admin.",
+            )
 
     def update_me(self, user_id: str, payload: UpdateMeRequest) -> AuthUser | None:
         with self.session_factory() as session:
@@ -172,13 +225,40 @@ class SqlAlchemyAuthService:
             session.refresh(row)
             return user_row_to_contract(row)
 
-    def change_password(self, user_id: str, payload: ChangePasswordRequest) -> None:
+    def change_password(
+        self,
+        user_id: str,
+        payload: ChangePasswordRequest,
+        *,
+        keep_token: str | None = None,
+    ) -> None:
         with self.session_factory() as session:
             row = session.get(UserRow, user_id)
             if row is None or not self._verify_hash(row.password_hash, payload.old_password):
                 raise NodeExecutionError(ErrorCode.auth_invalid_credentials, "Invalid credentials.")
+            # R5: enforce password strength on the new password too.
+            validate_password(
+                payload.new_password,
+                email=row.email,
+                display_name=row.display_name,
+            )
             row.password_hash = self.hash_password(payload.new_password)
             row.updated_at = utcnow()
+            # R5: revoke all OTHER active sessions of this user so a leaked
+            # session cannot survive a password change. Keep the caller's own
+            # session if we can identify it from its raw token (hashed lookup);
+            # otherwise revoke ALL sessions (the caller re-authenticates).
+            keep_id = hash_session_token(keep_token) if keep_token else None
+            now = utcnow()
+            other_sessions = session.scalars(
+                select(SessionRow)
+                .where(SessionRow.user_id == user_id)
+                .where(SessionRow.revoked_at.is_(None))
+            )
+            for session_row in other_sessions:
+                if keep_id is not None and session_row.id == keep_id:
+                    continue
+                session_row.revoked_at = now
             session.commit()
 
     def list_registration_codes(self, *, limit: int = 50) -> list[RegistrationCodePreview]:
@@ -245,7 +325,8 @@ class SqlAlchemyAuthService:
         if not token:
             raise NodeExecutionError(ErrorCode.auth_unauthorized, "Missing session.")
         with self.session_factory() as session:
-            session_row = session.get(SessionRow, token)
+            # R3: hash the incoming raw token before lookup (stored key is hashed).
+            session_row = session.get(SessionRow, hash_session_token(token))
             if session_row is None or session_row.revoked_at is not None:
                 raise NodeExecutionError(ErrorCode.auth_unauthorized, "Invalid session.")
             if session_row.expires_at < utcnow():
@@ -259,7 +340,8 @@ class SqlAlchemyAuthService:
         if not token:
             return
         with self.session_factory() as session:
-            session_row = session.get(SessionRow, token)
+            # R3: hash before lookup — the stored key is the hashed token.
+            session_row = session.get(SessionRow, hash_session_token(token))
             if session_row is not None:
                 session_row.revoked_at = utcnow()
                 session.commit()
@@ -269,28 +351,29 @@ class SqlAlchemyAuthService:
             raise NodeExecutionError(ErrorCode.auth_forbidden, "Permission denied.")
 
     def session_info(self, user: AuthUser, request_id: str) -> SessionInfo:
-        with self.session_factory() as session:
-            session_row = session.scalar(
-                select(SessionRow)
-                .where(SessionRow.user_id == user.id)
-                .where(SessionRow.revoked_at.is_(None))
-                .order_by(SessionRow.expires_at.desc())
-                .limit(1)
-            )
-            session_id = session_row.id if session_row else ""
+        # R3: SessionRow.id is now the HASH of the raw token, which cannot be
+        # turned back into a usable session cookie value. The raw token is only
+        # ever known to the client (held in its cookie), so the server returns an
+        # empty session_id here — no caller/frontend depends on a non-empty value.
         return SessionInfo(
             user=user,
-            session_id=session_id,
+            session_id="",
             expires_at=utcnow() + self.session_ttl,
             request_id=request_id,
         )
 
     def _auth_response(self, session: Session, user: AuthUser) -> tuple[AuthResponse, str]:
+        # R3: the RAW token goes to the client; only its hash is persisted as the
+        # SessionRow PK (still a String column — no schema change).
         token = new_id("sess")
         expires_at = utcnow() + self.session_ttl
-        session.add(SessionRow(id=token, user_id=user.id, expires_at=expires_at))
+        session.add(
+            SessionRow(id=hash_session_token(token), user_id=user.id, expires_at=expires_at)
+        )
         request_id = "req_local"
-        info = SessionInfo(user=user, session_id=token, expires_at=expires_at, request_id=request_id)
+        # session_id intentionally empty: the raw token cannot be recovered from
+        # the stored hash, and no caller depends on a non-empty value here.
+        info = SessionInfo(user=user, session_id="", expires_at=expires_at, request_id=request_id)
         return AuthResponse(user=user, session=info, request_id=request_id), token
 
     def _verify_hash(self, password_hash: str, password: str) -> bool:

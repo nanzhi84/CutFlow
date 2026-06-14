@@ -11,6 +11,7 @@ if os.getenv("CUTAGENT_RUN_DB_TESTS") != "1":
 
 from apps.api.main import app
 from packages.core.auth.service import hash_registration_code
+from packages.core.auth.sqlalchemy_service import hash_session_token
 from packages.core.storage.bootstrap import get_sqlalchemy_session_factory_if_enabled
 from packages.core.storage.database import ArtifactRow, RegistrationCodeRow, SessionRow, UploadSessionRow, UserRow
 
@@ -34,8 +35,14 @@ def test_sqlalchemy_auth_login_session_and_logout_are_persisted():
         token = client.cookies.get("cutagent_session")
         assert token
 
+        # R3: the raw cookie token is NOT the PK; the stored PK is its sha256.
+        hashed = hash_session_token(token)
+        assert hashed != token
+
         with session_factory() as session:
-            row = session.get(SessionRow, token)
+            # raw token must NOT be a key; hashed token must be.
+            assert session.get(SessionRow, token) is None
+            row = session.get(SessionRow, hashed)
             assert row is not None
             assert row.user_id == "usr_admin"
             assert row.revoked_at is None
@@ -49,7 +56,7 @@ def test_sqlalchemy_auth_login_session_and_logout_are_persisted():
         assert client.get("/api/auth/session").status_code == 401
 
         with session_factory() as session:
-            row = session.get(SessionRow, token)
+            row = session.get(SessionRow, hashed)
             assert row is not None
             assert row.revoked_at is not None
 
