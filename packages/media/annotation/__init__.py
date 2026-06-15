@@ -20,6 +20,16 @@ The artifact shapes (AnnotationV4 / ClipV4 / windows / quality report) live in
 
 from __future__ import annotations
 
+from .bgm import (
+    BGM_TEMPO_BUCKETS,
+    FEATURES_UNAVAILABLE,
+    LLM_UNCONFIGURED,
+    BgmAnnotationResult,
+    annotate_bgm,
+    extract_audio_features,
+    measure_loudness_lufs,
+    resolve_llm_profile,
+)
 from .boundary import apply_safety_inset, has_internal_cut, snap_to_cuts
 from .errors import (
     AnnotationV4Error,
@@ -99,6 +109,15 @@ __all__ = [
     "GatedAnnotationResult",
     "SensorDeps",
     "VLM_UNCONFIGURED",
+    # bgm / audio annotation
+    "annotate_bgm",
+    "resolve_llm_profile",
+    "extract_audio_features",
+    "measure_loudness_lufs",
+    "BgmAnnotationResult",
+    "LLM_UNCONFIGURED",
+    "FEATURES_UNAVAILABLE",
+    "BGM_TEMPO_BUCKETS",
     # errors
     "AnnotationV4Error",
     "SchemaError",

@@ -298,6 +298,89 @@ def test_annotation_rerun_degrades_without_source_video():
         )
 
 
+class FakeBgmLLMProvider:
+    """Returns canned BGM semantic JSON for the gated llm.chat BGM annotation path."""
+
+    provider_id = "fake.bgmllm"
+
+    def invoke(self, call: ProviderCall) -> ProviderResult:
+        return ProviderResult(
+            output={
+                "content": (
+                    '{"mood": "calm", "genre": "ambient", '
+                    '"scene_fit": ["产品介绍", "舒缓口播"], "avoid_scene": ["激烈促销"], '
+                    '"agent_caption": "适合舒缓的产品讲解场景"}'
+                )
+            }
+        )
+
+
+def test_bgm_annotation_rerun_uses_audio_path_and_llm_semantics():
+    """Re-running annotation on a BGM asset takes the audio path (objective features +
+    gated llm.chat semantics) rather than the visual VLM path: it persists an
+    AnnotationV4 whose quality_report["bgm"] carries mood/genre/scene_fit, and marks
+    the asset annotated + usable. librosa is optional, so bpm/energy may be absent --
+    the LLM mood/genre is what makes it usable."""
+    with TestClient(create_app()) as client:
+        _login_admin(client)
+        repository = client.app.state.repository
+        client.app.state.provider_gateway.register(FakeBgmLLMProvider())
+        profile = _profile("fake.bgmllm", "llm.chat", "fake-bgmllm")
+        repository.provider_profiles[profile.id] = profile
+        asset_id = "asset_bgm_demo"
+        assert repository.media_assets[asset_id].kind == "bgm"
+
+        rerun = client.post(
+            f"/api/annotations/{asset_id}/rerun",
+            json={"provider_profile_id": profile.id, "force": True},
+        )
+
+        assert rerun.status_code == 202, rerun.text
+        assert rerun.json()["status"] == "completed"
+        editor = client.get(f"/api/annotations/{asset_id}")
+        assert editor.status_code == 200, editor.text
+        body = editor.json()
+        canonical = body["canonical"]
+        assert canonical["meta"]["material_type"] == "bgm"
+        assert canonical["meta"]["annotation_status"] == "completed"
+        bgm_report = canonical["quality_report"]["bgm"]
+        assert bgm_report["mood"] == "calm"
+        assert bgm_report["genre"] == "ambient"
+        assert "产品介绍" in bgm_report["scene_fit"]
+        # editor projection exposes the BGM semantics + llm gating flag
+        assert body["projection"]["llm_configured"] is True
+        assert body["projection"]["usable"] is True
+        # asset is annotated + usable so it becomes an eligible BGM candidate
+        assert repository.media_assets[asset_id].annotation_status == "annotated"
+        assert repository.media_assets[asset_id].usable is True
+        assert any(
+            art.kind == ArtifactKind.material_annotation for art in repository.artifacts.values()
+        )
+
+
+def test_bgm_annotation_rerun_degrades_without_real_llm():
+    """No real llm.chat profile -> BGM annotation degrades to features-only
+    (llm_unconfigured), never fabricates mood/genre, and marks the asset failed."""
+    with TestClient(create_app()) as client:
+        _login_admin(client)
+        repository = client.app.state.repository
+        asset_id = "asset_bgm_demo"
+
+        rerun = client.post(f"/api/annotations/{asset_id}/rerun", json={"force": True})
+
+        assert rerun.status_code == 202, rerun.text
+        assert rerun.json()["status"] == "completed"
+        editor = client.get(f"/api/annotations/{asset_id}")
+        canonical = editor.json()["canonical"]
+        assert canonical["meta"]["material_type"] == "bgm"
+        assert canonical["meta"]["annotation_status"] == "failed"
+        bgm_report = canonical["quality_report"]["bgm"]
+        assert bgm_report["status"] == "llm_unconfigured"
+        assert bgm_report.get("mood") in (None, "")
+        assert editor.json()["projection"]["llm_configured"] is False
+        assert repository.media_assets[asset_id].annotation_status == "annotation_failed"
+
+
 def test_voice_preview_uses_tts_provider_artifact(media_fixture_factory):
     with TestClient(create_app()) as client:
         _login_admin(client)

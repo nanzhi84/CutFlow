@@ -37,15 +37,21 @@ from apps.api.services.annotation_patch import build_projection
 from packages.core import contracts as c
 from packages.core.storage.repository import new_id
 from packages.media.annotation import (
+    BgmAnnotationResult,
     GatedAnnotationResult,
     SensorDeps,
     V4Config,
     annotate_asset,
+    annotate_bgm,
+    resolve_llm_profile,
     resolve_vlm_profile,
 )
 from packages.media.assets import local_object_path
 
 logger = logging.getLogger("apps.api.services.asset_annotation")
+
+# Asset kinds annotated through the audio (BGM) path rather than the visual VLM path.
+_AUDIO_ANNOTATION_KINDS = frozenset({"bgm"})
 
 
 def run_inmemory_asset_annotation(
@@ -63,6 +69,11 @@ def run_inmemory_asset_annotation(
     repo = repository(request)
     asset = repo.media_assets[asset_id]
     gateway = request.app.state.provider_gateway
+
+    # BGM / audio assets are annotated through the audio path (objective features +
+    # gated LLM semantics); the visual VLM path cannot annotate an audio asset.
+    if asset.kind in _AUDIO_ANNOTATION_KINDS:
+        return _run_bgm_annotation(request, repo, asset, payload)
 
     explicit = repo.provider_profiles.get(payload.provider_profile_id) if payload.provider_profile_id else None
     candidates = [p for p in repo.provider_profiles.values() if p.capability == "vlm.annotation"]
@@ -91,6 +102,82 @@ def run_inmemory_asset_annotation(
     _persist(request, repo, asset, result)
     status = "failed" if (result.vlm_configured and _is_failed(result)) else "completed"
     return c.AnnotationRunResponse(asset_id=asset_id, run_id=None, status=status)
+
+
+def _run_bgm_annotation(
+    request: Request,
+    repo,
+    asset: c.MediaAssetRecord,
+    payload: c.RerunAnnotationRequest,
+    *,
+    feature_extractor=None,
+) -> c.AnnotationRunResponse:
+    """Annotate a BGM/audio asset: objective features + gated LLM semantics.
+
+    Gates the paid ``llm.chat`` path behind a real profile + active secret. Without
+    one (or with an unreadable source) it degrades to a features-only annotation and
+    never fabricates semantics. ``feature_extractor`` is injectable for tests so no
+    real ffmpeg / librosa runs.
+    """
+    gateway = request.app.state.provider_gateway
+    explicit = repo.provider_profiles.get(payload.provider_profile_id) if payload.provider_profile_id else None
+    candidates = [p for p in repo.provider_profiles.values() if p.capability == "llm.chat"]
+    llm_profile = resolve_llm_profile(gateway, candidate_profiles=candidates, explicit_profile=explicit)
+
+    audio_path = _local_audio_path(request, repo, asset)
+    duration = _asset_duration(repo, asset)
+    result = annotate_bgm(
+        asset_id=asset.id,
+        case_id=asset.case_id or "",
+        audio_path=str(audio_path or ""),
+        duration=duration,
+        asset_title=asset.title,
+        gateway=gateway,
+        llm_profile=llm_profile,
+        feature_extractor=feature_extractor,
+    )
+
+    _persist_bgm(repo, asset, result)
+    status = "failed" if (result.llm_configured and _bgm_is_failed(result)) else "completed"
+    return c.AnnotationRunResponse(asset_id=asset.id, run_id=None, status=status)
+
+
+def _persist_bgm(repo, asset: c.MediaAssetRecord, result: BgmAnnotationResult) -> None:
+    """Persist the BGM AnnotationV4 artifact + editor projection + asset status."""
+    annotation = result.annotation
+    canonical = annotation.model_dump(mode="json")
+    artifact = repo.create_artifact(
+        kind=c.ArtifactKind.material_annotation,
+        payload_schema="AnnotationV4.v1",
+        payload=canonical,
+        case_id=asset.case_id,
+    )
+    is_failed = _bgm_is_failed(result)
+    # A BGM annotation is usable when the real LLM path produced semantics (mood/genre).
+    bgm_report = canonical.get("quality_report", {}).get("bgm", {}) if isinstance(canonical, dict) else {}
+    usable = not is_failed and result.llm_configured and bool(bgm_report.get("mood"))
+    repo.annotations[asset.id] = c.AnnotationEditorVm(
+        asset=asset,
+        etag=new_id("etag"),
+        canonical=canonical,
+        projection={
+            "title": asset.title,
+            "usable": usable,
+            "annotation_artifact_id": artifact.id,
+            "llm_configured": result.llm_configured,
+            "annotation_status": annotation.meta.annotation_status.value,
+            "bgm": bgm_report,
+        },
+        editable_paths=["/labels", "/usable", "/title"],
+    )
+    annotation_status = "annotation_failed" if is_failed else "annotated"
+    repo.media_assets[asset.id] = asset.model_copy(
+        update={"annotation_status": annotation_status, "usable": usable, "updated_at": c.utcnow()}
+    )
+
+
+def _bgm_is_failed(result: BgmAnnotationResult) -> bool:
+    return result.annotation.meta.annotation_status == c.AnnotationStatus.failed
 
 
 def _persist(
@@ -251,6 +338,13 @@ def _local_video_path(request: Request, repo, asset: c.MediaAssetRecord):
     except ValueError:
         return None
     return path if path.exists() else None
+
+
+# BGM source resolution shares the same artifact-uri -> local-path resolution as
+# video; the only difference is intent (audio vs. video), so it reuses the helper.
+def _local_audio_path(request: Request, repo, asset: c.MediaAssetRecord):
+    """Resolve a local filesystem path for the BGM/audio asset's source, or None."""
+    return _local_video_path(request, repo, asset)
 
 
 def _asset_duration(repo, asset: c.MediaAssetRecord) -> float:

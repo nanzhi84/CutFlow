@@ -273,7 +273,13 @@ def rerun_annotation(
         raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
     if payload.provider_profile_id:
         profile = repo.provider_profiles.get(payload.provider_profile_id)
-        if profile is None or profile.capability != "vlm.annotation":
+        # BGM/audio assets are annotated through the gated llm.chat path; everything
+        # else through vlm.annotation. Validate the explicit profile's capability
+        # against the asset's annotation path so a correct profile isn't rejected.
+        expected_capability = (
+            "llm.chat" if repo.media_assets[asset_id].kind == "bgm" else "vlm.annotation"
+        )
+        if profile is None or profile.capability != expected_capability:
             raise NodeExecutionError(
                 c.ErrorCode.provider_unsupported_option, "Annotation provider profile is invalid."
             )

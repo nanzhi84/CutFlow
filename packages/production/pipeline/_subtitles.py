@@ -24,9 +24,16 @@ def write_ass_subtitles(
     style: dict,
     width: int,
     height: int,
+    font_name: str | None = None,
 ) -> None:
     subtitle = style.get("subtitle", {}) if isinstance(style.get("subtitle"), dict) else {}
     font_size = int(subtitle.get("font_size") or 64)
+    # libass matches the ASS ``Fontname`` against the family names of fonts in its
+    # fontsdir; a resolved selection (from the uploaded .ttf/.otf) replaces the
+    # hard-coded Arial so the user/agent-chosen font is actually burned. ASS field
+    # values are comma-separated, so a family name containing commas would corrupt
+    # the style row -- strip them and fall back to Arial when nothing usable.
+    resolved_font = (font_name or "").replace(",", " ").strip() or "Arial"
     margin_v = int(height * 0.12)
     position = subtitle.get("position")
     if isinstance(position, dict) and "y" in position:
@@ -46,7 +53,7 @@ def write_ass_subtitles(
             "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"
         ),
         (
-            f"Style: Default,Arial,{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H64000000,"
+            f"Style: Default,{resolved_font},{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H64000000,"
             f"1,0,0,0,100,100,0,0,1,4,1,2,80,80,{margin_v},1"
         ),
         "",
