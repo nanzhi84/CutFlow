@@ -4393,6 +4393,15 @@ export interface components {
              * @enum {string}
              */
             qc_status: "pending" | "passed" | "failed" | "warning";
+            /** Lipsync Provider Id */
+            lipsync_provider_id?: string | null;
+            /**
+             * Lipsync Fallback Used
+             * @default false
+             */
+            lipsync_fallback_used: boolean;
+            /** Lipsync Fallback Reason */
+            lipsync_fallback_reason?: string | null;
         };
         /** FinishedVideoDetail */
         FinishedVideoDetail: {

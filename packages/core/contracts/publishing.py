@@ -20,6 +20,15 @@ class FinishedVideo(EntityMeta):
     subtitle_artifact: ArtifactRef | None = None
     duration_sec: float = 0
     qc_status: Literal["pending", "passed", "failed", "warning"] = "pending"
+    # LipSync provider attribution (§ HeyGem-primary → VideoReTalk-fallback). Resolved
+    # from the run's LipSyncReportArtifact at export time. ``lipsync_provider_id`` is the
+    # ProviderProfile.provider_id of the provider that actually produced the lipsynced
+    # video (e.g. ``runninghub.heygem`` / ``dashscope.videoretalk``); ``None`` when lipsync
+    # was disabled / skipped / sandbox pass-through / report absent. ``lipsync_fallback_used``
+    # is True only when the primary provider failed and the fallback produced the video.
+    lipsync_provider_id: str | None = None
+    lipsync_fallback_used: bool = False
+    lipsync_fallback_reason: str | None = None
 
 
 class FinishedVideoQuery(BaseListQuery):

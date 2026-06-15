@@ -12714,6 +12714,33 @@
             ],
             "title": "Qc Status",
             "default": "pending"
+          },
+          "lipsync_provider_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lipsync Provider Id"
+          },
+          "lipsync_fallback_used": {
+            "type": "boolean",
+            "title": "Lipsync Fallback Used",
+            "default": false
+          },
+          "lipsync_fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lipsync Fallback Reason"
           }
         },
         "additionalProperties": false,
