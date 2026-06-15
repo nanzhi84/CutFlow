@@ -13,7 +13,7 @@ import { RunConfigPanel } from "./RunConfigPanel";
 import { StageProgress } from "./StageProgress";
 import { shortId } from "../../lib/format";
 import { toDisplayUrl } from "../../lib/url";
-import { artifactLabel, buildStages, nodeLabel, severityLabel, warningLabel, type RunAction } from "./runModel";
+import { artifactLabel, buildStages, lipsyncProviderLabel, nodeLabel, severityLabel, warningLabel, type RunAction } from "./runModel";
 
 function qcLabel(status: string) {
   if (status === "passed") return "质检通过";
@@ -109,7 +109,17 @@ export function RunDetailModal({
                 </div>
               )}
               <div className="mx-auto flex w-full max-w-[320px] items-center justify-between gap-2">
-                <span className="badge-info">{qcLabel(finishedVideo.qc_status)}</span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="badge-info">{qcLabel(finishedVideo.qc_status)}</span>
+                  {lipsyncProviderLabel(finishedVideo.lipsync_provider_id, finishedVideo.lipsync_fallback_used) ? (
+                    <span
+                      className={finishedVideo.lipsync_fallback_used ? "badge-warning" : "badge-info"}
+                      title={finishedVideo.lipsync_fallback_used ? finishedVideo.lipsync_fallback_reason ?? undefined : undefined}
+                    >
+                      {lipsyncProviderLabel(finishedVideo.lipsync_provider_id, finishedVideo.lipsync_fallback_used)}
+                    </span>
+                  ) : null}
+                </div>
                 {videoUrl ? (
                   <a className="btn-secondary text-sm no-underline" href={videoUrl} target="_blank" rel="noopener noreferrer">
                     <Download className="h-4 w-4" />

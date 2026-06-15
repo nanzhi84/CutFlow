@@ -743,6 +743,11 @@ class FinishedVideoRow(TimestampMixin, Base):
     subtitle_artifact: Mapped[dict | None] = mapped_column(JSONB)
     duration_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     qc_status: Mapped[str] = mapped_column(String, nullable=False)
+    # LipSync provider attribution (migration 0011). All optional / defaulted so the
+    # add is safe on populated tables and create_all DBs.
+    lipsync_provider_id: Mapped[str | None] = mapped_column(String)
+    lipsync_fallback_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    lipsync_fallback_reason: Mapped[str | None] = mapped_column(Text)
 
 
 class PublishPackageRow(TimestampMixin, Base):

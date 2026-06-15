@@ -118,6 +118,16 @@ export function severityLabel(value: string) {
   return "错误";
 }
 
+// 把后端 LipSync provider_id 映射成成片归因的中文徽标文案。
+// 兜底（fallback_used）优先：表明主供应商 HeyGem 失败、由 VideoReTalk 兜底产出。
+export function lipsyncProviderLabel(providerId: string | null | undefined, fallbackUsed: boolean): string | null {
+  if (!providerId) return null;
+  if (fallbackUsed) return "由 VideoReTalk 兜底生成";
+  if (providerId.startsWith("runninghub.heygem")) return "由 HeyGem 生成";
+  if (providerId.startsWith("dashscope.videoretalk")) return "由 VideoReTalk 生成";
+  return `由 ${providerId} 生成`;
+}
+
 export function artifactLabel(value: string) {
   if (value === "video.final" || value === "video.finished") return "最终视频";
   if (value === "video.rendered") return "渲染视频";

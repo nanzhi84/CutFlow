@@ -63,6 +63,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         media_info=final.media_info,
     )
     cover_artifact, cover_degradations, cover_invocation_ids = _build_cover(ctx, final)
+    lipsync_provider_id, lipsync_fallback_used, lipsync_fallback_reason = _resolve_lipsync_attribution(ctx)
     finished = FinishedVideo(
         id=new_id("fv"),
         case_id=state.request.case_id,
@@ -76,6 +77,9 @@ def run(ctx: NodeContext) -> NodeOutput:
             else None
         ),
         duration_sec=float(final.media_info.duration_sec if final.media_info and final.media_info.duration_sec else 0),
+        lipsync_provider_id=lipsync_provider_id,
+        lipsync_fallback_used=lipsync_fallback_used,
+        lipsync_fallback_reason=lipsync_fallback_reason,
     )
     repository.finished_videos[finished.id] = finished
     video_version = VideoVersion(
@@ -152,6 +156,36 @@ def _resolve_script_version(state, repository) -> ScriptVersion:
         script=state.request.script,
         creative_intent_artifact_id=creative_intent_artifact_id,
     )
+
+
+def _resolve_lipsync_attribution(ctx: NodeContext) -> tuple[str | None, bool, str | None]:
+    """Resolve which lipsync provider produced this finished video from the run's
+    LipSyncReportArtifact (HeyGem-primary → VideoReTalk-fallback).
+
+    Returns ``(provider_id, fallback_used, fallback_reason)``. Falls back to
+    ``(None, False, None)`` whenever attribution cannot be established honestly:
+    no report (lipsync absent in this template), the report is ``skipped`` (request
+    disabled / sandbox pass-through), no ``provider_profile_id`` recorded, or the
+    profile is no longer resolvable in the repository. ``provider_id`` is the
+    ProviderProfile.provider_id (e.g. ``runninghub.heygem`` / ``dashscope.videoretalk``),
+    NOT the profile id, so the UI can map it to a stable, profile-agnostic label."""
+    report = ctx.state.artifacts.get(ArtifactKind.lipsync_report)
+    payload = report.payload if report is not None else None
+    if not isinstance(payload, dict):
+        return None, False, None
+    # A skipped report means no real lipsync provider produced the video (request
+    # disabled / sandbox pass-through) -> no attribution to surface.
+    if payload.get("skipped"):
+        return None, False, None
+    profile_id = payload.get("provider_profile_id")
+    if not isinstance(profile_id, str) or not profile_id:
+        return None, False, None
+    profile = ctx.repository.provider_profiles.get(profile_id)
+    if profile is None:
+        return None, False, None
+    fallback_used = bool(payload.get("fallback_from"))
+    fallback_reason = payload.get("fallback_reason") if fallback_used else None
+    return profile.provider_id, fallback_used, fallback_reason
 
 
 def _build_cover(
