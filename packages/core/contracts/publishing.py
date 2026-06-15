@@ -37,6 +37,15 @@ class PublishDefaults(ContractModel):
     title: str
     description: str = ""
     hashtags: list[str] = Field(default_factory=list)
+    # §23.7 PublishDefaults parity: per-batch publish payload knobs the platform
+    # adapter (M6c) consumes. ``tags`` supersedes the legacy ``hashtags`` vestige
+    # (kept for backwards-compatibility of stored rows). ``account_group`` drives
+    # multi-account routing (which 小V猫 account publishes for this Case).
+    mode: Literal["immediate", "scheduled"] = "immediate"
+    scheduled_at: datetime | None = None
+    tags: list[str] = Field(default_factory=list)
+    location: str | None = None
+    account_group: str | None = None
 
 
 class PublishPackage(EntityMeta):
@@ -127,6 +136,16 @@ class PublishBatchItemVm(EntityMeta):
     description: str = ""
     selected: bool = True
     status: PublishItemStatus = PublishItemStatus.uploaded
+    # §28.1 PublishBatchItem parity: copy + cover + platform-payload fields the
+    # copy/cover nodes and the publish adapter populate.
+    publish_content: str = ""
+    cover_title: str = ""
+    cover_subtitle: str = ""
+    cover_artifact_id: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    location: str | None = None
+    account_group: str | None = None
+    scheduled_at: datetime | None = None
 
 
 class PublishBatchVm(EntityMeta):
@@ -146,12 +165,93 @@ class CreatePublishBatchRequest(ContractModel):
 class SubmitPublishBatchRequest(ContractModel):
     dry_run: bool = False
     simulate_publish_failure: bool = False
+    # §23.7 publish mode + Asia/Shanghai scheduling. ``scheduled`` requires a
+    # future ``scheduled_at`` (validated tz-aware in Asia/Shanghai); the publish
+    # adapter applies it on the platform. ``adapter_id`` lets an operator/feature
+    # flag override the resolved publish adapter for this submit.
+    mode: Literal["immediate", "scheduled"] = "immediate"
+    scheduled_at: datetime | None = None
+    adapter_id: str | None = None
 
 
 class PatchPublishItemRequest(ContractModel):
     title: str | None = None
     description: str | None = None
     selected: bool | None = None
+    publish_content: str | None = None
+    cover_title: str | None = None
+    cover_subtitle: str | None = None
+    cover_artifact_id: str | None = None
+    tags: list[str] | None = None
+    location: str | None = None
+    account_group: str | None = None
+    scheduled_at: datetime | None = None
+
+
+class GeneratePublishCopyRequest(ContractModel):
+    """Drive the Publishing Copy Node for one item (§2.1 / §28.3 generate-copy)."""
+
+    overwrite: bool = True
+    title_limit: int | None = None
+
+
+class PublishCopyResult(ContractModel):
+    title: str
+    publish_content: str
+    cover_title: str
+    cover_subtitle: str
+    source: Literal["llm", "deterministic"]
+    prompt_invocation_id: str | None = None
+
+
+class GeneratePublishCoverRequest(ContractModel):
+    """Drive the publishing Cover Node for one item (§2.1 / §28.3 generate-cover).
+
+    ``mode`` selects AI cover vs frame cover. ``frame_time_sec`` is the source
+    frame used when AI is unavailable / for ``mode='frame'``."""
+
+    mode: Literal["ai", "frame"] = "ai"
+    frame_time_sec: float = 0.0
+
+
+class PublishCoverResult(ContractModel):
+    cover_artifact: ArtifactRef
+    source: Literal["ai", "frame"]
+    # §2.2: surfaced when an AI cover was requested but fell back to a frame cover.
+    frame_fallback: bool = False
+    degraded_reason: str | None = None
+
+
+class PreviewCoverFrameRequest(ContractModel):
+    """Operator preview of a source frame at a chosen time (§28.3 preview-cover-frame)."""
+
+    frame_time_sec: float = 0.0
+
+
+class PreviewCoverFrameResult(ContractModel):
+    frame_artifact: ArtifactRef
+    frame_time_sec: float
+
+
+class PlatformAccount(ContractModel):
+    """A publish account discoverable through the platform adapter (§28.3
+    platform-accounts). UNVERIFIED against the live 小V猫 app; the sandbox adapter
+    returns a deterministic stub set."""
+
+    uid: str
+    platform: str
+    nickname: str = ""
+    remark: str = ""
+    sub_name: str = ""
+    account_group: str | None = None
+    is_login: bool = False
+
+
+class PlatformAccountList(ContractModel):
+    adapter_id: str
+    accounts: list[PlatformAccount] = Field(default_factory=list)
+    available: bool = True
+    unavailable_reason: str | None = None
 
 
 class PublishAttempt(EntityMeta):

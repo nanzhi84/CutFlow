@@ -293,6 +293,49 @@ class Repository:
         self.prompt_templates[template.id] = template
         self.prompt_versions[version.id] = version
         self.prompt_bindings[binding.id] = binding
+        # Publishing Copy Node (§2.1 must-retain): generates publish copy
+        # (title / publish_content / cover_title / cover_subtitle). The
+        # publish_copy.output schema is enforced by registry.validate_output.
+        copy_template = PromptTemplate(
+            id="prompt_publishing_copy",
+            name="Publishing Copy Generator",
+            purpose="publishing.publish_copy",
+            variables_schema_ref=PromptSchemaRef(schema_id="publish_copy.variables"),
+            output_schema_ref=PromptSchemaRef(schema_id="publish_copy.output"),
+            status="active",
+        )
+        copy_version = PromptVersion(
+            id="prompt_publishing_copy_v1",
+            prompt_template_id=copy_template.id,
+            content=(
+                "你是短视频标题、发布文案和封面文案撰写专家。"
+                "结合脚本内容与可用的案例背景，生成贴近业务线的发布文案。\n\n"
+                "案例背景：\n"
+                "- 案例名：{case_name}\n"
+                "- 业务描述：{description}\n\n"
+                "严格要求：只返回一个 JSON 对象（左花括号开头、右花括号结尾），"
+                "禁止 markdown 代码块、禁止任何额外说明。\n"
+                "JSON 必须且只能包含以下四个字符串字段：\n"
+                "- title：吸引人的发布标题（15-30字）。\n"
+                "- publish_content：适合社媒发布的正文（50-100字）。\n"
+                "- cover_title：封面主标题（8-18字，短、狠、清楚）。\n"
+                "- cover_subtitle：封面副标题（8-18字，补充利益点/结果/场景；没有合适内容返回空字符串）。\n\n"
+                "脚本内容：\n{script}"
+            ),
+            status="published",
+            approved_at=utcnow(),
+            published_at=utcnow(),
+        )
+        copy_binding = PromptBinding(
+            id="prompt_binding_global_publish_copy",
+            prompt_template_id=copy_template.id,
+            prompt_version_id=copy_version.id,
+            node_id="PublishingCopy",
+            priority=1,
+        )
+        self.prompt_templates[copy_template.id] = copy_template
+        self.prompt_versions[copy_version.id] = copy_version
+        self.prompt_bindings[copy_binding.id] = copy_binding
         seed_prompt_groups(self)
         catalog = ProviderPriceCatalog(
             id="price_sandbox",

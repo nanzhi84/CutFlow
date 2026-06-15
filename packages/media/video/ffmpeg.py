@@ -247,6 +247,105 @@ def extract_thumbnails(
     return results
 
 
+def extract_frame_at_time(
+    video_path: str | Path,
+    output_path: str | Path,
+    *,
+    time_sec: float = 0.0,
+) -> ThumbnailResult:
+    """Extract a single frame at ``time_sec`` (clamped into the video duration).
+
+    Used by the publishing Cover Node for operator frame previews and the frame
+    cover fallback (§2.2 cover.frame_fallback). Raises ``FfmpegCommandError`` on
+    a non-video source or ffmpeg failure — never silently produces an empty frame.
+    """
+    source = Path(video_path)
+    info = probe_media(source)
+    if info.media_type != "video":
+        raise FfmpegCommandError(f"Cover frame source must be video: {source}")
+    duration = float(info.duration_sec or 0)
+    requested = max(0.0, float(time_sec or 0.0))
+    timestamp = min(requested, max(0.0, duration - 0.05)) if duration > 0 else requested
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    FfmpegRunner().run(
+        [
+            ffmpeg_bin(), *FFMPEG_QUIET_ARGS, "-ss", f"{timestamp:.3f}", "-i", str(source),
+            "-frames:v", "1", "-update", "1", str(output),
+        ]
+    )
+    if not output.exists() or output.stat().st_size <= 0:
+        raise FfmpegCommandError(f"Cover frame extraction produced no output: {output}")
+    return ThumbnailResult(
+        label=f"frame_{timestamp:.3f}",
+        path=output,
+        sha256=sha256_file(output),
+        media_info=probe_media(output),
+    )
+
+
+# Platform-safe upload codecs (§13 Normalize stage): H.264 video + AAC audio +
+# yuv420p pixel format in an MP4 container. Mirrors the origin
+# UploadVideoNormalizer.normalize_for_upload target.
+NORMALIZE_VIDEO_CODEC = "h264"
+NORMALIZE_AUDIO_CODEC = "aac"
+NORMALIZE_PIXEL_FORMAT = "yuv420p"
+NORMALIZE_CONTAINER = "mp4"
+
+
+def needs_normalize_for_upload(path: str | Path) -> bool:
+    """Whether the source must be transcoded to platform-safe upload codecs.
+
+    True when the video stream is not H.264, the audio stream is not AAC, or the
+    container is not MP4. Best-effort: a probe failure returns True so the caller
+    transcodes rather than uploading an unknown-format file.
+    """
+    try:
+        info = probe_media(path)
+    except FfmpegCommandError:
+        return True
+    if info.media_type != "video":
+        return False
+    fmt = (info.format or "").lower()
+    container_ok = "mp4" in fmt or "mov" in fmt or "m4a" in fmt
+    codec_ok = (info.codec or "").lower() in {"h264", "avc1"}
+    return not (container_ok and codec_ok)
+
+
+def normalize_for_upload(
+    video_path: str | Path,
+    output_path: str | Path | None = None,
+    *,
+    timeout_sec: int = VIDEO_PROCESS_TIMEOUT_SEC,
+) -> Path:
+    """Transcode a finished/uploaded video to platform-safe upload codecs
+    (H.264 / AAC / yuv420p / MP4 + faststart). §13 Normalize stage.
+
+    Raises ``FfmpegCommandError`` on a non-video source or ffmpeg failure; the
+    caller surfaces the failure rather than publishing an un-normalized file.
+    """
+    source = Path(video_path)
+    info = probe_media(source)
+    if info.media_type != "video":
+        raise FfmpegCommandError(f"Normalize source must be video: {source}")
+    output = Path(output_path) if output_path else source.with_name(f"{source.stem}_normalized.mp4")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    FfmpegRunner(timeout_sec=timeout_sec).run(
+        [
+            ffmpeg_bin(), *FFMPEG_QUIET_ARGS, "-i", str(source),
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", NORMALIZE_PIXEL_FORMAT,
+            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
+            str(output),
+        ],
+        timeout_sec=timeout_sec,
+    )
+    if not output.exists() or output.stat().st_size <= 0:
+        raise FfmpegCommandError(f"Normalize produced no output: {output}")
+    probe_media(output)
+    return output
+
+
 def stabilize_video(
     video_path: str | Path,
     output_path: str | Path | None = None,

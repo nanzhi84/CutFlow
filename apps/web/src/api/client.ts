@@ -598,6 +598,40 @@ export const api = {
         `/api/publish/items/${enc(itemId)}`,
         { method: "PATCH", body: payload, idempotencyKey: createIdempotencyKey("publish_item_patch") },
       ),
+    generateCopy: (
+      batchId: string,
+      itemId: string,
+      payload: JsonRequest<operations["generate_publish_copy_api_publish_batches__batch_id__items__item_id__generate_copy_post"]>,
+    ) =>
+      fetchJson<JsonResponse<operations["generate_publish_copy_api_publish_batches__batch_id__items__item_id__generate_copy_post"]>>(
+        `/api/publish/batches/${enc(batchId)}/items/${enc(itemId)}/generate-copy`,
+        { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("publish_generate_copy") },
+      ),
+    generateCover: (
+      batchId: string,
+      itemId: string,
+      payload: JsonRequest<operations["generate_publish_cover_api_publish_batches__batch_id__items__item_id__generate_cover_post"]>,
+    ) =>
+      fetchJson<JsonResponse<operations["generate_publish_cover_api_publish_batches__batch_id__items__item_id__generate_cover_post"]>>(
+        `/api/publish/batches/${enc(batchId)}/items/${enc(itemId)}/generate-cover`,
+        { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("publish_generate_cover") },
+      ),
+    previewCoverFrame: (
+      batchId: string,
+      itemId: string,
+      payload: JsonRequest<operations["preview_publish_cover_frame_api_publish_batches__batch_id__items__item_id__preview_cover_frame_post"]>,
+    ) =>
+      fetchJson<JsonResponse<operations["preview_publish_cover_frame_api_publish_batches__batch_id__items__item_id__preview_cover_frame_post"]>>(
+        `/api/publish/batches/${enc(batchId)}/items/${enc(itemId)}/preview-cover-frame`,
+        { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("publish_preview_frame") },
+      ),
+    platformAccounts: (
+      query: QueryParams<operations["publish_platform_accounts_api_publish_platform_accounts_get"]> = {},
+    ) =>
+      fetchJson<JsonResponse<operations["publish_platform_accounts_api_publish_platform_accounts_get"]>>(
+        "/api/publish/platform-accounts",
+        { query },
+      ),
     deleteItem: (itemId: string) =>
       fetchJson<JsonResponse<operations["delete_publish_item_api_publish_items__item_id__delete"]>>(
         `/api/publish/items/${enc(itemId)}`,

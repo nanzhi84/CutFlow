@@ -29,7 +29,11 @@ async function assertR4ApiSurface(file: File) {
     description: "正文",
     selected: true,
   });
-  const submitted = await api.publishing.submitBatch(detail.id, { dry_run: true, simulate_publish_failure: false });
+  const submitted = await api.publishing.submitBatch(detail.id, {
+    dry_run: true,
+    simulate_publish_failure: false,
+    mode: "immediate",
+  });
   const attempts = await api.publishing.attempts(submitted.id, { limit: 20 });
   const retried = await api.publishing.retryItem(submitted.id, patchedItem.id);
   const deletedItem = await api.publishing.deleteItem(patchedItem.id);

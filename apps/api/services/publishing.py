@@ -12,11 +12,14 @@ from apps.api.common import (
     request_id,
 )
 from apps.api.dependencies import not_found_response
+from apps.api.services import publishing_nodes as nodes
 from packages.core import contracts as c
 from packages.core.contracts.state_machines import assert_transition
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 from packages.core.observability import record_funnel_event
+from packages.media.video import FfmpegCommandError
+from packages.publishing import normalize_publish_tags, normalize_scheduled_at, select_adapter
 
 
 def _publish_run_ids(repo, package_id: str | None) -> tuple[str | None, str | None]:
@@ -229,38 +232,90 @@ def submit_publish_batch(
         if batch is None:
             return not_found_response("Publish batch not found")
         return batch
-    batch = repository(request).publish_batches.get(batch_id)
+    repo = repository(request)
+    batch = repo.publish_batches.get(batch_id)
     if batch is None:
         return not_found_response("Publish batch not found")
+    # Resolve the publish adapter (sandbox by default; xiaovmao.cdp via the
+    # CUTAGENT_PUBLISH_ADAPTER feature flag or an explicit override) and normalize
+    # the Asia/Shanghai schedule (§23.7). A 'scheduled' submit yields scheduled
+    # attempts that have not yet published.
+    adapter = select_adapter(payload.adapter_id)
+    scheduled_at = normalize_scheduled_at(payload.mode, payload.scheduled_at)
+    is_scheduled = scheduled_at is not None
+
     new_items = []
     selected_count = 0
+    any_failed = False
     for item in batch.items:
         if not item.selected:
             new_items.append(item)
             continue
         selected_count += 1
+        package = repo.publish_packages.get(item.publish_package_id)
+        case = repo.cases.get(package.case_id) if package and package.case_id else None
+        case_name = getattr(case, "name", None)
+
+        # Stage 1 (normalizing) + Stage 3 (copy_running): the copy node produces
+        # real publish copy (title / publish_content / cover_title / cover_subtitle)
+        # for the item when not already operator-edited. Deterministic in the API
+        # path (no real LLM armed) — honest, not a silent no-op.
+        copy_updates: dict = {}
+        if not item.publish_content or not item.cover_title:
+            copy, _source, _inv = nodes.run_copy_node(repo, package, item)
+            copy_updates = {
+                "title": item.title or copy.title,
+                "publish_content": item.publish_content or copy.publish_content,
+                "cover_title": item.cover_title or copy.cover_title,
+                "cover_subtitle": item.cover_subtitle or copy.cover_subtitle,
+            }
+        normalize_disposition = _normalize_disposition(request, package)
+
         current_item_status = item.status
         for next_status in ["normalizing", "asr_running", "copy_running", "cover_running", "review_ready"]:
             assert_transition("publish_item", current_item_status, next_status)
             current_item_status = next_status
+
+        # Stage: publish via the resolved adapter.
+        outcome = None
         if not payload.dry_run:
             assert_transition("publish_item", current_item_status, "publishing")
             current_item_status = "publishing"
-            if payload.simulate_publish_failure:
+            outcome = adapter.publish(
+                nodes.build_publish_payload(
+                    item.model_copy(update=copy_updates) if copy_updates else item,
+                    package=package,
+                    case_name=case_name,
+                    scheduled_at=scheduled_at,
+                    manual_review=False,
+                    simulate_failure=payload.simulate_publish_failure,
+                )
+            )
+            if not outcome.success:
+                any_failed = True
                 assert_transition("publish_item", current_item_status, "publish_failed")
                 current_item_status = "publish_failed"
             else:
                 assert_transition("publish_item", current_item_status, "published")
                 current_item_status = "published"
-        new_items.append(
-            item.model_copy(
-                update={"status": c.PublishItemStatus(current_item_status), "updated_at": c.utcnow()}
-            )
-        )
-        attempt_status = "manual_review_ready" if payload.dry_run else (
-            "failed" if payload.simulate_publish_failure else "published"
-        )
+
+        item_updates = {"status": c.PublishItemStatus(current_item_status), "updated_at": c.utcnow()}
+        item_updates.update(copy_updates)
+        if is_scheduled and not payload.dry_run:
+            item_updates["scheduled_at"] = scheduled_at
+        new_items.append(item.model_copy(update=item_updates))
+
+        if payload.dry_run:
+            attempt_status = "manual_review_ready"
+        elif outcome is not None and not outcome.success:
+            attempt_status = "failed"
+        elif is_scheduled:
+            attempt_status = "scheduled"
+        else:
+            attempt_status = "published"
         assert_transition("publish_attempt", "created", attempt_status)
+        attempt_results = list(outcome.results) if outcome is not None else []
+        attempt_results.append({"normalize": normalize_disposition})
         attempt = c.PublishAttempt(
             id=new_id("pub_attempt"),
             batch_id=batch.id,
@@ -268,28 +323,28 @@ def submit_publish_batch(
             platforms=[item.platform],
             manual_review=payload.dry_run,
             status=c.PublishAttemptStatus(attempt_status),
-            adapter_id="sandbox.publish",
-            results=[],
+            adapter_id=adapter.adapter_id,
+            results=attempt_results,
             error=(
                 c.NodeError(
                     code=c.ErrorCode.publish_failed,
-                    message="Sandbox publish adapter simulated a failed publish.",
+                    message=(outcome.error_message if outcome else "Publish failed."),
                     retryable=True,
                 )
-                if payload.simulate_publish_failure
+                if attempt_status == "failed"
                 else None
             ),
             finished_at=c.utcnow() if attempt_status == "published" else None,
         )
-        repository(request).publish_attempts[attempt.id] = attempt
-        _record_publish_attempt_funnel(repository(request), batch, item, attempt)
+        repo.publish_attempts[attempt.id] = attempt
+        _record_publish_attempt_funnel(repo, batch, item, attempt)
     if selected_count == 0:
         raise NodeExecutionError(c.ErrorCode.validation_invalid_options, "At least one publish item must be selected.")
     assert_transition("publish_batch", batch.status, "processing")
     next_batch_status = "review_ready" if payload.dry_run else "publishing"
     assert_transition("publish_batch", "processing", next_batch_status)
     if not payload.dry_run:
-        if payload.simulate_publish_failure:
+        if any_failed:
             assert_transition("publish_batch", next_batch_status, "partial_failed")
             next_batch_status = "partial_failed"
         else:
@@ -298,8 +353,35 @@ def submit_publish_batch(
     batch = batch.model_copy(
         update={"status": c.PublishBatchStatus(next_batch_status), "items": new_items, "updated_at": c.utcnow()}
     )
-    repository(request).publish_batches[batch.id] = batch
+    repo.publish_batches[batch.id] = batch
     return batch
+
+
+def _normalize_disposition(request: Request, package) -> str:
+    """Honest disposition for the §13 Normalize stage (no silent no-op).
+
+    When the source video is a resolvable local object, probe it and transcode to
+    platform-safe codecs only when needed (H.264/AAC/yuv420p/mp4). Synthetic /
+    non-local sources (e.g. sandbox URIs) are reported as ``skipped_unresolvable_source``
+    rather than silently doing nothing.
+    """
+    video_uri = getattr(getattr(package, "video_artifact", None), "uri", None)
+    if not video_uri or not str(video_uri).startswith("local://"):
+        return "skipped_unresolvable_source"
+    try:
+        from apps.api.common import object_store
+        from packages.core.storage.object_store import parse_object_uri
+        from packages.media.video import needs_normalize_for_upload
+        import tempfile
+        from pathlib import Path
+
+        store = object_store(request)
+        ref = parse_object_uri(video_uri)
+        with tempfile.TemporaryDirectory(prefix="cutagent-normalize-") as directory:
+            local = store.download_file(ref, Path(directory) / "source")
+            return "needs_normalize" if needs_normalize_for_upload(local) else "already_compliant"
+    except (FfmpegCommandError, ValueError, OSError):
+        return "skipped_unresolvable_source"
 
 
 def retry_publish_item(batch_id: str, item_id: str, request: Request) -> c.PublishBatchItemVm | JSONResponse:
@@ -358,12 +440,150 @@ def patch_publish_item(
     for batch in repository(request).publish_batches.values():
         for index, item in enumerate(batch.items):
             if item.id == item_id:
-                updated = item.model_copy(update={**payload.model_dump(exclude_none=True), "updated_at": c.utcnow()})
+                item_updates = payload.model_dump(exclude_none=True)
+                if "tags" in item_updates:
+                    item_updates["tags"] = normalize_publish_tags(item_updates["tags"])
+                updated = item.model_copy(update={**item_updates, "updated_at": c.utcnow()})
                 items = list(batch.items)
                 items[index] = updated
                 repository(request).publish_batches[batch.id] = batch.model_copy(update={"items": items})
                 return updated
     return not_found_response("Publish item not found")
+
+
+def _find_item_in_memory(repo, batch_id: str, item_id: str):
+    batch = repo.publish_batches.get(batch_id)
+    if batch is None:
+        return None, None, None
+    for index, item in enumerate(batch.items):
+        if item.id == item_id:
+            return batch, index, item
+    return batch, None, None
+
+
+def _replace_item_in_memory(repo, batch, index: int, updated) -> None:
+    items = list(batch.items)
+    items[index] = updated
+    repo.publish_batches[batch.id] = batch.model_copy(update={"items": items, "updated_at": c.utcnow()})
+
+
+def generate_publish_copy(
+    batch_id: str, item_id: str, payload: c.GeneratePublishCopyRequest, request: Request
+) -> c.PublishCopyResult | JSONResponse:
+    """Publishing Copy Node endpoint (§28.3 generate-copy)."""
+    if publishing_repository(request) is not None:
+        return JSONResponse(
+            status_code=501,
+            content={"detail": "generate-copy is implemented by the local sandbox backend."},
+        )
+    repo = repository(request)
+    batch, index, item = _find_item_in_memory(repo, batch_id, item_id)
+    if item is None:
+        return not_found_response("Publish item not found")
+    package = repo.publish_packages.get(item.publish_package_id)
+    copy, source, invocation_id = nodes.run_copy_node(
+        repo, package, item, title_limit=payload.title_limit
+    )
+    updates = {
+        "publish_content": copy.publish_content,
+        "cover_title": copy.cover_title,
+        "cover_subtitle": copy.cover_subtitle,
+        "updated_at": c.utcnow(),
+    }
+    if payload.overwrite or not item.title:
+        updates["title"] = copy.title
+    _replace_item_in_memory(repo, batch, index, item.model_copy(update=updates))
+    return c.PublishCopyResult(
+        title=updates.get("title", item.title),
+        publish_content=copy.publish_content,
+        cover_title=copy.cover_title,
+        cover_subtitle=copy.cover_subtitle,
+        source=source,
+        prompt_invocation_id=invocation_id,
+    )
+
+
+def generate_publish_cover(
+    batch_id: str, item_id: str, payload: c.GeneratePublishCoverRequest, request: Request
+) -> c.PublishCoverResult | JSONResponse:
+    """Publishing Cover Node endpoint (§28.3 generate-cover)."""
+    if publishing_repository(request) is not None:
+        return JSONResponse(
+            status_code=501,
+            content={"detail": "generate-cover is implemented by the local sandbox backend."},
+        )
+    repo = repository(request)
+    batch, index, item = _find_item_in_memory(repo, batch_id, item_id)
+    if item is None:
+        return not_found_response("Publish item not found")
+    package = repo.publish_packages.get(item.publish_package_id)
+    video_uri = getattr(getattr(package, "video_artifact", None), "uri", None)
+    if not video_uri:
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Publish package has no source video.")
+    case_id = getattr(package, "case_id", None)
+    cover = nodes.run_cover_node(
+        request,
+        video_uri=video_uri,
+        mode=payload.mode,
+        frame_time_sec=payload.frame_time_sec,
+        item=item,
+        case_id=case_id,
+    )
+    _replace_item_in_memory(
+        repo,
+        batch,
+        index,
+        item.model_copy(update={"cover_artifact_id": cover.artifact_ref.artifact_id, "updated_at": c.utcnow()}),
+    )
+    return c.PublishCoverResult(
+        cover_artifact=cover.artifact_ref,
+        source=cover.source,
+        frame_fallback=cover.frame_fallback,
+        degraded_reason=cover.degraded_reason,
+    )
+
+
+def preview_publish_cover_frame(
+    batch_id: str, item_id: str, payload: c.PreviewCoverFrameRequest, request: Request
+) -> c.PreviewCoverFrameResult | JSONResponse:
+    """Operator source-frame preview endpoint (§28.3 preview-cover-frame)."""
+    if publishing_repository(request) is not None:
+        return JSONResponse(
+            status_code=501,
+            content={"detail": "preview-cover-frame is implemented by the local sandbox backend."},
+        )
+    repo = repository(request)
+    batch, index, item = _find_item_in_memory(repo, batch_id, item_id)
+    if item is None:
+        return not_found_response("Publish item not found")
+    package = repo.publish_packages.get(item.publish_package_id)
+    video_uri = getattr(getattr(package, "video_artifact", None), "uri", None)
+    if not video_uri:
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Publish package has no source video.")
+    case_id = getattr(package, "case_id", None)
+    frame_ref = nodes.run_preview_frame(
+        request,
+        video_uri=video_uri,
+        frame_time_sec=payload.frame_time_sec,
+        case_id=case_id,
+    )
+    return c.PreviewCoverFrameResult(frame_artifact=frame_ref, frame_time_sec=payload.frame_time_sec)
+
+
+def platform_accounts(
+    request: Request, account_group: str | None = None, case_name: str | None = None, adapter_id: str | None = None
+) -> c.PlatformAccountList:
+    """List publish accounts discoverable through the resolved platform adapter
+    (§28.3 platform-accounts). The 小V猫 adapter requires the live desktop app
+    (UNVERIFIED); the sandbox adapter returns a deterministic stub set."""
+    adapter = select_adapter(adapter_id)
+    accounts, available, reason = adapter.probe_accounts(account_group=account_group, case_name=case_name)
+    return c.PlatformAccountList(
+        adapter_id=adapter.adapter_id,
+        accounts=accounts,
+        available=available,
+        unavailable_reason=reason,
+    )
 
 
 def delete_publish_item(item_id: str, request: Request) -> c.OkResponse | JSONResponse:

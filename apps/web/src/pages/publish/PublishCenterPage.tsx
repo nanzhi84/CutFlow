@@ -17,6 +17,7 @@ import {
   buildDraftsFromBatch,
   defaultBatchDefaults,
   isBatchActive,
+  itemPatchFromDraft,
 } from "../../components/publish/publishModel";
 import { StudioTabs } from "../../components/StudioTabs";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
@@ -153,11 +154,7 @@ export default function PublishCenterPage() {
   const saveItem = useMutation({
     mutationFn: (item: PublishBatchItem) => {
       const draft = drafts[item.id] ?? buildDraftFromItem(item);
-      return api.publishing.patchItem(item.id, {
-        title: draft.title,
-        description: draft.description,
-        selected: draft.selected,
-      });
+      return api.publishing.patchItem(item.id, itemPatchFromDraft(draft));
     },
     onSuccess: async () => {
       toast.success("草稿已保存");
@@ -197,11 +194,7 @@ export default function PublishCenterPage() {
   async function syncDrafts() {
     for (const item of batch?.items ?? []) {
       const draft = drafts[item.id] ?? buildDraftFromItem(item);
-      await api.publishing.patchItem(item.id, {
-        title: draft.title,
-        description: draft.description,
-        selected: draft.selected,
-      });
+      await api.publishing.patchItem(item.id, itemPatchFromDraft(draft));
     }
   }
 
@@ -209,7 +202,20 @@ export default function PublishCenterPage() {
     mutationFn: async (mode: "manual" | "auto") => {
       if (!batch) throw new Error("缺少发布批次");
       await syncDrafts();
-      return api.publishing.submitBatch(batch.id, { dry_run: mode === "manual", simulate_publish_failure: false });
+      // Resolve schedule from the batch's first selected draft (defaults carry it
+      // for the whole batch). Asia/Shanghai validation happens server-side.
+      const scheduled = (batch.items ?? [])
+        .map((item) => drafts[item.id] ?? buildDraftFromItem(item))
+        .find((draft) => draft.scheduleMode === "scheduled" && draft.scheduledAt);
+      const scheduleFields =
+        scheduled && scheduled.scheduledAt
+          ? { mode: "scheduled" as const, scheduled_at: new Date(scheduled.scheduledAt).toISOString() }
+          : { mode: "immediate" as const };
+      return api.publishing.submitBatch(batch.id, {
+        dry_run: mode === "manual",
+        simulate_publish_failure: false,
+        ...scheduleFields,
+      });
     },
     onSuccess: async (_, mode) => {
       toast.success(mode === "manual" ? "半自动准备已完成" : "全自动发布已完成", "结果已写入 PublishAttempt。");
@@ -255,9 +261,9 @@ export default function PublishCenterPage() {
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-status-warning/25 bg-status-warning/10 px-4 py-3 text-sm text-status-warning">
         <span className="inline-flex items-center gap-2">
           <RadioTower className="h-4 w-4" />
-          小V猫平台状态：待接入（M6c）
+          小V猫真实发布需在发布主机启用 CUTAGENT_PUBLISH_ADAPTER 适配器（未对真实平台验证）。
         </span>
-        <span>真平台发布、AI 文案和 AI 封面依赖 M6c/M6d。</span>
+        <span>当前默认走沙盒适配器：发布文案、封面（截帧回退）与定时/标签/地点均已生效。</span>
       </div>
       <FlowStepper steps={PUBLISH_STEPS} activeStep={activeStep} ariaLabel="发布流程" onStepClick={(step) => (step === 0 || batch ? setActiveStep(step) : undefined)} />
 

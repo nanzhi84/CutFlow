@@ -75,17 +75,42 @@ export function titleLength(value: string) {
 }
 
 export function buildDraftFromItem(item: PublishBatchItem): PublishDraft {
+  const scheduledAtLocal = item.scheduled_at ? toDatetimeLocal(item.scheduled_at) : "";
   return {
     title: item.title,
     description: item.description,
     platforms: [item.platform],
     selected: item.selected,
-    tagsInput: "",
-    location: "",
-    scheduleMode: "immediate",
-    scheduledAt: "",
+    tagsInput: (item.tags ?? []).join(" "),
+    location: item.location ?? "",
+    scheduleMode: scheduledAtLocal ? "scheduled" : "immediate",
+    scheduledAt: scheduledAtLocal,
     frameTimeSec: 0,
   };
+}
+
+/** Convert a draft into the publish-item PATCH payload, persisting copy + platform
+ *  payload fields (tags / location / schedule) instead of discarding them. */
+export function itemPatchFromDraft(draft: PublishDraft) {
+  return {
+    title: draft.title,
+    description: draft.description,
+    selected: draft.selected,
+    tags: parseTags(draft.tagsInput),
+    location: draft.location || null,
+    scheduled_at:
+      draft.scheduleMode === "scheduled" && draft.scheduledAt
+        ? new Date(draft.scheduledAt).toISOString()
+        : null,
+  };
+}
+
+function toDatetimeLocal(iso: string): string {
+  // Render an ISO timestamp as a <input type="datetime-local"> value (no tz suffix).
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 export function buildDraftsFromBatch(batch?: PublishBatch | null) {

@@ -6250,6 +6250,258 @@
         }
       }
     },
+    "/api/publish/batches/{batch_id}/items/{item_id}/generate-copy": {
+      "post": {
+        "summary": "Generate Publish Copy",
+        "operationId": "generate_publish_copy_api_publish_batches__batch_id__items__item_id__generate_copy_post",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GeneratePublishCopyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishCopyResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/publish/batches/{batch_id}/items/{item_id}/generate-cover": {
+      "post": {
+        "summary": "Generate Publish Cover",
+        "operationId": "generate_publish_cover_api_publish_batches__batch_id__items__item_id__generate_cover_post",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GeneratePublishCoverRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishCoverResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/publish/batches/{batch_id}/items/{item_id}/preview-cover-frame": {
+      "post": {
+        "summary": "Preview Publish Cover Frame",
+        "operationId": "preview_publish_cover_frame_api_publish_batches__batch_id__items__item_id__preview_cover_frame_post",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewCoverFrameRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviewCoverFrameResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/publish/platform-accounts": {
+      "get": {
+        "summary": "Publish Platform Accounts",
+        "operationId": "publish_platform_accounts_api_publish_platform_accounts_get",
+        "parameters": [
+          {
+            "name": "account_group",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Account Group"
+            }
+          },
+          {
+            "name": "case_name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Case Name"
+            }
+          },
+          {
+            "name": "adapter_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Adapter Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformAccountList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/publish/items/{item_id}": {
       "patch": {
         "summary": "Patch Publish Item",
@@ -12504,6 +12756,52 @@
         ],
         "title": "FinishedVideoDetail"
       },
+      "GeneratePublishCopyRequest": {
+        "properties": {
+          "overwrite": {
+            "type": "boolean",
+            "title": "Overwrite",
+            "default": true
+          },
+          "title_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Limit"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "GeneratePublishCopyRequest",
+        "description": "Drive the Publishing Copy Node for one item (§2.1 / §28.3 generate-copy)."
+      },
+      "GeneratePublishCoverRequest": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "ai",
+              "frame"
+            ],
+            "title": "Mode",
+            "default": "ai"
+          },
+          "frame_time_sec": {
+            "type": "number",
+            "title": "Frame Time Sec",
+            "default": 0.0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "GeneratePublishCoverRequest",
+        "description": "Drive the publishing Cover Node for one item (§2.1 / §28.3 generate-cover).\n\n``mode`` selects AI cover vs frame cover. ``frame_time_sec`` is the source\nframe used when AI is unavailable / for ``mode='frame'``."
+      },
       "GenerateScriptWithMemoryRequest": {
         "properties": {
           "brief": {
@@ -16411,6 +16709,98 @@
               }
             ],
             "title": "Selected"
+          },
+          "publish_content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publish Content"
+          },
+          "cover_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Title"
+          },
+          "cover_subtitle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Subtitle"
+          },
+          "cover_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Artifact Id"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "account_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Group"
+          },
+          "scheduled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduled At"
           }
         },
         "additionalProperties": false,
@@ -16943,6 +17333,94 @@
         "title": "PerformanceScore",
         "description": "§25.6 normalized, windowed, confidence-gated performance score.\n\nA score never treats raw views/impressions as quality directly: when the\nobservation's impression/view volume is below ``MIN_CONFIDENT_IMPRESSIONS``\n(or the window is only an early 24h signal) the score is emitted with a\nreduced ``confidence`` and an ``excluded_reason`` so callers (memory\nactivation, high/low-performance recall) can refuse to draw conclusions."
       },
+      "PlatformAccount": {
+        "properties": {
+          "uid": {
+            "type": "string",
+            "title": "Uid"
+          },
+          "platform": {
+            "type": "string",
+            "title": "Platform"
+          },
+          "nickname": {
+            "type": "string",
+            "title": "Nickname",
+            "default": ""
+          },
+          "remark": {
+            "type": "string",
+            "title": "Remark",
+            "default": ""
+          },
+          "sub_name": {
+            "type": "string",
+            "title": "Sub Name",
+            "default": ""
+          },
+          "account_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Group"
+          },
+          "is_login": {
+            "type": "boolean",
+            "title": "Is Login",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uid",
+          "platform"
+        ],
+        "title": "PlatformAccount",
+        "description": "A publish account discoverable through the platform adapter (§28.3\nplatform-accounts). UNVERIFIED against the live 小V猫 app; the sandbox adapter\nreturns a deterministic stub set."
+      },
+      "PlatformAccountList": {
+        "properties": {
+          "adapter_id": {
+            "type": "string",
+            "title": "Adapter Id"
+          },
+          "accounts": {
+            "items": {
+              "$ref": "#/components/schemas/PlatformAccount"
+            },
+            "type": "array",
+            "title": "Accounts"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available",
+            "default": true
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "adapter_id"
+        ],
+        "title": "PlatformAccountList"
+      },
       "PortraitOptions": {
         "properties": {
           "template_mode": {
@@ -17048,6 +17526,37 @@
           "size_bytes"
         ],
         "title": "PrepareUploadRequest"
+      },
+      "PreviewCoverFrameRequest": {
+        "properties": {
+          "frame_time_sec": {
+            "type": "number",
+            "title": "Frame Time Sec",
+            "default": 0.0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PreviewCoverFrameRequest",
+        "description": "Operator preview of a source frame at a chosen time (§28.3 preview-cover-frame)."
+      },
+      "PreviewCoverFrameResult": {
+        "properties": {
+          "frame_artifact": {
+            "$ref": "#/components/schemas/ArtifactRef"
+          },
+          "frame_time_sec": {
+            "type": "number",
+            "title": "Frame Time Sec"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "frame_artifact",
+          "frame_time_sec"
+        ],
+        "title": "PreviewCoverFrameResult"
       },
       "ProductionQualityCheck": {
         "properties": {
@@ -18735,6 +19244,73 @@
           "status": {
             "$ref": "#/components/schemas/PublishItemStatus",
             "default": "uploaded"
+          },
+          "publish_content": {
+            "type": "string",
+            "title": "Publish Content",
+            "default": ""
+          },
+          "cover_title": {
+            "type": "string",
+            "title": "Cover Title",
+            "default": ""
+          },
+          "cover_subtitle": {
+            "type": "string",
+            "title": "Cover Subtitle",
+            "default": ""
+          },
+          "cover_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Artifact Id"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tags"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "account_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Group"
+          },
+          "scheduled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduled At"
           }
         },
         "additionalProperties": false,
@@ -18846,6 +19422,93 @@
         ],
         "title": "PublishBatchVm"
       },
+      "PublishCopyResult": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "publish_content": {
+            "type": "string",
+            "title": "Publish Content"
+          },
+          "cover_title": {
+            "type": "string",
+            "title": "Cover Title"
+          },
+          "cover_subtitle": {
+            "type": "string",
+            "title": "Cover Subtitle"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "llm",
+              "deterministic"
+            ],
+            "title": "Source"
+          },
+          "prompt_invocation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Invocation Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "title",
+          "publish_content",
+          "cover_title",
+          "cover_subtitle",
+          "source"
+        ],
+        "title": "PublishCopyResult"
+      },
+      "PublishCoverResult": {
+        "properties": {
+          "cover_artifact": {
+            "$ref": "#/components/schemas/ArtifactRef"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "ai",
+              "frame"
+            ],
+            "title": "Source"
+          },
+          "frame_fallback": {
+            "type": "boolean",
+            "title": "Frame Fallback",
+            "default": false
+          },
+          "degraded_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Degraded Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "cover_artifact",
+          "source"
+        ],
+        "title": "PublishCoverResult"
+      },
       "PublishDefaults": {
         "properties": {
           "title": {
@@ -18863,6 +19526,56 @@
             },
             "type": "array",
             "title": "Hashtags"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "immediate",
+              "scheduled"
+            ],
+            "title": "Mode",
+            "default": "immediate"
+          },
+          "scheduled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduled At"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tags"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "account_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Group"
           }
         },
         "additionalProperties": false,
@@ -20965,6 +21678,38 @@
             "type": "boolean",
             "title": "Simulate Publish Failure",
             "default": false
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "immediate",
+              "scheduled"
+            ],
+            "title": "Mode",
+            "default": "immediate"
+          },
+          "scheduled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduled At"
+          },
+          "adapter_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adapter Id"
           }
         },
         "additionalProperties": false,

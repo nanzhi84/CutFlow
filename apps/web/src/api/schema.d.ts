@@ -1949,6 +1949,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/publish/batches/{batch_id}/items/{item_id}/generate-copy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Generate Publish Copy */
+        post: operations["generate_publish_copy_api_publish_batches__batch_id__items__item_id__generate_copy_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/publish/batches/{batch_id}/items/{item_id}/generate-cover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Generate Publish Cover */
+        post: operations["generate_publish_cover_api_publish_batches__batch_id__items__item_id__generate_cover_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/publish/batches/{batch_id}/items/{item_id}/preview-cover-frame": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview Publish Cover Frame */
+        post: operations["preview_publish_cover_frame_api_publish_batches__batch_id__items__item_id__preview_cover_frame_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/publish/platform-accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Publish Platform Accounts */
+        get: operations["publish_platform_accounts_api_publish_platform_accounts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/publish/items/{item_id}": {
         parameters: {
             query?: never;
@@ -4333,6 +4401,39 @@ export interface components {
             /** Publish Records */
             publish_records?: components["schemas"]["PublishRecord"][];
         };
+        /**
+         * GeneratePublishCopyRequest
+         * @description Drive the Publishing Copy Node for one item (§2.1 / §28.3 generate-copy).
+         */
+        GeneratePublishCopyRequest: {
+            /**
+             * Overwrite
+             * @default true
+             */
+            overwrite: boolean;
+            /** Title Limit */
+            title_limit?: number | null;
+        };
+        /**
+         * GeneratePublishCoverRequest
+         * @description Drive the publishing Cover Node for one item (§2.1 / §28.3 generate-cover).
+         *
+         *     ``mode`` selects AI cover vs frame cover. ``frame_time_sec`` is the source
+         *     frame used when AI is unavailable / for ``mode='frame'``.
+         */
+        GeneratePublishCoverRequest: {
+            /**
+             * Mode
+             * @default ai
+             * @enum {string}
+             */
+            mode: "ai" | "frame";
+            /**
+             * Frame Time Sec
+             * @default 0
+             */
+            frame_time_sec: number;
+        };
         /** GenerateScriptWithMemoryRequest */
         GenerateScriptWithMemoryRequest: {
             /** Brief */
@@ -5551,6 +5652,22 @@ export interface components {
             description?: string | null;
             /** Selected */
             selected?: boolean | null;
+            /** Publish Content */
+            publish_content?: string | null;
+            /** Cover Title */
+            cover_title?: string | null;
+            /** Cover Subtitle */
+            cover_subtitle?: string | null;
+            /** Cover Artifact Id */
+            cover_artifact_id?: string | null;
+            /** Tags */
+            tags?: string[] | null;
+            /** Location */
+            location?: string | null;
+            /** Account Group */
+            account_group?: string | null;
+            /** Scheduled At */
+            scheduled_at?: string | null;
         };
         /** PatchPublishPackageRequest */
         PatchPublishPackageRequest: {
@@ -5750,6 +5867,54 @@ export interface components {
             /** Excluded Reason */
             excluded_reason?: string | null;
         };
+        /**
+         * PlatformAccount
+         * @description A publish account discoverable through the platform adapter (§28.3
+         *     platform-accounts). UNVERIFIED against the live 小V猫 app; the sandbox adapter
+         *     returns a deterministic stub set.
+         */
+        PlatformAccount: {
+            /** Uid */
+            uid: string;
+            /** Platform */
+            platform: string;
+            /**
+             * Nickname
+             * @default
+             */
+            nickname: string;
+            /**
+             * Remark
+             * @default
+             */
+            remark: string;
+            /**
+             * Sub Name
+             * @default
+             */
+            sub_name: string;
+            /** Account Group */
+            account_group?: string | null;
+            /**
+             * Is Login
+             * @default false
+             */
+            is_login: boolean;
+        };
+        /** PlatformAccountList */
+        PlatformAccountList: {
+            /** Adapter Id */
+            adapter_id: string;
+            /** Accounts */
+            accounts?: components["schemas"]["PlatformAccount"][];
+            /**
+             * Available
+             * @default true
+             */
+            available: boolean;
+            /** Unavailable Reason */
+            unavailable_reason?: string | null;
+        };
         /** PortraitOptions */
         PortraitOptions: {
             /**
@@ -5792,6 +5957,23 @@ export interface components {
              * @default false
              */
             stabilize: boolean;
+        };
+        /**
+         * PreviewCoverFrameRequest
+         * @description Operator preview of a source frame at a chosen time (§28.3 preview-cover-frame).
+         */
+        PreviewCoverFrameRequest: {
+            /**
+             * Frame Time Sec
+             * @default 0
+             */
+            frame_time_sec: number;
+        };
+        /** PreviewCoverFrameResult */
+        PreviewCoverFrameResult: {
+            frame_artifact: components["schemas"]["ArtifactRef"];
+            /** Frame Time Sec */
+            frame_time_sec: number;
         };
         /** ProductionQualityCheck */
         ProductionQualityCheck: {
@@ -6537,6 +6719,31 @@ export interface components {
             selected: boolean;
             /** @default uploaded */
             status: components["schemas"]["PublishItemStatus"];
+            /**
+             * Publish Content
+             * @default
+             */
+            publish_content: string;
+            /**
+             * Cover Title
+             * @default
+             */
+            cover_title: string;
+            /**
+             * Cover Subtitle
+             * @default
+             */
+            cover_subtitle: string;
+            /** Cover Artifact Id */
+            cover_artifact_id?: string | null;
+            /** Tags */
+            tags?: string[];
+            /** Location */
+            location?: string | null;
+            /** Account Group */
+            account_group?: string | null;
+            /** Scheduled At */
+            scheduled_at?: string | null;
         };
         /** PublishBatchRequest */
         PublishBatchRequest: {
@@ -6586,6 +6793,40 @@ export interface components {
             /** Items */
             items?: components["schemas"]["PublishBatchItemVm"][];
         };
+        /** PublishCopyResult */
+        PublishCopyResult: {
+            /** Title */
+            title: string;
+            /** Publish Content */
+            publish_content: string;
+            /** Cover Title */
+            cover_title: string;
+            /** Cover Subtitle */
+            cover_subtitle: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "llm" | "deterministic";
+            /** Prompt Invocation Id */
+            prompt_invocation_id?: string | null;
+        };
+        /** PublishCoverResult */
+        PublishCoverResult: {
+            cover_artifact: components["schemas"]["ArtifactRef"];
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "ai" | "frame";
+            /**
+             * Frame Fallback
+             * @default false
+             */
+            frame_fallback: boolean;
+            /** Degraded Reason */
+            degraded_reason?: string | null;
+        };
         /** PublishDefaults */
         PublishDefaults: {
             /** Title */
@@ -6597,6 +6838,20 @@ export interface components {
             description: string;
             /** Hashtags */
             hashtags?: string[];
+            /**
+             * Mode
+             * @default immediate
+             * @enum {string}
+             */
+            mode: "immediate" | "scheduled";
+            /** Scheduled At */
+            scheduled_at?: string | null;
+            /** Tags */
+            tags?: string[];
+            /** Location */
+            location?: string | null;
+            /** Account Group */
+            account_group?: string | null;
         };
         /**
          * PublishItemStatus
@@ -7441,6 +7696,16 @@ export interface components {
              * @default false
              */
             simulate_publish_failure: boolean;
+            /**
+             * Mode
+             * @default immediate
+             * @enum {string}
+             */
+            mode: "immediate" | "scheduled";
+            /** Scheduled At */
+            scheduled_at?: string | null;
+            /** Adapter Id */
+            adapter_id?: string | null;
         };
         /** SubtitleOptions */
         SubtitleOptions: {
@@ -12432,6 +12697,147 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PublishBatchItemVm"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_publish_copy_api_publish_batches__batch_id__items__item_id__generate_copy_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GeneratePublishCopyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishCopyResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_publish_cover_api_publish_batches__batch_id__items__item_id__generate_cover_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GeneratePublishCoverRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishCoverResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_publish_cover_frame_api_publish_batches__batch_id__items__item_id__preview_cover_frame_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewCoverFrameRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreviewCoverFrameResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    publish_platform_accounts_api_publish_platform_accounts_get: {
+        parameters: {
+            query?: {
+                account_group?: string | null;
+                case_name?: string | null;
+                adapter_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformAccountList"];
                 };
             };
             /** @description Validation Error */

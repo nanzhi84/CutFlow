@@ -34,6 +34,8 @@ from packages.core.storage.database import (
 )
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
+from packages.publishing.account_matching import normalize_publish_tags, normalize_scheduled_at
+from packages.publishing.platform_adapter import select_adapter
 from packages.publishing.sqlalchemy_mappers import (
     artifact_ref_from_row,
     publish_attempt_row_to_contract,
@@ -182,6 +184,7 @@ class SqlAlchemyPublishingRepository:
             session.flush()
             for package_id in payload.publish_package_ids:
                 defaults = PublishDefaults.model_validate(packages[package_id].platform_defaults)
+                default_tags = defaults.tags or defaults.hashtags
                 for platform in payload.platform_targets:
                     session.add(
                         PublishBatchItemRow(
@@ -193,6 +196,10 @@ class SqlAlchemyPublishingRepository:
                             description=defaults.description,
                             selected=True,
                             status="uploaded",
+                            tags=list(default_tags),
+                            location=defaults.location,
+                            account_group=defaults.account_group,
+                            scheduled_at=defaults.scheduled_at,
                         )
                     )
             session.commit()
@@ -238,6 +245,13 @@ class SqlAlchemyPublishingRepository:
                     "At least one publish item must be selected.",
                 )
 
+            # Resolve the publish adapter (sandbox by default; xiaovmao.cdp via
+            # CUTAGENT_PUBLISH_ADAPTER or an explicit override) and normalize the
+            # Asia/Shanghai schedule. ``scheduled`` produces a 'scheduled' attempt.
+            adapter = select_adapter(payload.adapter_id)
+            scheduled_at = normalize_scheduled_at(payload.mode, payload.scheduled_at)
+            is_scheduled = scheduled_at is not None
+
             batch_status = "review_ready" if payload.dry_run else "completed"
             assert_transition("publish_batch", batch.status, "processing")
             assert_transition("publish_batch", "processing", "review_ready" if payload.dry_run else "publishing")
@@ -263,6 +277,8 @@ class SqlAlchemyPublishingRepository:
                     assert_transition("publish_item", current_item_status, "published")
                     current_item_status = "published"
                 item.status = target_item_status
+                if is_scheduled and not payload.dry_run:
+                    item.scheduled_at = scheduled_at
                 item.updated_at = utcnow()
                 package = session.get(PublishPackageRow, item.publish_package_id)
                 if package is not None and package.case_id:
@@ -277,6 +293,8 @@ class SqlAlchemyPublishingRepository:
                     cover_ref = (
                         ArtifactRef.model_validate(package.cover_artifact) if package.cover_artifact else None
                     )
+                    # Prefer the per-item cover (cover node output) over the package default.
+                    record_cover_id = item.cover_artifact_id or (cover_ref.artifact_id if cover_ref else None)
                     session.add(
                         PublishRecordRow(
                             id=new_id("pub_record"),
@@ -286,11 +304,16 @@ class SqlAlchemyPublishingRepository:
                             publish_batch_id=batch.id,
                             platform=item.platform,
                             status=target_item_status,
-                            cover_artifact_id=cover_ref.artifact_id if cover_ref else None,
+                            cover_artifact_id=record_cover_id,
                             published_at=utcnow() if target_item_status == "published" else None,
                         )
                     )
-                attempt_status = "published" if not payload.dry_run else "manual_review_ready"
+                if payload.dry_run:
+                    attempt_status = "manual_review_ready"
+                elif is_scheduled:
+                    attempt_status = "scheduled"
+                else:
+                    attempt_status = "published"
                 assert_transition("publish_attempt", "created", attempt_status)
                 attempt_id = new_id("pub_attempt")
                 attempt_time = utcnow()
@@ -302,7 +325,7 @@ class SqlAlchemyPublishingRepository:
                         platforms=[item.platform],
                         manual_review=payload.dry_run,
                         status=attempt_status,
-                        adapter_id="sandbox.publish",
+                        adapter_id=adapter.adapter_id,
                         external_task_id=None,
                         results=[],
                         finished_at=attempt_time if attempt_status == "published" else None,
@@ -351,7 +374,10 @@ class SqlAlchemyPublishingRepository:
             row = session.get(PublishBatchItemRow, item_id)
             if row is None:
                 return None
-            for key, value in payload.model_dump(exclude_none=True).items():
+            updates = payload.model_dump(exclude_none=True)
+            if "tags" in updates:
+                updates["tags"] = normalize_publish_tags(updates["tags"])
+            for key, value in updates.items():
                 setattr(row, key, value)
             row.updated_at = utcnow()
             session.commit()

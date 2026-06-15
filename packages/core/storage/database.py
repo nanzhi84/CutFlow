@@ -775,6 +775,15 @@ class PublishBatchItemRow(TimestampMixin, Base):
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     status: Mapped[str] = mapped_column(String, nullable=False)
+    # §28.1 publish-copy + cover + platform-payload fields (migration 0007).
+    publish_content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    cover_title: Mapped[str] = mapped_column(String, nullable=False, default="")
+    cover_subtitle: Mapped[str] = mapped_column(String, nullable=False, default="")
+    cover_artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id"))
+    tags: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+    location: Mapped[str | None] = mapped_column(String)
+    account_group: Mapped[str | None] = mapped_column(String)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class PublishAttemptRow(TimestampMixin, Base):

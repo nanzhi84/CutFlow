@@ -50,7 +50,7 @@ export function PublishReviewStep({
           <StatusPill status={batch.status} />
         </div>
         <div className="rounded-2xl border border-status-info/25 bg-status-info/10 p-4 text-sm leading-6 text-status-info">
-          半自动会生成待人工处理结果；全自动只写入本地发布记录，不会真正触达小V猫或其他平台。
+          半自动会生成待人工处理结果；全自动按已配置的发布适配器提交（默认沙盒适配器只写入本地发布记录，启用小V猫适配器后才会真正触达平台）。
         </div>
         <div className="flex flex-wrap justify-between gap-3 border-t border-border/70 pt-4">
           <button className="btn-secondary" type="button" onClick={onBack}>

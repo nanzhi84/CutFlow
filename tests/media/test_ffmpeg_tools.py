@@ -8,7 +8,10 @@ from packages.core.contracts import MediaInfo
 from packages.media.video.ffmpeg import (
     FfmpegCommandError,
     compress_video_to_budget,
+    extract_frame_at_time,
     extract_thumbnails,
+    needs_normalize_for_upload,
+    normalize_for_upload,
     probe_media,
     sha256_file,
     stabilize_video,
@@ -150,6 +153,44 @@ def test_compress_video_to_budget_rejects_non_video(tmp_path):
     with pytest.raises(FfmpegCommandError) as exc:
         compress_video_to_budget(audio, max_size_mb=10)
     assert exc.value.error_code.value == "render.failed"
+
+
+def test_extract_frame_at_time_writes_single_clamped_frame(tmp_path):
+    video = generate_test_video(tmp_path, duration_sec=2, width=320, height=568, fps=30)
+    output = tmp_path / "frame.png"
+
+    # A timestamp beyond the duration is clamped into range rather than failing.
+    result = extract_frame_at_time(video, output, time_sec=99.0)
+
+    assert output.exists()
+    assert result.sha256 == sha256_file(output)
+    assert result.media_info.media_type == "image"
+    assert result.media_info.width == 320
+    assert result.media_info.height == 568
+
+
+def test_extract_frame_at_time_rejects_non_video(tmp_path):
+    audio = generate_test_audio(tmp_path, duration_sec=1, sample_rate=16000)
+    try:
+        extract_frame_at_time(audio, tmp_path / "frame.png", time_sec=0.5)
+    except FfmpegCommandError:
+        pass
+    else:
+        raise AssertionError("extract_frame_at_time should reject non-video sources")
+
+
+def test_normalize_for_upload_produces_h264_aac_mp4(tmp_path):
+    video = generate_test_video(tmp_path, duration_sec=1, width=160, height=120, fps=15)
+    output = tmp_path / "normalized.mp4"
+
+    normalize_for_upload(video, output)
+
+    assert output.exists()
+    info = probe_media(output)
+    assert info.media_type == "video"
+    assert info.codec.lower() in {"h264", "avc1"}
+    # Re-normalized output is already platform-compliant.
+    assert needs_normalize_for_upload(output) is False
 
 
 def test_session_media_fixture_factory_caches_generated_assets(media_fixture_factory):

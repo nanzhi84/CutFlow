@@ -80,6 +80,52 @@ def retry_publish_item(batch_id: str, item_id: str, request: Request) -> c.Publi
     return service.retry_publish_item(batch_id, item_id, request)
 
 
+@router.post(
+    "/api/publish/batches/{batch_id}/items/{item_id}/generate-copy",
+    response_model=c.PublishCopyResult,
+)
+def generate_publish_copy(
+    batch_id: str, item_id: str, payload: c.GeneratePublishCopyRequest, request: Request
+) -> c.PublishCopyResult | JSONResponse:
+    require_role(request, c.UserRole.operator)
+    return service.generate_publish_copy(batch_id, item_id, payload, request)
+
+
+@router.post(
+    "/api/publish/batches/{batch_id}/items/{item_id}/generate-cover",
+    response_model=c.PublishCoverResult,
+)
+def generate_publish_cover(
+    batch_id: str, item_id: str, payload: c.GeneratePublishCoverRequest, request: Request
+) -> c.PublishCoverResult | JSONResponse:
+    require_role(request, c.UserRole.operator)
+    return service.generate_publish_cover(batch_id, item_id, payload, request)
+
+
+@router.post(
+    "/api/publish/batches/{batch_id}/items/{item_id}/preview-cover-frame",
+    response_model=c.PreviewCoverFrameResult,
+)
+def preview_publish_cover_frame(
+    batch_id: str, item_id: str, payload: c.PreviewCoverFrameRequest, request: Request
+) -> c.PreviewCoverFrameResult | JSONResponse:
+    require_role(request, c.UserRole.operator)
+    return service.preview_publish_cover_frame(batch_id, item_id, payload, request)
+
+
+@router.get("/api/publish/platform-accounts", response_model=c.PlatformAccountList)
+def publish_platform_accounts(
+    request: Request,
+    account_group: str | None = None,
+    case_name: str | None = None,
+    adapter_id: str | None = None,
+) -> c.PlatformAccountList:
+    require_role(request, c.UserRole.operator)
+    return service.platform_accounts(
+        request, account_group=account_group, case_name=case_name, adapter_id=adapter_id
+    )
+
+
 @router.patch("/api/publish/items/{item_id}", response_model=c.PublishBatchItemVm)
 def patch_publish_item(
     item_id: str, payload: c.PatchPublishItemRequest, request: Request

@@ -253,6 +253,12 @@ class PromptRegistry:
                     ErrorCode.prompt_output_invalid,
                     "Script prompt output is missing a non-empty script field.",
                 )
+        elif schema_id == "publish_copy.output":
+            # §2.3 hard-fail: the Publishing Copy Node output must carry the four
+            # string fields (title / publish_content / cover_title / cover_subtitle).
+            from packages.publishing.copy_node import validate_publish_copy_output
+
+            validate_publish_copy_output(output)
         elif not isinstance(output, dict):
             raise NodeExecutionError(
                 ErrorCode.prompt_output_invalid,
