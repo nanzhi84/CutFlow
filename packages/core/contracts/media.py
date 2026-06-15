@@ -116,6 +116,50 @@ class SelectionLedgerEntry(ContractModel):
     created_at: datetime = Field(default_factory=utcnow)
 
 
+SelectionReservationStatus = Literal["reserved", "committed", "released", "expired"]
+
+# Default reservation lease before it expires and is reclaimable by another run
+# (§6.6: "Reservation 有 TTL"). One hour comfortably covers a normal production run
+# while still freeing a slot a stuck/abandoned run squatted on.
+SELECTION_RESERVATION_TTL_SECONDS = 3600
+
+
+class SelectionReservationRecord(ContractModel):
+    """One reserve->commit->release/expire lease over a (case, medium, asset) slot.
+
+    Spec §6.6 / §32.10: planning reserves a selection so a concurrent same-case run
+    does not silently collide on the same asset; the per-medium production node
+    commits it on success; cancel/failure releases it; an elapsed TTL expires it.
+    """
+
+    id: str = Field(default_factory=lambda: f"resv_{uuid4().hex[:12]}")
+    case_id: str
+    run_id: str
+    medium: SelectionMedium
+    asset_id: str
+    diversity_key: str | None = None
+    status: SelectionReservationStatus = "reserved"
+    created_at: datetime = Field(default_factory=utcnow)
+    expires_at: datetime = Field(
+        default_factory=lambda: utcnow() + timedelta(seconds=SELECTION_RESERVATION_TTL_SECONDS)
+    )
+    committed_at: datetime | None = None
+    released_at: datetime | None = None
+
+    def is_active(self, *, now: datetime | None = None) -> bool:
+        """A reservation that still blocks another run from the same slot.
+
+        ``reserved`` until its TTL elapses, plus ``committed`` (a committed pick
+        is a hard hold). ``released``/``expired`` no longer block.
+        """
+        reference = now or utcnow()
+        if self.status == "committed":
+            return True
+        if self.status == "reserved":
+            return self.expires_at > reference
+        return False
+
+
 class MaterialUsageRankingItem(ContractModel):
     asset_id: str
     medium: SelectionMedium

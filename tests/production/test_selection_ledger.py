@@ -132,6 +132,60 @@ def test_finalize_success_records_selected_assets_once(monkeypatch: pytest.Monke
     assert {entry.case_id for entry in entries} == {"case_demo"}
 
 
+def test_finalize_records_opening_segment_distinctly_and_commits_reservation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repository = Repository()
+    workflow = _workflow(repository)
+    run = _run()
+    node_run = _node_run(run.id)
+    repository.runs[run.id] = run
+    repository.node_runs[run.id] = [node_run]
+    # Planning reserved the portrait shortlist; finalize must commit the shipped pick
+    # and release the rest (§6.6 commit -> release).
+    repository.reserve_selections(
+        case_id="case_demo",
+        run_id=run.id,
+        medium="portrait",
+        asset_ids=["asset_portrait_demo", "asset_portrait_alt"],
+    )
+    state = RunState(
+        request=DigitalHumanVideoRequest(
+            case_id="case_demo",
+            script="hello",
+            voice={"voice_id": "voice_sandbox"},
+        ),
+        artifacts={
+            ArtifactKind.plan_portrait: _artifact(
+                ArtifactKind.plan_portrait,
+                {
+                    "asset_id": "asset_portrait_demo",
+                    "segments": [
+                        {"asset_id": "asset_portrait_demo", "slot_phase": "portrait_opening"},
+                        {"asset_id": "asset_portrait_demo", "slot_phase": "portrait_main"},
+                    ],
+                },
+            ),
+        },
+    )
+    monkeypatch.setattr(digital_human, "get_object_store", lambda: NoopDeleteStore())
+
+    workflow._finalize_run_report(run, node_run, state)
+
+    portrait_entries = sorted(
+        (e for e in repository.selection_ledger.values() if e.medium == "portrait"),
+        key=lambda e: e.slot_phase,
+    )
+    # The opening segment is recorded distinctly so the next run's opening guard sees it.
+    assert {e.slot_phase for e in portrait_entries} == {"portrait_main", "portrait_opening"}
+    # The shipped pick is committed; the other shortlist member is released.
+    reservations = {
+        (r.asset_id): r.status for r in repository.selection_reservations.values()
+    }
+    assert reservations["asset_portrait_demo"] == "committed"
+    assert reservations["asset_portrait_alt"] == "released"
+
+
 def test_usage_ranking_aggregates_distinct_runs_and_recent_score():
     repository = Repository()
     repository.media_assets["asset_broll_alt"] = MediaAssetRecord(

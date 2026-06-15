@@ -93,6 +93,25 @@ def test_mark_cancelled_does_not_emit_run_level_stages():
     assert "cancelled" not in types
 
 
+def test_mark_cancelled_releases_uncommitted_reservations_keeps_committed():
+    # §6.6: cancel releases this run's uncommitted reservations so the slots are
+    # reclaimable, but a committed pick stays a hard diversity hold.
+    adapter, run, _ = _adapter_with_run(RunStatus.running)
+    adapter.repository.reserve_selections(
+        case_id="case_demo",
+        run_id=run.id,
+        medium="portrait",
+        asset_ids=["asset_portrait_demo", "asset_portrait_alt"],
+    )
+    adapter.repository.commit_selection_reservation(
+        run_id=run.id, medium="portrait", asset_id="asset_portrait_demo"
+    )
+    adapter._mark_cancelled(run.id)
+    statuses = {r.asset_id: r.status for r in adapter.repository.selection_reservations.values()}
+    assert statuses["asset_portrait_demo"] == "committed"
+    assert statuses["asset_portrait_alt"] == "released"
+
+
 def test_execute_node_emits_node_started_and_node_succeeded():
     adapter, run, _ = _adapter_with_run(RunStatus.running)
     state = RunState(request=_request())

@@ -28,9 +28,33 @@ def selection_entries_from_state(run: WorkflowRun, state: RunState) -> list[Sele
                 )
             )
 
+    # Portrait: record the per-segment template usage with a distinct slot_phase for the
+    # opening segment ("portrait_opening") so the next run's recency context can fire the
+    # opening guard (no-consecutive-opening-reuse). Falls back to the single top-level
+    # asset_id (main) when a run somehow has no per-segment plan.
     portrait = state.artifacts.get(ArtifactKind.plan_portrait)
     portrait_payload = portrait.payload if portrait and isinstance(portrait.payload, dict) else {}
-    add("portrait", portrait_payload.get("asset_id"), "portrait_main")
+    portrait_segments = portrait_payload.get("segments")
+    recorded_portrait_keys: set[tuple[str, str]] = set()
+    if isinstance(portrait_segments, list) and portrait_segments:
+        for seg_index, segment in enumerate(portrait_segments):
+            if not isinstance(segment, dict):
+                continue
+            asset_id = segment.get("asset_id")
+            if not isinstance(asset_id, str) or not asset_id:
+                continue
+            slot_phase = str(segment.get("slot_phase") or "").strip() or (
+                "portrait_opening" if seg_index == 0 else "portrait_main"
+            )
+            # One ledger row per (template, slot_phase) so a reused template does not
+            # spam the ledger, while the opening row stays distinct from main rows.
+            key = (asset_id, slot_phase)
+            if key in recorded_portrait_keys:
+                continue
+            recorded_portrait_keys.add(key)
+            add("portrait", asset_id, slot_phase, segment.get("diversity_key"))
+    else:
+        add("portrait", portrait_payload.get("asset_id"), "portrait_main")
 
     broll = state.artifacts.get(ArtifactKind.plan_broll)
     broll_payload = broll.payload if broll and isinstance(broll.payload, dict) else {}

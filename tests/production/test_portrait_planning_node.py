@@ -240,7 +240,8 @@ def test_insufficient_material_soft_degrades(monkeypatch, tmp_path):
 
 def test_candidate_too_short_to_cover_returns_no_fabricated_plan(monkeypatch, tmp_path):
     # The only candidate (15s demo source) cannot cover a 40s timeline without
-    # over-extension -> the planner returns no plan -> honest soft-degrade.
+    # over-extension -> the planner returns no plan even after the escalation ladder
+    # (full pool + capacity-controlled split retry) -> honest hard-fail.
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
     monkeypatch.setattr(
@@ -251,3 +252,108 @@ def test_candidate_too_short_to_cover_returns_no_fabricated_plan(monkeypatch, tm
     with pytest.raises(NodeExecutionError) as exc:
         _run_node(adapter, _state(adapter, candidate_ids=["asset_portrait_demo"], duration=40.0))
     assert exc.value.error.code == ErrorCode.material_insufficient_portrait
+
+
+def test_escalation_ladder_diagnostics_on_success(monkeypatch, tmp_path):
+    # A coverable timeline: the single full-pool pass succeeds; diagnostics expose the
+    # escalation stage + that no capacity-controlled split was needed.
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    monkeypatch.setattr(
+        "packages.production.pipeline.nodes.portrait_planning.detect_silence_windows",
+        lambda *a, **k: [],
+    )
+    adapter = _adapter(object_store)
+    output = _run_node(adapter, _state(adapter, candidate_ids=["asset_portrait_demo"], duration=12.0))
+    diag = _portrait_payload(output)["diagnostics"]
+    assert diag["recovery_stage"] == "full_pool"
+    assert diag["capacity_controlled_split"] is False
+    assert diag["longest_usable_source_window"] > 0
+    assert any(a["stage"] == "full_pool" and a["ok"] for a in diag["recovery_attempts"])
+
+
+def test_capacity_controlled_split_retry_drives_recovery(monkeypatch, tmp_path):
+    # Force the single (default) pass to fail and the capacity-controlled split retry to
+    # succeed, proving the node DRIVES max_chunk_duration on escalation (gap 1).
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    monkeypatch.setattr(
+        "packages.production.pipeline.nodes.portrait_planning.detect_silence_windows",
+        lambda *a, **k: [],
+    )
+    from packages.planning.editing import BoundaryConstraints as _BC
+    from packages.production.pipeline.nodes import portrait_planning as pp
+
+    real_plan = pp.plan_boundary_timeline
+    calls: list[dict] = []
+
+    class _Empty:
+        ok = False
+        segments: list = []
+        total_frames = 0
+        used_audio_pauses = False
+
+    def fake_plan(*, narration_units, portrait_candidates, constraints, audio_pauses=None, fps=30):
+        calls.append(
+            {
+                "max_chunk_duration": constraints.max_chunk_duration,
+                "include_unlimited_reuse_scope": constraints.include_unlimited_reuse_scope,
+            }
+        )
+        # First (full-pool, no cap) pass: pretend it cannot cover -> forces escalation.
+        if constraints.max_chunk_duration is None:
+            return _Empty()
+        # Capacity-controlled split pass: defer to the real planner (it succeeds).
+        return real_plan(
+            narration_units=narration_units,
+            portrait_candidates=portrait_candidates,
+            constraints=constraints,
+            audio_pauses=audio_pauses,
+            fps=fps,
+        )
+
+    monkeypatch.setattr(pp, "plan_boundary_timeline", fake_plan)
+    adapter = _adapter(object_store)
+    output = _run_node(adapter, _state(adapter, candidate_ids=["asset_portrait_demo"], duration=12.0))
+
+    diag = _portrait_payload(output)["diagnostics"]
+    assert diag["recovery_stage"] == "capacity_controlled_split"
+    assert diag["capacity_controlled_split"] is True
+    # The escalation drove a SECOND call with a real max_chunk_duration cap and reuse off.
+    assert calls[0]["max_chunk_duration"] is None
+    assert calls[1]["max_chunk_duration"] is not None
+    assert calls[1]["include_unlimited_reuse_scope"] is False
+    assert isinstance(_BC, type)
+
+
+def test_recency_context_demotes_recently_used_template_and_records_opening(monkeypatch, tmp_path):
+    # A prior run used asset_portrait_demo as its opening -> the next run's candidate
+    # carries a live recency/opening context (previously dead), AND the new plan records
+    # its opening segment distinctly so the guard has data for the run after this one.
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    monkeypatch.setattr(
+        "packages.production.pipeline.nodes.portrait_planning.detect_silence_windows",
+        lambda *a, **k: [],
+    )
+    adapter = _adapter(object_store)
+    from packages.core.contracts import SelectionLedgerEntry
+
+    adapter.repository.record_selection_ledger_entries(
+        [
+            SelectionLedgerEntry(
+                case_id="case_demo",
+                run_id="run_prev",
+                medium="portrait",
+                asset_id="asset_portrait_demo",
+                slot_phase="portrait_opening",
+            )
+        ]
+    )
+    output = _run_node(adapter, _state(adapter, candidate_ids=["asset_portrait_demo"], duration=12.0))
+    payload = _portrait_payload(output)
+    # The only template is recently used -> diagnostics surface a non-zero recent count.
+    assert payload["diagnostics"]["recently_used_segment_count"] >= 1
+    # Opening segment recorded with the distinct slot_phase (drives the next-run guard).
+    assert payload["segments"][0]["slot_phase"] == "portrait_opening"
+    assert all(seg["slot_phase"] in {"portrait_opening", "portrait_main"} for seg in payload["segments"])

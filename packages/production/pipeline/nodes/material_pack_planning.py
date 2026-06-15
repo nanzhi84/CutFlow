@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from packages.core.contracts import ArtifactKind
 from packages.core.contracts.artifacts import MaterialCandidate, MaterialPackArtifact
-from packages.core.storage.repository import new_id
 from packages.planning.material import (
     extract_keywords,
     rank_broll_candidates,
@@ -124,6 +123,21 @@ def run(ctx: NodeContext) -> NodeOutput:
     bgm_candidates = _simple_candidates(bgm_assets, "bgm", bgm_ledger)
     font_candidates = _simple_candidates(font_assets, "font", font_ledger)
 
+    # §6.6 reserve: claim a TTL lease over each top candidate per medium so a
+    # concurrent same-case run does not silently collide on the same asset. The
+    # per-medium production node commits the asset it actually ships; cancel/failure
+    # releases the rest. Assets a live run already holds are skipped (recency already
+    # demoted them upstream); the reservation ids surfaced here are the ones THIS run
+    # owns, wiring the previously-stubbed ``reservations`` contract field for real.
+    reservation_ids = _reserve_top_candidates(
+        ctx,
+        case_id=request.case_id,
+        portrait_candidates=portrait_candidates,
+        broll_candidates=broll_candidates,
+        bgm_candidates=bgm_candidates,
+        font_candidates=font_candidates,
+    )
+
     payload = MaterialPackArtifact(
         case_id=request.case_id,
         portrait_candidates=portrait_candidates,
@@ -138,11 +152,52 @@ def run(ctx: NodeContext) -> NodeOutput:
             and not broll_annotations,
             "bgm_missing": request.bgm.enabled and not bgm_candidates,
         },
-        reservations=[new_id("reserve")],
+        reservations=reservation_ids,
     ).model_dump(mode="json")
     return NodeOutput(
         artifacts=[ctx.artifact(ArtifactKind.plan_material_pack, payload, "MaterialPackPlanArtifact.v1")]
     )
+
+
+# How many top-ranked candidates to reserve per medium. Reserving the shortlist (not
+# only the single eventual pick) is intentional: the production node may pick any of the
+# top candidates, and uncommitted reservations are released at finalize/failure.
+_RESERVE_TOP_N = 3
+
+
+def _reserve_top_candidates(
+    ctx: NodeContext,
+    *,
+    case_id: str,
+    portrait_candidates: list[MaterialCandidate],
+    broll_candidates: list[MaterialCandidate],
+    bgm_candidates: list[MaterialCandidate],
+    font_candidates: list[MaterialCandidate],
+) -> list[str]:
+    reservation_ids: list[str] = []
+    for medium, candidates in (
+        ("portrait", portrait_candidates),
+        ("broll", broll_candidates),
+        ("bgm", bgm_candidates),
+        ("font", font_candidates),
+    ):
+        asset_ids = [c.asset_id for c in candidates[:_RESERVE_TOP_N] if c.asset_id]
+        if not asset_ids:
+            continue
+        diversity_keys = {
+            c.asset_id: (c.metadata or {}).get("diversity_key")
+            for c in candidates[:_RESERVE_TOP_N]
+            if c.asset_id
+        }
+        owned = ctx.repository.reserve_selections(
+            case_id=case_id,
+            run_id=ctx.run.id,
+            medium=medium,
+            asset_ids=asset_ids,
+            diversity_keys=diversity_keys,
+        )
+        reservation_ids.extend(reservation.id for reservation in owned)
+    return reservation_ids
 
 
 def _simple_candidates(assets, medium_label, ledger_entries) -> list[MaterialCandidate]:

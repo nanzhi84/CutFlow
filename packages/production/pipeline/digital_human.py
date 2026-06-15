@@ -670,6 +670,18 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             )
             self.repository.node_runs[run.id][-1] = failed_node
             record_node_run(failed_node)
+            # §6.6 release on failure: free this run's UNCOMMITTED reservations so a
+            # sibling run can claim those slots. Committed picks stay held for diversity
+            # memory ("失败任务默认保留用于多样性记忆"). Never let a reservation hiccup
+            # mask the original node failure.
+            try:
+                self.repository.release_run_reservations(run_id=run.id, only_uncommitted=True)
+            except Exception:
+                logger.warning(
+                    "Failed to release selection reservations for failed run %s.",
+                    run.id,
+                    exc_info=True,
+                )
             self._write_report(run, state, failed=True)
             assert_transition("run", self.repository.runs[run.id].status, RunStatus.failed)
             self.repository.runs[run.id] = self.repository.runs[run.id].model_copy(
@@ -740,6 +752,16 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         self.repository.runs[run.id] = self.repository.runs[run.id].model_copy(
             update={"status": RunStatus.cancelled, "finished_at": utcnow(), "updated_at": utcnow()}
         )
+        # §6.6 release on cancel: free this run's uncommitted reservations so the slots
+        # are reclaimable immediately (committed picks stay held for diversity memory).
+        try:
+            self.repository.release_run_reservations(run_id=run_id, only_uncommitted=True)
+        except Exception:
+            logger.warning(
+                "Failed to release selection reservations for cancelled run %s.",
+                run_id,
+                exc_info=True,
+            )
         record_workflow_run(self.repository.runs[run.id])
         self.repository.create_event(
             "workflow.run.cancelled",

@@ -273,6 +273,28 @@ class SelectionLedgerRow(Base):
     )
 
 
+class SelectionReservationRow(Base):
+    __tablename__ = "selection_reservations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    case_id: Mapped[str] = mapped_column(String, nullable=False)
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
+    medium: Mapped[str] = mapped_column(String, nullable=False)
+    asset_id: Mapped[str] = mapped_column(String, nullable=False)
+    diversity_key: Mapped[str | None] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="reserved")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "medium", "asset_id"),
+    )
+
+
 class AnnotationRow(TimestampMixin, Base):
     __tablename__ = "annotations"
 
@@ -816,6 +838,15 @@ Index(
 )
 Index("idx_selection_ledger_case_medium", SelectionLedgerRow.case_id, SelectionLedgerRow.medium)
 Index("idx_selection_ledger_asset", SelectionLedgerRow.medium, SelectionLedgerRow.asset_id)
+# §17: selection_reservations must have a TTL index so expiry sweeps + active-slot
+# lookups stay index-backed (status to scope to live reservations, expires_at for TTL).
+Index(
+    "idx_selection_reservations_active",
+    SelectionReservationRow.case_id,
+    SelectionReservationRow.medium,
+    SelectionReservationRow.status,
+)
+Index("idx_selection_reservations_ttl", SelectionReservationRow.status, SelectionReservationRow.expires_at)
 Index("idx_provider_invocations_case", ProviderInvocationRow.case_id, ProviderInvocationRow.provider_id)
 Index("idx_usage_meter_provider", UsageMeterRecordRow.provider_id, UsageMeterRecordRow.capability_id)
 Index("idx_case_memories_case_status", CaseMemoryRow.case_id, CaseMemoryRow.status)

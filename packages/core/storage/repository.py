@@ -63,6 +63,7 @@ from packages.core.contracts import (
     SecretPreview,
     SelectionLedgerEntry,
     SelectionMedium,
+    SelectionReservationRecord,
     UploadSession,
     UsageMeterRecord,
     UserRole,
@@ -99,6 +100,7 @@ class Repository:
         self.artifacts: dict[str, Artifact] = {}
         self.media_assets: dict[str, MediaAssetRecord] = {}
         self.selection_ledger: dict[str, SelectionLedgerEntry] = {}
+        self.selection_reservations: dict[str, SelectionReservationRecord] = {}
         self.annotations: dict[str, AnnotationEditorVm] = {}
         self.voices: dict[str, VoiceProfile] = {}
         self.prompt_templates: dict[str, PromptTemplate] = {}
@@ -327,6 +329,162 @@ class Repository:
             existing.add(key)
             recorded.append(entry)
         return recorded
+
+    # --- selection reservations (§6.6 reserve -> commit -> release/expire) -----
+    def active_selection_reservations(
+        self,
+        *,
+        case_id: str | None,
+        medium: SelectionMedium,
+        exclude_run_id: str | None = None,
+    ) -> list[SelectionReservationRecord]:
+        """Reservations that still hold a slot for ``case_id``/``medium``.
+
+        Expires lazily as it scans (TTL): a ``reserved`` lease past its
+        ``expires_at`` is reclaimed and excluded. ``exclude_run_id`` drops this
+        run's own reservations so a run never collides with itself.
+        """
+        now = utcnow()
+        active: list[SelectionReservationRecord] = []
+        for reservation in list(self.selection_reservations.values()):
+            if reservation.medium != medium:
+                continue
+            if case_id is not None and reservation.case_id != case_id:
+                continue
+            if reservation.status == "reserved" and reservation.expires_at <= now:
+                self.selection_reservations[reservation.id] = reservation.model_copy(
+                    update={"status": "expired", "released_at": now}
+                )
+                continue
+            if not reservation.is_active(now=now):
+                continue
+            if exclude_run_id is not None and reservation.run_id == exclude_run_id:
+                continue
+            active.append(reservation)
+        return active
+
+    def reserve_selections(
+        self,
+        *,
+        case_id: str,
+        run_id: str,
+        medium: SelectionMedium,
+        asset_ids: Iterable[str],
+        diversity_keys: dict[str, str | None] | None = None,
+    ) -> list[SelectionReservationRecord]:
+        """Reserve a TTL lease over each (run, medium, asset) slot.
+
+        Idempotent per (run, medium, asset): re-reserving an existing live lease
+        returns it unchanged (so a retried planning node does not duplicate). Assets
+        another live run already holds are SKIPPED here — the caller decides whether a
+        skip is fatal (portrait coverage) or a soft demotion already applied upstream.
+        Returns the reservations this run owns for the given assets.
+        """
+        keys = diversity_keys or {}
+        blocked = {
+            reservation.asset_id
+            for reservation in self.active_selection_reservations(
+                case_id=case_id, medium=medium, exclude_run_id=run_id
+            )
+        }
+        owned: list[SelectionReservationRecord] = []
+        for asset_id in asset_ids:
+            if not isinstance(asset_id, str) or not asset_id:
+                continue
+            existing = next(
+                (
+                    reservation
+                    for reservation in self.selection_reservations.values()
+                    if reservation.run_id == run_id
+                    and reservation.medium == medium
+                    and reservation.asset_id == asset_id
+                    and reservation.status in {"reserved", "committed"}
+                ),
+                None,
+            )
+            if existing is not None:
+                owned.append(existing)
+                continue
+            if asset_id in blocked:
+                continue
+            reservation = SelectionReservationRecord(
+                case_id=case_id,
+                run_id=run_id,
+                medium=medium,
+                asset_id=asset_id,
+                diversity_key=keys.get(asset_id),
+            )
+            self.selection_reservations[reservation.id] = reservation
+            owned.append(reservation)
+        return owned
+
+    def commit_selection_reservation(
+        self,
+        *,
+        run_id: str,
+        medium: SelectionMedium,
+        asset_id: str,
+    ) -> SelectionReservationRecord | None:
+        """Promote this run's live reservation on a slot to ``committed`` (a hard hold).
+
+        Called from the per-medium production node when the asset actually ships.
+        Returns the committed record, or ``None`` when this run held no live
+        reservation for the slot (e.g. it was reclaimed by TTL before commit).
+        """
+        now = utcnow()
+        for reservation in self.selection_reservations.values():
+            if (
+                reservation.run_id == run_id
+                and reservation.medium == medium
+                and reservation.asset_id == asset_id
+                and reservation.status == "reserved"
+            ):
+                committed = reservation.model_copy(
+                    update={"status": "committed", "committed_at": now}
+                )
+                self.selection_reservations[reservation.id] = committed
+                return committed
+        return None
+
+    def release_run_reservations(
+        self,
+        *,
+        run_id: str,
+        only_uncommitted: bool = True,
+    ) -> list[SelectionReservationRecord]:
+        """Release a run's reservations (cancel/failure path, §6.6).
+
+        By default only ``reserved`` (uncommitted) leases are freed — a committed
+        pick stays a hard hold for diversity memory even if the run later fails
+        (§6.6: "失败任务默认保留用于多样性记忆"). ``only_uncommitted=False`` also
+        releases committed holds (ops cleanup).
+        """
+        now = utcnow()
+        released: list[SelectionReservationRecord] = []
+        for reservation in list(self.selection_reservations.values()):
+            if reservation.run_id != run_id:
+                continue
+            if reservation.status not in {"reserved", "committed"}:
+                continue
+            if only_uncommitted and reservation.status == "committed":
+                continue
+            updated = reservation.model_copy(update={"status": "released", "released_at": now})
+            self.selection_reservations[reservation.id] = updated
+            released.append(updated)
+        return released
+
+    def expire_stale_selection_reservations(self) -> list[SelectionReservationRecord]:
+        """Sweep ``reserved`` leases past their TTL into ``expired`` (ops/scheduler)."""
+        now = utcnow()
+        expired: list[SelectionReservationRecord] = []
+        for reservation in list(self.selection_reservations.values()):
+            if reservation.status == "reserved" and reservation.expires_at <= now:
+                updated = reservation.model_copy(
+                    update={"status": "expired", "released_at": now}
+                )
+                self.selection_reservations[reservation.id] = updated
+                expired.append(updated)
+        return expired
 
     def material_usage_ranking(
         self,
