@@ -14,9 +14,9 @@ import {
   templateKindLabels,
   type TemplateKind,
   type UploadPlaceholder,
-  toDisplayUrl,
   readPreviewUrlMeta,
 } from "../../components/library/libraryModel";
+import { toDisplayUrl } from "../../lib/url";
 import { SearchInput } from "../../components/ui/SearchInput";
 import { useToast } from "../../components/ui/Toast";
 import { InfiniteScrollSentinel } from "../../components/ui/InfiniteScrollSentinel";

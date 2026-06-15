@@ -60,46 +60,6 @@ class TimelineValidationReport(ContractModel):
     checks: dict[str, bool] = Field(default_factory=dict)
 
 
-class AnnotationTimelineRow(ContractModel):
-    annotation_id: str
-    asset_id: str
-    start_sec: float
-    end_sec: float
-    label: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class QualityEventRow(ContractModel):
-    event_id: str
-    asset_id: str
-    severity: Literal["info", "warning", "error", "critical"]
-    message: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class FieldUiMetadata(ContractModel):
-    field: str
-    label: str
-    widget: str
-    required: bool = False
-    options: list[str] = Field(default_factory=list)
-
-
-class AnnotationEditView(ContractModel):
-    asset_id: str
-    etag: str
-    timeline: list[AnnotationTimelineRow] = Field(default_factory=list)
-    quality_events: list[QualityEventRow] = Field(default_factory=list)
-    fields: list[FieldUiMetadata] = Field(default_factory=list)
-
-
-class AnnotationPatchRequest(ContractModel):
-    annotation_id: str
-    base_etag: str
-    reason: str
-    changes: dict[str, Any] = Field(default_factory=dict)
-
-
 class UploadedFileArtifact(ContractModel):
     upload_session_id: str | None = None
     filename: str
@@ -224,17 +184,6 @@ class MaterialPackArtifact(ContractModel):
     bgm_candidates: list[MaterialCandidate] = Field(default_factory=list)
     reservations: list[str] = Field(default_factory=list)
     diagnostics: dict[str, Any] = Field(default_factory=dict)
-
-
-class PortraitSegment(ContractModel):
-    segment_id: str
-    asset_id: str
-    start: float
-    end: float
-    source_start: float
-    source_end: float
-    role: str
-    unit_ids: list[str]
 
 
 class PortraitPlanArtifact(ContractModel):

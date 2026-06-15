@@ -88,41 +88,6 @@ def create_secret(
     return secret
 
 
-def read_secret(secret_id: str, request: Request, actor: str | None = None) -> str | None:
-    """Reveal a secret's plaintext value for internal use, writing a ``secret.read`` audit.
-
-    Spec §11.3: the public API never returns plaintext, but internal consumers
-    read the value via the secret store. This seam records the read in the audit log
-    without logging the value itself. Returns ``None`` if the secret or its backing
-    value is missing.
-
-    NOTE: this service-layer reveal is not the production hot path — provider
-    invocations reveal secrets via ProviderInvocationContext.get_secret(), which
-    records its own secret.read audit. This function remains for in-process /
-    admin-tooling callers and keeps the read audit atomic with the read.
-    """
-    repo = secret_repository(request)
-    if repo is not None:
-        # DB backend: reveal + secret.read audit persist atomically (same txn).
-        return repo.read_secret(secret_id, actor=actor)
-    secret = repository(request).secrets.get(secret_id)
-    if secret is None or not secret.secret_ref:
-        return None
-    value = secret_store(request).get(secret.secret_ref)
-    if value is None:
-        return None
-    _record_secret_audit(
-        request,
-        action="secret.read",
-        secret_id=secret.id,
-        secret_ref=secret.secret_ref,
-        provider_id=secret.provider_id,
-        environment=secret.environment,
-        actor=actor,
-    )
-    return value
-
-
 def rotate_secret(
     secret_id: str, payload: c.RotateSecretRequest, request: Request, actor: str | None = None
 ) -> c.SecretPreview:

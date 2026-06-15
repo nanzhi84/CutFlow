@@ -105,44 +105,6 @@ def test_secret_create_rotate_disable_write_audit_events_without_plaintext():
     assert rotated_plaintext not in serialized
 
 
-def test_read_secret_service_reveals_value_and_audits_secret_read():
-    # Spec 32.9: secret.read is an audited action. read_secret reveals the
-    # plaintext for internal callers while recording a secret.read audit event
-    # whose details never include the value itself.
-    plaintext = "internal-read-value-123"
-    app = _memory_app()
-    request = _request(app)
-
-    created = service.create_secret(
-        c.CreateSecretRequest(
-            provider_id="sandbox-read",
-            environment="local",
-            name="Read key",
-            plaintext_secret=plaintext,
-        ),
-        request,
-        actor="usr_admin",
-    )
-
-    value = service.read_secret(created.id, request, actor="tester")
-    assert value == plaintext
-
-    read_events = [event for event in _secret_audit_events(request) if event.action == "secret.read"]
-    assert read_events, "expected a secret.read audit event"
-    read_event = read_events[0]
-    assert read_event.resource_id == created.id
-    assert read_event.actor == "tester"
-    assert plaintext not in repr(read_event)
-
-
-def test_read_secret_returns_none_for_missing_secret_and_skips_audit():
-    app = _memory_app()
-    request = _request(app)
-
-    assert service.read_secret("sec_does_not_exist", request, actor="tester") is None
-    assert _secret_audit_events(request) == []
-
-
 def test_router_passes_authenticated_actor_into_audit():
     # The router captures require_role's AuthUser and forwards user.id as actor,
     # so audit events attribute the real admin rather than the bare "system".

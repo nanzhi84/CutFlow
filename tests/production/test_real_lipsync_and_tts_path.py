@@ -14,7 +14,6 @@ import pytest
 from packages.ai.gateway import ProviderResult
 from packages.ai.gateway.provider_gateway import ProviderCall, ProviderGateway, ProviderRuntimeError
 from packages.core.contracts import (
-    Artifact,
     ArtifactKind,
     DigitalHumanVideoRequest,
     ErrorCode,

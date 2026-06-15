@@ -126,8 +126,7 @@ async def upload_file(
         updates = {"status": c.UploadStatus.uploading}
     if upload_repository(request) is not None:
         return upload_repository(request).patch_upload(upload_session_id, updates)
-    if "status" in updates:
-        assert_transition("upload_session", upload.status, updates["status"])
+    assert_transition("upload_session", upload.status, updates["status"])
     return repository(request).patch(repository(request).uploads, upload_session_id, updates)
 
 

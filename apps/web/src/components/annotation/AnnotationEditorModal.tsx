@@ -16,7 +16,8 @@ import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, isApiError, type AnnotationEditorVm, type MediaAssetRecord } from "../../api/client";
 import { formatDuration, shortId } from "../../lib/format";
-import { readAssetThumbnailUrl, readPreviewUrlMeta, toDisplayUrl } from "../../components/library/libraryModel";
+import { toDisplayUrl } from "../../lib/url";
+import { readAssetThumbnailUrl, readPreviewUrlMeta } from "../../components/library/libraryModel";
 import {
   canonicalToEvidenceFrames,
   canonicalToQualityEvents,

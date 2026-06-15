@@ -8,16 +8,9 @@ keeps working unchanged. ``__all__`` is the authoritative public surface.
 
 from __future__ import annotations
 
-# Re-exported standard-library / Pydantic names. These were transitively importable
-# from this package before the per-domain split (some callers rely on e.g.
-# ``packages.core.contracts.Decimal``); keep them on the public surface.
-from datetime import datetime, timedelta, timezone
+# Re-exported for backward compatibility: a few call sites reach Decimal via
+# ``packages.core.contracts.Decimal`` (e.g. apps/api/services/ops.py, providers.py).
 from decimal import Decimal
-from enum import Enum
-from typing import Annotated, Any, Generic, Literal, TypeVar
-from uuid import uuid4
-
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from .base import (
     T,
@@ -384,6 +377,7 @@ from .ops import (
 
 
 __all__ = [
+    "Decimal",
     "T",
     "utcnow",
     "ContractModel",

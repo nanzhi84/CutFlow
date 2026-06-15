@@ -14,7 +14,6 @@ import asyncio
 from decimal import Decimal
 
 import httpx
-import pytest
 
 from packages.core.config import BalanceSettings
 from packages.core.contracts import ProviderOptionsSchemaRef, ProviderProfile

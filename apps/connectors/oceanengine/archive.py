@@ -19,8 +19,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = "oceanengine_offline_v1"
-
 _SCHEMA_SQL = """
 create table if not exists imported_files (
   file_sha256 text primary key,

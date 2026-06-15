@@ -1,6 +1,6 @@
 import { FileAudio, Library, Mic2, Music4 } from "lucide-react";
 import type { MediaAssetCard, MediaAssetRecord, SignedUrlResponse, VoiceProfile } from "../../api/client";
-import { toDisplayUrl as sanitizeDisplayUrl } from "../../lib/url";
+import { toDisplayUrl } from "../../lib/url";
 
 export const VOICE_UPLOAD_ACCEPT = ".mp3,.wav,.m4a,.aac,.ogg,.flac";
 
@@ -96,11 +96,6 @@ export function uploadStageLabel(status: string) {
   if (status === "completed") return "已完成";
   if (status === "failed") return "失败";
   return "等待";
-}
-
-/** 仅 http(s) 或站内相对路径可直接作为浏览器资源 URL；内部 scheme（local:// 等）回退占位。 */
-export function toDisplayUrl(url: string | null | undefined): string | null {
-  return sanitizeDisplayUrl(url);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

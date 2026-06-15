@@ -3,7 +3,8 @@ import { useRef, useState } from "react";
 import type { PublishBatchItem, PublishPackage } from "../../api/client";
 import { useUpload } from "../../hooks/useUpload";
 import { useToast } from "../ui/Toast";
-import { type PublishDraft, toDisplayUrl } from "./publishModel";
+import { toDisplayUrl } from "../../lib/url";
+import type { PublishDraft } from "./publishModel";
 
 type CoverPanelProps = {
   item: PublishBatchItem;

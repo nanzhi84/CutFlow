@@ -48,7 +48,6 @@ class IngestResult:
     archived_path: str
     file_sha256: str
     status: str  # "ingested" | "skipped_duplicate_file" | "unsupported"
-    normalized_rows: list[OceanEngineMetricRow] = field(default_factory=list)
     new_row_count: int = 0
     skipped_row_count: int = 0
     import_request: MetricsImportRequest | None = None
@@ -206,7 +205,6 @@ def import_archived_xlsx(
         archived_path=str(path),
         file_sha256=file_sha256,
         status="ingested",
-        normalized_rows=new_rows,
         new_row_count=len(new_rows),
         skipped_row_count=skipped,
         import_request=request,

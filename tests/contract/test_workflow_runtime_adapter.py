@@ -23,9 +23,6 @@ class RecordingRuntimeAdapter:
     ) -> None:
         self.started_run_id = new_run.id
 
-    def get_run_status(self, run_id: str) -> c.RunStatus | None:
-        return None
-
 
 def test_runtime_settings_default_to_local(monkeypatch):
     monkeypatch.delenv("CUTAGENT_WORKFLOW_RUNTIME", raising=False)
