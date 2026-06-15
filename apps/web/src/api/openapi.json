@@ -4906,6 +4906,144 @@
         }
       }
     },
+    "/api/cases/{case_id}/memory/recall": {
+      "get": {
+        "summary": "Recall Memory",
+        "operationId": "recall_memory_api_cases__case_id__memory_recall_get",
+        "parameters": [
+          {
+            "name": "case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Case Id"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "recent",
+                "topic",
+                "platform",
+                "memory_type",
+                "high_performance",
+                "low_performance"
+              ],
+              "type": "string",
+              "default": "recent",
+              "title": "Mode"
+            }
+          },
+          {
+            "name": "topic",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Topic"
+            }
+          },
+          {
+            "name": "platform",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Platform"
+            }
+          },
+          {
+            "name": "memory_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "script_pattern",
+                    "video_pattern",
+                    "audience_insight",
+                    "editing_rule",
+                    "negative_lesson"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Memory Type"
+            }
+          },
+          {
+            "name": "scope_key",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope Key"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryRecallResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cases/{case_id}/memory/{memory_id}/approve": {
       "post": {
         "summary": "Approve Memory",
@@ -9443,6 +9581,18 @@
             "title": "Status",
             "default": "proposed"
           },
+          "memory_type": {
+            "type": "string",
+            "enum": [
+              "script_pattern",
+              "video_pattern",
+              "audience_insight",
+              "editing_rule",
+              "negative_lesson"
+            ],
+            "title": "Memory Type",
+            "default": "script_pattern"
+          },
           "scope": {
             "$ref": "#/components/schemas/CaseMemoryScope"
           },
@@ -9463,6 +9613,22 @@
             "minimum": 0.0,
             "title": "Confidence",
             "default": 0.5
+          },
+          "sample_size": {
+            "type": "integer",
+            "title": "Sample Size",
+            "default": 0
+          },
+          "supersedes_memory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes Memory Id"
           }
         },
         "additionalProperties": false,
@@ -9508,6 +9674,76 @@
               }
             ],
             "title": "Product"
+          },
+          "scope_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Key"
+          },
+          "applies_to_case_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Applies To Case Ids"
+          },
+          "applies_to_platforms": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Applies To Platforms"
+          },
+          "applies_to_audience_segments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Applies To Audience Segments"
+          },
+          "applies_to_script_intents": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Applies To Script Intents"
+          },
+          "excluded_case_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Excluded Case Ids"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
           }
         },
         "additionalProperties": false,
@@ -9525,6 +9761,13 @@
             },
             "type": "array",
             "title": "Observations"
+          },
+          "scores": {
+            "items": {
+              "$ref": "#/components/schemas/PerformanceScore"
+            },
+            "type": "array",
+            "title": "Scores"
           }
         },
         "additionalProperties": false,
@@ -11249,6 +11492,68 @@
       },
       "CreativeFeatureVector": {
         "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version",
+            "default": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "case_id": {
+            "type": "string",
+            "title": "Case Id",
+            "default": ""
+          },
+          "script_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Script Version Id"
+          },
+          "video_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Version Id"
+          },
           "hook_type": {
             "anyOf": [
               {
@@ -11260,6 +11565,46 @@
             ],
             "title": "Hook Type"
           },
+          "script_structure": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Script Structure"
+          },
+          "topic_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Topic Tags"
+          },
+          "cta_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cta Type"
+          },
+          "angle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Angle"
+          },
           "duration_sec": {
             "anyOf": [
               {
@@ -11270,6 +11615,68 @@
               }
             ],
             "title": "Duration Sec"
+          },
+          "broll_density": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Broll Density"
+          },
+          "cut_density": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cut Density"
+          },
+          "subtitle_style_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle Style Id"
+          },
+          "bgm_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bgm Id"
+          },
+          "cover_style": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Style"
+          },
+          "material_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Material Ids"
           },
           "broll_count": {
             "type": "integer",
@@ -11284,6 +11691,9 @@
         },
         "additionalProperties": false,
         "type": "object",
+        "required": [
+          "id"
+        ],
         "title": "CreativeFeatureVector"
       },
       "CreativePattern": {
@@ -13237,6 +13647,18 @@
             "title": "Status",
             "default": "proposed"
           },
+          "memory_type": {
+            "type": "string",
+            "enum": [
+              "script_pattern",
+              "video_pattern",
+              "audience_insight",
+              "editing_rule",
+              "negative_lesson"
+            ],
+            "title": "Memory Type",
+            "default": "script_pattern"
+          },
           "scope": {
             "$ref": "#/components/schemas/CaseMemoryScope"
           },
@@ -13257,6 +13679,22 @@
             "minimum": 0.0,
             "title": "Confidence",
             "default": 0.5
+          },
+          "sample_size": {
+            "type": "integer",
+            "title": "Sample Size",
+            "default": 0
+          },
+          "supersedes_memory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes Memory Id"
           },
           "proposed_by_reflection_run_id": {
             "anyOf": [
@@ -13279,6 +13717,40 @@
         ],
         "title": "MemoryProposal"
       },
+      "MemoryRecallResponse": {
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "title": "Case Id"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "recent",
+              "topic",
+              "platform",
+              "memory_type",
+              "high_performance",
+              "low_performance"
+            ],
+            "title": "Mode"
+          },
+          "memories": {
+            "items": {
+              "$ref": "#/components/schemas/CaseMemory"
+            },
+            "type": "array",
+            "title": "Memories"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "case_id",
+          "mode"
+        ],
+        "title": "MemoryRecallResponse"
+      },
       "MetricsImportRequest": {
         "properties": {
           "rows": {
@@ -13295,6 +13767,49 @@
             "type": "boolean",
             "title": "Dry Run",
             "default": false
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "manual_csv",
+              "oceanengine_rpa",
+              "platform_api"
+            ],
+            "title": "Source",
+            "default": "manual_csv"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Id"
+          },
+          "matching_policy": {
+            "type": "string",
+            "enum": [
+              "external_post_id",
+              "platform_item_id",
+              "published_url",
+              "strict_manual"
+            ],
+            "title": "Matching Policy",
+            "default": "external_post_id"
           }
         },
         "additionalProperties": false,
@@ -13302,7 +13817,8 @@
         "required": [
           "rows"
         ],
-        "title": "MetricsImportRequest"
+        "title": "MetricsImportRequest",
+        "description": "§25.4 metrics import request.\n\n``matching_policy`` selects the deterministic key used to resolve each row's\n``publish_record_id``. Title + publish-time guessing is forbidden unless the\npolicy is ``strict_manual`` (which also writes a warning into the report)."
       },
       "Money-Input": {
         "properties": {
@@ -16092,6 +16608,57 @@
             "type": "string",
             "title": "Publish Record Id"
           },
+          "video_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Version Id"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Id"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "1h",
+                  "24h",
+                  "3d",
+                  "7d",
+                  "30d"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window"
+          },
           "metric_name": {
             "type": "string",
             "title": "Metric Name"
@@ -16099,6 +16666,123 @@
           "metric_value": {
             "type": "number",
             "title": "Metric Value"
+          },
+          "impressions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Impressions"
+          },
+          "views": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Views"
+          },
+          "avg_watch_sec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Watch Sec"
+          },
+          "completion_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Rate"
+          },
+          "like_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Like Rate"
+          },
+          "comment_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment Rate"
+          },
+          "share_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Share Rate"
+          },
+          "follow_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Follow Rate"
+          },
+          "conversion_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversion Count"
+          },
+          "conversion_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversion Rate"
+          },
+          "raw_metrics": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object",
+            "title": "Raw Metrics"
           },
           "observed_at": {
             "type": "string",
@@ -16116,6 +16800,148 @@
           "metric_value"
         ],
         "title": "PerformanceObservation"
+      },
+      "PerformanceScore": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version",
+            "default": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "observation_id": {
+            "type": "string",
+            "title": "Observation Id"
+          },
+          "case_id": {
+            "type": "string",
+            "title": "Case Id"
+          },
+          "video_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Version Id"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Id"
+          },
+          "window": {
+            "type": "string",
+            "enum": [
+              "1h",
+              "24h",
+              "3d",
+              "7d",
+              "30d"
+            ],
+            "title": "Window",
+            "default": "7d"
+          },
+          "primary_metric": {
+            "type": "string",
+            "enum": [
+              "completion_rate",
+              "follow_rate",
+              "conversion_rate",
+              "engagement_rate"
+            ],
+            "title": "Primary Metric",
+            "default": "engagement_rate"
+          },
+          "normalized_score": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Normalized Score",
+            "default": 0.0
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "default": 0.0
+          },
+          "sample_size": {
+            "type": "integer",
+            "title": "Sample Size",
+            "default": 0
+          },
+          "excluded_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excluded Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "observation_id",
+          "case_id"
+        ],
+        "title": "PerformanceScore",
+        "description": "§25.6 normalized, windowed, confidence-gated performance score.\n\nA score never treats raw views/impressions as quality directly: when the\nobservation's impression/view volume is below ``MIN_CONFIDENT_IMPRESSIONS``\n(or the window is only an early 24h signal) the score is emitted with a\nreduced ``confidence`` and an ``excluded_reason`` so callers (memory\nactivation, high/low-performance recall) can refuse to draw conclusions."
       },
       "PortraitOptions": {
         "properties": {
@@ -18831,6 +19657,32 @@
               }
             ],
             "title": "Report Artifact Id"
+          },
+          "input_observation_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Input Observation Ids"
+          },
+          "input_feature_vector_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Input Feature Vector Ids"
+          },
+          "memory_proposal_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Memory Proposal Ids"
+          },
+          "sample_size": {
+            "type": "integer",
+            "title": "Sample Size",
+            "default": 0
           }
         },
         "additionalProperties": false,

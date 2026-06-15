@@ -14,6 +14,7 @@ from apps.api.common import (
 )
 from packages.core import contracts as c
 from packages.core.workflow import NodeExecutionError
+from packages.creative.cases import evolution
 from packages.media.assets import local_object_path
 from packages.production.editor_handoff import EditorHandoffAsset, EditorHandoffBuilder, EditorHandoffInput
 from packages.production.jianying_draft import JianyingDraftBuilder, JianyingDraftInput
@@ -25,13 +26,32 @@ def performance_attribution(request: Request, video_version_id: str) -> c.Perfor
         if attribution is None:
             raise NodeExecutionError(c.ErrorCode.artifact_missing, "Video version is missing.")
         return attribution
-    video = repository(request).video_versions[video_version_id]
+    repo = repository(request)
+    video = repo.video_versions[video_version_id]
+    feature_vector = _extract_feature_vector(repo, video)
     return c.PerformanceAttributionResponse(
         video_version_id=video_version_id,
-        feature_vector=c.CreativeFeatureVector(broll_count=1),
-        observations=[item for item in repository(request).performance_observations.values() if item.case_id == video.case_id],
-        contributing_memories=[item for item in repository(request).memories.values() if item.case_id == video.case_id],
+        feature_vector=feature_vector,
+        observations=[item for item in repo.performance_observations.values() if item.case_id == video.case_id],
+        contributing_memories=[
+            item
+            for item in repo.memories.values()
+            if item.case_id == video.case_id and item.status == "active"
+        ],
     )
+
+
+def _extract_feature_vector(repo, video: c.VideoVersion) -> c.CreativeFeatureVector:
+    """§25.5 ScriptFeatureExtraction + VideoFeatureExtraction over in-memory state."""
+    feature_id = f"cfv_{video.id}"
+    partial = None
+    if video.script_version_id and video.script_version_id in repo.scripts:
+        partial = evolution.extract_script_features(
+            repo.scripts[video.script_version_id],
+            case_id=video.case_id,
+            feature_id=feature_id,
+        )
+    return evolution.extract_video_features(video, feature_id=feature_id, partial=partial)
 
 
 def case_finished_videos(request: Request, case_id: str, limit: int = 50) -> c.PageResponse[c.FinishedVideo]:

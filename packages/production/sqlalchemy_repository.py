@@ -35,6 +35,8 @@ from packages.core.contracts import (
     PageResponse,
     PerformanceAttributionResponse,
     PerformanceMetricView,
+    PerformanceScore,
+    PerformanceObservation,
     PromptInvocation,
     ProviderInvocation,
     PublishPackage,
@@ -67,6 +69,8 @@ from packages.core.storage.database import (
     NodeRunRow,
     OutboxEventRow,
     PerformanceObservationRow,
+    PerformanceScoreRow,
+    CreativeFeatureVectorRow,
     PromptInvocationRow,
     PromptTemplateRow,
     PromptVersionRow,
@@ -86,6 +90,7 @@ from packages.core.storage.database import (
     YieldFunnelEventRow,
 )
 from packages.ai.gateway.sqlalchemy_repository import provider_profile_row_to_contract
+from packages.creative.cases import evolution, metrics_import
 from packages.creative.cases.sqlalchemy_learning_mappers import script_version_row_to_contract
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
@@ -108,6 +113,8 @@ from packages.production.sqlalchemy_mappers import (
     job_row_to_contract,
     node_run_row_to_contract,
     performance_observation_row_to_contract,
+    performance_score_row_to_contract,
+    creative_feature_vector_row_to_contract,
     publish_record_row_to_contract,
     video_version_row_to_contract,
     workflow_run_row_to_contract,
@@ -839,6 +846,14 @@ class SqlAlchemyProductionRepository:
                 .order_by(PerformanceObservationRow.observed_at.desc())
             )
             observations = [performance_observation_row_to_contract(row) for row in session.scalars(statement)]
+            obs_ids = {obs.id for obs in observations}
+            scores = [
+                performance_score_row_to_contract(row)
+                for row in session.scalars(
+                    select(PerformanceScoreRow).where(PerformanceScoreRow.case_id == case_id)
+                )
+                if row.observation_id in obs_ids
+            ]
         return CasePerformanceResponse(
             metrics=PerformanceMetricView(
                 impressions=int(sum(item.metric_value for item in observations if item.metric_name == "impressions")),
@@ -846,41 +861,61 @@ class SqlAlchemyProductionRepository:
                 likes=int(sum(item.metric_value for item in observations if item.metric_name == "likes")),
             ),
             observations=observations,
+            scores=scores,
         )
 
     def import_metrics(
         self, *, case_id: str, payload: MetricsImportRequest, request_id: str
     ) -> ImportBatchReport:
         results: list[ImportRowResult] = []
-        created = 0
-        failed = 0
         with self.session_factory() as session:
-            for index, row in enumerate(payload.rows):
-                if not isinstance(row, dict):
-                    failed += 1
-                    results.append(self._failed_row(index, "Import row must be an object."))
-                    continue
+            records = [
+                metrics_import.PublishRecordIndex(
+                    publish_record_id=row.id,
+                    video_version_id=row.video_version_id,
+                    platform=row.platform,
+                )
+                for row in session.scalars(
+                    select(PublishRecordRow).where(PublishRecordRow.case_id == case_id)
+                )
+            ]
+            match = metrics_import.match_metrics_rows(
+                payload.rows,
+                policy=payload.matching_policy,
+                records=records,
+                default_platform=payload.platform,
+                default_account_id=payload.account_id,
+            )
+            for matched in match.matched:
                 internal_id = new_id("perf")
                 if not payload.dry_run:
-                    session.add(
-                        PerformanceObservationRow(
-                            id=internal_id,
-                            case_id=case_id,
-                            publish_record_id=str(row.get("publish_record_id", "manual")),
-                            metric_name=str(row.get("metric_name", "views")),
-                            metric_value=float(row.get("metric_value", 0)),
-                            observed_at=utcnow(),
-                        )
+                    obs_row = self._observation_row_from_match(internal_id, case_id, matched)
+                    session.add(obs_row)
+                    score = evolution.compute_performance_score(
+                        performance_observation_row_to_contract(obs_row)
                     )
-                created += 1
-                results.append(ImportRowResult(row_index=index, status="created", internal_id=internal_id))
+                    session.add(self._performance_score_row(score))
+                results.append(
+                    ImportRowResult(row_index=matched.row_index, status="created", internal_id=internal_id)
+                )
+            for unmatched in match.unmatched:
+                results.append(
+                    ImportRowResult(
+                        row_index=unmatched.row_index,
+                        status="skipped",
+                        error=NodeError(code=ErrorCode.validation_invalid_options, message=unmatched.reason),
+                    )
+                )
+            results.sort(key=lambda item: item.row_index)
             report = ImportBatchReport(
                 batch_id=new_id("imp"),
                 import_type="performance",
-                status=ImportBatchStatus.completed if failed == 0 else ImportBatchStatus.partially_failed,
-                created_count=created,
-                skipped_count=0,
-                failed_count=failed,
+                status=ImportBatchStatus.completed
+                if not match.unmatched
+                else ImportBatchStatus.partially_failed,
+                created_count=len(match.matched),
+                skipped_count=len(match.unmatched),
+                failed_count=0,
                 results=results,
                 request_id=request_id,
             )
@@ -888,6 +923,52 @@ class SqlAlchemyProductionRepository:
                 session.add(_report_row(report))
             session.commit()
             return report
+
+    @staticmethod
+    def _observation_row_from_match(
+        internal_id: str, case_id: str, matched: metrics_import.MatchedRow
+    ) -> PerformanceObservationRow:
+        canonical = matched.canonical_metrics
+        return PerformanceObservationRow(
+            id=internal_id,
+            case_id=case_id,
+            publish_record_id=matched.publish_record_id,
+            video_version_id=matched.video_version_id,
+            platform=matched.platform,
+            account_id=matched.account_id,
+            window=matched.window,
+            metric_name=matched.metric_name,
+            metric_value=matched.metric_value,
+            impressions=int(canonical["impressions"]) if "impressions" in canonical else None,
+            views=int(canonical["views"]) if "views" in canonical else None,
+            avg_watch_sec=canonical.get("avg_watch_sec"),
+            completion_rate=canonical.get("completion_rate"),
+            like_rate=canonical.get("like_rate"),
+            comment_rate=canonical.get("comment_rate"),
+            share_rate=canonical.get("share_rate"),
+            follow_rate=canonical.get("follow_rate"),
+            conversion_count=int(canonical["conversion_count"]) if "conversion_count" in canonical else None,
+            conversion_rate=canonical.get("conversion_rate"),
+            raw_metrics=dict(canonical),
+            observed_at=utcnow(),
+        )
+
+    @staticmethod
+    def _performance_score_row(score: PerformanceScore) -> PerformanceScoreRow:
+        return PerformanceScoreRow(
+            id=score.id,
+            observation_id=score.observation_id,
+            case_id=score.case_id,
+            video_version_id=score.video_version_id,
+            platform=score.platform,
+            account_id=score.account_id,
+            window=score.window,
+            primary_metric=score.primary_metric,
+            normalized_score=score.normalized_score,
+            confidence=score.confidence,
+            sample_size=score.sample_size,
+            excluded_reason=score.excluded_reason,
+        )
 
     def performance_attribution(self, video_version_id: str) -> PerformanceAttributionResponse | None:
         with self.session_factory() as session:
@@ -900,12 +981,44 @@ class SqlAlchemyProductionRepository:
                 .order_by(PerformanceObservationRow.observed_at.desc())
             )
             observations = [performance_observation_row_to_contract(row) for row in session.scalars(statement)]
+            feature_row = session.scalars(
+                select(CreativeFeatureVectorRow)
+                .where(CreativeFeatureVectorRow.video_version_id == video_version_id)
+                .order_by(CreativeFeatureVectorRow.updated_at.desc())
+                .limit(1)
+            ).first()
+            feature_vector = (
+                creative_feature_vector_row_to_contract(feature_row)
+                if feature_row is not None
+                else self._extract_feature_vector(session, version)
+            )
             return PerformanceAttributionResponse(
                 video_version_id=video_version_id,
-                feature_vector=CreativeFeatureVector(broll_count=1),
+                feature_vector=feature_vector,
                 observations=observations,
                 contributing_memories=[],
             )
+
+    def _extract_feature_vector(self, session: Session, version: VideoVersionRow) -> CreativeFeatureVector:
+        """Derive a CreativeFeatureVector on-the-fly (§25.5) when none is persisted."""
+        feature_id = f"cfv_{version.id}"
+        script_row = (
+            session.get(ScriptVersionRow, version.script_version_id)
+            if version.script_version_id
+            else None
+        )
+        partial: CreativeFeatureVector | None = None
+        if script_row is not None:
+            partial = evolution.extract_script_features(
+                script_version_row_to_contract(script_row),
+                case_id=version.case_id,
+                feature_id=feature_id,
+            )
+        return evolution.extract_video_features(
+            video_version_row_to_contract(version),
+            feature_id=feature_id,
+            partial=partial,
+        )
 
     def create_import_batch(self, payload: CreateImportBatchRequest, request_id: str) -> ImportBatchReport | None:
         if payload.import_type not in SUPPORTED_IMPORT_TYPES:

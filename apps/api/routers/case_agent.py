@@ -100,6 +100,28 @@ def case_memory(request: Request, case_id: str, limit: int = 50) -> c.PageRespon
     return service.case_memory(request, case_id, limit)
 
 
+@router.get("/api/cases/{case_id}/memory/recall", response_model=c.MemoryRecallResponse)
+def recall_memory(
+    request: Request,
+    case_id: str,
+    mode: c.MemoryRecallMode = "recent",
+    topic: str | None = None,
+    platform: str | None = None,
+    memory_type: c.MemoryType | None = None,
+    scope_key: str | None = None,
+    limit: int = 20,
+) -> c.MemoryRecallResponse:
+    query = c.MemoryRecallQuery(
+        mode=mode,
+        topic=topic,
+        platform=platform,
+        memory_type=memory_type,
+        scope_key=scope_key,
+        limit=limit,
+    )
+    return service.recall_memory(request, case_id, query)
+
+
 @router.post("/api/cases/{case_id}/memory/{memory_id}/approve", response_model=c.CaseMemory)
 def approve_memory(
     case_id: str, memory_id: str, payload: c.ApproveMemoryRequest, request: Request

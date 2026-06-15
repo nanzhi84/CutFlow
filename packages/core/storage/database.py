@@ -592,10 +592,16 @@ class CaseMemoryRow(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
+    memory_type: Mapped[str] = mapped_column(String, nullable=False, default="script_pattern")
     scope: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    scope_key: Mapped[str | None] = mapped_column(String)
     insight: Mapped[str] = mapped_column(Text, nullable=False)
     evidence: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    sample_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    supersedes_memory_id: Mapped[str | None] = mapped_column(String)
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     embedding: Mapped[object | None] = mapped_column(Vector(1536))
 
     __table_args__ = (CheckConstraint("confidence >= 0 AND confidence <= 1", name="confidence_range"),)
@@ -607,10 +613,14 @@ class MemoryProposalRow(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
+    memory_type: Mapped[str] = mapped_column(String, nullable=False, default="script_pattern")
     scope: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    scope_key: Mapped[str | None] = mapped_column(String)
     insight: Mapped[str] = mapped_column(Text, nullable=False)
     evidence: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    sample_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    supersedes_memory_id: Mapped[str | None] = mapped_column(String)
     proposed_by_reflection_run_id: Mapped[str | None] = mapped_column(String)
 
 
@@ -622,6 +632,10 @@ class ReflectionRunRow(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String, nullable=False)
     window: Mapped[str] = mapped_column(String, nullable=False)
     report_artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id"))
+    input_observation_ids: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+    input_feature_vector_ids: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+    memory_proposal_ids: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+    sample_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class PublishRecordRow(TimestampMixin, Base):
@@ -644,9 +658,77 @@ class PerformanceObservationRow(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
     publish_record_id: Mapped[str] = mapped_column(String, nullable=False)
+    video_version_id: Mapped[str | None] = mapped_column(String)
+    platform: Mapped[str | None] = mapped_column(String)
+    account_id: Mapped[str | None] = mapped_column(String)
+    window: Mapped[str | None] = mapped_column(String)
     metric_name: Mapped[str] = mapped_column(String, nullable=False)
     metric_value: Mapped[float] = mapped_column(Float, nullable=False)
+    impressions: Mapped[int | None] = mapped_column(Integer)
+    views: Mapped[int | None] = mapped_column(Integer)
+    avg_watch_sec: Mapped[float | None] = mapped_column(Float)
+    completion_rate: Mapped[float | None] = mapped_column(Float)
+    like_rate: Mapped[float | None] = mapped_column(Float)
+    comment_rate: Mapped[float | None] = mapped_column(Float)
+    share_rate: Mapped[float | None] = mapped_column(Float)
+    follow_rate: Mapped[float | None] = mapped_column(Float)
+    conversion_count: Mapped[int | None] = mapped_column(Integer)
+    conversion_rate: Mapped[float | None] = mapped_column(Float)
+    raw_metrics: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CreativeFeatureVectorRow(TimestampMixin, Base):
+    __tablename__ = "creative_feature_vectors"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
+    script_version_id: Mapped[str | None] = mapped_column(String)
+    video_version_id: Mapped[str | None] = mapped_column(String)
+    hook_type: Mapped[str | None] = mapped_column(String)
+    script_structure: Mapped[str | None] = mapped_column(String)
+    topic_tags: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+    cta_type: Mapped[str | None] = mapped_column(String)
+    angle: Mapped[str | None] = mapped_column(String)
+    duration_sec: Mapped[float | None] = mapped_column(Float)
+    broll_density: Mapped[float | None] = mapped_column(Float)
+    cut_density: Mapped[float | None] = mapped_column(Float)
+    subtitle_style_id: Mapped[str | None] = mapped_column(String)
+    bgm_id: Mapped[str | None] = mapped_column(String)
+    cover_style: Mapped[str | None] = mapped_column(String)
+    material_ids: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+    broll_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    title_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class PerformanceScoreRow(TimestampMixin, Base):
+    __tablename__ = "performance_scores"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    observation_id: Mapped[str] = mapped_column(String, nullable=False)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
+    video_version_id: Mapped[str | None] = mapped_column(String)
+    platform: Mapped[str | None] = mapped_column(String)
+    account_id: Mapped[str | None] = mapped_column(String)
+    window: Mapped[str] = mapped_column(String, nullable=False)
+    primary_metric: Mapped[str] = mapped_column(String, nullable=False)
+    normalized_score: Mapped[float] = mapped_column(Float, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    sample_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    excluded_reason: Mapped[str | None] = mapped_column(String)
+
+
+class CaseKnowledgeItemRow(TimestampMixin, Base):
+    __tablename__ = "case_knowledge_items"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    ref_id: Mapped[str] = mapped_column(String, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    tags: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+    embedding_ref: Mapped[str | None] = mapped_column(String)
+    score: Mapped[float | None] = mapped_column(Float)
 
 
 class FinishedVideoRow(TimestampMixin, Base):
@@ -885,7 +967,14 @@ Index("idx_selection_reservations_ttl", SelectionReservationRow.status, Selectio
 Index("idx_provider_invocations_case", ProviderInvocationRow.case_id, ProviderInvocationRow.provider_id)
 Index("idx_usage_meter_provider", UsageMeterRecordRow.provider_id, UsageMeterRecordRow.capability_id)
 Index("idx_case_memories_case_status", CaseMemoryRow.case_id, CaseMemoryRow.status)
+Index("idx_case_memories_case_type", CaseMemoryRow.case_id, CaseMemoryRow.memory_type)
 Index("idx_performance_case_metric", PerformanceObservationRow.case_id, PerformanceObservationRow.metric_name)
+Index("idx_performance_video", PerformanceObservationRow.video_version_id)
+Index("idx_feature_vectors_case", CreativeFeatureVectorRow.case_id)
+Index("idx_feature_vectors_video", CreativeFeatureVectorRow.video_version_id)
+Index("idx_performance_scores_case", PerformanceScoreRow.case_id, PerformanceScoreRow.window)
+Index("idx_performance_scores_observation", PerformanceScoreRow.observation_id)
+Index("idx_knowledge_items_case_kind", CaseKnowledgeItemRow.case_id, CaseKnowledgeItemRow.kind)
 Index("idx_outbox_pending", OutboxEventRow.status, OutboxEventRow.available_at, OutboxEventRow.created_at, OutboxEventRow.id)
 Index("idx_failure_taxonomy_class", FailureTaxonomyRow.failure_class, FailureTaxonomyRow.created_at)
 Index("idx_failure_taxonomy_run", FailureTaxonomyRow.run_id)

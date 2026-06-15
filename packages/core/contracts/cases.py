@@ -99,11 +99,33 @@ class PublishRecord(EntityMeta):
     published_at: datetime | None = None
 
 
+MetricWindow = Literal["1h", "24h", "3d", "7d", "30d"]
+
+
 class PerformanceObservation(EntityMeta):
     case_id: str
     publish_record_id: str
+    # §25.1 / §8.3: an observation must be able to bind back to the video lineage
+    # and carry the platform/account/window dimensions used for grouping & scoring.
+    video_version_id: str | None = None
+    platform: str | None = None
+    account_id: str | None = None
+    window: MetricWindow | None = None
+    # Generic single-metric shape (kept for backward compatibility / manual rows).
     metric_name: str
     metric_value: float
+    # §8.3 canonical metrics (optional; populated by structured imports).
+    impressions: int | None = None
+    views: int | None = None
+    avg_watch_sec: float | None = None
+    completion_rate: float | None = None
+    like_rate: float | None = None
+    comment_rate: float | None = None
+    share_rate: float | None = None
+    follow_rate: float | None = None
+    conversion_count: int | None = None
+    conversion_rate: float | None = None
+    raw_metrics: dict[str, JsonValue] = Field(default_factory=dict)
     observed_at: datetime = Field(default_factory=utcnow)
 
 
@@ -115,30 +137,121 @@ class PerformanceMetricView(ContractModel):
     conversion_rate: float | None = None
 
 
-class CreativeFeatureVector(ContractModel):
+class PerformanceScore(EntityMeta):
+    """§25.6 normalized, windowed, confidence-gated performance score.
+
+    A score never treats raw views/impressions as quality directly: when the
+    observation's impression/view volume is below ``MIN_CONFIDENT_IMPRESSIONS``
+    (or the window is only an early 24h signal) the score is emitted with a
+    reduced ``confidence`` and an ``excluded_reason`` so callers (memory
+    activation, high/low-performance recall) can refuse to draw conclusions.
+    """
+
+    observation_id: str
+    case_id: str
+    video_version_id: str | None = None
+    platform: str | None = None
+    account_id: str | None = None
+    window: MetricWindow = "7d"
+    primary_metric: Literal[
+        "completion_rate", "follow_rate", "conversion_rate", "engagement_rate"
+    ] = "engagement_rate"
+    normalized_score: float = Field(0.0, ge=0, le=1)
+    confidence: float = Field(0.0, ge=0, le=1)
+    sample_size: int = 0
+    excluded_reason: str | None = None
+
+
+class CreativeFeatureVector(EntityMeta):
+    case_id: str = ""
+    script_version_id: str | None = None
+    video_version_id: str | None = None
     hook_type: str | None = None
+    script_structure: str | None = None
+    topic_tags: list[str] = Field(default_factory=list)
+    cta_type: str | None = None
+    angle: str | None = None
     duration_sec: float | None = None
+    broll_density: float | None = None
+    cut_density: float | None = None
+    subtitle_style_id: str | None = None
+    bgm_id: str | None = None
+    cover_style: str | None = None
+    material_ids: list[str] = Field(default_factory=list)
+    # Legacy convenience counters retained for existing callers/UI.
     broll_count: int = 0
     title_tokens: int = 0
 
 
 class CaseMemoryScope(ContractModel):
+    # Legacy single-value dimensions (kept; still emitted/consumed by older UI).
     channel: str | None = None
     audience: str | None = None
     product: str | None = None
+    # §8.3 scope dimensions for recall filtering.
+    scope_key: str | None = None
+    applies_to_case_ids: list[str] = Field(default_factory=list)
+    applies_to_platforms: list[str] = Field(default_factory=list)
+    applies_to_audience_segments: list[str] = Field(default_factory=list)
+    applies_to_script_intents: list[str] = Field(default_factory=list)
+    excluded_case_ids: list[str] = Field(default_factory=list)
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+
+
+MemoryType = Literal[
+    "script_pattern", "video_pattern", "audience_insight", "editing_rule", "negative_lesson"
+]
 
 
 class CaseMemory(EntityMeta):
     case_id: str
     status: Literal["proposed", "approved", "active", "deprecated", "rejected", "superseded"] = "proposed"
+    memory_type: MemoryType = "script_pattern"
     scope: CaseMemoryScope = Field(default_factory=CaseMemoryScope)
     insight: str
     evidence: list[str] = Field(default_factory=list)
     confidence: float = Field(0.5, ge=0, le=1)
+    sample_size: int = 0
+    supersedes_memory_id: str | None = None
 
 
 class MemoryProposal(CaseMemory):
     proposed_by_reflection_run_id: str | None = None
+
+
+MemoryRecallMode = Literal[
+    "recent", "topic", "platform", "memory_type", "high_performance", "low_performance"
+]
+
+
+class MemoryRecallQuery(ContractModel):
+    """§25.8 LoadCaseContextNode retrieval modes for recalling case memories."""
+
+    mode: MemoryRecallMode = "recent"
+    topic: str | None = None
+    platform: str | None = None
+    memory_type: MemoryType | None = None
+    scope_key: str | None = None
+    limit: int = Field(20, ge=1, le=200)
+
+
+class CaseKnowledgeItem(EntityMeta):
+    """§25.8 unified knowledge index row spanning script/video/publish/metric/memory."""
+
+    case_id: str
+    kind: Literal["script", "video", "publish", "metric", "reflection", "memory"]
+    ref_id: str
+    summary: str
+    tags: list[str] = Field(default_factory=list)
+    embedding_ref: str | None = None
+    score: float | None = None
+
+
+class MemoryRecallResponse(ContractModel):
+    case_id: str
+    mode: MemoryRecallMode
+    memories: list[CaseMemory] = Field(default_factory=list)
 
 
 class ReflectionRun(EntityMeta):
@@ -146,6 +259,11 @@ class ReflectionRun(EntityMeta):
     status: RunStatus = RunStatus.created
     window: Literal["24h", "3d", "7d", "30d"] = "7d"
     report_artifact_id: str | None = None
+    # §8.3: lineage of what the reflection actually read and produced.
+    input_observation_ids: list[str] = Field(default_factory=list)
+    input_feature_vector_ids: list[str] = Field(default_factory=list)
+    memory_proposal_ids: list[str] = Field(default_factory=list)
+    sample_size: int = 0
 
 
 class CaseAgentSourceBinding(EntityMeta):
@@ -243,6 +361,7 @@ class CasePerformanceQuery(ContractModel):
 class CasePerformanceResponse(ContractModel):
     metrics: PerformanceMetricView
     observations: list[PerformanceObservation]
+    scores: list[PerformanceScore] = Field(default_factory=list)
 
 
 class StartReflectionRunRequest(ContractModel):
@@ -339,9 +458,36 @@ class CaseInsightCard(EntityMeta):
     severity: Literal["info", "warning", "success"] = "info"
 
 
+MetricsMatchingPolicy = Literal[
+    "external_post_id", "platform_item_id", "published_url", "strict_manual"
+]
+
+
 class MetricsImportRequest(ContractModel):
+    """§25.4 metrics import request.
+
+    ``matching_policy`` selects the deterministic key used to resolve each row's
+    ``publish_record_id``. Title + publish-time guessing is forbidden unless the
+    policy is ``strict_manual`` (which also writes a warning into the report).
+    """
+
     rows: list[dict[str, JsonValue]]
     dry_run: bool = False
+    source: Literal["manual_csv", "oceanengine_rpa", "platform_api"] = "manual_csv"
+    platform: str | None = None
+    account_id: str | None = None
+    matching_policy: MetricsMatchingPolicy = "external_post_id"
+
+
+class MetricsImportResponse(ContractModel):
+    """§25.4 metrics import response with matched/unmatched accounting."""
+
+    imported_count: int = 0
+    unmatched_count: int = 0
+    unmatched_rows_artifact_id: str | None = None
+    observation_ids: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    request_id: str
 
 
 OceanEngineSourcePage = Literal[

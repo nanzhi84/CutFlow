@@ -19,7 +19,7 @@ from packages.core.contracts.state_machines import assert_transition
 from packages.core.storage.repository import new_id
 from packages.core.config.settings import sandbox_fallback_allowed
 from packages.core.workflow import NodeExecutionError
-from packages.creative.cases import BriefFields
+from packages.creative.cases import BriefFields, evolution, metrics_import
 from packages.creative.reference_extract import ReferenceExtractError, extract_reference
 
 def source_bindings(request: Request, case_id: str, limit: int = 50) -> c.PageResponse[c.CaseAgentSourceBinding]:
@@ -227,15 +227,38 @@ def start_case_agent_run(
         )
         repository(request).drafts[draft.id] = draft
     if payload.goal == "memory_proposal":
-        proposal = c.MemoryProposal(
-            id=new_id("mem"),
-            case_id=case_id,
-            insight="Short hooks with concrete outcomes perform better for this case.",
-            evidence=[],
-            proposed_by_reflection_run_id=run.id,
-        )
+        proposal = _agent_memory_proposal(request, case_id, run.id)
         repository(request).memory_proposals[proposal.id] = proposal
     return run
+
+
+def _agent_memory_proposal(request: Request, case_id: str, run_id: str) -> c.MemoryProposal:
+    """Derive a data-driven memory proposal from the case's run evidence (§8.4).
+
+    Uses the latest brief + any confident performance analysis instead of a
+    hardcoded literal, and dedups against existing active/proposed memories.
+    """
+    repo = repository(request)
+    observations = [obs for obs in repo.performance_observations.values() if obs.case_id == case_id]
+    scores = [evolution.compute_performance_score(obs) for obs in observations]
+    analysis = evolution.analyze_historical_performance(observations, scores)
+    briefs = [b for b in repo.briefs.values() if b.case_id == case_id]
+    existing_active = [m for m in repo.memories.values() if m.case_id == case_id and m.status == "active"]
+    existing_proposed = [
+        m for m in repo.memory_proposals.values() if m.case_id == case_id and m.status == "proposed"
+    ]
+    proposals = evolution.build_memory_proposals(
+        case_id=case_id,
+        reflection_run_id=run_id,
+        analysis=analysis,
+        briefs=briefs,
+        existing_active=existing_active,
+        existing_proposed=existing_proposed,
+        id_factory=lambda: new_id("mem"),
+    )
+    if proposals:
+        return proposals[0]
+    return _fallback_proposal(case_id, run_id, briefs)
 
 
 def case_agent_runs(request: Request, case_id: str, limit: int = 50) -> c.PageResponse[c.CaseAgentRun]:
@@ -372,7 +395,13 @@ def case_performance(request: Request, case_id: str, window: str = "7d") -> c.Ca
         views=int(sum(item.metric_value for item in observations if item.metric_name == "views")),
         likes=int(sum(item.metric_value for item in observations if item.metric_name == "likes")),
     )
-    return c.CasePerformanceResponse(metrics=metrics, observations=observations)
+    obs_ids = {obs.id for obs in observations}
+    scores = [
+        score
+        for score in repository(request).performance_scores.values()
+        if score.case_id == case_id and score.observation_id in obs_ids
+    ]
+    return c.CasePerformanceResponse(metrics=metrics, observations=observations, scores=scores)
 
 
 def import_metrics(case_id: str, payload: c.MetricsImportRequest, request: Request) -> c.ImportBatchReport:
@@ -382,31 +411,116 @@ def import_metrics(case_id: str, payload: c.MetricsImportRequest, request: Reque
             payload=payload,
             request_id=request_id(),
         )
-    rows = []
-    for index, row in enumerate(payload.rows):
-        if isinstance(row, dict):
-            obs = c.PerformanceObservation(
-                id=new_id("perf"),
-                case_id=case_id,
-                publish_record_id=str(row.get("publish_record_id", "manual")),
-                metric_name=str(row.get("metric_name", "views")),
-                metric_value=float(row.get("metric_value", 0)),
+    repo = repository(request)
+    records = [
+        metrics_import.PublishRecordIndex(
+            publish_record_id=record.id,
+            video_version_id=record.video_version_id,
+            platform=record.platform,
+        )
+        for record in repo.publish_records.values()
+        if record.case_id == case_id
+    ]
+    result = metrics_import.match_metrics_rows(
+        payload.rows,
+        policy=payload.matching_policy,
+        records=records,
+        default_platform=payload.platform,
+        default_account_id=payload.account_id,
+    )
+    results: list[c.ImportRowResult] = []
+    for matched in result.matched:
+        obs = _observation_from_match(case_id, matched)
+        if not payload.dry_run:
+            repo.performance_observations[obs.id] = obs
+            score = evolution.compute_performance_score(obs)
+            repo.performance_scores[score.id] = score
+        results.append(c.ImportRowResult(row_index=matched.row_index, status="created", internal_id=obs.id))
+    for unmatched in result.unmatched:
+        results.append(
+            c.ImportRowResult(
+                row_index=unmatched.row_index,
+                status="skipped",
+                error=c.NodeError(code=c.ErrorCode.validation_invalid_options, message=unmatched.reason),
             )
-            if not payload.dry_run:
-                repository(request).performance_observations[obs.id] = obs
-            rows.append(c.ImportRowResult(row_index=index, status="created", internal_id=obs.id))
+        )
+    results.sort(key=lambda item: item.row_index)
     report = c.ImportBatchReport(
         batch_id=new_id("imp"),
         import_type="performance",
-        status=c.ImportBatchStatus.completed,
-        created_count=len(rows),
-        skipped_count=0,
+        status=c.ImportBatchStatus.completed
+        if not result.unmatched
+        else c.ImportBatchStatus.partially_failed,
+        created_count=len(result.matched),
+        skipped_count=len(result.unmatched),
         failed_count=0,
-        results=rows,
+        results=results,
         request_id=request_id(),
     )
-    repository(request).import_reports[report.batch_id] = report
+    repo.import_reports[report.batch_id] = report
     return report
+
+
+def _observation_from_match(
+    case_id: str, matched: metrics_import.MatchedRow
+) -> c.PerformanceObservation:
+    canonical = matched.canonical_metrics
+    return c.PerformanceObservation(
+        id=new_id("perf"),
+        case_id=case_id,
+        publish_record_id=matched.publish_record_id,
+        video_version_id=matched.video_version_id,
+        platform=matched.platform,
+        account_id=matched.account_id,
+        window=matched.window,
+        metric_name=matched.metric_name,
+        metric_value=matched.metric_value,
+        impressions=int(canonical["impressions"]) if "impressions" in canonical else None,
+        views=int(canonical["views"]) if "views" in canonical else None,
+        avg_watch_sec=canonical.get("avg_watch_sec"),
+        completion_rate=canonical.get("completion_rate"),
+        like_rate=canonical.get("like_rate"),
+        comment_rate=canonical.get("comment_rate"),
+        share_rate=canonical.get("share_rate"),
+        follow_rate=canonical.get("follow_rate"),
+        conversion_count=int(canonical["conversion_count"]) if "conversion_count" in canonical else None,
+        conversion_rate=canonical.get("conversion_rate"),
+        raw_metrics=dict(canonical),
+    )
+
+
+def recall_memory(
+    request: Request, case_id: str, query: c.MemoryRecallQuery
+) -> c.MemoryRecallResponse:
+    """§25.8 memory recall: scope + validity-window filtered, confidence/score ranked."""
+    get_case(request, case_id)
+    learning = case_learning_repository(request)
+    if learning is not None:
+        return learning.recall_memory(case_id=case_id, query=query)
+    memories = [item for item in repository(request).memories.values() if item.case_id == case_id]
+    score_lookup = _memory_score_lookup(request, case_id)
+    recalled = evolution.filter_recall_memories(
+        memories,
+        mode=query.mode,
+        topic=query.topic,
+        platform=query.platform,
+        memory_type=query.memory_type,
+        scope_key=query.scope_key,
+        limit=query.limit,
+        score_lookup=score_lookup,
+    )
+    return c.MemoryRecallResponse(case_id=case_id, mode=query.mode, memories=recalled)
+
+
+def _memory_score_lookup(request: Request, case_id: str) -> dict[str, float]:
+    """Map memory scope_key -> best normalized performance score for high/low recall."""
+    lookup: dict[str, float] = {}
+    for score in repository(request).performance_scores.values():
+        if score.case_id != case_id or score.excluded_reason is not None:
+            continue
+        key = score.platform or score.video_version_id or score.observation_id
+        lookup[key] = max(lookup.get(key, 0.0), score.normalized_score)
+    return lookup
 
 
 def start_reflection(case_id: str, payload: c.StartReflectionRunRequest, request: Request) -> c.ReflectionRun:
@@ -418,23 +532,71 @@ def start_reflection(case_id: str, payload: c.StartReflectionRunRequest, request
     if case_learning_repository(request) is not None:
         get_case(request, case_id)
         return case_learning_repository(request).start_reflection(case_id=case_id, payload=payload)
+    repo = repository(request)
+    observations = [
+        obs for obs in repo.performance_observations.values() if obs.case_id == case_id
+    ]
+    scores_by_obs = {s.observation_id: s for s in repo.performance_scores.values()}
+    scores = [
+        scores_by_obs.get(obs.id) or evolution.compute_performance_score(obs)
+        for obs in observations
+    ]
+    analysis = evolution.analyze_historical_performance(observations, scores)
+    briefs = [b for b in repo.briefs.values() if b.case_id == case_id]
+    existing_active = [m for m in repo.memories.values() if m.case_id == case_id and m.status == "active"]
+    existing_proposed = [
+        m for m in repo.memory_proposals.values() if m.case_id == case_id and m.status == "proposed"
+    ]
     reflection = c.ReflectionRun(
         id=new_id("refl"),
         case_id=case_id,
         status=c.RunStatus.succeeded,
         window=payload.window,
+        input_observation_ids=[obs.id for obs in observations],
+        sample_size=len(observations),
     )
-    repository(request).reflection_runs[reflection.id] = reflection
-    proposal = c.MemoryProposal(
+    proposals = evolution.build_memory_proposals(
+        case_id=case_id,
+        reflection_run_id=reflection.id,
+        analysis=analysis,
+        briefs=briefs,
+        existing_active=existing_active,
+        existing_proposed=existing_proposed,
+        id_factory=lambda: new_id("mem"),
+    )
+    if not proposals:
+        # No-silent-degrade still needs a reviewable artifact: emit a low-confidence
+        # proposal grounded in the brief so the reflection run is never empty.
+        proposals = [_fallback_proposal(case_id, reflection.id, briefs)]
+    for proposal in proposals:
+        repo.memory_proposals[proposal.id] = proposal
+    reflection = reflection.model_copy(
+        update={"memory_proposal_ids": [proposal.id for proposal in proposals]}
+    )
+    repo.reflection_runs[reflection.id] = reflection
+    return reflection
+
+
+def _fallback_proposal(
+    case_id: str, reflection_run_id: str, briefs: list[c.CreativeBrief]
+) -> c.MemoryProposal:
+    topic = briefs[0].topic if briefs else None
+    summary = briefs[0].summary if briefs else None
+    descriptor = topic or summary or "this case"
+    return c.MemoryProposal(
         id=new_id("mem"),
         case_id=case_id,
-        insight="Reuse the best performing hook style from recent videos.",
-        evidence=[reflection.id],
-        confidence=0.65,
-        proposed_by_reflection_run_id=reflection.id,
+        status="proposed",
+        memory_type="script_pattern",
+        insight=(
+            f"Insufficient confident performance data for {descriptor}; "
+            "collect more published-metric samples before drawing conclusions."
+        ),
+        evidence=[reflection_run_id],
+        confidence=0.3,
+        sample_size=0,
+        proposed_by_reflection_run_id=reflection_run_id,
     )
-    repository(request).memory_proposals[proposal.id] = proposal
-    return reflection
 
 
 def case_insights(request: Request, case_id: str, limit: int = 50) -> c.PageResponse[c.CaseInsightCard]:

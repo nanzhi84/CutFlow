@@ -97,15 +97,31 @@ def script_version_row_to_contract(row: ScriptVersionRow) -> ScriptVersion:
     )
 
 
+def _scope_from_row(scope: dict | None, scope_key: str | None) -> CaseMemoryScope:
+    parsed = CaseMemoryScope.model_validate(scope or {})
+    if scope_key and parsed.scope_key is None:
+        parsed = parsed.model_copy(update={"scope_key": scope_key})
+    return parsed
+
+
 def case_memory_row_to_contract(row: CaseMemoryRow) -> CaseMemory:
+    scope = _scope_from_row(row.scope, row.scope_key).model_copy(
+        update={
+            "valid_from": row.valid_from,
+            "valid_until": row.valid_until,
+        }
+    )
     return CaseMemory(
         id=row.id,
         case_id=row.case_id,
         status=row.status,
-        scope=CaseMemoryScope.model_validate(row.scope),
+        memory_type=row.memory_type,
+        scope=scope,
         insight=row.insight,
         evidence=list(row.evidence or []),
         confidence=row.confidence,
+        sample_size=row.sample_size,
+        supersedes_memory_id=row.supersedes_memory_id,
         schema_version=row.schema_version,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -117,10 +133,13 @@ def memory_proposal_row_to_contract(row: MemoryProposalRow) -> MemoryProposal:
         id=row.id,
         case_id=row.case_id,
         status=row.status,
-        scope=CaseMemoryScope.model_validate(row.scope),
+        memory_type=row.memory_type,
+        scope=_scope_from_row(row.scope, row.scope_key),
         insight=row.insight,
         evidence=list(row.evidence or []),
         confidence=row.confidence,
+        sample_size=row.sample_size,
+        supersedes_memory_id=row.supersedes_memory_id,
         proposed_by_reflection_run_id=row.proposed_by_reflection_run_id,
         schema_version=row.schema_version,
         created_at=row.created_at,
@@ -135,6 +154,10 @@ def reflection_run_row_to_contract(row: ReflectionRunRow) -> ReflectionRun:
         status=RunStatus(row.status),
         window=row.window,
         report_artifact_id=row.report_artifact_id,
+        input_observation_ids=list(row.input_observation_ids or []),
+        input_feature_vector_ids=list(row.input_feature_vector_ids or []),
+        memory_proposal_ids=list(row.memory_proposal_ids or []),
+        sample_size=row.sample_size,
         schema_version=row.schema_version,
         created_at=row.created_at,
         updated_at=row.updated_at,

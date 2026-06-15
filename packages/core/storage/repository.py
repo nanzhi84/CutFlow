@@ -36,6 +36,9 @@ from packages.core.contracts import (
     OpsAlertEvent,
     OutboxEvent,
     PerformanceObservation,
+    PerformanceScore,
+    CreativeFeatureVector,
+    CaseKnowledgeItem,
     PromptBinding,
     PromptExperiment,
     PromptInvocation,
@@ -128,6 +131,9 @@ class Repository:
         self.video_versions: dict[str, VideoVersion] = {}
         self.publish_records: dict[str, PublishRecord] = {}
         self.performance_observations: dict[str, PerformanceObservation] = {}
+        self.performance_scores: dict[str, PerformanceScore] = {}
+        self.feature_vectors: dict[str, CreativeFeatureVector] = {}
+        self.knowledge_items: dict[str, CaseKnowledgeItem] = {}
         self.finished_videos: dict[str, FinishedVideo] = {}
         self.publish_packages: dict[str, PublishPackage] = {}
         self.publish_batches: dict[str, PublishBatchVm] = {}

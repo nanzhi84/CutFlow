@@ -1554,6 +1554,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cases/{case_id}/memory/recall": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Recall Memory */
+        get: operations["recall_memory_api_cases__case_id__memory_recall_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cases/{case_id}/memory/{memory_id}/approve": {
         parameters: {
             query?: never;
@@ -3230,6 +3247,12 @@ export interface components {
              * @enum {string}
              */
             status: "proposed" | "approved" | "active" | "deprecated" | "rejected" | "superseded";
+            /**
+             * Memory Type
+             * @default script_pattern
+             * @enum {string}
+             */
+            memory_type: "script_pattern" | "video_pattern" | "audience_insight" | "editing_rule" | "negative_lesson";
             scope?: components["schemas"]["CaseMemoryScope"];
             /** Insight */
             insight: string;
@@ -3240,6 +3263,13 @@ export interface components {
              * @default 0.5
              */
             confidence: number;
+            /**
+             * Sample Size
+             * @default 0
+             */
+            sample_size: number;
+            /** Supersedes Memory Id */
+            supersedes_memory_id?: string | null;
         };
         /** CaseMemoryScope */
         CaseMemoryScope: {
@@ -3249,12 +3279,30 @@ export interface components {
             audience?: string | null;
             /** Product */
             product?: string | null;
+            /** Scope Key */
+            scope_key?: string | null;
+            /** Applies To Case Ids */
+            applies_to_case_ids?: string[];
+            /** Applies To Platforms */
+            applies_to_platforms?: string[];
+            /** Applies To Audience Segments */
+            applies_to_audience_segments?: string[];
+            /** Applies To Script Intents */
+            applies_to_script_intents?: string[];
+            /** Excluded Case Ids */
+            excluded_case_ids?: string[];
+            /** Valid From */
+            valid_from?: string | null;
+            /** Valid Until */
+            valid_until?: string | null;
         };
         /** CasePerformanceResponse */
         CasePerformanceResponse: {
             metrics: components["schemas"]["PerformanceMetricView"];
             /** Observations */
             observations: components["schemas"]["PerformanceObservation"][];
+            /** Scores */
+            scores?: components["schemas"]["PerformanceScore"][];
         };
         /** ChangePasswordRequest */
         ChangePasswordRequest: {
@@ -3913,10 +3961,63 @@ export interface components {
         };
         /** CreativeFeatureVector */
         CreativeFeatureVector: {
+            /** Id */
+            id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at?: string;
+            /** Created By */
+            created_by?: string | null;
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
+            /**
+             * Schema Version
+             * @default v1
+             */
+            schema_version: string;
+            /**
+             * Case Id
+             * @default
+             */
+            case_id: string;
+            /** Script Version Id */
+            script_version_id?: string | null;
+            /** Video Version Id */
+            video_version_id?: string | null;
             /** Hook Type */
             hook_type?: string | null;
+            /** Script Structure */
+            script_structure?: string | null;
+            /** Topic Tags */
+            topic_tags?: string[];
+            /** Cta Type */
+            cta_type?: string | null;
+            /** Angle */
+            angle?: string | null;
             /** Duration Sec */
             duration_sec?: number | null;
+            /** Broll Density */
+            broll_density?: number | null;
+            /** Cut Density */
+            cut_density?: number | null;
+            /** Subtitle Style Id */
+            subtitle_style_id?: string | null;
+            /** Bgm Id */
+            bgm_id?: string | null;
+            /** Cover Style */
+            cover_style?: string | null;
+            /** Material Ids */
+            material_ids?: string[];
             /**
              * Broll Count
              * @default 0
@@ -4642,6 +4743,12 @@ export interface components {
              * @enum {string}
              */
             status: "proposed" | "approved" | "active" | "deprecated" | "rejected" | "superseded";
+            /**
+             * Memory Type
+             * @default script_pattern
+             * @enum {string}
+             */
+            memory_type: "script_pattern" | "video_pattern" | "audience_insight" | "editing_rule" | "negative_lesson";
             scope?: components["schemas"]["CaseMemoryScope"];
             /** Insight */
             insight: string;
@@ -4652,10 +4759,36 @@ export interface components {
              * @default 0.5
              */
             confidence: number;
+            /**
+             * Sample Size
+             * @default 0
+             */
+            sample_size: number;
+            /** Supersedes Memory Id */
+            supersedes_memory_id?: string | null;
             /** Proposed By Reflection Run Id */
             proposed_by_reflection_run_id?: string | null;
         };
-        /** MetricsImportRequest */
+        /** MemoryRecallResponse */
+        MemoryRecallResponse: {
+            /** Case Id */
+            case_id: string;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "recent" | "topic" | "platform" | "memory_type" | "high_performance" | "low_performance";
+            /** Memories */
+            memories?: components["schemas"]["CaseMemory"][];
+        };
+        /**
+         * MetricsImportRequest
+         * @description §25.4 metrics import request.
+         *
+         *     ``matching_policy`` selects the deterministic key used to resolve each row's
+         *     ``publish_record_id``. Title + publish-time guessing is forbidden unless the
+         *     policy is ``strict_manual`` (which also writes a warning into the report).
+         */
         MetricsImportRequest: {
             /** Rows */
             rows: {
@@ -4666,6 +4799,22 @@ export interface components {
              * @default false
              */
             dry_run: boolean;
+            /**
+             * Source
+             * @default manual_csv
+             * @enum {string}
+             */
+            source: "manual_csv" | "oceanengine_rpa" | "platform_api";
+            /** Platform */
+            platform?: string | null;
+            /** Account Id */
+            account_id?: string | null;
+            /**
+             * Matching Policy
+             * @default external_post_id
+             * @enum {string}
+             */
+            matching_policy: "external_post_id" | "platform_item_id" | "published_url" | "strict_manual";
         };
         /** Money */
         "Money-Input": {
@@ -5484,15 +5633,122 @@ export interface components {
             case_id: string;
             /** Publish Record Id */
             publish_record_id: string;
+            /** Video Version Id */
+            video_version_id?: string | null;
+            /** Platform */
+            platform?: string | null;
+            /** Account Id */
+            account_id?: string | null;
+            /** Window */
+            window?: ("1h" | "24h" | "3d" | "7d" | "30d") | null;
             /** Metric Name */
             metric_name: string;
             /** Metric Value */
             metric_value: number;
+            /** Impressions */
+            impressions?: number | null;
+            /** Views */
+            views?: number | null;
+            /** Avg Watch Sec */
+            avg_watch_sec?: number | null;
+            /** Completion Rate */
+            completion_rate?: number | null;
+            /** Like Rate */
+            like_rate?: number | null;
+            /** Comment Rate */
+            comment_rate?: number | null;
+            /** Share Rate */
+            share_rate?: number | null;
+            /** Follow Rate */
+            follow_rate?: number | null;
+            /** Conversion Count */
+            conversion_count?: number | null;
+            /** Conversion Rate */
+            conversion_rate?: number | null;
+            /** Raw Metrics */
+            raw_metrics?: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
             /**
              * Observed At
              * Format: date-time
              */
             observed_at?: string;
+        };
+        /**
+         * PerformanceScore
+         * @description §25.6 normalized, windowed, confidence-gated performance score.
+         *
+         *     A score never treats raw views/impressions as quality directly: when the
+         *     observation's impression/view volume is below ``MIN_CONFIDENT_IMPRESSIONS``
+         *     (or the window is only an early 24h signal) the score is emitted with a
+         *     reduced ``confidence`` and an ``excluded_reason`` so callers (memory
+         *     activation, high/low-performance recall) can refuse to draw conclusions.
+         */
+        PerformanceScore: {
+            /** Id */
+            id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at?: string;
+            /** Created By */
+            created_by?: string | null;
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
+            /**
+             * Schema Version
+             * @default v1
+             */
+            schema_version: string;
+            /** Observation Id */
+            observation_id: string;
+            /** Case Id */
+            case_id: string;
+            /** Video Version Id */
+            video_version_id?: string | null;
+            /** Platform */
+            platform?: string | null;
+            /** Account Id */
+            account_id?: string | null;
+            /**
+             * Window
+             * @default 7d
+             * @enum {string}
+             */
+            window: "1h" | "24h" | "3d" | "7d" | "30d";
+            /**
+             * Primary Metric
+             * @default engagement_rate
+             * @enum {string}
+             */
+            primary_metric: "completion_rate" | "follow_rate" | "conversion_rate" | "engagement_rate";
+            /**
+             * Normalized Score
+             * @default 0
+             */
+            normalized_score: number;
+            /**
+             * Confidence
+             * @default 0
+             */
+            confidence: number;
+            /**
+             * Sample Size
+             * @default 0
+             */
+            sample_size: number;
+            /** Excluded Reason */
+            excluded_reason?: string | null;
         };
         /** PortraitOptions */
         PortraitOptions: {
@@ -6671,6 +6927,17 @@ export interface components {
             window: "24h" | "3d" | "7d" | "30d";
             /** Report Artifact Id */
             report_artifact_id?: string | null;
+            /** Input Observation Ids */
+            input_observation_ids?: string[];
+            /** Input Feature Vector Ids */
+            input_feature_vector_ids?: string[];
+            /** Memory Proposal Ids */
+            memory_proposal_ids?: string[];
+            /**
+             * Sample Size
+             * @default 0
+             */
+            sample_size: number;
         };
         /** RefreshProviderBalancesRequest */
         RefreshProviderBalancesRequest: {
@@ -11263,6 +11530,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PageResponse_CaseMemory_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    recall_memory_api_cases__case_id__memory_recall_get: {
+        parameters: {
+            query?: {
+                mode?: "recent" | "topic" | "platform" | "memory_type" | "high_performance" | "low_performance";
+                topic?: string | null;
+                platform?: string | null;
+                memory_type?: ("script_pattern" | "video_pattern" | "audience_insight" | "editing_rule" | "negative_lesson") | null;
+                scope_key?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryRecallResponse"];
                 };
             };
             /** @description Validation Error */

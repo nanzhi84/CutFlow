@@ -8,13 +8,16 @@ from sqlalchemy.orm import Session, sessionmaker
 from packages.core.contracts import (
     AdoptScriptDraftRequest, CaseAgentRun, CaseAgentRunDetail, CaseAgentSourceBinding, CaseInsightCard,
     CaseKnowledgeResponse, CaseMemory, CaseMemoryScope, CreateSourceBindingRequest, CreativePattern,
-    GenerateScriptWithMemoryRequest, ImportCaseSourceRequest, MemoryProposal, ReflectionRun, RunStatus,
-    ScriptDraft, ScriptVersion, StartCaseAgentRunRequest, StartReflectionRunRequest, utcnow,
+    GenerateScriptWithMemoryRequest, ImportCaseSourceRequest, MemoryProposal, MemoryRecallQuery,
+    MemoryRecallResponse, PerformanceObservation, ReflectionRun, RunStatus, ScriptDraft, ScriptVersion,
+    StartCaseAgentRunRequest, StartReflectionRunRequest, utcnow,
 )
 from packages.core.storage.database import (
     CaseAgentRunRow, CaseAgentSourceBindingRow, CaseMemoryRow, CreativeBriefRow, FinishedVideoRow,
-    MemoryProposalRow, ReflectionRunRow, ScriptDraftRow, ScriptVersionRow, VideoVersionRow,
+    MemoryProposalRow, PerformanceObservationRow, PerformanceScoreRow, ReflectionRunRow, ScriptDraftRow,
+    ScriptVersionRow, VideoVersionRow,
 )
+import packages.creative.cases.evolution as evolution
 from packages.creative.cases.sqlalchemy_learning_mappers import (
     case_agent_run_row_to_contract, case_memory_row_to_contract, creative_brief_row_to_contract,
     memory_proposal_row_to_contract, reflection_run_row_to_contract, script_draft_row_to_contract,
@@ -140,18 +143,8 @@ class SqlAlchemyCaseLearningRepository:
                     )
                 )
             elif payload.goal == "memory_proposal":
-                session.add(
-                    MemoryProposalRow(
-                        id=new_id("mem"),
-                        case_id=case_id,
-                        status="proposed",
-                        scope=CaseMemoryScope().model_dump(mode="json"),
-                        insight="Short hooks with concrete outcomes perform better for this case.",
-                        evidence=[],
-                        confidence=0.5,
-                        proposed_by_reflection_run_id=run.id,
-                    )
-                )
+                for proposal in self._derive_memory_proposals(session, case_id=case_id, run_id=run.id):
+                    session.add(proposal)
             session.commit()
             session.refresh(run)
             return case_agent_run_row_to_contract(run)
@@ -278,6 +271,45 @@ class SqlAlchemyCaseLearningRepository:
             )
             return [case_memory_row_to_contract(row) for row in session.scalars(statement)]
 
+    def recall_memory(self, *, case_id: str, query: MemoryRecallQuery) -> MemoryRecallResponse:
+        """§25.8 memory recall with scope/validity-window filter and ranking."""
+        with self.session_factory() as session:
+            memories = [
+                case_memory_row_to_contract(row)
+                for row in session.scalars(
+                    select(CaseMemoryRow)
+                    .where(CaseMemoryRow.case_id == case_id)
+                    .where(CaseMemoryRow.status == "active")
+                )
+            ]
+            score_lookup = self._performance_scope_scores(session, case_id)
+        recalled = evolution.filter_recall_memories(
+            memories,
+            mode=query.mode,
+            topic=query.topic,
+            platform=query.platform,
+            memory_type=query.memory_type,
+            scope_key=query.scope_key,
+            limit=query.limit,
+            score_lookup=score_lookup,
+        )
+        return MemoryRecallResponse(case_id=case_id, mode=query.mode, memories=recalled)
+
+    def performance_scope_scores(self, *, case_id: str) -> dict[str, float]:
+        with self.session_factory() as session:
+            return self._performance_scope_scores(session, case_id)
+
+    def _performance_scope_scores(self, session: Session, case_id: str) -> dict[str, float]:
+        lookup: dict[str, float] = {}
+        for row in session.scalars(
+            select(PerformanceScoreRow)
+            .where(PerformanceScoreRow.case_id == case_id)
+            .where(PerformanceScoreRow.excluded_reason.is_(None))
+        ):
+            key = row.platform or row.video_version_id or row.observation_id
+            lookup[key] = max(lookup.get(key, 0.0), row.normalized_score)
+        return lookup
+
     def approve_memory(self, *, case_id: str, memory_id: str) -> CaseMemory | None:
         with self.session_factory() as session:
             memory = session.get(CaseMemoryRow, memory_id)
@@ -305,10 +337,14 @@ class SqlAlchemyCaseLearningRepository:
                 id=proposal.id,
                 case_id=case_id,
                 status="active",
+                memory_type=proposal.memory_type,
                 scope=proposal.scope,
+                scope_key=proposal.scope_key,
                 insight=proposal.insight,
                 evidence=proposal.evidence,
                 confidence=proposal.confidence,
+                sample_size=proposal.sample_size,
+                supersedes_memory_id=proposal.supersedes_memory_id,
             )
             session.add(memory)
             session.commit()
@@ -328,29 +364,100 @@ class SqlAlchemyCaseLearningRepository:
 
     def start_reflection(self, *, case_id: str, payload: StartReflectionRunRequest) -> ReflectionRun:
         with self.session_factory() as session:
+            observations = self._load_observations(session, case_id)
             reflection = ReflectionRunRow(
                 id=new_id("refl"),
                 case_id=case_id,
                 status=RunStatus.succeeded.value,
                 window=payload.window,
+                input_observation_ids=[obs.id for obs in observations],
+                input_feature_vector_ids=[],
+                memory_proposal_ids=[],
+                sample_size=len(observations),
             )
             session.add(reflection)
             session.flush()
-            session.add(
-                MemoryProposalRow(
-                    id=new_id("mem"),
-                    case_id=case_id,
-                    status="proposed",
-                    scope=CaseMemoryScope().model_dump(mode="json"),
-                    insight="Reuse the best performing hook style from recent videos.",
-                    evidence=[reflection.id],
-                    confidence=0.65,
-                    proposed_by_reflection_run_id=reflection.id,
-                )
+            proposal_rows = self._derive_memory_proposals(
+                session, case_id=case_id, run_id=reflection.id, observations=observations
             )
+            for row in proposal_rows:
+                session.add(row)
+            reflection.memory_proposal_ids = [row.id for row in proposal_rows]
             session.commit()
             session.refresh(reflection)
             return reflection_run_row_to_contract(reflection)
+
+    def _load_observations(self, session: Session, case_id: str) -> list[PerformanceObservation]:
+        rows = session.scalars(
+            select(PerformanceObservationRow).where(PerformanceObservationRow.case_id == case_id)
+        )
+        return [_performance_observation_row_to_contract(row) for row in rows]
+
+    def _derive_memory_proposals(
+        self,
+        session: Session,
+        *,
+        case_id: str,
+        run_id: str,
+        observations: list[PerformanceObservation] | None = None,
+    ) -> list[MemoryProposalRow]:
+        """§8.4: derive data-driven proposals from performance analysis + briefs,
+        dedup against existing active + proposed memories."""
+        observations = observations if observations is not None else self._load_observations(session, case_id)
+        scores = [evolution.compute_performance_score(obs) for obs in observations]
+        analysis = evolution.analyze_historical_performance(observations, scores)
+        briefs = [
+            creative_brief_row_to_contract(row)
+            for row in session.scalars(
+                select(CreativeBriefRow).where(CreativeBriefRow.case_id == case_id)
+            )
+        ]
+        existing_active = [
+            case_memory_row_to_contract(row)
+            for row in session.scalars(
+                select(CaseMemoryRow)
+                .where(CaseMemoryRow.case_id == case_id)
+                .where(CaseMemoryRow.status == "active")
+            )
+        ]
+        existing_proposed = [
+            memory_proposal_row_to_contract(row)
+            for row in session.scalars(
+                select(MemoryProposalRow)
+                .where(MemoryProposalRow.case_id == case_id)
+                .where(MemoryProposalRow.status == "proposed")
+            )
+        ]
+        proposals = evolution.build_memory_proposals(
+            case_id=case_id,
+            reflection_run_id=run_id,
+            analysis=analysis,
+            briefs=briefs,
+            existing_active=existing_active,
+            existing_proposed=existing_proposed,
+            id_factory=lambda: new_id("mem"),
+        )
+        if not proposals:
+            topic = briefs[0].topic if briefs else None
+            summary = briefs[0].summary if briefs else None
+            descriptor = topic or summary or "this case"
+            proposals = [
+                MemoryProposal(
+                    id=new_id("mem"),
+                    case_id=case_id,
+                    status="proposed",
+                    memory_type="script_pattern",
+                    insight=(
+                        f"Insufficient confident performance data for {descriptor}; "
+                        "collect more published-metric samples before drawing conclusions."
+                    ),
+                    evidence=[run_id],
+                    confidence=0.3,
+                    sample_size=0,
+                    proposed_by_reflection_run_id=run_id,
+                )
+            ]
+        return [_memory_proposal_contract_to_row(proposal) for proposal in proposals]
 
     def insights(self, *, case_id: str, limit: int = 50) -> list[CaseInsightCard]:
         with self.session_factory() as session:
@@ -425,3 +532,49 @@ class SqlAlchemyCaseLearningRepository:
             status=RunStatus.succeeded.value,
             source_binding_ids=source_binding_ids,
         )
+
+
+def _performance_observation_row_to_contract(row: PerformanceObservationRow) -> PerformanceObservation:
+    return PerformanceObservation(
+        id=row.id,
+        case_id=row.case_id,
+        publish_record_id=row.publish_record_id,
+        video_version_id=row.video_version_id,
+        platform=row.platform,
+        account_id=row.account_id,
+        window=row.window,
+        metric_name=row.metric_name,
+        metric_value=row.metric_value,
+        impressions=row.impressions,
+        views=row.views,
+        avg_watch_sec=row.avg_watch_sec,
+        completion_rate=row.completion_rate,
+        like_rate=row.like_rate,
+        comment_rate=row.comment_rate,
+        share_rate=row.share_rate,
+        follow_rate=row.follow_rate,
+        conversion_count=row.conversion_count,
+        conversion_rate=row.conversion_rate,
+        raw_metrics=dict(row.raw_metrics or {}),
+        observed_at=row.observed_at,
+        schema_version=row.schema_version,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _memory_proposal_contract_to_row(proposal: MemoryProposal) -> MemoryProposalRow:
+    return MemoryProposalRow(
+        id=proposal.id,
+        case_id=proposal.case_id,
+        status=proposal.status,
+        memory_type=proposal.memory_type,
+        scope=proposal.scope.model_dump(mode="json"),
+        scope_key=proposal.scope.scope_key,
+        insight=proposal.insight,
+        evidence=list(proposal.evidence),
+        confidence=proposal.confidence,
+        sample_size=proposal.sample_size,
+        supersedes_memory_id=proposal.supersedes_memory_id,
+        proposed_by_reflection_run_id=proposal.proposed_by_reflection_run_id,
+    )
