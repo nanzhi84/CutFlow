@@ -2270,6 +2270,43 @@
             }
           }
         }
+      },
+      "delete": {
+        "summary": "Delete Media Asset",
+        "operationId": "delete_media_asset_api_media_assets__asset_id__delete",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Asset Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/media/assets/{asset_id}/preview-url": {
@@ -9642,6 +9679,17 @@
               }
             ],
             "title": "Template Id"
+          },
+          "reference_asset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Asset Id"
           }
         },
         "additionalProperties": false,

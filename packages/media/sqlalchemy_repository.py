@@ -191,6 +191,19 @@ class SqlAlchemyMediaRepository:
                 preview_url=f"local://media/{row.id}",
             )
 
+    def delete_asset(self, asset_id: str) -> bool:
+        """Delete the media-asset row (e.g. a retired cover_template). Returns
+        ``False`` when the asset does not exist. The backing source artifact/object
+        is left in place — artifacts are append-only audit records and may be shared;
+        only the asset registration is removed."""
+        with self.session_factory() as session:
+            row = session.get(MediaAssetRow, asset_id)
+            if row is None:
+                return False
+            session.delete(row)
+            session.commit()
+            return True
+
     def material_usage_ranking(
         self,
         *,

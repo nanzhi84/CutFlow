@@ -200,6 +200,112 @@ def test_ai_cover_generates_artifact_when_profile_and_secret_active(
     assert finished.cover_artifact.artifact_id == cover.id
 
 
+class _TemplateAwareImageProvider:
+    """Records the cover ProviderCall input so the test can assert the reference
+    image + has_template prompt branch reached the provider."""
+
+    provider_id = "openai.image"
+
+    def __init__(self) -> None:
+        self.inputs: list[dict] = []
+
+    def invoke_with_context(self, call: ProviderCall, context) -> ProviderResult:
+        self.inputs.append(dict(call.input))
+        artifact = context.store_media_bytes(
+            content=_PNG_1x1,
+            filename=f"{call.idempotency_key or 'ai-cover'}.png",
+            purpose="covers",
+            kind=ArtifactKind.cover_image,
+            call=call,
+        )
+        return ProviderResult(
+            output={"cover_artifact_id": artifact.id, "cover_uri": artifact.uri},
+            image_count=1,
+        )
+
+
+def test_ai_cover_consumes_uploaded_cover_template_reference(
+    tmp_path, media_fixture_factory, monkeypatch
+):
+    adapter, gateway, secret_store, object_store = _adapter(tmp_path)
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store", lambda: object_store
+    )
+    secret_ref = secret_store.put("openai-image-key")
+    _seed_image_profile(adapter.repository, secret_ref)
+    provider = _TemplateAwareImageProvider()
+    gateway.register(provider)
+
+    # Seed an uploaded cover_template MediaAsset backed by a real image artifact.
+    template_path = tmp_path / "template.png"
+    template_path.write_bytes(_PNG_1x1)
+    template_stored = store_file(object_store, template_path, purpose="cover-templates")
+    template_artifact = adapter.repository.create_artifact(
+        kind=ArtifactKind.cover_image,
+        payload_schema="uri-only",
+        payload=None,
+        case_id="case_demo",
+        uri=template_stored.ref.uri,
+        sha256=template_stored.sha256,
+        media_info=MediaInfo(media_type="image", codec="png", format="png"),
+    )
+    from packages.core import contracts as c
+
+    asset = c.MediaAssetRecord(
+        id="asset_cover_tpl",
+        case_id="case_demo",
+        title="风格参考封面",
+        kind="cover_template",
+        source_artifact_id=template_artifact.id,
+    )
+    adapter.repository.media_assets[asset.id] = asset
+
+    state = _seed_final_state(adapter.repository, object_store, media_fixture_factory, cover_mode="ai")
+    state.request.cover.reference_asset_id = asset.id
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+
+    from packages.production.pipeline import nodes
+
+    output = nodes.export_finished_video.run(ctx)
+
+    assert output.status == NodeStatus.succeeded
+    assert provider.inputs, "image provider must be invoked"
+    call_input = provider.inputs[0]
+    # The uploaded template bytes were forwarded to the edit-reference path...
+    import base64
+
+    assert call_input.get("template_image_b64") == base64.b64encode(_PNG_1x1).decode("ascii")
+    assert call_input.get("template_filename")
+    # ...and the prompt switched to the has_template style-reference instruction.
+    assert "style and layout template" in call_input["prompt"]
+
+
+def test_ai_cover_without_reference_asset_sends_no_template(
+    tmp_path, media_fixture_factory, monkeypatch
+):
+    adapter, gateway, secret_store, object_store = _adapter(tmp_path)
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store", lambda: object_store
+    )
+    secret_ref = secret_store.put("openai-image-key")
+    _seed_image_profile(adapter.repository, secret_ref)
+    provider = _TemplateAwareImageProvider()
+    gateway.register(provider)
+
+    state = _seed_final_state(adapter.repository, object_store, media_fixture_factory, cover_mode="ai")
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+
+    from packages.production.pipeline import nodes
+
+    output = nodes.export_finished_video.run(ctx)
+
+    assert output.status == NodeStatus.succeeded
+    assert provider.inputs
+    # No reference asset -> no template bytes, text-to-image generation only.
+    assert "template_image_b64" not in provider.inputs[0]
+    assert "from scratch" in provider.inputs[0]["prompt"]
+
+
 def test_ai_cover_requested_but_unconfigured_falls_back_to_frame_cover(
     tmp_path, media_fixture_factory, monkeypatch
 ):

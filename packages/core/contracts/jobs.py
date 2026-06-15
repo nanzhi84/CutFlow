@@ -84,7 +84,13 @@ class BgmOptions(ContractModel):
 
 class CoverOptions(ContractModel):
     mode: Literal["none", "frame", "ai"] = "frame"
+    # Selects the image.generate ProviderProfile for the AI cover (when None, the
+    # first eligible real profile is used). NOT a media asset id.
     template_id: str | None = None
+    # Optional uploaded ``cover_template`` MediaAsset whose image conditions the AI
+    # cover's style/layout: its bytes are passed to the image-edit reference path so
+    # the generated cover follows the uploaded reference, not pure text-to-image.
+    reference_asset_id: str | None = None
 
 
 class OutputOptions(ContractModel):

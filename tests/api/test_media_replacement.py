@@ -181,3 +181,73 @@ def test_auto_match_replace_reports_matched_unmatched_and_ambiguous(tmp_path):
     assert results["missing.mp4"]["status"] == "unmatched"
     assert results["duplicate.mp4"]["status"] == "ambiguous"
     assert repository().media_assets[matched_asset_id].source_artifact_id == replacement["artifact"]["artifact_id"]
+
+
+def upload_cover_template(tmp_path, *, filename: str, case_id: str, title: str) -> dict:
+    image = tmp_path / filename
+    # A tiny valid PNG is enough; the upload path only needs real bytes + sha.
+    image.write_bytes(
+        bytes.fromhex(
+            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f"
+            "15c4890000000b49444154789c6360000200000500017a5eab3f00000000"
+            "49454e44ae426082"
+        )
+    )
+    content = image.read_bytes()
+    digest = hashlib.sha256(content).hexdigest()
+    prepared = client.post(
+        "/api/uploads/prepare",
+        json={
+            "kind": "cover_template",
+            "case_id": case_id,
+            "filename": filename,
+            "content_type": "image/png",
+            "size_bytes": len(content),
+            "sha256": digest,
+        },
+    )
+    assert prepared.status_code == 201, prepared.text
+    upload = prepared.json()
+    uploaded = client.put(f"/api/uploads/{upload['id']}/file", files={"file": (filename, content, "image/png")})
+    assert uploaded.status_code == 200, uploaded.text
+    completed = client.post(
+        "/api/uploads/complete",
+        json={"upload_session_id": upload["id"], "size_bytes": len(content), "sha256": digest, "metadata": {"title": title}},
+    )
+    assert completed.status_code == 200, completed.text
+    body = completed.json()
+    if body.get("media_asset"):
+        return body["media_asset"]
+    created = client.post(
+        "/api/media/assets",
+        json={
+            "upload_session_id": upload["id"],
+            "case_id": case_id,
+            "title": title,
+            "kind": "cover_template",
+        },
+    )
+    assert created.status_code == 201, created.text
+    return created.json()
+
+
+def test_delete_cover_template_asset_removes_it_from_listing(tmp_path):
+    login_admin()
+    asset = upload_cover_template(
+        tmp_path, filename="style-ref.png", case_id="case_cover_tpl", title="风格参考"
+    )
+    asset_id = asset["id"]
+
+    listed = client.get("/api/media/assets", params={"case_id": "case_cover_tpl", "kind": "cover_template"})
+    assert listed.status_code == 200, listed.text
+    assert any(card["asset"]["id"] == asset_id for card in listed.json()["items"])
+
+    deleted = client.delete(f"/api/media/assets/{asset_id}")
+    assert deleted.status_code == 200, deleted.text
+
+    after = client.get("/api/media/assets", params={"case_id": "case_cover_tpl", "kind": "cover_template"})
+    assert not any(card["asset"]["id"] == asset_id for card in after.json()["items"])
+
+    # Deleting again is a 4xx (already gone), not a silent 200.
+    missing = client.delete(f"/api/media/assets/{asset_id}")
+    assert missing.status_code >= 400

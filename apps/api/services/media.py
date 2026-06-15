@@ -155,6 +155,20 @@ def media_asset_preview(request: Request, asset_id: str) -> c.SignedUrlResponse:
     return _with_preview_playback(signed(request, f"media/{asset_id}"), None, None)
 
 
+def delete_media_asset(request: Request, asset_id: str) -> c.OkResponse:
+    """Delete a media-asset registration (e.g. a retired ``cover_template``). The
+    backing source artifact/object is intentionally retained — artifacts are
+    append-only and may be referenced by prior runs."""
+    if media_repository(request) is not None:
+        if not media_repository(request).delete_asset(asset_id):
+            raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
+        return c.OkResponse(request_id=request_id())
+    if asset_id not in repository(request).media_assets:
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
+    del repository(request).media_assets[asset_id]
+    return c.OkResponse(request_id=request_id())
+
+
 def batch_stabilize_assets(
     payload: c.BatchStabilizeMediaAssetsRequest, request: Request
 ) -> c.BatchMediaProcessResponse:

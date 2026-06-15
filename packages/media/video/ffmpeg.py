@@ -18,6 +18,14 @@ from packages.core.contracts import ErrorCode, MediaInfo
 
 DEFAULT_TIMEOUT_SEC = 30
 VIDEO_PROCESS_TIMEOUT_SEC = 300
+# Headroom factor applied to the size budget when deriving a target bitrate, so a
+# single-pass encode lands comfortably under the cap (leaving margin for the audio
+# track + container overhead). Mirrors the origin video_processor 0.95 margin.
+COMPRESS_BUDGET_MARGIN = 0.95
+# Bitrate caps (kbps) for the resolution-reduction fallback strategies. Mirror the
+# origin ladder: 720p capped at 2500k, 480p capped at 1500k.
+COMPRESS_720P_MAX_KBPS = 2500
+COMPRESS_480P_MAX_KBPS = 1500
 STABILIZATION_SHAKINESS = 4
 STABILIZATION_ACCURACY = 10
 STABILIZATION_STEPSIZE = 6
@@ -74,6 +82,23 @@ class ThumbnailResult:
     label: str
     path: Path
     sha256: str
+    media_info: MediaInfo
+
+
+@dataclass(frozen=True)
+class CompressionStrategy:
+    """One rung of the compress-to-budget ladder."""
+
+    name: str
+    video_kbps: int
+    resolution: tuple[int, int] | None
+
+
+@dataclass(frozen=True)
+class CompressionResult:
+    path: Path
+    strategy: str
+    size_bytes: int
     media_info: MediaInfo
 
 
@@ -269,6 +294,93 @@ def stabilize_video(
         )
     probe_media(output)
     return output
+
+
+def compress_video_to_budget(
+    video_path: str | Path,
+    *,
+    max_size_mb: float,
+    output_path: str | Path | None = None,
+    timeout_sec: int = VIDEO_PROCESS_TIMEOUT_SEC,
+) -> CompressionResult:
+    """Downsize ``video_path`` so its file size fits ``max_size_mb``.
+
+    Port of the origin ``video_processor.compress_video`` multi-strategy ladder
+    (duration-derived target bitrate, then a 720p and a 480p resolution fallback).
+    Used as the no-silent-degrade guard before submitting an oversized source to a
+    provider with a hard input-size cap (e.g. VideoReTalk's 300MB limit) so the
+    remote call does not fail on an over-budget upload.
+
+    Unlike the origin (which returned ``None`` on failure and let the caller raise a
+    bare ``ValueError``), this raises a typed :class:`FfmpegCommandError` with
+    ``ErrorCode.render_failed`` when no strategy can reach the budget, so the
+    failure carries a spec error code instead of degrading silently.
+    """
+    source = Path(video_path)
+    info = probe_media(source)
+    duration = float(info.duration_sec or 0)
+    if info.media_type != "video" or duration <= 0:
+        raise FfmpegCommandError(
+            "Compress source must be a video with a positive duration.",
+            error_code=ErrorCode.render_failed,
+        )
+    if max_size_mb <= 0:
+        raise FfmpegCommandError(
+            "Compress size budget must be positive.",
+            error_code=ErrorCode.render_failed,
+        )
+    output = Path(output_path) if output_path else source.with_name(f"{source.stem}_compressed.mp4")
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    target_video_bits = (max_size_mb * 8 * 1024 * 1024 * COMPRESS_BUDGET_MARGIN) / duration
+    target_video_kbps = max(1, int(target_video_bits / 1000))
+    current_width = int(info.width or 1920)
+    current_height = int(info.height or 1080)
+    portrait = current_height > current_width
+    strategies = (
+        CompressionStrategy("reduce_bitrate", target_video_kbps, None),
+        CompressionStrategy(
+            "720p",
+            min(target_video_kbps, COMPRESS_720P_MAX_KBPS),
+            (720, 1280) if portrait else (1280, 720),
+        ),
+        CompressionStrategy(
+            "480p",
+            min(target_video_kbps, COMPRESS_480P_MAX_KBPS),
+            (480, 854) if portrait else (854, 480),
+        ),
+    )
+    runner = FfmpegRunner(timeout_sec=timeout_sec)
+    max_size_bytes = int(max_size_mb * 1024 * 1024)
+    for strategy in strategies:
+        args = [
+            ffmpeg_bin(), *FFMPEG_QUIET_ARGS, "-i", str(source),
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-b:v", f"{strategy.video_kbps}k",
+            "-maxrate", f"{strategy.video_kbps}k",
+            "-bufsize", f"{strategy.video_kbps * 2}k",
+        ]
+        if strategy.resolution is not None:
+            args.extend(["-s", f"{strategy.resolution[0]}x{strategy.resolution[1]}"])
+        args.extend(["-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(output)])
+        try:
+            runner.run(args, timeout_sec=timeout_sec)
+        except FfmpegCommandError:
+            output.unlink(missing_ok=True)
+            continue
+        size_bytes = output.stat().st_size
+        if size_bytes <= max_size_bytes:
+            return CompressionResult(
+                path=output,
+                strategy=strategy.name,
+                size_bytes=size_bytes,
+                media_info=probe_media(output),
+            )
+        output.unlink(missing_ok=True)
+    raise FfmpegCommandError(
+        f"Could not compress video below {max_size_mb}MB after exhausting the bitrate/resolution ladder.",
+        error_code=ErrorCode.render_failed,
+    )
 
 
 def trim_to_valid_segments(

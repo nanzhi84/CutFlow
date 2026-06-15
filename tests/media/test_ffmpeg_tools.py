@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 
+import pytest
+
 from packages.core.contracts import MediaInfo
 from packages.media.video.ffmpeg import (
     FfmpegCommandError,
+    compress_video_to_budget,
     extract_thumbnails,
     probe_media,
     sha256_file,
@@ -101,6 +104,52 @@ def test_trim_to_valid_segments_rejects_out_of_bounds_windows(tmp_path):
         assert exc.error_code.value == "render.invalid_timeline"
     else:
         raise AssertionError("trim_to_valid_segments should reject out-of-bounds segments")
+
+
+def test_compress_video_to_budget_reduces_file_below_cap(tmp_path):
+    # A high-bitrate source we then squeeze under a small byte budget.
+    video = generate_test_video(tmp_path, duration_sec=2, width=640, height=480, fps=30)
+    source_size_mb = video.stat().st_size / (1024 * 1024)
+
+    # Pick a budget below the source so at least one strategy must engage.
+    budget_mb = max(0.05, source_size_mb * 0.5)
+    result = compress_video_to_budget(video, max_size_mb=budget_mb)
+
+    assert result.path.exists()
+    assert result.path != video
+    assert result.size_bytes <= budget_mb * 1024 * 1024
+    assert result.media_info.media_type == "video"
+    assert result.strategy in {"reduce_bitrate", "720p", "480p"}
+
+
+def test_compress_video_to_budget_uses_resolution_ladder_for_tiny_budget(tmp_path):
+    # A 720p source whose bitrate floor at full resolution overshoots a small budget,
+    # so the ladder must downscale to reach it.
+    video = generate_test_video(tmp_path, duration_sec=3, width=1280, height=720, fps=30)
+
+    result = compress_video_to_budget(video, max_size_mb=0.5)
+
+    assert result.size_bytes <= 0.5 * 1024 * 1024
+    # Reaching the budget required a resolution-reduction rung, not bitrate alone.
+    assert result.strategy in {"720p", "480p"}
+    assert (result.media_info.width or 0) < 1280
+
+
+def test_compress_video_to_budget_raises_typed_error_when_unachievable(tmp_path):
+    video = generate_test_video(tmp_path, duration_sec=2, width=640, height=480, fps=30)
+
+    # A budget no encode can hit -> typed render_failed, not a silent None.
+    with pytest.raises(FfmpegCommandError) as exc:
+        compress_video_to_budget(video, max_size_mb=0.0005)
+    assert exc.value.error_code.value == "render.failed"
+
+
+def test_compress_video_to_budget_rejects_non_video(tmp_path):
+    audio = generate_test_audio(tmp_path, duration_sec=1.0, sample_rate=16000)
+
+    with pytest.raises(FfmpegCommandError) as exc:
+        compress_video_to_budget(audio, max_size_mb=10)
+    assert exc.value.error_code.value == "render.failed"
 
 
 def test_session_media_fixture_factory_caches_generated_assets(media_fixture_factory):

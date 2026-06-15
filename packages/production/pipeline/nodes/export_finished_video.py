@@ -10,6 +10,7 @@ is never reached and the existing frame-based cover runs unchanged (emitting a
 
 from __future__ import annotations
 
+import base64
 import tempfile
 from pathlib import Path
 
@@ -228,10 +229,17 @@ def _resolve_cover_prompt_version_id(ctx: NodeContext) -> str | None:
 
 def _generate_ai_cover(ctx: NodeContext, profile_id: str) -> tuple[Artifact | None, str | None]:
     """Generate the AI cover via the gateway. Returns ``(None, None)`` on any
-    provider failure so the caller can fall back to the frame cover."""
+    provider failure so the caller can fall back to the frame cover.
+
+    When the request references an uploaded ``cover_template`` MediaAsset
+    (``cover.reference_asset_id``), its image conditions the cover: ``has_template``
+    flips the prompt to follow the reference style/layout and the template bytes are
+    forwarded to the image-edit reference path so the uploaded style actually takes
+    effect (mirrors the origin ``generate_publish_cover(template_id=...)``)."""
     state = ctx.state
     run = ctx.run
     node_run = ctx.node_run
+    template = _resolve_cover_template(ctx)
     version_id = _resolve_cover_prompt_version_id(ctx)
     version = ctx.repository.prompt_versions.get(version_id) if version_id is not None else None
     prompt = build_cover_prompt(
@@ -239,9 +247,14 @@ def _generate_ai_cover(ctx: NodeContext, profile_id: str) -> tuple[Artifact | No
             title=state.request.title or "",
             description=state.request.publish_content,
             case_name=state.request.case_id,
+            has_template=template is not None,
         ),
         template=version.content if version is not None else None,
     )
+    call_input: dict = {"prompt": prompt}
+    if template is not None:
+        call_input["template_image_b64"] = template[0]
+        call_input["template_filename"] = template[1]
     invocation, result = ctx.provider_gateway.invoke(
         ProviderCall(
             case_id=run.case_id,
@@ -250,7 +263,7 @@ def _generate_ai_cover(ctx: NodeContext, profile_id: str) -> tuple[Artifact | No
             provider_profile_id=profile_id,
             capability_id="image.generate",
             prompt_version_id=version.id if version is not None else None,
-            input={"prompt": prompt},
+            input=call_input,
             idempotency_key=f"cover-{run.id}",
         )
     )
@@ -260,3 +273,22 @@ def _generate_ai_cover(ctx: NodeContext, profile_id: str) -> tuple[Artifact | No
     if not isinstance(artifact_id, str) or artifact_id not in ctx.repository.artifacts:
         return None, None
     return ctx.repository.artifacts[artifact_id], invocation.id
+
+
+def _resolve_cover_template(ctx: NodeContext) -> tuple[str, str] | None:
+    """Return ``(base64_image, filename)`` for the requested cover-template asset, or
+    ``None`` when no reference is set or it cannot be resolved (the cover then falls
+    back to template-free generation rather than failing the whole node)."""
+    asset_id = ctx.state.request.cover.reference_asset_id
+    if not asset_id:
+        return None
+    try:
+        artifact = ctx.source_artifact_for_asset(asset_id)
+        path = ctx.artifact_path(artifact)
+        data = path.read_bytes()
+    except (NodeExecutionError, FileNotFoundError, OSError):
+        return None
+    if not data:
+        return None
+    filename = Path(path).name or "cover-template.jpg"
+    return base64.b64encode(data).decode("ascii"), filename

@@ -66,6 +66,12 @@ def media_asset_detail(request: Request, asset_id: str) -> c.MediaAssetDetail:
     return service.media_asset_detail(request, asset_id)
 
 
+@router.delete("/api/media/assets/{asset_id}", response_model=c.OkResponse)
+def delete_media_asset(asset_id: str, request: Request) -> c.OkResponse:
+    require_role(request, c.UserRole.operator)
+    return service.delete_media_asset(request, asset_id)
+
+
 @router.get("/api/media/assets/{asset_id}/preview-url", response_model=c.SignedUrlResponse)
 def media_asset_preview(request: Request, asset_id: str) -> c.SignedUrlResponse:
 

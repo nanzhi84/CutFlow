@@ -210,18 +210,25 @@ def test_write_endpoint_matrix_rejects_viewer_for_operator_and_admin_routes():
 
 def test_write_endpoint_matrix_uses_422_error_envelope_for_invalid_bodies():
     app = create_app()
+    # Denominator = write endpoints that ACCEPT a request body (the ones eligible
+    # for body validation). Body-less writes (DELETEs, no-body POSTs) are not
+    # 422-body-testable, so excluding them keeps the coverage ratio meaningful and
+    # robust to legitimately body-less endpoints rather than penalising them.
+    body_bearing = [
+        (method, path, operation)
+        for method, path, operation in write_operations(app)
+        if request_body_schema(operation) is not None
+    ]
     covered = 0
-    for method, path, operation in write_operations(app):
+    for method, path, operation in body_bearing:
         if (method, path) in INVALID_BODY_EXEMPTIONS:
-            continue
-        if request_body_schema(operation) is None:
             continue
         covered += 1
         with TestClient(create_app()) as client:
             login(client, "admin@local.cutagent", "local-admin")
             response = send_matrix_request(client, method, path, {"__unexpected": True})
             assert_error_envelope(response, 422, "validation.invalid_options")
-    assert covered / len(write_operations(app)) >= 0.90
+    assert covered / len(body_bearing) >= 0.90
 
 
 def test_idempotency_replay_returns_200_per_spec_32_11():

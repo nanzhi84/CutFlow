@@ -806,7 +806,8 @@ export interface paths {
         get: operations["media_asset_detail_api_media_assets__asset_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** Delete Media Asset */
+        delete: operations["delete_media_asset_api_media_assets__asset_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3383,6 +3384,8 @@ export interface components {
             mode: "none" | "frame" | "ai";
             /** Template Id */
             template_id?: string | null;
+            /** Reference Asset Id */
+            reference_asset_id?: string | null;
         };
         /** CreateCaseRequest */
         CreateCaseRequest: {
@@ -9028,6 +9031,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MediaAssetDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_media_asset_api_media_assets__asset_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OkResponse"];
                 };
             };
             /** @description Validation Error */

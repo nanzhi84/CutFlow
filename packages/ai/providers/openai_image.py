@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import mimetypes
 from decimal import Decimal
 from typing import Any
 
@@ -59,16 +60,35 @@ class OpenAIImageProvider:
         model_id = context.profile.model_id
         size = str(call.input.get("size") or option(context, "size", "1024x1536"))
         count = int(call.input.get("n") or option(context, "n", 1) or 1)
-        payload = self._generation_payload(model_id, prompt, size=size, count=count, context=context)
-        response = request(
-            self.client,
-            "POST",
-            f"{base_url}/images/generations",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json_body=payload,
-            timeout=float(context.profile.timeout_sec),
-        )
-        result = response_json(response)
+        template_b64 = str(call.input.get("template_image_b64") or "").strip()
+        result: dict[str, Any] | None = None
+        if template_b64:
+            # Reference-image (style/layout) path: edit-from-template so the uploaded
+            # cover template actually conditions the result (mirrors the origin
+            # ``/images/edits`` call). Falls back to plain generation if the endpoint
+            # or model does not support edits.
+            result = self._edit_with_template(
+                base_url,
+                api_key,
+                prompt,
+                template_b64=template_b64,
+                template_filename=str(call.input.get("template_filename") or "cover-template.png"),
+                size=size,
+                count=count,
+                model_id=model_id,
+                context=context,
+            )
+        if result is None:
+            payload = self._generation_payload(model_id, prompt, size=size, count=count, context=context)
+            response = request(
+                self.client,
+                "POST",
+                f"{base_url}/images/generations",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json_body=payload,
+                timeout=float(context.profile.timeout_sec),
+            )
+            result = response_json(response)
         image_bytes, output_format = self._decode_image(result, api_key, context)
         artifact = context.store_media_bytes(
             content=image_bytes,
@@ -110,6 +130,53 @@ class OpenAIImageProvider:
         if output_format:
             payload["output_format"] = str(output_format)
         return payload
+
+    def _edit_with_template(
+        self,
+        base_url: str,
+        api_key: str,
+        prompt: str,
+        *,
+        template_b64: str,
+        template_filename: str,
+        size: str,
+        count: int,
+        model_id: str,
+        context: ProviderInvocationContext,
+    ) -> dict[str, Any] | None:
+        """POST the prompt + reference image to ``/images/edits`` so the uploaded
+        cover template conditions the result. Returns the decoded JSON, or ``None``
+        to signal the caller should fall back to plain text-to-image generation
+        (when the endpoint/model rejects edits, e.g. HTTP 400/404/422)."""
+        try:
+            template_bytes = base64.b64decode(template_b64)
+        except (binascii.Error, ValueError):
+            return None
+        if not template_bytes:
+            return None
+        mime = mimetypes.guess_type(template_filename)[0] or "image/png"
+        data = {"model": model_id, "prompt": prompt, "size": size, "n": str(count)}
+        # Try the canonical ``image`` field first, then ``image[]`` (some mirrors
+        # only accept the array form) — mirrors the origin's two-field attempt.
+        for image_field in ("image", "image[]"):
+            try:
+                response = request(
+                    self.client,
+                    "POST",
+                    f"{base_url}/images/edits",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    data=data,
+                    files={image_field: (template_filename, template_bytes, mime)},
+                    timeout=float(context.profile.timeout_sec),
+                )
+            except ProviderRuntimeError as exc:
+                # auth/quota are hard failures (re-raise); request-shape/endpoint
+                # rejections fall back to generation so the cover still ships.
+                if exc.code in {ErrorCode.provider_auth_failed, ErrorCode.provider_quota_exceeded}:
+                    raise
+                continue
+            return response_json(response)
+        return None
 
     def _decode_image(
         self, result: dict[str, Any], api_key: str, context: ProviderInvocationContext

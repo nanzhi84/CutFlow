@@ -1144,6 +1144,104 @@ def test_openai_image_generates_cover_from_b64_json(tmp_path):
     assert object_path.read_bytes() == _PNG_1x1
 
 
+def test_openai_image_edits_from_template_reference(tmp_path):
+    import base64
+    import json
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/images/edits":
+            seen["path"] = request.url.path
+            seen["content_type"] = request.headers.get("content-type", "")
+            # The reference image bytes ride in the multipart body, not a JSON prompt.
+            seen["body"] = request.content
+            return httpx.Response(
+                200,
+                json={"data": [{"b64_json": base64.b64encode(_PNG_1x1).decode("ascii")}]},
+            )
+        raise AssertionError(f"unexpected request to {request.url.path}")
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+    secret_ref = gateway.secret_store.put("image-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="openai.image",
+        capability="image.generate",
+        model_id="gpt-image-2-all",
+        secret_ref=secret_ref,
+        default_options={"base_url": "https://example.invalid/v1", "provider_kind": "neuromash"},
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            provider_profile_id=profile.id,
+            capability_id="image.generate",
+            input={
+                "prompt": "封面测试 cover prompt",
+                "template_image_b64": base64.b64encode(_PNG_1x1).decode("ascii"),
+                "template_filename": "ref.png",
+            },
+            idempotency_key="cover-edit-1",
+        )
+    )
+
+    assert invocation.status == ProviderStatus.succeeded
+    assert result is not None
+    # Routed to the EDIT endpoint (template-conditioned), not plain generation.
+    assert seen["path"] == "/v1/images/edits"
+    assert "multipart/form-data" in seen["content_type"]
+    assert b"ref.png" in seen["body"]
+    artifact = repository.artifacts[result.output["cover_artifact_id"]]
+    assert artifact.media_info and artifact.media_info.media_type == "image"
+
+
+def test_openai_image_edit_rejection_falls_back_to_generation(tmp_path):
+    import base64
+
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/v1/images/edits":
+            # Both image / image[] field attempts rejected with a request-shape error.
+            return httpx.Response(400, text="edits unsupported")
+        if request.url.path == "/v1/images/generations":
+            return httpx.Response(
+                200, json={"data": [{"b64_json": base64.b64encode(_PNG_1x1).decode("ascii")}]}
+            )
+        raise AssertionError(f"unexpected {request.url.path}")
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+    secret_ref = gateway.secret_store.put("image-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="openai.image",
+        capability="image.generate",
+        model_id="gpt-image-2-all",
+        secret_ref=secret_ref,
+        default_options={"base_url": "https://example.invalid/v1", "provider_kind": "neuromash"},
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            provider_profile_id=profile.id,
+            capability_id="image.generate",
+            input={
+                "prompt": "cover",
+                "template_image_b64": base64.b64encode(_PNG_1x1).decode("ascii"),
+                "template_filename": "ref.png",
+            },
+        )
+    )
+
+    assert invocation.status == ProviderStatus.succeeded
+    assert result is not None
+    # Tried edits (both fields) then degraded to generation; cover still produced.
+    assert paths.count("/v1/images/edits") == 2
+    assert paths[-1] == "/v1/images/generations"
+
+
 def test_openai_image_falls_back_to_url_when_no_b64(tmp_path):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/images/generations":
