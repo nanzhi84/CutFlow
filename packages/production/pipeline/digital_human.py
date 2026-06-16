@@ -49,6 +49,7 @@ from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError, NodeOutput, WorkflowRuntimeAdapter, manifest_hash
 from packages.production.pipeline.node_sequence import NODE_SEQUENCE
 from packages.media.assets import local_object_path, store_file
+from packages.media.rendering import generate_seed_audio, generate_seed_video
 from packages.media.video.ffmpeg import FfmpegCommandError, probe_media
 from packages.core.observability import (
     node_stage,
@@ -60,7 +61,6 @@ from packages.core.observability import (
 from packages.core.contracts.state_machines import assert_transition
 from packages.core.config.settings import sandbox_fallback_allowed
 from packages.production.pipeline import nodes
-from packages.production.pipeline._ffmpeg import generate_seed_audio, generate_seed_video
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState, degradation_notice
 from packages.production.pipeline.reuse import ReusePlan, ReuseSourceRun, compute_reuse_plan

@@ -8,7 +8,8 @@ from pathlib import Path
 from packages.core.contracts import ArtifactKind, DegradationNotice, ErrorCode, NodeStatus, WarningCode
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.media.assets import store_file
-from packages.media.video.ffmpeg import FfmpegCommandError, probe_media, probe_video_frame_count
+from packages.media.rendering import validate_rendered_output
+from packages.media.video.ffmpeg import FfmpegCommandError, probe_media
 from packages.production.pipeline._ffmpeg import render_final_media
 from packages.production.pipeline._fonts import ResolvedFont, resolve_subtitle_font
 from packages.production.pipeline._node_context import NodeContext
@@ -131,12 +132,11 @@ def run(ctx: NodeContext) -> NodeOutput:
                     )
                 )
                 warnings.append(WarningCode.bgm_loudness_probe_failed)
-            media_info = probe_media(output_path)
-            if probe_video_frame_count(output_path) != total_frames:
-                raise NodeExecutionError(
-                    ErrorCode.render_invalid_timeline,
-                    "Final video frame count does not match the timeline.",
-                )
+            media_info = validate_rendered_output(
+                output_path,
+                expected_frames=total_frames,
+                frame_count_message="Final video frame count does not match the timeline.",
+            )
             final_stored = store_file(ctx.object_store(), output_path, purpose="generated-video")
             if subtitle_path is not None:
                 subtitle_stored = store_file(ctx.object_store(), subtitle_path, purpose="subtitles")

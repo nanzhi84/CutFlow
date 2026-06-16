@@ -27,8 +27,8 @@ from packages.core.storage.database import AnnotationRow, ArtifactRow, MediaAsse
 from packages.core.storage.object_store import ObjectStore
 from packages.core.storage.repository import demo_portrait_annotation_v4, new_id
 from packages.media.assets import store_file
+from packages.media.rendering import generate_seed_audio, generate_seed_video
 from packages.media.video.ffmpeg import probe_media
-from packages.production.pipeline._ffmpeg import generate_seed_audio, generate_seed_video
 
 _SEED_MEDIA_SPECS: dict[str, dict] = {
     "asset_portrait_demo": {
