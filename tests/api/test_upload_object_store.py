@@ -164,6 +164,46 @@ def test_video_upload_probes_media_and_creates_real_thumbnail_artifacts(tmp_path
     assert all(artifact.media_info and artifact.media_info.media_type == "image" for artifact in thumbnails)
 
 
+def test_unified_video_kind_upload_creates_video_media_asset(tmp_path):
+    """P0: the unified ``video`` bucket creates a media asset (kind=video) through the
+    same probe/normalize path as portrait/broll — the operator never picks A/B-roll."""
+    login_admin()
+    video = generate_test_video(tmp_path, duration_sec=1, width=320, height=568)
+    content = video.read_bytes()
+    digest = hashlib.sha256(content).hexdigest()
+    prepared = client.post(
+        "/api/uploads/prepare",
+        json={
+            "kind": "video",
+            "case_id": "case_unified_video",
+            "filename": "mixed.mp4",
+            "content_type": "video/mp4",
+            "size_bytes": len(content),
+            "sha256": digest,
+        },
+    )
+    assert prepared.status_code == 201, prepared.text
+    upload = prepared.json()
+    assert upload["kind"] == "video"
+    uploaded = client.put(
+        f"/api/uploads/{upload['id']}/file",
+        files={"file": ("mixed.mp4", content, "video/mp4")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+
+    completed = client.post(
+        "/api/uploads/complete",
+        json={"upload_session_id": upload["id"], "size_bytes": len(content), "sha256": digest},
+    )
+    assert completed.status_code == 200, completed.text
+    body = completed.json()
+    assert body["media_asset"] is not None
+    assert body["media_asset"]["kind"] == "video"
+    assert body["media_asset"]["source_artifact_id"] == body["artifact"]["artifact_id"]
+    artifact = repository().artifacts[body["artifact"]["artifact_id"]]
+    assert artifact.media_info is not None and artifact.media_info.media_type == "video"
+
+
 def test_video_upload_can_stabilize_before_creating_media_asset(tmp_path):
     login_admin()
     video = generate_test_video(tmp_path, duration_sec=1.2, width=160, height=120, fps=15)

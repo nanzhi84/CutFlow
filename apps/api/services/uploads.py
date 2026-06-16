@@ -148,12 +148,12 @@ def complete_upload(payload: c.CompleteUploadRequest, request: Request) -> c.Com
     is_av_video = (
         media_info is not None
         and media_info.media_type == "video"
-        and upload.kind in {c.UploadKind.portrait, c.UploadKind.broll}
+        and upload.kind in {c.UploadKind.portrait, c.UploadKind.broll, c.UploadKind.video}
     )
     if is_av_video and settings(request).upload.normalize_video:
         upload, media_info = _normalize_upload_video(request, upload)
         was_normalized = True
-    if upload.stabilize and upload.kind in {c.UploadKind.portrait, c.UploadKind.broll}:
+    if upload.stabilize and upload.kind in {c.UploadKind.portrait, c.UploadKind.broll, c.UploadKind.video}:
         upload, media_info = _stabilize_upload_video(request, upload)
     if upload_repository(request) is not None:
         upload = upload_repository(request).patch_upload(upload.id, {"status": c.UploadStatus.completed})
@@ -177,6 +177,7 @@ def complete_upload(payload: c.CompleteUploadRequest, request: Request) -> c.Com
     if upload.kind in {
         c.UploadKind.portrait,
         c.UploadKind.broll,
+        c.UploadKind.video,
         c.UploadKind.bgm,
         c.UploadKind.font,
         c.UploadKind.cover_template,

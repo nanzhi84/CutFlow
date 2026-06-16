@@ -6,7 +6,7 @@ export const VOICE_UPLOAD_ACCEPT = ".mp3,.wav,.m4a,.aac,.ogg,.flac";
 
 export type LibraryTab = "voices" | "templates" | "fonts" | "bgm";
 export type VoiceSourceFilter = "all" | VoiceProfile["source"];
-export type TemplateKind = "portrait" | "broll";
+export type TemplateKind = "portrait" | "broll" | "video";
 export type LibraryAssetKind = "font" | "bgm";
 
 export type UploadPlaceholder = {
@@ -34,6 +34,9 @@ export const voiceSourceLabels: Record<VoiceProfile["source"], string> = {
 export const templateKindLabels: Record<TemplateKind, string> = {
   portrait: "人像模板",
   broll: "B-roll",
+  // Unified bucket: upload mixed footage here; the annotator classifies each clip
+  // (lip-sync A-roll vs cover B-roll) so the operator never pre-sorts at upload.
+  video: "视频素材",
 };
 
 export const annotationStatusLabels: Record<MediaAssetRecord["annotation_status"], string> = {

@@ -33,7 +33,7 @@ export function TemplatesTab() {
   const replaceInputRef = useRef<HTMLInputElement>(null);
   const [caseSearch, setCaseSearch] = useState("");
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
-  const [kind, setKind] = useState<TemplateKind>("portrait");
+  const [kind, setKind] = useState<TemplateKind>("video");
   const [assetLimit, setAssetLimit] = useState(50);
   const [assetSearch, setAssetSearch] = useState("");
   const [sceneFilter, setSceneFilter] = useState("all");
@@ -78,14 +78,24 @@ export function TemplatesTab() {
     refetchInterval: pageVisible ? 10_000 : false,
   });
 
-  const usageQuery = useQuery({
-    queryKey: ["library", "usage-ranking", selectedCaseId, kind],
-    queryFn: () => api.mediaAssets.usageRanking(kind, { case_id: selectedCaseId, top_n: 20 }),
+  // Unified video bucket: mixed footage classified per-clip by the annotator.
+  const videoQuery = useQuery({
+    queryKey: ["library", "media", selectedCaseId, "video", assetLimit],
+    queryFn: () => api.mediaAssets.list({ limit: assetLimit, case_id: selectedCaseId, kind: "video" }),
     enabled: Boolean(selectedCaseId),
     refetchInterval: pageVisible ? 10_000 : false,
   });
 
-  const activeQuery = kind === "portrait" ? portraitQuery : brollQuery;
+  const usageQuery = useQuery({
+    queryKey: ["library", "usage-ranking", selectedCaseId, kind],
+    queryFn: () => api.mediaAssets.usageRanking(kind, { case_id: selectedCaseId, top_n: 20 }),
+    // Usage ranking is per legacy medium (portrait/broll); the unified video bucket
+    // ranks at the clip level downstream, so skip the asset-level ranking call here.
+    enabled: Boolean(selectedCaseId) && kind !== "video",
+    refetchInterval: pageVisible ? 10_000 : false,
+  });
+
+  const activeQuery = kind === "portrait" ? portraitQuery : kind === "broll" ? brollQuery : videoQuery;
   const activeItems = activeQuery.data?.items ?? [];
   const hasMoreAssets = Boolean(activeQuery.data && activeItems.length >= assetLimit);
   const selectedCase = cases.find((item) => item.id === selectedCaseId) ?? null;
@@ -95,9 +105,13 @@ export function TemplatesTab() {
   );
   const previewCard = useMemo(() => {
     if (!previewAssetId) return null;
-    const pool = [...(portraitQuery.data?.items ?? []), ...(brollQuery.data?.items ?? [])];
+    const pool = [
+      ...(portraitQuery.data?.items ?? []),
+      ...(brollQuery.data?.items ?? []),
+      ...(videoQuery.data?.items ?? []),
+    ];
     return pool.find((card) => card.asset.id === previewAssetId) ?? null;
-  }, [previewAssetId, portraitQuery.data, brollQuery.data]);
+  }, [previewAssetId, portraitQuery.data, brollQuery.data, videoQuery.data]);
   const scenes = useMemo(() => {
     const values = new Set<string>();
     activeItems.forEach((card) => card.asset.tags?.forEach((tag) => values.add(tag)));
@@ -278,7 +292,7 @@ export function TemplatesTab() {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="text-xl font-semibold text-text-primary">{selectedCase?.name ?? "选择案例"}</h2>
-            <p className="mt-1 text-sm text-text-secondary">人像模板与 B-roll 共用上传与标注流程。</p>
+            <p className="mt-1 text-sm text-text-secondary">视频素材统一上传，标注自动区分口播(A-roll)与空镜(B-roll);人像/B-roll 为兼容旧素材。</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button className="btn-secondary" type="button" onClick={() => setBatchMode((value) => !value)}>
@@ -293,12 +307,12 @@ export function TemplatesTab() {
         </div>
 
         <div className="tabs">
-          {(["portrait", "broll"] as TemplateKind[]).map((item) => (
+          {(["video", "portrait", "broll"] as TemplateKind[]).map((item) => (
             <button key={item} className={`tabLink ${kind === item ? "active" : ""}`} type="button" onClick={() => setKind(item)}>
-              {item === "portrait" ? <Video className="h-4 w-4" /> : <Film className="h-4 w-4" />}
+              {item === "portrait" ? <Video className="h-4 w-4" /> : item === "broll" ? <Film className="h-4 w-4" /> : <FolderUp className="h-4 w-4" />}
               <span>{templateKindLabels[item]}</span>
               <span className="badge bg-white/70 text-text-secondary">
-                {item === "portrait" ? (portraitQuery.data?.items.length ?? 0) : (brollQuery.data?.items.length ?? 0)}
+                {(item === "portrait" ? portraitQuery : item === "broll" ? brollQuery : videoQuery).data?.items.length ?? 0}
               </span>
             </button>
           ))}

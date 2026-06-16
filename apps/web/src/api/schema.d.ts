@@ -7841,7 +7841,7 @@ export interface components {
          * UploadKind
          * @enum {string}
          */
-        UploadKind: "portrait" | "broll" | "voice_reference" | "bgm" | "font" | "cover_template" | "publish_video";
+        UploadKind: "portrait" | "broll" | "video" | "voice_reference" | "bgm" | "font" | "cover_template" | "publish_video";
         /** UploadSession */
         UploadSession: {
             /** Id */

@@ -27,6 +27,11 @@ UploadStatus = UploadSessionStatus
 class UploadKind(str, Enum):
     portrait = "portrait"
     broll = "broll"
+    # Unified video bucket: the operator uploads talking-head / b-roll / mixed
+    # footage as one kind and the annotation pipeline classifies each clip's
+    # usability (lip-sync portrait vs cover b-roll) per-clip, so no human
+    # portrait/b-roll pre-classification is required at upload time.
+    video = "video"
     voice_reference = "voice_reference"
     bgm = "bgm"
     font = "font"

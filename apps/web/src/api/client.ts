@@ -407,7 +407,7 @@ export const api = {
         (res) => ({ ...res, items: res.items.filter(isRealAssetCard) }),
       ),
     usageRanking: (
-      kind: "portrait" | "broll" | "bgm" | "font",
+      kind: "portrait" | "broll" | "video" | "bgm" | "font",
       query: QueryParams<operations["material_usage_ranking_api_library_assets__kind__usage_ranking_get"]> = {},
     ) =>
       fetchJson<JsonResponse<operations["material_usage_ranking_api_library_assets__kind__usage_ranking_get"]>>(

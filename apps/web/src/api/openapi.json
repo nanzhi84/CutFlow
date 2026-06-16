@@ -22070,6 +22070,7 @@
         "enum": [
           "portrait",
           "broll",
+          "video",
           "voice_reference",
           "bgm",
           "font",
