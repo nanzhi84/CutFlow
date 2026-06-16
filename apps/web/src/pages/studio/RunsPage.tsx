@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, Eye, Image as ImageIcon, OctagonX, Play, RotateCw, Trash2 } from "lucide-react";
+import { Eye, Image as ImageIcon, OctagonX, Play, RotateCw, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type RunCard } from "../../api/client";
@@ -225,15 +225,6 @@ export default function RunsPage() {
                     <div className="flex items-center gap-1.5" onClick={(event) => event.stopPropagation()}>
                       <button className="rounded-lg p-2 text-text-tertiary hover:bg-surface hover:text-text-primary" type="button" onClick={() => openRunDetail(run)} title="查看详情">
                         <Eye className="h-4 w-4" />
-                      </button>
-                      <button
-                        className="rounded-lg p-2 text-text-tertiary hover:bg-status-error/10 hover:text-status-error"
-                        type="button"
-                        disabled={run.status !== "running" && run.status !== "admitted"}
-                        onClick={() => setPendingAction({ type: "cancel", run })}
-                        title="中断生成任务"
-                      >
-                        <Ban className="h-4 w-4" />
                       </button>
                       <button
                         className="rounded-lg p-2 text-text-tertiary hover:bg-status-error/10 hover:text-status-error"

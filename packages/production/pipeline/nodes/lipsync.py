@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from packages.ai.gateway import ProviderCall
 from packages.core.config.settings import sandbox_fallback_allowed
-from packages.core.contracts import ArtifactKind, ErrorCode, NodeStatus
+from packages.core.contracts import ArtifactKind, ErrorCode, NodeStatus, WarningCode
 from packages.core.contracts.artifacts import LipSyncReportArtifact
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline._run_state import degradation_notice
 
 
 def run(ctx: NodeContext) -> NodeOutput:
@@ -69,6 +70,25 @@ def run(ctx: NodeContext) -> NodeOutput:
             ).model_dump(mode="json"),
             "LipSyncReportArtifact.v1",
         )
+        # No silent fallback: when the primary lipsync provider failed and a
+        # fallback produced the video, surface the primary failure reason as a
+        # node-level degradation (shown inline in the run detail timeline), not
+        # just on the finished-video badge tooltip.
+        if fallback_from:
+            return NodeOutput(
+                status=NodeStatus.degraded,
+                artifacts=[artifact, report],
+                provider_invocation_ids=[invocation.id],
+                warnings=[WarningCode.lipsync_fallback_used],
+                degradations=[
+                    degradation_notice(
+                        WarningCode.lipsync_fallback_used,
+                        f"主口型供应商（{fallback_from}）失败，已由兜底供应商（{used_profile.id}）生成。"
+                        f"失败原因：{fallback_reason or '未知错误'}",
+                        node_id=node_run.node_id,
+                    )
+                ],
+            )
         return NodeOutput(artifacts=[artifact, report], provider_invocation_ids=[invocation.id])
 
     if not is_real:

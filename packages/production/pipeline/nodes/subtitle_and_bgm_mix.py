@@ -5,13 +5,14 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from packages.core.contracts import ArtifactKind, ErrorCode
+from packages.core.contracts import ArtifactKind, DegradationNotice, ErrorCode, NodeStatus, WarningCode
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.media.assets import store_file
 from packages.media.video.ffmpeg import FfmpegCommandError, probe_media, probe_video_frame_count
 from packages.production.pipeline._ffmpeg import render_final_media
 from packages.production.pipeline._fonts import ResolvedFont, resolve_subtitle_font
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline._run_state import degradation_notice
 from packages.production.pipeline._subtitles import write_ass_subtitles
 
 # Sentinel font asset id meaning "no real font selected" (StylePlanning emits it
@@ -19,12 +20,18 @@ from packages.production.pipeline._subtitles import write_ass_subtitles
 _DEFAULT_FONT_SENTINEL = "case_default_font"
 
 
-def _resolve_selected_font(ctx: NodeContext, style: dict, runtime_dir) -> ResolvedFont | None:
+def _resolve_selected_font(ctx: NodeContext, style: dict, runtime_dir) -> tuple[ResolvedFont | None, str | None]:
     """Stage the user/agent-selected subtitle font for libass, or None to default.
 
     Reads the resolved font asset id from the style plan, loads its source file,
     copies it into ``runtime_dir`` and derives the family name so the ASS style
     burns the chosen font instead of silently falling back to Arial.
+
+    Returns ``(resolved_font, unresolved_font_asset_id)``. The second element is
+    the requested font asset id when a font WAS selected but its file could not be
+    staged — so the caller emits a ``font.resolution_failed`` degradation instead
+    of silently defaulting to Arial. It is ``None`` when no font was selected or
+    the selected font resolved fine.
     """
     subtitle = style.get("subtitle") if isinstance(style.get("subtitle"), dict) else {}
     font = style.get("font") if isinstance(style.get("font"), dict) else {}
@@ -34,18 +41,21 @@ def _resolve_selected_font(ctx: NodeContext, style: dict, runtime_dir) -> Resolv
         or (subtitle or {}).get("font_id")
     )
     if not font_asset_id or font_asset_id == _DEFAULT_FONT_SENTINEL:
-        return None
+        return None, None
     try:
         font_artifact = ctx.source_artifact_for_asset(font_asset_id)
         font_path = ctx.artifact_path(font_artifact)
     except Exception:  # noqa: BLE001 - missing font asset must degrade, not crash
-        return None
+        return None, font_asset_id
     asset = ctx.repository.media_assets.get(font_asset_id)
     fallback_name = getattr(asset, "title", None) if asset is not None else None
-    return resolve_subtitle_font(
-        font_path=font_path,
-        runtime_dir=runtime_dir,
-        fallback_name=fallback_name,
+    return (
+        resolve_subtitle_font(
+            font_path=font_path,
+            runtime_dir=runtime_dir,
+            fallback_name=fallback_name,
+        ),
+        None,
     )
 
 
@@ -60,13 +70,26 @@ def run(ctx: NodeContext) -> NodeOutput:
     total_frames = int(timeline.get("total_frames") or 0)
     duration = total_frames / fps if total_frames else float(rendered.media_info.duration_sec or 0)
     subtitle_artifact = None
+    degradations: list[DegradationNotice] = []
+    warnings: list[WarningCode] = []
     try:
         with tempfile.TemporaryDirectory(prefix="cutagent-final-") as directory:
             temp_dir = Path(directory)
             subtitle_path = temp_dir / "subtitle.ass" if state.request.subtitle.enabled else None
             resolved_font: ResolvedFont | None = None
             if subtitle_path is not None:
-                resolved_font = _resolve_selected_font(ctx, style, temp_dir / "fonts")
+                resolved_font, unresolved_font_id = _resolve_selected_font(ctx, style, temp_dir / "fonts")
+                # No silent fallback: a selected font whose file can't be staged
+                # must surface, not quietly burn the default Arial.
+                if unresolved_font_id:
+                    degradations.append(
+                        degradation_notice(
+                            WarningCode.font_resolution_failed,
+                            f"指定字幕字体（{unresolved_font_id}）文件无法加载，已使用默认字体。",
+                            node_id=ctx.node_run.node_id,
+                        )
+                    )
+                    warnings.append(WarningCode.font_resolution_failed)
                 write_ass_subtitles(
                     subtitle_path,
                     narration=narration,
@@ -84,7 +107,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             # auto_mix consumed here: LUFS-targeted volume + sidechain ducking +
             # fades when enabled (no longer a dead end-to-end flag).
             auto_mix = bool((bgm_plan or {}).get("auto_mix", state.request.bgm.auto_mix))
-            render_final_media(
+            mix_result = render_final_media(
                 rendered_path=ctx.artifact_path(rendered),
                 audio_path=ctx.artifact_path(audio),
                 output_path=output_path,
@@ -96,6 +119,18 @@ def run(ctx: NodeContext) -> NodeOutput:
                 fonts_dir=resolved_font.fonts_dir if resolved_font else None,
                 auto_mix=auto_mix,
             )
+            # No silent fallback: when auto-mix wanted LUFS targeting but the
+            # loudness probe failed, the mixer quietly used the requested volume.
+            # Surface that so the user knows the auto-balance was not applied.
+            if mix_result is not None and mix_result.metadata.get("fallback_reason") == "loudness_probe_failed":
+                degradations.append(
+                    degradation_notice(
+                        WarningCode.bgm_loudness_probe_failed,
+                        "BGM 响度探测失败，已按请求音量混音（未做自动响度对齐）。",
+                        node_id=ctx.node_run.node_id,
+                    )
+                )
+                warnings.append(WarningCode.bgm_loudness_probe_failed)
             media_info = probe_media(output_path)
             if probe_video_frame_count(output_path) != total_frames:
                 raise NodeExecutionError(
@@ -127,4 +162,9 @@ def run(ctx: NodeContext) -> NodeOutput:
     artifacts = [final]
     if subtitle_artifact is not None:
         artifacts.append(subtitle_artifact)
-    return NodeOutput(artifacts=artifacts)
+    return NodeOutput(
+        status=NodeStatus.degraded if degradations else NodeStatus.succeeded,
+        artifacts=artifacts,
+        warnings=warnings,
+        degradations=degradations,
+    )

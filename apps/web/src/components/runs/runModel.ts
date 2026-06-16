@@ -108,6 +108,9 @@ export function warningLabel(value: string) {
   if (value === "cover.frame_fallback") return "封面生成降级为取帧";
   if (value === "timestamp.estimated") return "部分时间戳为系统估算";
   if (value === "cost.unpriced") return "部分供应商费用未定价";
+  if (value === "lipsync.fallback_used") return "主口型供应商失败，已由兜底供应商生成";
+  if (value === "bgm.loudness_probe_failed") return "BGM 响度探测失败，已按请求音量混音";
+  if (value === "font.resolution_failed") return "指定字体文件解析失败，已使用默认字体";
   return "未知警告";
 }
 

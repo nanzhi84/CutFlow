@@ -4139,7 +4139,7 @@ export interface components {
          * DegradationCode
          * @enum {string}
          */
-        DegradationCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback";
+        DegradationCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed";
         /** DegradationNotice */
         DegradationNotice: {
             code: components["schemas"]["WarningCode"];
@@ -8096,7 +8096,7 @@ export interface components {
          * WarningCode
          * @enum {string}
          */
-        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced";
+        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed";
         /** WorkflowRun */
         WorkflowRun: {
             /** Id */

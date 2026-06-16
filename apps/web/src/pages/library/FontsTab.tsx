@@ -21,6 +21,7 @@ export function FontsTab() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [detailAsset, setDetailAsset] = useState<MediaAssetRecord | null>(null);
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  const [highlightAssetId, setHighlightAssetId] = useState<string | null>(null);
 
   const fontsQuery = useQuery({
     queryKey: ["library", "media", "font"],
@@ -68,55 +69,80 @@ export function FontsTab() {
     }
   }
 
+  function jumpToAsset(assetId: string) {
+    if (!items.some((card) => card.asset.id === assetId)) {
+      toast.info("该素材不在当前列表");
+      return;
+    }
+    setSearch("");
+    setCategory("all");
+    setHighlightAssetId(assetId);
+    window.setTimeout(() => {
+      document.getElementById(`asset-${assetId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 60);
+    window.setTimeout(() => setHighlightAssetId((current) => (current === assetId ? null : current)), 2600);
+  }
+
   return (
-    <section className="card grid gap-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold text-text-primary">字体库</h2>
-          <p className="mt-1 text-sm text-text-secondary">上传字体文件并实时预览字幕样式。</p>
+    <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="card grid content-start gap-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold text-text-primary">字体库</h2>
+            <p className="mt-1 text-sm text-text-secondary">上传字体文件并实时预览字幕样式。</p>
+          </div>
+          <button className="btn-primary" type="button" onClick={() => setUploadOpen(true)}>
+            <Upload className="h-4 w-4" />
+            <span>上传字体</span>
+          </button>
         </div>
-        <button className="btn-primary" type="button" onClick={() => setUploadOpen(true)}>
-          <Upload className="h-4 w-4" />
-          <span>上传字体</span>
-        </button>
-      </div>
 
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
-        <SearchInput value={search} onChange={setSearch} placeholder="搜索字体名称、ID 或标签" />
-        <select value={category} onChange={(event) => setCategory(event.target.value)}>
-          <option value="all">全部分类</option>
-          {categories.map((item) => (
-            <option key={item} value={item}>
-              {item}
-            </option>
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
+          <SearchInput value={search} onChange={setSearch} placeholder="搜索字体名称、ID 或标签" />
+          <select value={category} onChange={(event) => setCategory(event.target.value)}>
+            <option value="all">全部分类</option>
+            {categories.map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {fontsQuery.isLoading ? <TemplateGridSkeleton /> : null}
+        {fontsQuery.error ? <ErrorState error={fontsQuery.error} /> : null}
+
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {filteredItems.map((card) => (
+            <FontAssetCard
+              key={card.asset.id}
+              domId={`asset-${card.asset.id}`}
+              highlighted={highlightAssetId === card.asset.id}
+              asset={card.asset}
+              usage={usageByAssetId.get(card.asset.id)}
+              previewUrl={previewUrls[card.asset.id] ?? null}
+              onLoadPreview={() => void ensurePreview(card.asset)}
+              onDetail={async () => {
+                await ensurePreview(card.asset);
+                setDetailAsset(card.asset);
+              }}
+            />
           ))}
-        </select>
+        </div>
+
+        {!fontsQuery.isLoading && filteredItems.length === 0 ? (
+          <EmptyState icon={Type} title="暂无字体素材" detail="上传 ttf、otf、woff 或 woff2 后可预览。" />
+        ) : null}
       </div>
 
-      <UsageRankingPanel report={usageQuery.data} isLoading={usageQuery.isLoading} error={usageQuery.error} />
-
-      {fontsQuery.isLoading ? <TemplateGridSkeleton /> : null}
-      {fontsQuery.error ? <ErrorState error={fontsQuery.error} /> : null}
-
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {filteredItems.map((card) => (
-          <FontAssetCard
-            key={card.asset.id}
-            asset={card.asset}
-            usage={usageByAssetId.get(card.asset.id)}
-            previewUrl={previewUrls[card.asset.id] ?? null}
-            onLoadPreview={() => void ensurePreview(card.asset)}
-            onDetail={async () => {
-              await ensurePreview(card.asset);
-              setDetailAsset(card.asset);
-            }}
-          />
-        ))}
+      <div className="xl:sticky xl:top-4 xl:self-start">
+        <UsageRankingPanel
+          report={usageQuery.data}
+          isLoading={usageQuery.isLoading}
+          error={usageQuery.error}
+          onItemClick={jumpToAsset}
+        />
       </div>
-
-      {!fontsQuery.isLoading && filteredItems.length === 0 ? (
-        <EmptyState icon={Type} title="暂无字体素材" detail="上传 ttf、otf、woff 或 woff2 后可预览。" />
-      ) : null}
 
       <LibraryAssetUploadModal
         isOpen={uploadOpen}

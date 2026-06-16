@@ -8,14 +8,21 @@ type FontAssetCardProps = {
   asset: MediaAssetRecord;
   usage?: MaterialUsageRankingItem;
   previewUrl: string | null;
+  domId?: string;
+  highlighted?: boolean;
   onLoadPreview: () => void;
   onDetail: () => void;
 };
 
-export function FontAssetCard({ asset, usage, previewUrl, onLoadPreview, onDetail }: FontAssetCardProps) {
+export function FontAssetCard({ asset, usage, previewUrl, domId, highlighted, onLoadPreview, onDetail }: FontAssetCardProps) {
   const family = fontFamilyName(asset.id);
   return (
-    <article className="rounded-[24px] border border-border/80 bg-white/65 p-4 shadow-glow">
+    <article
+      id={domId}
+      className={`rounded-[24px] border bg-white/65 p-4 shadow-glow transition-all ${
+        highlighted ? "border-accent ring-2 ring-accent/60" : "border-border/80"
+      }`}
+    >
       {previewUrl ? <FontFaceStyle assetId={asset.id} url={previewUrl} /> : null}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">

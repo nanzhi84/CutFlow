@@ -25,6 +25,7 @@ export function BgmTab() {
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
   const [playing, setPlaying] = useState<{ asset: MediaAssetRecord; url: string } | null>(null);
   const [limit, setLimit] = useState(50);
+  const [highlightAssetId, setHighlightAssetId] = useState<string | null>(null);
 
   const bgmQuery = useQuery({
     queryKey: ["library", "media", "bgm", limit],
@@ -78,60 +79,75 @@ export function BgmTab() {
     if (url) setPlaying({ asset, url });
   }
 
+  function jumpToAsset(assetId: string) {
+    if (!items.some((card) => card.asset.id === assetId)) {
+      toast.info("该素材不在当前列表");
+      return;
+    }
+    setSearch("");
+    setStyleFilter("all");
+    setHighlightAssetId(assetId);
+    window.setTimeout(() => {
+      document.getElementById(`asset-${assetId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 60);
+    window.setTimeout(() => setHighlightAssetId((current) => (current === assetId ? null : current)), 2600);
+  }
+
   return (
-    <section className="card grid gap-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold text-text-primary">BGM 库</h2>
-          <p className="mt-1 text-sm text-text-secondary">管理配乐、在线试听并查看标注状态。</p>
+    <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="card grid content-start gap-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold text-text-primary">BGM 库</h2>
+            <p className="mt-1 text-sm text-text-secondary">管理配乐、在线试听并查看标注状态。</p>
+          </div>
+          <button className="btn-primary" type="button" onClick={() => setUploadOpen(true)}>
+            <Upload className="h-4 w-4" />
+            <span>上传 BGM</span>
+          </button>
         </div>
-        <button className="btn-primary" type="button" onClick={() => setUploadOpen(true)}>
-          <Upload className="h-4 w-4" />
-          <span>上传 BGM</span>
-        </button>
-      </div>
 
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
-        <SearchInput value={search} onChange={setSearch} placeholder="搜索 BGM 名称、ID 或风格" />
-        <select value={styleFilter} onChange={(event) => setStyleFilter(event.target.value)}>
-          <option value="all">全部风格</option>
-          {styles.map((style) => (
-            <option key={style} value={style}>
-              {style}
-            </option>
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
+          <SearchInput value={search} onChange={setSearch} placeholder="搜索 BGM 名称、ID 或风格" />
+          <select value={styleFilter} onChange={(event) => setStyleFilter(event.target.value)}>
+            <option value="all">全部风格</option>
+            {styles.map((style) => (
+              <option key={style} value={style}>
+                {style}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {bgmQuery.isLoading ? <TemplateGridSkeleton /> : null}
+        {bgmQuery.error ? <ErrorState error={bgmQuery.error} /> : null}
+
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {filteredItems.map((card) => (
+            <BgmAssetCard
+              key={card.asset.id}
+              domId={`asset-${card.asset.id}`}
+              highlighted={highlightAssetId === card.asset.id}
+              asset={card.asset}
+              usage={usageByAssetId.get(card.asset.id)}
+              isPlaying={playing?.asset.id === card.asset.id}
+              onPlay={() => void handlePlay(card.asset)}
+              onAnnotation={() => setAnnotationAssetId(card.asset.id)}
+            />
           ))}
-        </select>
-      </div>
+        </div>
 
-      <UsageRankingPanel report={usageQuery.data} isLoading={usageQuery.isLoading} error={usageQuery.error} />
+        {!bgmQuery.isLoading && filteredItems.length === 0 ? (
+          <EmptyState icon={Headphones} title="暂无 BGM 素材" detail="上传音频后可在线试听并进入标注流程。" />
+        ) : null}
 
-      {bgmQuery.isLoading ? <TemplateGridSkeleton /> : null}
-      {bgmQuery.error ? <ErrorState error={bgmQuery.error} /> : null}
+        <InfiniteScrollSentinel
+          enabled={hasMore && !bgmQuery.isFetching}
+          onVisible={() => setLimit((current) => current + 50)}
+          label={`继续加载 BGM（已显示 ${filteredItems.length} 条）`}
+        />
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {filteredItems.map((card) => (
-          <BgmAssetCard
-            key={card.asset.id}
-            asset={card.asset}
-            usage={usageByAssetId.get(card.asset.id)}
-            isPlaying={playing?.asset.id === card.asset.id}
-            onPlay={() => void handlePlay(card.asset)}
-            onAnnotation={() => setAnnotationAssetId(card.asset.id)}
-          />
-        ))}
-      </div>
-
-      {!bgmQuery.isLoading && filteredItems.length === 0 ? (
-        <EmptyState icon={Headphones} title="暂无 BGM 素材" detail="上传音频后可在线试听并进入标注流程。" />
-      ) : null}
-
-      <InfiniteScrollSentinel
-        enabled={hasMore && !bgmQuery.isFetching}
-        onVisible={() => setLimit((current) => current + 50)}
-        label={`继续加载 BGM（已显示 ${filteredItems.length} 条）`}
-      />
-
-      {playing ? (
+        {playing ? (
         <div className="sticky bottom-4 z-20 rounded-[24px] border border-border/80 bg-white/92 p-4 shadow-glow backdrop-blur-xl">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
@@ -146,7 +162,17 @@ export function BgmTab() {
             <audio src={playing.url} controls autoPlay className="min-w-[260px] flex-1" />
           </div>
         </div>
-      ) : null}
+        ) : null}
+      </div>
+
+      <div className="xl:sticky xl:top-4 xl:self-start">
+        <UsageRankingPanel
+          report={usageQuery.data}
+          isLoading={usageQuery.isLoading}
+          error={usageQuery.error}
+          onItemClick={jumpToAsset}
+        />
+      </div>
 
       <LibraryAssetUploadModal
         isOpen={uploadOpen}

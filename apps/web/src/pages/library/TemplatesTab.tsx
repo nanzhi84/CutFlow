@@ -1,4 +1,4 @@
-import { CheckCircle2, Film, FolderUp, Video } from "lucide-react";
+import { ArrowLeft, ArrowRight, CheckCircle2, Film, FolderUp, Loader2, Video, Wand2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type MediaAssetRecord, type UploadKind } from "../../api/client";
@@ -18,12 +18,13 @@ import {
 } from "../../components/library/libraryModel";
 import { toDisplayUrl } from "../../lib/url";
 import { SearchInput } from "../../components/ui/SearchInput";
+import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { useToast } from "../../components/ui/Toast";
 import { InfiniteScrollSentinel } from "../../components/ui/InfiniteScrollSentinel";
 import { EmptyState, ErrorState, LoadingState } from "../../components/ui/State";
 import { usePageVisible } from "../../hooks/usePageVisible";
 import { useUpload } from "../../hooks/useUpload";
-import { shortId } from "../../lib/format";
+import { formatRelativeTime, shortId } from "../../lib/format";
 
 export function TemplatesTab() {
   const toast = useToast();
@@ -33,13 +34,20 @@ export function TemplatesTab() {
   const replaceInputRef = useRef<HTMLInputElement>(null);
   const [caseSearch, setCaseSearch] = useState("");
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
-  const [kind, setKind] = useState<TemplateKind>("video");
+  const [kind, setKind] = useState<TemplateKind>("portrait");
   const [assetLimit, setAssetLimit] = useState(50);
   const [assetSearch, setAssetSearch] = useState("");
   const [sceneFilter, setSceneFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<"all" | MediaAssetRecord["annotation_status"]>("all");
   const [batchMode, setBatchMode] = useState(false);
   const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
+  // Asset ids queued for the annotation confirm dialog (null = closed). Fed by
+  // both the batch bar (selected ids) and the header 智能标注 (auto-collected
+  // unannotated ids).
+  const [annotateTargetIds, setAnnotateTargetIds] = useState<string[] | null>(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  // Asset highlighted (ring) after a usage-ranking click jumped to it.
+  const [highlightAssetId, setHighlightAssetId] = useState<string | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [annotationAssetId, setAnnotationAssetId] = useState<string | null>(null);
   const [replaceTargetAssetId, setReplaceTargetAssetId] = useState<string | null>(null);
@@ -57,9 +65,8 @@ export function TemplatesTab() {
 
   const cases = casesQuery.data?.items ?? [];
 
-  useEffect(() => {
-    if (!selectedCaseId && cases[0]?.id) setSelectedCaseId(cases[0].id);
-  }, [cases, selectedCaseId]);
+  // No auto-select: the case grid is the preface page; the materials view only
+  // renders after the user picks a case.
   useEffect(() => {
     setAssetLimit(50);
   }, [kind, selectedCaseId]);
@@ -78,24 +85,14 @@ export function TemplatesTab() {
     refetchInterval: pageVisible ? 10_000 : false,
   });
 
-  // Unified video bucket: mixed footage classified per-clip by the annotator.
-  const videoQuery = useQuery({
-    queryKey: ["library", "media", selectedCaseId, "video", assetLimit],
-    queryFn: () => api.mediaAssets.list({ limit: assetLimit, case_id: selectedCaseId, kind: "video" }),
+  const usageQuery = useQuery({
+    queryKey: ["library", "usage-ranking", selectedCaseId, kind],
+    queryFn: () => api.mediaAssets.usageRanking(kind, { case_id: selectedCaseId, top_n: 20 }),
     enabled: Boolean(selectedCaseId),
     refetchInterval: pageVisible ? 10_000 : false,
   });
 
-  const usageQuery = useQuery({
-    queryKey: ["library", "usage-ranking", selectedCaseId, kind],
-    queryFn: () => api.mediaAssets.usageRanking(kind, { case_id: selectedCaseId, top_n: 20 }),
-    // Usage ranking is per legacy medium (portrait/broll); the unified video bucket
-    // ranks at the clip level downstream, so skip the asset-level ranking call here.
-    enabled: Boolean(selectedCaseId) && kind !== "video",
-    refetchInterval: pageVisible ? 10_000 : false,
-  });
-
-  const activeQuery = kind === "portrait" ? portraitQuery : kind === "broll" ? brollQuery : videoQuery;
+  const activeQuery = kind === "portrait" ? portraitQuery : brollQuery;
   const activeItems = activeQuery.data?.items ?? [];
   const hasMoreAssets = Boolean(activeQuery.data && activeItems.length >= assetLimit);
   const selectedCase = cases.find((item) => item.id === selectedCaseId) ?? null;
@@ -105,13 +102,9 @@ export function TemplatesTab() {
   );
   const previewCard = useMemo(() => {
     if (!previewAssetId) return null;
-    const pool = [
-      ...(portraitQuery.data?.items ?? []),
-      ...(brollQuery.data?.items ?? []),
-      ...(videoQuery.data?.items ?? []),
-    ];
+    const pool = [...(portraitQuery.data?.items ?? []), ...(brollQuery.data?.items ?? [])];
     return pool.find((card) => card.asset.id === previewAssetId) ?? null;
-  }, [previewAssetId, portraitQuery.data, brollQuery.data, videoQuery.data]);
+  }, [previewAssetId, portraitQuery.data, brollQuery.data]);
   const scenes = useMemo(() => {
     const values = new Set<string>();
     activeItems.forEach((card) => card.asset.tags?.forEach((tag) => values.add(tag)));
@@ -158,6 +151,79 @@ export function TemplatesTab() {
     },
     onError: (error) => toast.error("批量增稳失败", error),
   });
+
+  // Batch annotation (force=false): VLM-analyzes the selected assets, skipping
+  // any that are already annotated so it never re-bills annotated material.
+  const annotateMutation = useMutation({
+    mutationFn: (assetIds: string[]) =>
+      api.annotations.batch({ schema_version: "annotation_batch_request.v1", asset_ids: assetIds, force: false }),
+    onSuccess: async (response) => {
+      await queryClient.invalidateQueries({ queryKey: ["library", "media", selectedCaseId] });
+      toast.success(
+        "批量标注已提交",
+        `新标注 ${response.completed_count} 个 · 跳过 ${response.skipped_count} 个已标注 · 失败 ${response.failed_count} 个`,
+      );
+      setSelectedAssetIds([]);
+      setAnnotateTargetIds(null);
+    },
+    onError: (error) => {
+      toast.error("批量标注失败", error);
+      setAnnotateTargetIds(null);
+    },
+  });
+
+  // All loaded assets in the current view that are not yet annotated — the
+  // 智能标注 target and the count force=false will actually bill the VLM for.
+  const unannotatedAssetIds = useMemo(
+    () => activeItems.filter((card) => card.asset.annotation_status !== "annotated").map((card) => card.asset.id),
+    [activeItems],
+  );
+  // Of the ids queued for the confirm dialog, how many are unannotated (the ones
+  // that will really hit the VLM; already-annotated ones are skipped server-side).
+  const annotateTargetUnannotatedCount = useMemo(
+    () =>
+      activeItems.filter(
+        (card) => annotateTargetIds?.includes(card.asset.id) && card.asset.annotation_status !== "annotated",
+      ).length,
+    [activeItems, annotateTargetIds],
+  );
+
+  // Batch delete: the backend exposes per-asset DELETE, so fan out one call per
+  // selected asset.
+  const deleteMutation = useMutation({
+    mutationFn: async (assetIds: string[]) => {
+      await Promise.all(assetIds.map((id) => api.mediaAssets.delete(id)));
+      return assetIds.length;
+    },
+    onSuccess: async (count) => {
+      await queryClient.invalidateQueries({ queryKey: ["library", "media", selectedCaseId] });
+      await queryClient.invalidateQueries({ queryKey: ["library", "usage-ranking", selectedCaseId] });
+      toast.success("批量删除完成", `已删除 ${count} 个素材`);
+      setSelectedAssetIds([]);
+      setDeleteConfirmOpen(false);
+    },
+    onError: (error) => {
+      toast.error("批量删除失败", error);
+      setDeleteConfirmOpen(false);
+    },
+  });
+
+  // Jump from a usage-ranking item to its asset card: clear filters that might
+  // hide it, scroll it into view, and flash a highlight ring.
+  function jumpToAsset(assetId: string) {
+    if (!activeItems.some((card) => card.asset.id === assetId)) {
+      toast.info("该素材不在当前列表", "可能属于另一个标签页或尚未加载。");
+      return;
+    }
+    setAssetSearch("");
+    setSceneFilter("all");
+    setStatusFilter("all");
+    setHighlightAssetId(assetId);
+    window.setTimeout(() => {
+      document.getElementById(`asset-${assetId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 60);
+    window.setTimeout(() => setHighlightAssetId((current) => (current === assetId ? null : current)), 2600);
+  }
 
   const replaceMutation = useMutation({
     mutationFn: async ({ assetId, file }: { assetId: string; file: File }) => {
@@ -253,48 +319,100 @@ export function TemplatesTab() {
     }, 900);
   }
 
-  return (
-    <section className="grid gap-4 xl:grid-cols-[290px_minmax(0,1fr)]">
-      <aside className="card grid content-start gap-4">
-        <div>
-          <h2 className="text-lg font-semibold text-text-primary">案例</h2>
-          <p className="mt-1 text-sm text-text-secondary">模板与 B-roll 按案例归档。</p>
-        </div>
-        <SearchInput value={caseSearch} onChange={setCaseSearch} placeholder="搜索案例" />
-        <div className="grid max-h-[620px] gap-2 overflow-y-auto pr-1">
+  if (!selectedCaseId) {
+    return (
+      <section className="grid gap-4">
+        <div className="card grid gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-semibold text-text-primary">选择案例</h2>
+              <p className="mt-1 text-sm text-text-secondary">点击案例卡片进入其素材库。</p>
+            </div>
+          </div>
+          <SearchInput value={caseSearch} onChange={setCaseSearch} placeholder="搜索案例" />
           {casesQuery.isLoading ? <LoadingState label="加载案例" /> : null}
           {casesQuery.error ? <ErrorState error={casesQuery.error} /> : null}
-          {cases.map((item) => (
-            <button
-              key={item.id}
-              className={`rounded-2xl border p-3 text-left transition-all ${
-                selectedCaseId === item.id ? "border-accent/25 bg-accent/10 text-accent" : "border-border/75 bg-white/55 text-text-primary hover:bg-white/80"
-              }`}
-              type="button"
-              onClick={() => {
-                setSelectedCaseId(item.id);
-                setSelectedAssetIds([]);
-              }}
-            >
-              <span className="block truncate text-sm font-semibold">{item.name}</span>
-              <span className="mt-1 block truncate text-xs text-text-secondary">
-                {item.owner_user_id ? `负责人 ${shortId(item.owner_user_id)}` : `${item.active_memory_count} 条记忆`}
-              </span>
-            </button>
-          ))}
           {!casesQuery.isLoading && !casesQuery.error && cases.length === 0 ? (
             <EmptyState title="暂无案例" detail="先在案例中心创建案例。" />
           ) : null}
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {cases.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className="group rounded-[24px] border border-border/80 bg-white/65 p-4 text-left shadow-glow transition-all hover:-translate-y-0.5 hover:border-accent/25"
+              onClick={() => {
+                setSelectedCaseId(item.id);
+                setSelectedAssetIds([]);
+                setBatchMode(false);
+              }}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <span className="badge bg-accent/10 text-accent">案例</span>
+                  <h3 className="mt-3 truncate text-lg font-semibold text-text-primary">{item.name}</h3>
+                  <p className="mt-1 font-mono text-xs text-text-tertiary">{shortId(item.id, 12)}</p>
+                </div>
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-accent/10 text-accent transition-transform group-hover:translate-x-0.5">
+                  <ArrowRight className="h-5 w-5" />
+                </span>
+              </div>
+              <dl className="mt-4 grid gap-2 text-xs text-text-secondary">
+                <div className="flex justify-between gap-2">
+                  <dt>素材</dt>
+                  <dd>{item.material_count} 个</dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt>脚本</dt>
+                  <dd>{item.script_count} 个</dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt>更新时间</dt>
+                  <dd>{formatRelativeTime(item.updated_at ?? item.created_at)}</dd>
+                </div>
+              </dl>
+            </button>
+            ))}
+          </div>
         </div>
-      </aside>
+      </section>
+    );
+  }
 
-      <div className="card grid gap-4">
+  return (
+    <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="card grid content-start gap-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-xl font-semibold text-text-primary">{selectedCase?.name ?? "选择案例"}</h2>
-            <p className="mt-1 text-sm text-text-secondary">视频素材统一上传，标注自动区分口播(A-roll)与空镜(B-roll);人像/B-roll 为兼容旧素材。</p>
+          <div className="flex items-start gap-3">
+            <button
+              className="icon-button mt-0.5"
+              type="button"
+              aria-label="返回案例"
+              title="返回案例列表"
+              onClick={() => {
+                setSelectedCaseId(null);
+                setSelectedAssetIds([]);
+                setBatchMode(false);
+              }}
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </button>
+            <div>
+              <h2 className="text-xl font-semibold text-text-primary">{selectedCase?.name ?? "素材库"}</h2>
+              <p className="mt-1 text-sm text-text-secondary">人像模板与 B-roll 共用上传与标注流程。</p>
+            </div>
           </div>
           <div className="flex flex-wrap gap-2">
+            <button
+              className="btn-secondary"
+              type="button"
+              disabled={!selectedCaseId || unannotatedAssetIds.length === 0 || annotateMutation.isPending}
+              onClick={() => setAnnotateTargetIds(unannotatedAssetIds)}
+              title="自动选择未标注的素材并发起 VLM 标注"
+            >
+              {annotateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
+              <span>智能标注{unannotatedAssetIds.length > 0 ? ` (${unannotatedAssetIds.length})` : ""}</span>
+            </button>
             <button className="btn-secondary" type="button" onClick={() => setBatchMode((value) => !value)}>
               <CheckCircle2 className="h-4 w-4" />
               <span>{batchMode ? "退出批量" : "批量操作"}</span>
@@ -307,12 +425,12 @@ export function TemplatesTab() {
         </div>
 
         <div className="tabs">
-          {(["video", "portrait", "broll"] as TemplateKind[]).map((item) => (
+          {(["portrait", "broll"] as TemplateKind[]).map((item) => (
             <button key={item} className={`tabLink ${kind === item ? "active" : ""}`} type="button" onClick={() => setKind(item)}>
-              {item === "portrait" ? <Video className="h-4 w-4" /> : item === "broll" ? <Film className="h-4 w-4" /> : <FolderUp className="h-4 w-4" />}
+              {item === "portrait" ? <Video className="h-4 w-4" /> : <Film className="h-4 w-4" />}
               <span>{templateKindLabels[item]}</span>
               <span className="badge bg-white/70 text-text-secondary">
-                {(item === "portrait" ? portraitQuery : item === "broll" ? brollQuery : videoQuery).data?.items.length ?? 0}
+                {item === "portrait" ? (portraitQuery.data?.items.length ?? 0) : (brollQuery.data?.items.length ?? 0)}
               </span>
             </button>
           ))}
@@ -336,13 +454,17 @@ export function TemplatesTab() {
           </select>
         </div>
 
-        <UsageRankingPanel report={usageQuery.data} isLoading={usageQuery.isLoading} error={usageQuery.error} />
-
         {batchMode ? (
           <TemplateBatchActionBar
             selectedCount={selectedAssetIds.length}
+            totalCount={filteredItems.length}
             isStabilizing={stabilizeMutation.isPending}
+            isAnnotating={annotateMutation.isPending}
+            isDeleting={deleteMutation.isPending}
+            onSelectAll={() => setSelectedAssetIds(filteredItems.map((card) => card.asset.id))}
             onStabilize={() => stabilizeMutation.mutate(selectedAssetIds)}
+            onAnnotate={() => setAnnotateTargetIds(selectedAssetIds)}
+            onDelete={() => setDeleteConfirmOpen(true)}
             onClear={() => setSelectedAssetIds([])}
           />
         ) : null}
@@ -357,6 +479,8 @@ export function TemplatesTab() {
           {filteredItems.map((card) => (
             <TemplateAssetCard
               key={card.asset.id}
+              domId={`asset-${card.asset.id}`}
+              highlighted={highlightAssetId === card.asset.id}
               card={card}
               previewUrl={toDisplayUrl(previewUrls[card.asset.id] ?? card.preview_url)}
               batchMode={batchMode}
@@ -388,6 +512,15 @@ export function TemplatesTab() {
         ) : null}
       </div>
 
+      <div className="xl:sticky xl:top-4 xl:self-start">
+        <UsageRankingPanel
+          report={usageQuery.data}
+          isLoading={usageQuery.isLoading}
+          error={usageQuery.error}
+          onItemClick={jumpToAsset}
+        />
+      </div>
+
       <TemplateUploadModal
         isOpen={uploadOpen}
         onClose={() => setUploadOpen(false)}
@@ -406,6 +539,35 @@ export function TemplatesTab() {
         type="file"
         accept=".mp4,.mov,.m4v,.webm,.avi,.mkv"
         onChange={(event) => handleReplaceFile(event.currentTarget.files?.[0])}
+      />
+      <ConfirmDialog
+        isOpen={annotateTargetIds !== null}
+        onClose={() => setAnnotateTargetIds(null)}
+        onConfirm={() => annotateMutation.mutate(annotateTargetIds ?? [])}
+        title="批量标注素材"
+        message={`将对 ${annotateTargetIds?.length ?? 0} 个素材中未标注的部分调用 VLM 视觉模型标注；已标注的会自动跳过。`}
+        consequences={[
+          `预计约 ${annotateTargetUnannotatedCount} 个素材会真实调用 VLM（产生费用）`,
+          "已标注素材会被跳过，不重复计费",
+          "标注为异步任务，状态会在素材卡片上更新",
+        ]}
+        confirmText="开始标注"
+        type="warning"
+        isLoading={annotateMutation.isPending}
+      />
+      <ConfirmDialog
+        isOpen={deleteConfirmOpen}
+        onClose={() => setDeleteConfirmOpen(false)}
+        onConfirm={() => deleteMutation.mutate(selectedAssetIds)}
+        title="批量删除素材"
+        message={`确定删除选中的 ${selectedAssetIds.length} 个素材吗？`}
+        consequences={[
+          "素材记录与其标注会被删除，操作不可撤销",
+          "已用于历史成片的产物不受影响",
+        ]}
+        confirmText="删除"
+        type="danger"
+        isLoading={deleteMutation.isPending}
       />
       <AnnotationEditorModal assetId={annotationAssetId} caseId={selectedCaseId} onClose={() => setAnnotationAssetId(null)} />
       <VideoPreviewModal

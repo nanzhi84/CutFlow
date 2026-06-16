@@ -122,7 +122,7 @@ export default function CaseListPage() {
               </div>
               <CaseCounts item={item} />
               <p className="text-sm text-text-secondary">
-                {item.active_memory_count} 条活跃记忆 · v{item.version} · {item.owner_user_id ? "已分配负责人" : "默认负责人"}
+                {item.active_memory_count} 条活跃记忆 · v{item.version}
               </p>
               <div className="flex items-center justify-between gap-3 border-t border-border/70 pt-4">
                 <Link className="btn-secondary no-underline" to={routes.caseStudio(item.id)}>

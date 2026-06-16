@@ -12025,7 +12025,10 @@
           "broll.skipped_no_material",
           "bgm.skipped_library_unannotated",
           "font.default_used",
-          "cover.frame_fallback"
+          "cover.frame_fallback",
+          "lipsync.fallback_used",
+          "bgm.loudness_probe_failed",
+          "font.resolution_failed"
         ],
         "title": "DegradationCode"
       },
@@ -22649,7 +22652,10 @@
           "font.default_used",
           "cover.frame_fallback",
           "timestamp.estimated",
-          "cost.unpriced"
+          "cost.unpriced",
+          "lipsync.fallback_used",
+          "bgm.loudness_probe_failed",
+          "font.resolution_failed"
         ],
         "title": "WarningCode"
       },

@@ -2,7 +2,7 @@
 #
 # One-click local dev for Cutagent.
 #
-#   scripts/dev_up.sh [up]        start infra (docker) + API + worker + web (idempotent)
+#   scripts/dev_up.sh [up]        start infra, bootstrap DB, then API + worker + web (idempotent)
 #   scripts/dev_up.sh down        stop the API + worker + web app processes (infra stays up)
 #   scripts/dev_up.sh down --infra also `docker compose down` the infra (data volumes kept)
 #   scripts/dev_up.sh restart     down (app only) then up
@@ -127,7 +127,12 @@ cmd_up() {
   wait_for "temporal :7233"  tcp_up 7233
   wait_for "minio :9000"     minio_up
 
-  # 2. API
+  # 2. Database schema + seed data. This is idempotent and keeps a fresh checkout
+  # genuinely one-command: API startup only connects/seeds, it does not run Alembic.
+  log "bootstrapping database"
+  "$PY" scripts/bootstrap_database.py
+
+  # 3. API
   if api_up; then
     warn "API already up on :$API_PORT — skipping (use 'restart' to recycle)"
   else
@@ -136,7 +141,7 @@ cmd_up() {
     wait_for "API :$API_PORT" api_up
   fi
 
-  # 3. worker (no port; track by pid)
+  # 4. worker (no port; track by pid)
   if proc_alive worker; then
     warn "worker already running (pid $(cat "$(pidfile worker)")) — skipping"
   else
@@ -146,7 +151,7 @@ cmd_up() {
     proc_alive worker && ok "worker started (pid $(cat "$(pidfile worker)"))" || die "worker exited — see $(logfile worker)"
   fi
 
-  # 4. web (vite dev)
+  # 5. web (vite dev)
   if tcp_up "$WEB_PORT"; then
     warn "web already up on :$WEB_PORT — skipping"
   else

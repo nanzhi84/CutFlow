@@ -7,13 +7,20 @@ type BgmAssetCardProps = {
   asset: MediaAssetRecord;
   usage?: MaterialUsageRankingItem;
   isPlaying: boolean;
+  domId?: string;
+  highlighted?: boolean;
   onPlay: () => void;
   onAnnotation: () => void;
 };
 
-export function BgmAssetCard({ asset, usage, isPlaying, onPlay, onAnnotation }: BgmAssetCardProps) {
+export function BgmAssetCard({ asset, usage, isPlaying, domId, highlighted, onPlay, onAnnotation }: BgmAssetCardProps) {
   return (
-    <article className="rounded-[24px] border border-border/80 bg-white/65 p-4 shadow-glow">
+    <article
+      id={domId}
+      className={`rounded-[24px] border bg-white/65 p-4 shadow-glow transition-all ${
+        highlighted ? "border-accent ring-2 ring-accent/60" : "border-border/80"
+      }`}
+    >
       <div className="flex aspect-video items-center justify-center rounded-2xl bg-[linear-gradient(135deg,rgba(94,109,81,0.14),rgba(214,255,72,0.16))] text-accent">
         {isPlaying ? <PauseCircle className="h-10 w-10" /> : <Music4 className="h-10 w-10" />}
       </div>

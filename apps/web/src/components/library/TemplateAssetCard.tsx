@@ -12,6 +12,8 @@ type TemplateAssetCardProps = {
   isReplacing: boolean;
   isPreviewLoading: boolean;
   usage?: MaterialUsageRankingItem;
+  domId?: string;
+  highlighted?: boolean;
   onToggleSelected: () => void;
   onPreview: () => void;
   onAnalyze: () => void;
@@ -28,6 +30,8 @@ export function TemplateAssetCard({
   isReplacing,
   isPreviewLoading,
   usage,
+  domId,
+  highlighted,
   onToggleSelected,
   onPreview,
   onAnalyze,
@@ -39,8 +43,13 @@ export function TemplateAssetCard({
   const durationSec = readAssetDurationSec(asset);
   return (
     <article
+      id={domId}
       className={`group rounded-[24px] border bg-white/65 p-3 shadow-glow transition-all hover:-translate-y-0.5 ${
-        selected ? "border-accent/40" : "border-border/80 hover:border-accent/25"
+        highlighted
+          ? "border-accent ring-2 ring-accent/60"
+          : selected
+            ? "border-accent/40"
+            : "border-border/80 hover:border-accent/25"
       }`}
     >
       <div className="relative overflow-hidden rounded-2xl bg-[#151913]">

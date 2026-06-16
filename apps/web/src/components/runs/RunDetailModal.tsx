@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Ban, ChevronDown, Download, OctagonX, Play, RotateCw, Trash2 } from "lucide-react";
+import { ChevronDown, Download, OctagonX, Play, RotateCw, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { api, type FinishedVideo, type NodeRun, type RunCard, type RunDetailResponse } from "../../api/client";
 import { EmptyState, ErrorState, LoadingState } from "../State";
@@ -67,13 +67,9 @@ export function RunDetailModal({
               <p className="mt-1 text-sm text-text-secondary">当前阶段：{card.currentNodeLabel || "等待节点推进"}</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <button className="btn-secondary compactButton" type="button" disabled={card.status !== "running" && card.status !== "admitted"} onClick={() => onAction("cancel", card)}>
-                <Ban className="h-4 w-4" />
-                <span>中断</span>
-              </button>
               <button className="btn-secondary compactButton" type="button" disabled={!isProcessingStatus(card.status)} onClick={() => onAction("forceCancel", card)}>
                 <OctagonX className="h-4 w-4" />
-                <span>强制</span>
+                <span>强制终止</span>
               </button>
               <button className="btn-secondary compactButton" type="button" disabled={!card.canRetry} onClick={() => onAction("retry", card)}>
                 <RotateCw className="h-4 w-4" />
@@ -127,6 +123,11 @@ export function RunDetailModal({
                   </a>
                 ) : null}
               </div>
+              {finishedVideo.lipsync_fallback_used && finishedVideo.lipsync_fallback_reason ? (
+                <p className="mx-auto w-full max-w-[320px] rounded-xl border border-status-warning/20 bg-status-warning/10 px-3 py-2 text-xs text-status-warning">
+                  口型兜底原因：{finishedVideo.lipsync_fallback_reason}
+                </p>
+              ) : null}
             </section>
           ) : null}
 

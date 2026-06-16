@@ -77,6 +77,9 @@ class WarningCode(str, Enum):
     cover_frame_fallback = "cover.frame_fallback"
     timestamp_estimated = "timestamp.estimated"
     cost_unpriced = "cost.unpriced"
+    lipsync_fallback_used = "lipsync.fallback_used"
+    bgm_loudness_probe_failed = "bgm.loudness_probe_failed"
+    font_resolution_failed = "font.resolution_failed"
 
 
 class DegradationCode(str, Enum):
@@ -84,6 +87,9 @@ class DegradationCode(str, Enum):
     bgm_skipped_library_unannotated = "bgm.skipped_library_unannotated"
     font_default_used = "font.default_used"
     cover_frame_fallback = "cover.frame_fallback"
+    lipsync_fallback_used = "lipsync.fallback_used"
+    bgm_loudness_probe_failed = "bgm.loudness_probe_failed"
+    font_resolution_failed = "font.resolution_failed"
 
 
 class JobStatus(str, Enum):

@@ -35,6 +35,7 @@ from packages.core.contracts import (
     RunDebugReportArtifact,
     RunPublicReportArtifact,
     RunStatus,
+    WarningCode,
     WorkflowRun,
     WorkflowTemplate,
     NodeSpec,
@@ -598,6 +599,16 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                     event_time=node_run.updated_at,
                 )
             output = self._run_node(node_id, run, node_run, state)
+            # No silent fallback: any provider call this node made that the gateway
+            # could not price (billing_status="unpriced") surfaces as a node-level
+            # cost.unpriced warning instead of staying buried in usage metering.
+            if WarningCode.cost_unpriced not in output.warnings:
+                invocations = getattr(self.repository, "provider_invocations", {})
+                for inv_id in output.provider_invocation_ids:
+                    invocation = invocations.get(inv_id)
+                    if invocation is not None and getattr(invocation, "billing_status", None) == "unpriced":
+                        output.warnings.append(WarningCode.cost_unpriced)
+                        break
             for artifact in output.artifacts:
                 state.artifacts[artifact.kind] = artifact
             state.provider_invocation_ids.extend(output.provider_invocation_ids)
