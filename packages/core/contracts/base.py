@@ -273,6 +273,7 @@ class DegradationNotice(ContractModel):
     code: WarningCode
     message: str
     node_id: str | None = None
+    policy_id: str | None = None
     affects_true_yield: bool = False
     details: dict[str, JsonValue] = Field(default_factory=dict)
 

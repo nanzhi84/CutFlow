@@ -26,6 +26,7 @@ from packages.core.contracts import (
 )
 from packages.core.storage.repository import Repository
 from packages.core.workflow import NodeExecutionError
+from packages.production.pipeline.degradation_policies import ASR_ESTIMATED_FALLBACK_POLICY
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter, RunState
 
 
@@ -212,6 +213,7 @@ def test_narration_alignment_non_strict_estimates_when_asr_fails():
     assert output.provider_invocation_ids == ["pinv_failed_asr"]
     assert output.warnings == [WarningCode.timestamp_estimated]
     assert output.degradations
+    assert output.degradations[0].policy_id == ASR_ESTIMATED_FALLBACK_POLICY.id
     assert output.degradations[0].details["reason"] == "asr_unavailable_estimated_fallback"
     assert output.degradations[0].details["provider_invocation_id"] == "pinv_failed_asr"
     assert narration["source"] == "estimated"

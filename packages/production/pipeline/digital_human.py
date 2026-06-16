@@ -63,6 +63,7 @@ from packages.core.config.settings import sandbox_fallback_allowed
 from packages.production.pipeline import nodes
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState, degradation_notice
+from packages.production.pipeline.degradation_policies import LIPSYNC_FAILOVER_POLICY
 from packages.production.pipeline.reuse import ReusePlan, ReuseSourceRun, compute_reuse_plan
 
 __all__ = [
@@ -99,22 +100,6 @@ NODE_HANDLERS = {
 }
 
 logger = logging.getLogger(__name__)
-
-_LIPSYNC_CONTENT_POLICY_MARKERS = (
-    "input data may contain inappropriate content",
-    "inappropriate content",
-    "content policy",
-    "sensitive content",
-    "unsafe content",
-)
-
-
-def _is_lipsync_content_policy_error(message: str | None) -> bool:
-    text = str(message or "").strip().lower()
-    if not text:
-        return False
-    return any(marker in text for marker in _LIPSYNC_CONTENT_POLICY_MARKERS)
-
 
 def digital_human_template() -> WorkflowTemplate:
     # ExportFinishedVideo makes a PAID image.generate call on the gated AI-cover
@@ -1051,12 +1036,11 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         enabled, secret-active real profile of the fallback provider, or None."""
         if current_profile is None:
             return None
-        provider_id = current_profile.provider_id
-        if provider_id == "runninghub.heygem":
-            target_provider = "dashscope.videoretalk"
-        elif provider_id == "dashscope.videoretalk" and _is_lipsync_content_policy_error(error_message):
-            target_provider = "runninghub.heygem"
-        else:
+        target_provider = LIPSYNC_FAILOVER_POLICY.target_provider_id(
+            current_profile.provider_id,
+            error_message,
+        )
+        if target_provider is None:
             return None
         for profile in self.repository.provider_profiles.values():
             if profile.provider_id != target_provider:

@@ -12062,6 +12062,17 @@
             ],
             "title": "Node Id"
           },
+          "policy_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Id"
+          },
           "affects_true_yield": {
             "type": "boolean",
             "title": "Affects True Yield",

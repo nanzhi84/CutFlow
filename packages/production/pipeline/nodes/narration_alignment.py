@@ -19,6 +19,7 @@ from packages.core.contracts.artifacts import (
 )
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline.degradation_policies import ASR_ESTIMATED_FALLBACK_POLICY
 
 
 def run(ctx: NodeContext) -> NodeOutput:
@@ -166,6 +167,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                     code=WarningCode.timestamp_estimated,
                     message="ASR unavailable; estimated narration timestamps used.",
                     node_id=node_run.node_id,
+                    policy_id=ASR_ESTIMATED_FALLBACK_POLICY.id,
                     details={
                         "reason": "asr_unavailable_estimated_fallback",
                         "provider_invocation_id": invocation.id,

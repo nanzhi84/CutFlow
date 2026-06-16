@@ -36,6 +36,7 @@ from packages.core.storage.secret_store import LocalSecretStore
 from packages.media.assets import store_file
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState
+from packages.production.pipeline.degradation_policies import COVER_FALLBACK_POLICY
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
 
 # A valid 1x1 RGBA PNG — enough for ffprobe to recognise an image stream.
@@ -343,6 +344,7 @@ def test_ai_cover_requested_but_unconfigured_falls_back_to_frame_cover(
     assert not output.provider_invocation_ids
     assert output.status == NodeStatus.degraded
     assert [d.code for d in output.degradations] == [WarningCode.cover_frame_fallback]
+    assert output.degradations[0].policy_id == COVER_FALLBACK_POLICY.id
 
 
 def test_frame_cover_default_mode_has_no_degradation(

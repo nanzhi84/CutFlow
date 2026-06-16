@@ -33,7 +33,7 @@ from packages.media.cover import CoverPromptInputs, build_cover_prompt
 from packages.media.video.ffmpeg import FfmpegCommandError, extract_thumbnails
 from packages.core.observability import record_funnel_event
 from packages.production.pipeline._node_context import NodeContext
-from packages.production.pipeline._run_state import degradation_notice
+from packages.production.pipeline.degradation_policies import COVER_FALLBACK_POLICY
 
 COVER_PROMPT_VERSION_ID = "prompt_cover_ai_cover_v1"
 # Spec §10.1: the AI-cover prompt must resolve through the Prompt Registry binding
@@ -206,10 +206,11 @@ def _build_cover(
     if wants_ai:
         # AI cover requested but unavailable/failed -> honest frame fallback.
         degradations.append(
-            degradation_notice(
-                WarningCode.cover_frame_fallback,
-                "AI cover unavailable; used frame-based cover.",
+            DegradationNotice(
+                code=WarningCode.cover_frame_fallback,
+                message="AI cover unavailable; used frame-based cover.",
                 node_id=ctx.node_run.node_id,
+                policy_id=COVER_FALLBACK_POLICY.id,
             )
         )
     return cover_artifact, degradations, []

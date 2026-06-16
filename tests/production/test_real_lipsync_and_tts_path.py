@@ -31,6 +31,7 @@ from packages.core.storage.secret_store import LocalSecretStore
 from packages.core.workflow import NodeExecutionError
 from packages.media.assets import store_file
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline.degradation_policies import LIPSYNC_FAILOVER_POLICY
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter, RunState
 
 
@@ -288,6 +289,7 @@ def test_real_heygem_failure_falls_back_to_videoretalk(tmp_path, media_fixture_f
     assert report["skipped"] is False
     assert video.media_info and video.media_info.media_type == "video"
     assert videoretalk.calls == ["run_1:nr_lipsync:lipsync:videoretalk.real"]
+    assert output.degradations[0].policy_id == LIPSYNC_FAILOVER_POLICY.id
 
 
 def test_real_videoretalk_falls_back_to_heygem_only_on_content_policy(tmp_path, media_fixture_factory, monkeypatch):
@@ -324,6 +326,7 @@ def test_real_videoretalk_falls_back_to_heygem_only_on_content_policy(tmp_path, 
     assert report["fallback_from"] == "videoretalk.real"
     assert report["fallback_to"] == "heygem.real"
     assert heygem.calls == ["run_1:nr_lipsync:lipsync:heygem.real"]
+    assert output.degradations[0].policy_id == LIPSYNC_FAILOVER_POLICY.id
 
 
 def test_real_videoretalk_non_policy_failure_does_not_fall_back(tmp_path, media_fixture_factory, monkeypatch):
