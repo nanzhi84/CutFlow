@@ -479,6 +479,18 @@ class SqlAlchemyCaseRubricRepository:
             row = session.get(VideoVersionRow, video_version_id)
             return video_version_row_to_contract(row) if row is not None else None
 
+    def resolve_video_version_for_finished_video(self, finished_video_id: str):
+        from packages.creative.cases.sqlalchemy_learning_mappers import video_version_row_to_contract
+
+        with self.session_factory() as session:
+            statement = (
+                select(VideoVersionRow)
+                .where(VideoVersionRow.finished_video_id == finished_video_id)
+                .order_by(VideoVersionRow.created_at.desc())
+            )
+            row = session.scalars(statement).first()
+            return video_version_row_to_contract(row) if row is not None else None
+
     def get_script_version(self, script_version_id: str) -> ScriptVersion | None:
         with self.session_factory() as session:
             row = session.get(ScriptVersionRow, script_version_id)
@@ -492,9 +504,5 @@ class SqlAlchemyCaseRubricRepository:
             finished = session.get(FinishedVideoRow, finished_video_id)
             if finished is None:
                 return None
-            statement = (
-                select(VideoVersionRow.script_version_id)
-                .where(VideoVersionRow.finished_video_id == finished_video_id)
-                .where(VideoVersionRow.script_version_id.is_not(None))
-            )
-            return session.scalars(statement).first()
+        version = self.resolve_video_version_for_finished_video(finished_video_id)
+        return version.script_version_id if version is not None else None

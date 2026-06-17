@@ -4,7 +4,7 @@ Double-backend integration layer over the storage-agnostic ``rubric.py`` pure
 functions: it wires blind scoring, reward-signal collection, lazy reward derivation,
 calibration, and the one-confirmation bump flow.
 
-Two symmetric paths, exactly like ``case_agent.py``:
+Two storage paths:
 - DB:    ``case_rubric_repository(request)`` is not None.
 - memory: the in-memory ``repository(request)`` dicts.
 
@@ -38,7 +38,7 @@ def _learning_settings(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Feature reconstruction (single helper — §6.4 rebuilds features from script text)
+# Feature reconstruction
 # ---------------------------------------------------------------------------
 
 def _features_from_script(script: c.ScriptVersion, *, case_id: str) -> c.CreativeFeatureVector:
@@ -756,6 +756,8 @@ def _resolve_publish_lineage_for_finished_video(
     so backfill works even before a record is created."""
     repo = case_rubric_repository(request)
     if repo is not None:
+        if not any(fv.id == finished_video_id for fv in repo.list_finished_videos(case_id)):
+            raise _missing_finished_video()
         for record in repo.list_publish_records(case_id):
             resolved = (
                 repo.resolve_video_version(record.video_version_id)
@@ -764,10 +766,13 @@ def _resolve_publish_lineage_for_finished_video(
             )
             if resolved is not None and resolved.finished_video_id == finished_video_id:
                 return record.id, record.video_version_id
-        # No publish record: still resolve the video version via the finished video.
-        video_version_id = _video_version_id_for_finished_video_db(repo, case_id, finished_video_id)
+        version = repo.resolve_video_version_for_finished_video(finished_video_id)
+        video_version_id = version.id if version is not None else None
         return finished_video_id, video_version_id
     mem = repository(request)
+    finished = mem.finished_videos.get(finished_video_id)
+    if finished is None or finished.case_id != case_id:
+        raise _missing_finished_video()
     version = _video_version_for_finished_video_memory(mem, finished_video_id)
     video_version_id = version.id if version is not None else None
     if version is not None:
@@ -775,16 +780,6 @@ def _resolve_publish_lineage_for_finished_video(
             if record.case_id == case_id and record.video_version_id == version.id:
                 return record.id, version.id
     return finished_video_id, video_version_id
-
-
-def _video_version_id_for_finished_video_db(repo, case_id: str, finished_video_id: str) -> str | None:
-    for vv_id in {
-        r.video_version_id for r in repo.list_publish_records(case_id) if r.video_version_id
-    }:
-        resolved = repo.resolve_video_version(vv_id)
-        if resolved is not None and resolved.finished_video_id == finished_video_id:
-            return vv_id
-    return None
 
 
 def _video_version_for_finished_video_memory(repo, finished_video_id: str) -> c.VideoVersion | None:
@@ -819,3 +814,9 @@ def _missing(message: str):
     from packages.core.workflow import NodeExecutionError
 
     return NodeExecutionError(c.ErrorCode.validation_invalid_options, message)
+
+
+def _missing_finished_video():
+    from packages.core.workflow import NodeExecutionError
+
+    return NodeExecutionError(c.ErrorCode.artifact_missing, "Finished video is missing.")

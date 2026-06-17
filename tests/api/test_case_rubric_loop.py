@@ -34,7 +34,22 @@ def _create_case(client) -> str:
 def _seed_published_lineage(
     client, case_id: str, script_version_id: str, *, days_ago: int
 ) -> tuple[str, str, str]:
-    """Seed FinishedVideo → VideoVersion → published PublishRecord into the memory repo."""
+    """Seed FinishedVideo -> VideoVersion -> published PublishRecord into the memory repo."""
+    finished_id, version_id = _seed_finished_lineage(client, case_id, script_version_id)
+    repo = client.app.state.repository
+    record = c.PublishRecord(
+        id="pr_rubric",
+        case_id=case_id,
+        video_version_id=version_id,
+        platform="douyin",
+        status="published",
+        published_at=c.utcnow() - timedelta(days=days_ago),
+    )
+    repo.publish_records[record.id] = record
+    return finished_id, version_id, record.id
+
+
+def _seed_finished_lineage(client, case_id: str, script_version_id: str) -> tuple[str, str]:
     repo = client.app.state.repository
     finished = c.FinishedVideo(
         id="fv_rubric",
@@ -58,16 +73,7 @@ def _seed_published_lineage(
         style_plan_artifact_id="art_style",
     )
     repo.video_versions[version.id] = version
-    record = c.PublishRecord(
-        id="pr_rubric",
-        case_id=case_id,
-        video_version_id=version.id,
-        platform="douyin",
-        status="published",
-        published_at=c.utcnow() - timedelta(days=days_ago),
-    )
-    repo.publish_records[record.id] = record
-    return finished.id, version.id, record.id
+    return finished.id, version.id
 
 
 def test_case_rubric_loop_end_to_end():
@@ -278,3 +284,41 @@ def test_published_reward_is_idempotent_across_syncs():
         produced = [r for r in rewards if r.source_kind == "video_produced"]
         assert len(published) == 1
         assert len(produced) == 1
+
+
+def test_backfill_rejects_missing_finished_video():
+    with TestClient(create_app()) as client:
+        _login(client)
+        case_id = _create_case(client)
+
+        response = client.post(
+            f"/api/cases/{case_id}/finished-videos/missing_fv/metrics",
+            json={"window": "7d", "views": 100},
+        )
+
+        assert response.status_code == 404, response.text
+        assert not client.app.state.repository.performance_observations
+
+
+def test_backfill_unpublished_finished_video_preserves_lineage():
+    with TestClient(create_app()) as client:
+        _login(client)
+        case_id = _create_case(client)
+        gen = client.post(
+            f"/api/cases/{case_id}/scripts/generate-with-memory",
+            json={"brief": "痛点开场"},
+        )
+        draft_id = gen.json()["id"]
+        adopt = client.post(f"/api/cases/{case_id}/agent/drafts/{draft_id}/adopt", json={})
+        script_version_id = adopt.json()["id"]
+        finished_id, version_id = _seed_finished_lineage(client, case_id, script_version_id)
+
+        response = client.post(
+            f"/api/cases/{case_id}/finished-videos/{finished_id}/metrics",
+            json={"window": "7d", "views": 1000, "likes": 50},
+        )
+
+        assert response.status_code == 202, response.text
+        body = response.json()
+        assert body["publish_record_id"] == finished_id
+        assert body["video_version_id"] == version_id

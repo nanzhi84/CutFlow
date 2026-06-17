@@ -19,8 +19,8 @@ from packages.media.assets import local_object_path
 from packages.production.editor_handoff import EditorHandoffAsset, EditorHandoffBuilder, EditorHandoffInput
 from packages.production.jianying_draft import JianyingDraftBuilder, JianyingDraftInput
 
-def performance_attribution(request: Request, video_version_id: str) -> c.PerformanceAttributionResponse:
 
+def performance_attribution(request: Request, video_version_id: str) -> c.PerformanceAttributionResponse:
     if production_repository(request) is not None:
         attribution = production_repository(request).performance_attribution(video_version_id)
         if attribution is None:
@@ -55,7 +55,6 @@ def _extract_feature_vector(repo, video: c.VideoVersion) -> c.CreativeFeatureVec
 
 
 def case_finished_videos(request: Request, case_id: str, limit: int = 50) -> c.PageResponse[c.FinishedVideo]:
-
     if production_repository(request) is not None:
         values = production_repository(request).list_finished_videos(case_id=case_id, limit=limit)
         return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
@@ -63,7 +62,6 @@ def case_finished_videos(request: Request, case_id: str, limit: int = 50) -> c.P
 
 
 def finished_video_detail(request: Request, id: str) -> c.FinishedVideoDetail:
-
     if production_repository(request) is not None:
         detail = production_repository(request).finished_video_detail(id)
         if detail is None:
@@ -79,7 +77,6 @@ def finished_video_detail(request: Request, id: str) -> c.FinishedVideoDetail:
 
 
 def finished_video_preview(request: Request, id: str) -> c.SignedUrlResponse:
-
     if production_repository(request) is not None:
         uri = production_repository(request).artifact_uri_for_finished_video(id)
         if uri is None:
@@ -95,7 +92,6 @@ def finished_video_preview(request: Request, id: str) -> c.SignedUrlResponse:
 
 
 def finished_video_download(request: Request, id: str) -> c.SignedUrlResponse:
-
     return finished_video_preview(request, id)
 
 
