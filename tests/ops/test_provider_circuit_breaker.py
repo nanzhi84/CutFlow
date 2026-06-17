@@ -127,6 +127,43 @@ def test_provider_profile_health_metrics_computes_error_timeout_and_p95() -> Non
     assert profile.circuit_open is True
 
 
+def test_circuit_open_blocks_are_excluded_from_health_so_circuit_can_recover() -> None:
+    """The breaker's own fail-fast blocks are recorded as failed invocations. If
+    they counted toward the health window the circuit could never recover — its
+    own blocks would keep error_rate pinned high — and budget/circuit blocks could
+    even trip a healthy provider open. provider.circuit_open invocations must be
+    excluded from the aggregation entirely (numerator AND denominator).
+    """
+    session_factory = _sqlite_session_factory()
+    # Two real successful calls reached the provider in-window...
+    _insert_invocation(session_factory, invocation_id="pinv_ok_1", status="succeeded", duration_ms=100)
+    _insert_invocation(session_factory, invocation_id="pinv_ok_2", status="succeeded", duration_ms=110)
+    # ...and the breaker fast-failed many calls while OPEN. These never reached the
+    # provider and must not pollute its health.
+    for i in range(8):
+        _insert_invocation(
+            session_factory,
+            invocation_id=f"pinv_circuit_block_{i}",
+            status="failed",
+            duration_ms=1,
+            error_code=ErrorCode.provider_circuit_open,
+        )
+
+    metrics = sqlalchemy_provider_profile_health_metrics(
+        session_factory,
+        window_hours=24,
+        error_rate_threshold=0.5,
+    )
+
+    profile = next(item for item in metrics if item.provider_profile_id == "sandbox.tts.default")
+    # Only the 2 real successful calls count; the 8 circuit-open blocks are excluded.
+    assert profile.calls == 2
+    assert profile.success_count == 2
+    assert profile.failure_count == 0
+    assert profile.error_rate == 0.0
+    assert profile.circuit_open is False  # recovered: no real failures remain in-window
+
+
 def test_provider_circuit_breaker_blocks_open_profile_with_degradation(
     monkeypatch,
     caplog,
@@ -154,7 +191,7 @@ def test_provider_circuit_breaker_blocks_open_profile_with_degradation(
     assert result is None
     assert invocation.status == ProviderStatus.failed
     assert invocation.error is not None
-    assert invocation.error.code == ErrorCode.provider_remote_failed
+    assert invocation.error.code == ErrorCode.provider_circuit_open
     assert "circuit open" in invocation.error.message
     assert gateway.repository.usage_records == {}
     degradations = [

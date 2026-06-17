@@ -31,6 +31,13 @@ class BudgetEnforcementGuard:
 
     def evaluate(self, *, call: object, invocation: object) -> ProviderError | None:
         budgets = {budget.id: budget for budget in self.repository.list_budgets(limit=200)}
+        # The guard runs on EVERY provider call. It can only ever block on an
+        # enabled+enforce budget, so when none exists skip evaluate_budgets() —
+        # which does a full spend scan + alert-sync write — rather than paying that
+        # cost (and write amplification) on every call. Alert syncing for
+        # warning-only budgets still happens via the ops snapshot path, not here.
+        if not any(budget.enabled and budget.enforce for budget in budgets.values()):
+            return None
         for evaluation in self.repository.evaluate_budgets():
             budget = budgets.get(evaluation.budget_id)
             if budget is None or not budget.enabled or not budget.enforce:

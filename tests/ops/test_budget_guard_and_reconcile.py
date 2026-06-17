@@ -161,6 +161,48 @@ def test_enforced_budget_blocks_provider_gateway_and_reports_degradation():
         assert alert.severity == "critical"
 
 
+def test_budget_guard_skips_expensive_evaluation_when_no_enforcing_budget():
+    """The guard runs on EVERY provider call on the SQL backend. It can only ever
+    block on an enabled+enforce budget, so when none exists it must early-exit
+    after the cheap budget list and must NOT run evaluate_budgets() — which does a
+    full spend scan + alert-sync write transaction — on the provider hot path.
+    """
+
+    class _SpyRepo:
+        def __init__(self, budgets):
+            self._budgets = budgets
+            self.list_calls = 0
+            self.evaluate_calls = 0
+
+        def list_budgets(self, *, limit=50):
+            self.list_calls += 1
+            return list(self._budgets)
+
+        def evaluate_budgets(self, *, now=None):
+            self.evaluate_calls += 1
+            return []
+
+    # An enabled but warning-only (enforce=False) budget — the default, common case.
+    repo = _SpyRepo(
+        [
+            Budget(
+                id="budget_warning_only",
+                scope_type="provider",
+                scope_id="sandbox",
+                limit=_money("1.00"),
+                enforce=False,
+            )
+        ]
+    )
+    guard = BudgetEnforcementGuard(repo)
+
+    result = guard.evaluate(call=object(), invocation=object())
+
+    assert result is None
+    assert repo.evaluate_calls == 0  # expensive scan + alert-sync write skipped
+    assert repo.list_calls >= 1  # cheap enforce-prefilter still consulted budgets
+
+
 def test_budget_guard_allows_warning_only_or_under_limit_budgets():
     warning_repository, warning_session_factory = _sqlite_ops_repository()
     warning_repository.upsert_budget(

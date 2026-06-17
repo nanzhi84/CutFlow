@@ -3,11 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 
-from sqlalchemy import case, cast, func, select
+from sqlalchemy import case, cast, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.sql.sqltypes import Numeric
 
-from packages.core.contracts import Money, ProviderUsageMetricsItem, ProviderUsageMetricsReport, utcnow
+from packages.core.contracts import (
+    ErrorCode,
+    Money,
+    ProviderUsageMetricsItem,
+    ProviderUsageMetricsReport,
+    utcnow,
+)
 from packages.core.storage.database import ProviderInvocationRow
 
 
@@ -106,6 +112,18 @@ def sqlalchemy_provider_profile_health_metrics(
         )
         .where(ProviderInvocationRow.started_at >= window_start)
         .where(ProviderInvocationRow.provider_profile_id.is_not(None))
+        # The circuit breaker's own fail-fast blocks are recorded as failed
+        # invocations but never reached the provider. Exclude them entirely so a
+        # provider's health reflects only real calls — otherwise the breaker's
+        # blocks keep error_rate pinned high and the circuit can never recover.
+        # NULL error_code (successful calls) must survive the filter, hence the
+        # explicit is-null branch (``error_code != x`` drops NULLs in SQL).
+        .where(
+            or_(
+                error_code.is_(None),
+                error_code != ErrorCode.provider_circuit_open.value,
+            )
+        )
     )
     if provider_profile_id is not None:
         base_statement = base_statement.where(ProviderInvocationRow.provider_profile_id == provider_profile_id)

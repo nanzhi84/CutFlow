@@ -48,6 +48,7 @@ class ErrorCode(str, Enum):
     provider_quota_exceeded = "provider.quota_exceeded"
     provider_timeout = "provider.timeout"
     provider_remote_failed = "provider.remote_failed"
+    provider_circuit_open = "provider.circuit_open"
     provider_auth_failed = "provider.auth_failed"
     provider_cost_unpriced = "provider.cost_unpriced"
     artifact_missing = "artifact.missing"

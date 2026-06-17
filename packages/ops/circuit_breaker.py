@@ -54,7 +54,7 @@ class ProviderCircuitBreaker:
             },
         )
         return ProviderError(
-            code=ErrorCode.provider_remote_failed,
+            code=ErrorCode.provider_circuit_open,
             message=(
                 f"Provider profile {provider_profile_id} circuit open: "
                 f"error_rate={health.error_rate:.3f} "

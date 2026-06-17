@@ -12355,6 +12355,7 @@
           "provider.quota_exceeded",
           "provider.timeout",
           "provider.remote_failed",
+          "provider.circuit_open",
           "provider.auth_failed",
           "provider.cost_unpriced",
           "artifact.missing",
