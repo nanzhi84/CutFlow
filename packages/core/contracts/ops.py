@@ -115,6 +115,7 @@ class Budget(EntityMeta):
     limit: Money
     alert_threshold: float = Field(0.8, ge=0, le=1)
     enabled: bool = True
+    enforce: bool = False
 
 
 class BudgetQuery(BaseListQuery):
@@ -129,6 +130,7 @@ class PatchBudgetRequest(ContractModel):
     limit: Money | None = None
     alert_threshold: float | None = None
     enabled: bool | None = None
+    enforce: bool | None = None
     period: BudgetPeriod | None = None
 
 

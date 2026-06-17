@@ -77,6 +77,7 @@ from .providers import (
     RefreshProviderBalancesRequest,
     ProviderBalanceSnapshot,
     ReconcileBillingRequest,
+    ReconcileBillingLineItem,
     ReconcileBillingResponse,
 )
 from .cases import (
@@ -596,6 +597,7 @@ __all__ = [
     "RefreshProviderBalancesRequest",
     "ProviderBalanceSnapshot",
     "ReconcileBillingRequest",
+    "ReconcileBillingLineItem",
     "ReconcileBillingResponse",
     "ScriptVersion",
     "VideoVersion",

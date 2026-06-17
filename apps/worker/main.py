@@ -23,6 +23,8 @@ from packages.core.workflow.temporal_adapter import (
     temporal_activities,
     temporal_workflows,
 )
+from packages.ops import BudgetEnforcementGuard, SqlAlchemyOpsRepository
+from packages.ops.circuit_breaker import ProviderCircuitBreaker
 from packages.production import SqlAlchemyProductionRepository
 from packages.production.pipeline import build_digital_human_workflow
 
@@ -40,10 +42,13 @@ async def async_main() -> None:
     prompt_reader = (
         SqlAlchemyPromptRuntimeRepository(session_factory) if session_factory is not None else None
     )
+    ops_repository = SqlAlchemyOpsRepository(session_factory) if session_factory is not None else None
     provider_gateway = ProviderGateway(
         runtime_repository,
         provider_reader=provider_reader,
         secret_store=secret_store,
+        budget_guard=BudgetEnforcementGuard(ops_repository) if ops_repository is not None else None,
+        circuit_breaker=ProviderCircuitBreaker(session_factory) if session_factory is not None else None,
     )
     prompt_registry = PromptRegistry(runtime_repository, prompt_reader=prompt_reader)
     # Under the SQL backend this worker-global runtime is only a stateless-service

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from queue import Empty, Queue
@@ -15,29 +18,231 @@ from packages.core.observability.telemetry import update_outbox_lag
 from packages.core.storage.database import OutboxEventRow
 from packages.core.storage.repository import Repository
 
+logger = logging.getLogger(__name__)
+
 
 class InProcessFanoutHub:
-    def __init__(self) -> None:
+    def __init__(self, *, redis_url: str | None = None, namespace: str = "cutagent") -> None:
         self._subscribers: dict[str, list[Queue]] = {}
+        self._lock = threading.RLock()
+        self._redis_url = redis_url
+        self._namespace = namespace.rstrip(":")
+        self._instance_id = uuid4().hex
+        self._redis = None
+        self._redis_failed = False
+        self._redis_lock = threading.RLock()
+        self._pubsubs: dict[str, Any] = {}
+        self._subscription_stops: dict[str, threading.Event] = {}
+        self._subscription_threads: dict[str, threading.Thread] = {}
+        self._closed = threading.Event()
 
     def subscribe(self, run_id: str) -> Queue:
         subscriber: Queue = Queue()
-        self._subscribers.setdefault(run_id, []).append(subscriber)
+        with self._lock:
+            self._subscribers.setdefault(run_id, []).append(subscriber)
+        if self._redis_url:
+            self._ensure_subscription(run_id)
         return subscriber
 
     def unsubscribe(self, run_id: str, subscriber: Queue) -> None:
-        subscribers = self._subscribers.get(run_id, [])
-        if subscriber in subscribers:
-            subscribers.remove(subscriber)
-        if not subscribers:
-            self._subscribers.pop(run_id, None)
+        should_stop = False
+        with self._lock:
+            subscribers = self._subscribers.get(run_id, [])
+            if subscriber in subscribers:
+                subscribers.remove(subscriber)
+            if not subscribers:
+                self._subscribers.pop(run_id, None)
+                should_stop = True
+        if should_stop:
+            self._stop_subscription(run_id)
 
     def publish(self, run_id: str, payload: dict[str, Any]) -> None:
-        for subscriber in list(self._subscribers.get(run_id, [])):
+        self._fanout_local(run_id, payload)
+        if self._redis_url:
+            self._publish_redis(run_id, payload)
+
+    def _fanout_local(self, run_id: str, payload: dict[str, Any]) -> None:
+        with self._lock:
+            subscribers = list(self._subscribers.get(run_id, []))
+        for subscriber in subscribers:
             subscriber.put(payload)
 
-    def get_nowait(self, subscriber: Queue) -> dict[str, Any]:
-        return subscriber.get_nowait()
+    def get_nowait(self, subscriber: Queue) -> dict[str, Any] | None:
+        try:
+            return subscriber.get_nowait()
+        except Empty:
+            return None
+
+    def close(self) -> None:
+        self._closed.set()
+        with self._redis_lock:
+            pubsubs = list(self._pubsubs.values())
+            stops = list(self._subscription_stops.values())
+            threads = list(self._subscription_threads.values())
+            self._pubsubs.clear()
+            self._subscription_stops.clear()
+            self._subscription_threads.clear()
+            redis = self._redis
+            self._redis = None
+        for stop in stops:
+            stop.set()
+        for pubsub in pubsubs:
+            try:
+                pubsub.close()
+            except Exception:
+                pass
+        for thread in threads:
+            if thread is not threading.current_thread():
+                thread.join(timeout=0.5)
+        if redis is not None:
+            try:
+                redis.close()
+            except Exception:
+                pass
+
+    def _channel(self, run_id: str) -> str:
+        return f"{self._namespace}:run:{run_id}"
+
+    def _redis_client(self):
+        if not self._redis_url or self._redis_failed or self._closed.is_set():
+            return None
+        with self._redis_lock:
+            if self._redis is not None:
+                return self._redis
+            try:
+                import redis
+
+                client = redis.Redis.from_url(
+                    self._redis_url,
+                    decode_responses=True,
+                    socket_connect_timeout=0.5,
+                    socket_timeout=1.0,
+                )
+                client.ping()
+                self._redis = client
+                return client
+            except Exception as exc:  # pragma: no cover - exact Redis errors vary.
+                self._degrade(exc)
+                return None
+
+    def _ensure_subscription(self, run_id: str) -> None:
+        if self._closed.is_set():
+            return
+        with self._redis_lock:
+            if run_id in self._subscription_threads:
+                return
+        client = self._redis_client()
+        if client is None:
+            return
+        try:
+            pubsub = client.pubsub(ignore_subscribe_messages=True)
+            pubsub.subscribe(self._channel(run_id))
+        except Exception as exc:  # pragma: no cover - exact Redis errors vary.
+            self._degrade(exc)
+            return
+        stop = threading.Event()
+        thread = threading.Thread(
+            target=self._listen_to_subscription,
+            args=(run_id, pubsub, stop),
+            name=f"cutagent-event-fanout-{run_id}",
+            daemon=True,
+        )
+        with self._redis_lock:
+            if run_id in self._subscription_threads or self._closed.is_set():
+                stop.set()
+                try:
+                    pubsub.close()
+                except Exception:
+                    pass
+                return
+            self._pubsubs[run_id] = pubsub
+            self._subscription_stops[run_id] = stop
+            self._subscription_threads[run_id] = thread
+        thread.start()
+
+    def _stop_subscription(self, run_id: str) -> None:
+        with self._redis_lock:
+            pubsub = self._pubsubs.pop(run_id, None)
+            stop = self._subscription_stops.pop(run_id, None)
+            thread = self._subscription_threads.pop(run_id, None)
+        if stop is not None:
+            stop.set()
+        if pubsub is not None:
+            try:
+                pubsub.close()
+            except Exception:
+                pass
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=0.5)
+
+    def _listen_to_subscription(self, run_id: str, pubsub, stop: threading.Event) -> None:
+        while not self._closed.is_set() and not stop.is_set():
+            try:
+                message = pubsub.get_message(timeout=0.1)
+            except Exception as exc:  # pragma: no cover - exact Redis errors vary.
+                if not self._closed.is_set() and not stop.is_set():
+                    self._degrade(exc)
+                break
+            if not message or message.get("type") != "message":
+                continue
+            try:
+                envelope = json.loads(message.get("data") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if envelope.get("instance_id") == self._instance_id:
+                continue
+            payload = envelope.get("payload")
+            if isinstance(payload, dict):
+                self._fanout_local(run_id, payload)
+
+    def _publish_redis(self, run_id: str, payload: dict[str, Any]) -> None:
+        client = self._redis_client()
+        if client is None:
+            return
+        try:
+            client.publish(
+                self._channel(run_id),
+                json.dumps(
+                    {"instance_id": self._instance_id, "payload": payload},
+                    separators=(",", ":"),
+                ),
+            )
+        except Exception as exc:  # pragma: no cover - exact Redis errors vary.
+            self._degrade(exc)
+
+    def _degrade(self, exc: Exception) -> None:
+        with self._redis_lock:
+            if self._redis_failed:
+                return
+            self._redis_failed = True
+            redis = self._redis
+            self._redis = None
+            pubsubs = list(self._pubsubs.values())
+            stops = list(self._subscription_stops.values())
+            self._pubsubs.clear()
+            self._subscription_stops.clear()
+            self._subscription_threads.clear()
+        for stop in stops:
+            stop.set()
+        for pubsub in pubsubs:
+            try:
+                pubsub.close()
+            except Exception:
+                pass
+        if redis is not None:
+            try:
+                redis.close()
+            except Exception:
+                pass
+        logger.warning(
+            "redis event fanout degraded; using per-process fanout",
+            extra={
+                "event": "observability.event_fanout.redis_degraded",
+                "degradation_level": "fail_safe",
+                "redis_url_configured": bool(self._redis_url),
+                "reason": str(exc),
+            },
+        )
 
 
 class OutboxDispatcher:
@@ -221,16 +426,33 @@ class EventStreamToken:
 
 
 class EventStreamTokenStore:
-    def __init__(self) -> None:
+    def __init__(self, *, redis_url: str | None = None, namespace: str = "cutagent") -> None:
         self._tokens: dict[str, EventStreamToken] = {}
+        self._redis_url = redis_url
+        self._namespace = namespace.rstrip(":")
+        self._redis = None
+        self._redis_failed = False
+        self._redis_lock = threading.RLock()
 
     def issue(self, run_id: str, ttl: timedelta) -> EventStreamToken:
         token = f"stream_{uuid4().hex[:24]}"
         issued = EventStreamToken(token=token, run_id=run_id, expires_at=utcnow() + ttl)
         self._tokens[token] = issued
+        client = self._redis_client()
+        if client is not None:
+            try:
+                client.set(self._key(token), run_id, px=max(1, int(ttl.total_seconds() * 1000)))
+            except Exception as exc:  # pragma: no cover - exact Redis errors vary.
+                self._degrade(exc)
         return issued
 
     def validate(self, token: str, run_id: str) -> bool:
+        client = self._redis_client()
+        if client is not None:
+            try:
+                return client.get(self._key(token)) == run_id
+            except Exception as exc:  # pragma: no cover - exact Redis errors vary.
+                self._degrade(exc)
         issued = self._tokens.get(token)
         if issued is None:
             return False
@@ -240,6 +462,53 @@ class EventStreamTokenStore:
             self._tokens.pop(token, None)
             return False
         return True
+
+    def _key(self, token: str) -> str:
+        return f"{self._namespace}:event-token:{token}"
+
+    def _redis_client(self):
+        if not self._redis_url or self._redis_failed:
+            return None
+        with self._redis_lock:
+            if self._redis is not None:
+                return self._redis
+            try:
+                import redis
+
+                client = redis.Redis.from_url(
+                    self._redis_url,
+                    decode_responses=True,
+                    socket_connect_timeout=0.5,
+                    socket_timeout=1.0,
+                )
+                client.ping()
+                self._redis = client
+                return client
+            except Exception as exc:  # pragma: no cover - exact Redis errors vary.
+                self._degrade(exc)
+                return None
+
+    def _degrade(self, exc: Exception) -> None:
+        with self._redis_lock:
+            if self._redis_failed:
+                return
+            self._redis_failed = True
+            redis = self._redis
+            self._redis = None
+        if redis is not None:
+            try:
+                redis.close()
+            except Exception:
+                pass
+        logger.warning(
+            "redis event token store degraded; using per-process token store",
+            extra={
+                "event": "observability.event_tokens.redis_degraded",
+                "degradation_level": "fail_safe",
+                "redis_url_configured": bool(self._redis_url),
+                "reason": str(exc),
+            },
+        )
 
 
 async def receive_from_subscriber(subscriber: Queue, timeout: float = 0.05) -> dict[str, Any] | None:

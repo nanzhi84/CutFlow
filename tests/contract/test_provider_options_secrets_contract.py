@@ -112,6 +112,7 @@ def test_warning_code_is_single_spec_enum_and_degradation_notice_shape():
         "cover.frame_fallback",
         "timestamp.estimated",
         "cost.unpriced",
+        "budget.exceeded",
         # No-silent-fallback surfacing: lipsync provider fallback, BGM loudness
         # probe failure, and selected-font resolution failure now degrade visibly.
         "lipsync.fallback_used",

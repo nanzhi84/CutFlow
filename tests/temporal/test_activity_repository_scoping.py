@@ -137,6 +137,33 @@ def test_build_runtime_returns_fresh_isolated_repository() -> None:
     assert art.id not in template.repository.artifacts
 
 
+def test_build_runtime_propagates_circuit_breaker_and_budget_guard() -> None:
+    """Per-activity gateways must carry the worker-global circuit breaker AND
+    budget guard.
+
+    build_runtime() rebuilds a fresh ProviderGateway for every activity. If it
+    forgets to thread an opt-in control through, that control is silently dead on
+    the worker (Temporal) execution path — which is where the pipeline's real
+    provider calls happen — even when the operator enabled it. Budget guard was
+    already threaded; the circuit breaker was not.
+    """
+    template = _template_runtime()
+    sentinel_breaker = object()
+    sentinel_budget = object()
+    template.provider_gateway.circuit_breaker = sentinel_breaker
+    template.provider_gateway.budget_guard = sentinel_budget
+    ctx = TemporalActivityContext(
+        repository=template.repository,
+        local_runtime=template,
+        production_repository=object(),  # presence flips scoping on
+    )
+
+    _repo, runtime = ctx.build_runtime()
+
+    assert runtime.provider_gateway.circuit_breaker is sentinel_breaker
+    assert runtime.provider_gateway.budget_guard is sentinel_budget
+
+
 def test_scoping_disabled_without_production_repository() -> None:
     template = _template_runtime()
     ctx = TemporalActivityContext(

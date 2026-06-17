@@ -18,8 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from packages.media.rendering import fit_video_to_exact_duration
 from packages.media.video.ffmpeg import FfmpegRunner, ffmpeg_bin, probe_media
-from packages.production.pipeline._ffmpeg import fit_video_to_exact_duration
 
 PLAN_WIDTH = 720
 PLAN_HEIGHT = 1280

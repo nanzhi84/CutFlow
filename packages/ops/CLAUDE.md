@@ -21,5 +21,5 @@ Ops / 成本 / 成品率 / 治理域：既有 §9/§26 的**指标计算**（成
 - `pytest tests/ops tests/observability`（指标计算 / 漏斗 / outbox / metrics）。
 
 ## 注意 / 坑
-- `reconcile_billing` 当前只写审计并返回 `status="queued"`，是占位，勿当成已完成对账。
+- `reconcile_billing` 现做真实对账：按窗口聚合 ProviderInvocation 的 estimated_cost 与已记账用量，算出 estimated/recorded/variance（按 provider+capability 出 line_items），返回 `status="completed"`；`dry_run=True` 仅返回计算结果不落库不写审计，`dry_run=False` 落 `ProviderBillingReconciliationRow` + 写 `billing.reconcile_completed` 审计。
 - 改 Ops contract 后须重新生成 openapi.json + schema.d.ts（`scripts/export_openapi.py`）。

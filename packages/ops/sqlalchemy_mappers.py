@@ -51,6 +51,7 @@ def budget_row_to_contract(row: BudgetRow) -> Budget:
         limit=Money.model_validate(row.limit),
         alert_threshold=row.alert_threshold,
         enabled=row.enabled,
+        enforce=bool(getattr(row, "enforce", False)),
         schema_version=row.schema_version,
         created_at=row.created_at,
         updated_at=row.updated_at,

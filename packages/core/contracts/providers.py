@@ -297,7 +297,19 @@ class ReconcileBillingRequest(ContractModel):
     dry_run: bool = False
 
 
+class ReconcileBillingLineItem(ContractModel):
+    provider_id: str
+    capability_id: str
+    estimated_cost: Money
+    recorded_usage_cost: Money
+    variance: Money
+
+
 class ReconcileBillingResponse(ContractModel):
     reconciliation_run_id: str
-    status: Literal["queued", "running"]
+    status: Literal["queued", "running", "completed"]
+    estimated_cost: Money
+    recorded_usage_cost: Money
+    variance: Money
+    line_items: list[ReconcileBillingLineItem] = Field(default_factory=list)
     request_id: str

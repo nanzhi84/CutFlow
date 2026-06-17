@@ -48,6 +48,7 @@ class ErrorCode(str, Enum):
     provider_quota_exceeded = "provider.quota_exceeded"
     provider_timeout = "provider.timeout"
     provider_remote_failed = "provider.remote_failed"
+    provider_circuit_open = "provider.circuit_open"
     provider_auth_failed = "provider.auth_failed"
     provider_cost_unpriced = "provider.cost_unpriced"
     artifact_missing = "artifact.missing"
@@ -77,6 +78,7 @@ class WarningCode(str, Enum):
     cover_frame_fallback = "cover.frame_fallback"
     timestamp_estimated = "timestamp.estimated"
     cost_unpriced = "cost.unpriced"
+    budget_exceeded = "budget.exceeded"
     lipsync_fallback_used = "lipsync.fallback_used"
     bgm_loudness_probe_failed = "bgm.loudness_probe_failed"
     font_resolution_failed = "font.resolution_failed"
@@ -272,6 +274,7 @@ class DegradationNotice(ContractModel):
     code: WarningCode
     message: str
     node_id: str | None = None
+    policy_id: str | None = None
     affects_true_yield: bool = False
     details: dict[str, JsonValue] = Field(default_factory=dict)
 

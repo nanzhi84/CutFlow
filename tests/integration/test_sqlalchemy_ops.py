@@ -114,10 +114,13 @@ def test_sqlalchemy_ops_budget_alert_cost_and_dashboard_flow_is_persisted():
                 "provider_id": "sandbox",
                 "window_start": "2026-06-01T00:00:00Z",
                 "window_end": "2026-06-11T00:00:00Z",
-                "dry_run": True,
+                "dry_run": False,
             },
         )
         assert reconciled.status_code == 202, reconciled.text
+        # reconcile_billing now computes a real reconciliation synchronously
+        # (estimated vs recorded usage cost) instead of the old queued placeholder.
+        assert reconciled.json()["status"] == "completed"
         reconciliation_run_id = reconciled.json()["reconciliation_run_id"]
 
     with session_factory() as session:
@@ -133,7 +136,7 @@ def test_sqlalchemy_ops_budget_alert_cost_and_dashboard_flow_is_persisted():
         assert cost_row.invocations >= 0
         audit_rows = list(
             session.scalars(
-                select(AuditEventRow).where(AuditEventRow.action == "billing.reconcile_requested")
+                select(AuditEventRow).where(AuditEventRow.action == "billing.reconcile_completed")
             )
         )
         assert any(row.details.get("reconciliation_run_id") == reconciliation_run_id for row in audit_rows)

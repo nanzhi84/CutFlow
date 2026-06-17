@@ -8,11 +8,12 @@ from .default_pricing import (
     TTS_UNIT,
     default_price_for,
 )
-from .provider_gateway import ProviderCall, ProviderGateway, ProviderResult
+from .provider_gateway import BudgetGuard, ProviderCall, ProviderGateway, ProviderResult
 from .sqlalchemy_repository import SqlAlchemyProviderRepository, SqlAlchemyProviderRuntimeRepository
 
 __all__ = [
     "ProviderCall",
+    "BudgetGuard",
     "ProviderGateway",
     "ProviderResult",
     "SqlAlchemyProviderRepository",

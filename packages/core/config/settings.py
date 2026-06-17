@@ -343,6 +343,10 @@ class Settings(BaseModel):
     api: ApiSettings = Field(default_factory=ApiSettings)
     balance: BalanceSettings = Field(default_factory=BalanceSettings)
     providers: ProviderSettings = Field(default_factory=ProviderSettings)
+    # Optional shared coordination backend (cross-process limiter / fanout /
+    # ephemeral token store). When unset, those layers stay per-process. See
+    # packages/ai/gateway/provider_limiter.py and packages/core/observability/events.py.
+    redis_url: str | None = None
 
 
 # ----------------------------------------------------------------------------
@@ -478,6 +482,7 @@ def build_settings() -> Settings:
             )
             == "1",
         ),
+        redis_url=os.getenv("CUTAGENT_REDIS_URL"),
     )
 
 

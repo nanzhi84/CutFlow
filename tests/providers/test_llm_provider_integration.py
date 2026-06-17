@@ -160,8 +160,13 @@ def test_creative_intent_prefers_real_llm_profile_over_sandbox():
         )
 
         assert response.status_code == 201, response.text
+        run_id = response.json()["initial_run"]["id"]
+        resolve_node = next(
+            node for node in repository.node_runs[run_id] if node.node_id == "ResolveCreativeIntent"
+        )
         llm_invocations = [
             item for item in repository.provider_invocations.values() if item.capability_id == "llm.chat"
         ]
         assert llm_invocations[-1].provider_id == "fake.llm"
         assert provider.calls
+        assert provider.calls[0].idempotency_key == f"{run_id}:{resolve_node.id}:resolve_creative_intent"

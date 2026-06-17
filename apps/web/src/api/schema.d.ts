@@ -2883,6 +2883,11 @@ export interface components {
              * @default true
              */
             enabled: boolean;
+            /**
+             * Enforce
+             * @default false
+             */
+            enforce: boolean;
         };
         /** Budget */
         "Budget-Output": {
@@ -2931,6 +2936,11 @@ export interface components {
              * @default true
              */
             enabled: boolean;
+            /**
+             * Enforce
+             * @default false
+             */
+            enforce: boolean;
         };
         /**
          * BudgetEvaluation
@@ -4147,6 +4157,8 @@ export interface components {
             message: string;
             /** Node Id */
             node_id?: string | null;
+            /** Policy Id */
+            policy_id?: string | null;
             /**
              * Affects True Yield
              * @default false
@@ -4241,7 +4253,7 @@ export interface components {
          * ErrorCode
          * @enum {string}
          */
-        ErrorCode: "validation.missing_case" | "validation.missing_voice" | "validation.missing_script" | "validation.invalid_options" | "validation.conflict" | "auth.unauthorized" | "auth.forbidden" | "auth.invalid_credentials" | "auth.registration_closed" | "auth.user_disabled" | "upload.invalid_state" | "upload.expired" | "upload.size_mismatch" | "upload.sha256_mismatch" | "upload.unsupported_type" | "upload.too_large" | "upload.normalization_failed" | "material.insufficient.portrait" | "material.insufficient.broll" | "material.annotation_failed" | "prompt.render_error" | "prompt.output_invalid" | "prompt.version_not_published" | "provider.unsupported_option" | "provider.quota_exceeded" | "provider.timeout" | "provider.remote_failed" | "provider.auth_failed" | "provider.cost_unpriced" | "artifact.missing" | "artifact.integrity_failed" | "artifact.schema_mismatch" | "workflow.invalid_transition" | "workflow.cancelled" | "workflow.resume_not_allowed" | "workflow.worker_lost" | "render.invalid_timeline" | "render.failed" | "render.subtitle_failed" | "publish.failed" | "import.failed" | "reference.unreachable" | "reference.unsupported_platform" | "reference.asr_failed" | "reference.cookie_invalid" | "reference.cookie_missing" | "idempotency.conflict";
+        ErrorCode: "validation.missing_case" | "validation.missing_voice" | "validation.missing_script" | "validation.invalid_options" | "validation.conflict" | "auth.unauthorized" | "auth.forbidden" | "auth.invalid_credentials" | "auth.registration_closed" | "auth.user_disabled" | "upload.invalid_state" | "upload.expired" | "upload.size_mismatch" | "upload.sha256_mismatch" | "upload.unsupported_type" | "upload.too_large" | "upload.normalization_failed" | "material.insufficient.portrait" | "material.insufficient.broll" | "material.annotation_failed" | "prompt.render_error" | "prompt.output_invalid" | "prompt.version_not_published" | "provider.unsupported_option" | "provider.quota_exceeded" | "provider.timeout" | "provider.remote_failed" | "provider.circuit_open" | "provider.auth_failed" | "provider.cost_unpriced" | "artifact.missing" | "artifact.integrity_failed" | "artifact.schema_mismatch" | "workflow.invalid_transition" | "workflow.cancelled" | "workflow.resume_not_allowed" | "workflow.worker_lost" | "render.invalid_timeline" | "render.failed" | "render.subtitle_failed" | "publish.failed" | "import.failed" | "reference.unreachable" | "reference.unsupported_platform" | "reference.asr_failed" | "reference.cookie_invalid" | "reference.cookie_missing" | "idempotency.conflict";
         /** EventStreamTokenResponse */
         EventStreamTokenResponse: {
             /** Stream Url */
@@ -5585,6 +5597,8 @@ export interface components {
             alert_threshold?: number | null;
             /** Enabled */
             enabled?: boolean | null;
+            /** Enforce */
+            enforce?: boolean | null;
             /** Period */
             period?: ("day" | "week" | "month") | null;
         };
@@ -7009,6 +7023,16 @@ export interface components {
             /** Segment Id */
             segment_id?: string | null;
         };
+        /** ReconcileBillingLineItem */
+        ReconcileBillingLineItem: {
+            /** Provider Id */
+            provider_id: string;
+            /** Capability Id */
+            capability_id: string;
+            estimated_cost: components["schemas"]["Money-Output"];
+            recorded_usage_cost: components["schemas"]["Money-Output"];
+            variance: components["schemas"]["Money-Output"];
+        };
         /** ReconcileBillingRequest */
         ReconcileBillingRequest: {
             /** Provider Id */
@@ -7037,7 +7061,12 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "queued" | "running";
+            status: "queued" | "running" | "completed";
+            estimated_cost: components["schemas"]["Money-Output"];
+            recorded_usage_cost: components["schemas"]["Money-Output"];
+            variance: components["schemas"]["Money-Output"];
+            /** Line Items */
+            line_items?: components["schemas"]["ReconcileBillingLineItem"][];
             /** Request Id */
             request_id: string;
         };
@@ -8098,7 +8127,7 @@ export interface components {
          * WarningCode
          * @enum {string}
          */
-        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed";
+        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced" | "budget.exceeded" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed";
         /** WorkflowRun */
         WorkflowRun: {
             /** Id */

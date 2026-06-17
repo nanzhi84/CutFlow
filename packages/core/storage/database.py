@@ -855,6 +855,23 @@ class BudgetRow(TimestampMixin, Base):
     limit: Mapped[dict] = mapped_column(JSONB, nullable=False)
     alert_threshold: Mapped[float] = mapped_column(Float, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    enforce: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class ProviderBillingReconciliationRow(TimestampMixin, Base):
+    __tablename__ = "provider_billing_reconciliations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider_id: Mapped[str | None] = mapped_column(String)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    estimated_cost: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    recorded_usage_cost: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    variance: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    line_items: Mapped[list[dict]] = mapped_column(JSONB, nullable=False, default=list)
+    request_id: Mapped[str] = mapped_column(String, nullable=False)
 
 
 class OpsAlertRuleRow(TimestampMixin, Base):

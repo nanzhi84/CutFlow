@@ -4,18 +4,13 @@ from __future__ import annotations
 
 import logging
 
-from packages.core.contracts import ArtifactKind
+from packages.core.contracts import RunStatus
 from packages.core.workflow import NodeOutput
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._selection import selection_entries_from_state
+from packages.production.pipeline.ephemeral_gc import gc_ephemeral_artifacts, record_ephemeral_gc_event
 
 logger = logging.getLogger(__name__)
-
-EPHEMERAL_ARTIFACT_KINDS = {
-    ArtifactKind.video_portrait_track,
-    ArtifactKind.video_lipsync,
-    ArtifactKind.video_rendered,
-}
 
 
 def run(ctx: NodeContext) -> NodeOutput:
@@ -40,16 +35,12 @@ def run(ctx: NodeContext) -> NodeOutput:
         logger.warning(
             "Failed to commit/release selection reservations for run %s.", ctx.run.id, exc_info=True
         )
-    for artifact in state.artifacts.values():
-        if artifact.kind not in EPHEMERAL_ARTIFACT_KINDS or not artifact.uri:
-            continue
-        try:
-            ctx.object_store().delete(artifact.uri)
-        except Exception:
-            logger.warning(
-                "Failed to delete ephemeral artifact %s at %s.",
-                artifact.id,
-                artifact.uri,
-                exc_info=True,
-            )
+    deleted_uris = gc_ephemeral_artifacts(ctx.object_store(), state, run_id=ctx.run.id)
+    record_ephemeral_gc_event(
+        ctx.repository,
+        run_id=ctx.run.id,
+        terminal_status=RunStatus.succeeded.value,
+        deleted_uris=deleted_uris,
+        skipped=False,
+    )
     return NodeOutput(artifacts=[public_artifact, debug_artifact])

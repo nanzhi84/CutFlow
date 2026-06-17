@@ -10,6 +10,7 @@ from packages.core.observability.funnel import (
 from .yield_rates import compute_yield_rates
 from .cost_metrics import FunnelCounts, InvocationCost, compute_cost_metrics
 from .budget_evaluation import SpendRecord, evaluate_budget, period_start
+from .budget_guard import BudgetEnforcementGuard
 from .alert_rules import ALERT_METRIC_CATALOG, evaluate_rules
 from .failure_taxonomy import classify_error_code, classify_funnel_event
 from .sqlalchemy_repository import SqlAlchemyOpsRepository
@@ -28,6 +29,7 @@ __all__ = [
     "evaluate_budget",
     "period_start",
     "SpendRecord",
+    "BudgetEnforcementGuard",
     "evaluate_rules",
     "ALERT_METRIC_CATALOG",
     "classify_error_code",

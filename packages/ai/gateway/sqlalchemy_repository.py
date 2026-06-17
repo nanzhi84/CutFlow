@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from datetime import timedelta
+
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from packages.core.contracts import (
@@ -25,6 +27,7 @@ from packages.core.contracts import (
 from packages.core.storage.database import (
     ProviderCapabilityRow,
     ProviderBalanceSnapshotRow,
+    ProviderInvocationRow,
     ProviderPriceCatalogRow,
     ProviderPriceItemRow,
     ProviderProfileRow,
@@ -32,6 +35,9 @@ from packages.core.storage.database import (
 )
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
+
+
+DEFAULT_HEALTH_CHECK_LATENCY_MS = 100
 
 
 def provider_profile_row_to_contract(row: ProviderProfileRow) -> ProviderProfile:
@@ -229,11 +235,41 @@ class SqlAlchemyProviderRepository:
     ) -> ProviderHealthCheckResponse:
         with self.session_factory() as session:
             row = session.get(ProviderProfileRow, profile_id)
+            ok = row is not None and row.enabled
+            latency_ms = None
+            if ok:
+                latency_ms = self._recent_profile_p95_latency_ms(session, profile_id)
+                if latency_ms is None:
+                    latency_ms = DEFAULT_HEALTH_CHECK_LATENCY_MS
             return ProviderHealthCheckResponse(
                 profile_id=profile_id,
-                ok=row is not None and row.enabled,
-                latency_ms=1 if row is not None and row.enabled else None,
+                ok=ok,
+                latency_ms=latency_ms,
             )
+
+    def _recent_profile_p95_latency_ms(
+        self,
+        session: Session,
+        profile_id: str,
+        *,
+        window_hours: int = 24,
+    ) -> int | None:
+        window_start = utcnow() - timedelta(hours=window_hours)
+        ranked = (
+            select(
+                ProviderInvocationRow.duration_ms.label("duration_ms"),
+                func.row_number().over(order_by=ProviderInvocationRow.duration_ms.asc()).label("duration_rank"),
+                func.count(ProviderInvocationRow.id).over().label("duration_count"),
+            )
+            .where(ProviderInvocationRow.provider_profile_id == profile_id)
+            .where(ProviderInvocationRow.started_at >= window_start)
+            .subquery()
+        )
+        statement = select(func.min(ranked.c.duration_ms)).where(
+            ranked.c.duration_rank * 100 >= ranked.c.duration_count * 95
+        )
+        value = session.scalar(statement)
+        return int(value) if value is not None else None
 
     def list_capabilities(self) -> list[ProviderCapability]:
         with self.session_factory() as session:

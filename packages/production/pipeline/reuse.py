@@ -69,6 +69,8 @@ def compute_reuse_plan(
     template_by_node = {node.node_id: node for node in template.nodes}
 
     for template_node in template.nodes:
+        if template_node.reuse_policy == "never":
+            return _stop(plan, template_node.node_id, "reuse_policy_forces_rerun")
         previous_node = previous_by_node.get(template_node.node_id)
         if previous_node is None:
             return _stop(plan, template_node.node_id, "node_run_missing")

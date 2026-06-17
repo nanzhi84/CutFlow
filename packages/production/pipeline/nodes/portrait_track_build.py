@@ -8,12 +8,12 @@ from pathlib import Path
 from packages.core.contracts import ArtifactKind, ErrorCode
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.media.assets import store_file
-from packages.media.video.ffmpeg import FfmpegCommandError, probe_media
-from packages.production.pipeline._ffmpeg import (
+from packages.media.rendering import (
     concat_video_segments,
     fit_video_to_exact_duration,
     transcode_video_segment,
 )
+from packages.media.video.ffmpeg import FfmpegCommandError, probe_media
 from packages.production.pipeline._node_context import NodeContext
 
 

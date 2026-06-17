@@ -56,8 +56,10 @@ class ArtifactTTSProvider:
         self.source_audio = source_audio
         self.artifact_id: str | None = None
         self.uri: str | None = None
+        self.calls: list[ProviderCall] = []
 
     def invoke(self, call: ProviderCall) -> ProviderResult:
+        self.calls.append(call)
         stored = store_file(self.object_store, self.source_audio, purpose="fake-provider-audio")
         media_info = probe_media(self.source_audio)
         artifact = self.repository.create_artifact(
@@ -198,6 +200,7 @@ def test_tts_node_uses_provider_audio_artifact(media_fixture_factory):
         run_id = response.json()["initial_run"]["id"]
         tts_node = next(node for node in repository.node_runs[run_id] if node.node_id == "TTS")
         assert tts_node.output_artifact_ids == [provider.artifact_id]
+        assert provider.calls[0].idempotency_key == f"{run_id}:{tts_node.id}:tts"
 
 
 def test_lipsync_node_uses_provider_video_artifact(media_fixture_factory):

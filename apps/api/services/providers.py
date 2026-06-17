@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import httpx
 from fastapi import Request
@@ -18,6 +18,9 @@ from packages.core import contracts as c
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 from packages.ops.balance import BalancePollerService, refresh_balances
+
+
+DEFAULT_HEALTH_CHECK_LATENCY_MS = 100
 
 
 def _validate_outbound_hosts(default_options: dict | None) -> None:
@@ -59,6 +62,25 @@ def _snapshot_from_item(item: c.ProviderBalanceItem) -> c.ProviderBalanceSnapsho
         detail=item.detail,
         checked_at=item.checked_at,
     )
+
+
+def _recent_profile_p95_latency_ms(
+    invocations: list[c.ProviderInvocation],
+    *,
+    profile_id: str,
+    window_hours: int = 24,
+) -> int | None:
+    window_start = c.utcnow() - timedelta(hours=window_hours)
+    durations = sorted(
+        invocation.duration_ms
+        for invocation in invocations
+        if invocation.provider_profile_id == profile_id and invocation.started_at >= window_start
+    )
+    if not durations:
+        return None
+    index = max(0, ((len(durations) * 95 + 99) // 100) - 1)
+    return int(durations[index])
+
 
 def provider_profiles(
     request: Request,
@@ -109,7 +131,17 @@ def test_provider_profile(
 ) -> c.ProviderHealthCheckResponse:
     if provider_repository(request) is not None:
         return provider_repository(request).test_profile(profile_id, payload)
-    return c.ProviderHealthCheckResponse(profile_id=profile_id, ok=profile_id in repository(request).provider_profiles, latency_ms=1)
+    profile = repository(request).provider_profiles.get(profile_id)
+    ok = profile is not None and profile.enabled
+    latency_ms = None
+    if ok:
+        latency_ms = _recent_profile_p95_latency_ms(
+            list(repository(request).provider_invocations.values()),
+            profile_id=profile_id,
+        )
+        if latency_ms is None:
+            latency_ms = DEFAULT_HEALTH_CHECK_LATENCY_MS
+    return c.ProviderHealthCheckResponse(profile_id=profile_id, ok=ok, latency_ms=latency_ms)
 
 
 def provider_capabilities(request: Request) -> list[c.ProviderCapability]:
@@ -306,4 +338,11 @@ def build_balance_poller_service(app) -> BalancePollerService:
 def reconcile_billing(payload: c.ReconcileBillingRequest, request: Request) -> c.ReconcileBillingResponse:
     if ops_repository(request) is not None:
         return ops_repository(request).reconcile_billing(payload, request_id())
-    return c.ReconcileBillingResponse(reconciliation_run_id=new_id("recon"), status="queued", request_id=request_id())
+    return c.ReconcileBillingResponse(
+        reconciliation_run_id=new_id("recon"),
+        status="completed",
+        estimated_cost=c.zero_money(),
+        recorded_usage_cost=c.zero_money(),
+        variance=c.zero_money(),
+        request_id=request_id(),
+    )

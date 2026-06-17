@@ -8960,6 +8960,11 @@
             "type": "boolean",
             "title": "Enabled",
             "default": true
+          },
+          "enforce": {
+            "type": "boolean",
+            "title": "Enforce",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -9047,6 +9052,11 @@
             "type": "boolean",
             "title": "Enabled",
             "default": true
+          },
+          "enforce": {
+            "type": "boolean",
+            "title": "Enforce",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -12052,6 +12062,17 @@
             ],
             "title": "Node Id"
           },
+          "policy_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Id"
+          },
           "affects_true_yield": {
             "type": "boolean",
             "title": "Affects True Yield",
@@ -12334,6 +12355,7 @@
           "provider.quota_exceeded",
           "provider.timeout",
           "provider.remote_failed",
+          "provider.circuit_open",
           "provider.auth_failed",
           "provider.cost_unpriced",
           "artifact.missing",
@@ -16353,6 +16375,17 @@
             ],
             "title": "Enabled"
           },
+          "enforce": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enforce"
+          },
           "period": {
             "anyOf": [
               {
@@ -19969,6 +20002,37 @@
         "title": "QualityEventV4",
         "description": "V4 quality event (the single authoritative risk source).\n\n``source`` distinguishes 'sensor' (black/freeze/blur/shake/camera_drop) from\n'vlm' (blooper/look-off). Deterministic sensors here set source='sensor' or\n'motion_guard'."
       },
+      "ReconcileBillingLineItem": {
+        "properties": {
+          "provider_id": {
+            "type": "string",
+            "title": "Provider Id"
+          },
+          "capability_id": {
+            "type": "string",
+            "title": "Capability Id"
+          },
+          "estimated_cost": {
+            "$ref": "#/components/schemas/Money-Output"
+          },
+          "recorded_usage_cost": {
+            "$ref": "#/components/schemas/Money-Output"
+          },
+          "variance": {
+            "$ref": "#/components/schemas/Money-Output"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "provider_id",
+          "capability_id",
+          "estimated_cost",
+          "recorded_usage_cost",
+          "variance"
+        ],
+        "title": "ReconcileBillingLineItem"
+      },
       "ReconcileBillingRequest": {
         "properties": {
           "provider_id": {
@@ -20016,9 +20080,26 @@
             "type": "string",
             "enum": [
               "queued",
-              "running"
+              "running",
+              "completed"
             ],
             "title": "Status"
+          },
+          "estimated_cost": {
+            "$ref": "#/components/schemas/Money-Output"
+          },
+          "recorded_usage_cost": {
+            "$ref": "#/components/schemas/Money-Output"
+          },
+          "variance": {
+            "$ref": "#/components/schemas/Money-Output"
+          },
+          "line_items": {
+            "items": {
+              "$ref": "#/components/schemas/ReconcileBillingLineItem"
+            },
+            "type": "array",
+            "title": "Line Items"
           },
           "request_id": {
             "type": "string",
@@ -20030,6 +20111,9 @@
         "required": [
           "reconciliation_run_id",
           "status",
+          "estimated_cost",
+          "recorded_usage_cost",
+          "variance",
           "request_id"
         ],
         "title": "ReconcileBillingResponse"
@@ -22664,6 +22748,7 @@
           "cover.frame_fallback",
           "timestamp.estimated",
           "cost.unpriced",
+          "budget.exceeded",
           "lipsync.fallback_used",
           "bgm.loudness_probe_failed",
           "font.resolution_failed"

@@ -53,6 +53,7 @@ REQUIRED_TABLES = {
     "yield_funnel_events",
     "cost_rollups",
     "budgets",
+    "provider_billing_reconciliations",
     "ops_alert_rules",
     "ops_alert_events",
     "production_quality_checks",
@@ -178,6 +179,19 @@ def test_contract_columns_for_core_boundaries_exist():
         "created_at",
         "expires_at",
     } <= set(tables["idempotency_records"].columns.keys())
+    assert "enforce" in tables["budgets"].columns.keys()
+    assert {
+        "provider_id",
+        "window_start",
+        "window_end",
+        "status",
+        "dry_run",
+        "estimated_cost",
+        "recorded_usage_cost",
+        "variance",
+        "line_items",
+        "request_id",
+    } <= set(tables["provider_billing_reconciliations"].columns.keys())
     assert "embedding" in tables["case_memories"].columns.keys()
 
 

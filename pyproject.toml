@@ -16,6 +16,7 @@ dependencies = [
   "uvicorn[standard]>=0.34",
   "python-multipart>=0.0.20",
   "boto3>=1.35",
+  "redis>=5",
   "yt-dlp>=2025.1",
   "opencv-python-headless>=4.8",
   "numpy>=2.0",

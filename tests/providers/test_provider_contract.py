@@ -4,6 +4,7 @@ from packages.ai.gateway.provider_gateway import ProviderCall, ProviderGateway
 from packages.core.contracts import (
     ErrorCode,
     Money,
+    ProviderError,
     ProviderOptionsSchemaRef,
     ProviderPriceItem,
     ProviderProfile,
@@ -64,6 +65,42 @@ def test_provider_secret_missing_is_auth_failure():
     assert result is None
     assert invocation.error
     assert invocation.error.code == ErrorCode.provider_auth_failed
+
+
+class _RejectingBudgetGuard:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def evaluate(self, *, call, invocation):
+        self.calls.append((call, invocation))
+        return ProviderError(
+            code=ErrorCode.provider_quota_exceeded,
+            message="Provider sandbox is over budget.",
+            retryable=False,
+        )
+
+
+def test_provider_gateway_budget_guard_blocks_before_submission():
+    repository = Repository()
+    guard = _RejectingBudgetGuard()
+    gw = ProviderGateway(repository, budget_guard=guard, auto_register_real_plugins=False)
+
+    invocation, result = gw.invoke(
+        ProviderCall(
+            provider_profile_id="sandbox.tts.default",
+            capability_id="tts.speech",
+            input={"text": "hello"},
+        )
+    )
+
+    assert result is None
+    assert invocation.status == ProviderStatus.failed
+    assert invocation.error
+    assert invocation.error.code == ErrorCode.provider_quota_exceeded
+    assert "over budget" in invocation.error.message
+    assert guard.calls
+    assert guard.calls[0][1].status == ProviderStatus.prepared
+    assert repository.usage_records == {}
 
 
 def test_gateway_blocks_offlist_base_url_when_enforcement_enabled(tmp_path, monkeypatch):

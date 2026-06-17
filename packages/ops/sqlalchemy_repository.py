@@ -8,8 +8,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.sql.sqltypes import Numeric
 
-_NUMERIC = Numeric(20, 6)
-
 from packages.core.contracts import (
     ApprovalDecisionRequest,
     ApprovalRequest,
@@ -31,6 +29,7 @@ from packages.core.contracts import (
     PatchAlertRuleRequest,
     PatchBudgetRequest,
     ProductionQualityCheck,
+    ReconcileBillingLineItem,
     ProviderUsageReport,
     ProviderUsageMetricsReport,
     ReconcileBillingRequest,
@@ -49,8 +48,12 @@ from packages.core.storage.database import (
     FinishedVideoRow,
     OpsAlertEventRow,
     OpsAlertRuleRow,
+    ProviderBalanceSnapshotRow,
+    ProviderBillingReconciliationRow,
     ProviderInvocationRow,
+    ProviderPriceItemRow,
     ProductionQualityCheckRow,
+    UsageMeterRecordRow,
     WorkflowRunRow,
     YieldFunnelEventRow,
 )
@@ -73,6 +76,9 @@ from packages.ops.sqlalchemy_mappers import (
 )
 from packages.ops.provider_usage_metrics import sqlalchemy_provider_usage_metrics
 from packages.ops.yield_rates import compute_yield_rates
+
+
+_NUMERIC = Numeric(20, 6)
 
 
 def _money_amount(payload: dict | None) -> Decimal:
@@ -439,6 +445,7 @@ class SqlAlchemyOpsRepository:
                 limit=budget.limit.model_dump(mode="json"),
                 alert_threshold=budget.alert_threshold,
                 enabled=budget.enabled,
+                enforce=budget.enforce,
                 schema_version=budget.schema_version,
                 created_at=budget.created_at,
                 updated_at=utcnow(),
@@ -460,6 +467,8 @@ class SqlAlchemyOpsRepository:
                 row.alert_threshold = updates["alert_threshold"]
             if "enabled" in updates:
                 row.enabled = updates["enabled"]
+            if "enforce" in updates:
+                row.enforce = updates["enforce"]
             if "period" in updates:
                 row.period = updates["period"]
             row.updated_at = utcnow()
@@ -906,26 +915,244 @@ class SqlAlchemyOpsRepository:
 
     def reconcile_billing(self, payload: ReconcileBillingRequest, request_id: str) -> ReconcileBillingResponse:
         reconciliation_run_id = new_id("recon")
+        response = self._compute_billing_reconciliation(
+            payload,
+            reconciliation_run_id=reconciliation_run_id,
+            request_id=request_id,
+        )
+        if payload.dry_run:
+            return response
         with self.session_factory() as session:
+            session.add(
+                ProviderBillingReconciliationRow(
+                    id=reconciliation_run_id,
+                    provider_id=payload.provider_id,
+                    window_start=payload.window_start,
+                    window_end=payload.window_end,
+                    status=response.status,
+                    dry_run=payload.dry_run,
+                    estimated_cost=response.estimated_cost.model_dump(mode="json"),
+                    recorded_usage_cost=response.recorded_usage_cost.model_dump(mode="json"),
+                    variance=response.variance.model_dump(mode="json"),
+                    line_items=[
+                        item.model_dump(mode="json") for item in response.line_items
+                    ],
+                    request_id=request_id,
+                )
+            )
             self._record_audit(
                 session,
-                action="billing.reconcile_requested",
+                action="billing.reconcile_completed",
                 resource_type="provider_billing",
-                resource_id=payload.provider_id,
+                resource_id=reconciliation_run_id,
                 details={
                     "reconciliation_run_id": reconciliation_run_id,
                     "provider_id": payload.provider_id,
                     "window_start": payload.window_start.isoformat(),
                     "window_end": payload.window_end.isoformat(),
                     "dry_run": payload.dry_run,
+                    "status": response.status,
+                    "estimated_cost": response.estimated_cost.model_dump(mode="json"),
+                    "recorded_usage_cost": response.recorded_usage_cost.model_dump(mode="json"),
+                    "variance": response.variance.model_dump(mode="json"),
+                    "line_items": [
+                        item.model_dump(mode="json") for item in response.line_items
+                    ],
                 },
             )
             session.commit()
+        return response
+
+    def _compute_billing_reconciliation(
+        self,
+        payload: ReconcileBillingRequest,
+        *,
+        reconciliation_run_id: str,
+        request_id: str,
+    ) -> ReconcileBillingResponse:
+        groups: dict[tuple[str, str], dict[str, Decimal | str]] = {}
+        with self.session_factory() as session:
+            statement = (
+                select(ProviderInvocationRow, UsageMeterRecordRow, ProviderPriceItemRow)
+                .outerjoin(
+                    UsageMeterRecordRow,
+                    UsageMeterRecordRow.provider_invocation_id == ProviderInvocationRow.id,
+                )
+                .outerjoin(
+                    ProviderPriceItemRow,
+                    ProviderPriceItemRow.id == ProviderInvocationRow.price_item_id,
+                )
+                .where(ProviderInvocationRow.created_at >= payload.window_start)
+                .where(ProviderInvocationRow.created_at <= payload.window_end)
+            )
+            if payload.provider_id:
+                statement = statement.where(
+                    ProviderInvocationRow.provider_id == payload.provider_id
+                )
+            rows = list(session.execute(statement))
+            balance_actual_costs = self._balance_actual_costs(session, payload)
+
+        for invocation, usage, price_item in rows:
+            provider_id = invocation.provider_id
+            capability_id = invocation.capability_id
+            key = (provider_id, capability_id)
+            group = groups.setdefault(
+                key,
+                {
+                    "estimated": Decimal("0"),
+                    "recorded": Decimal("0"),
+                    "currency": _money_currency(invocation.estimated_cost),
+                },
+            )
+            group["estimated"] = Decimal(str(group["estimated"])) + _money_amount(
+                invocation.estimated_cost
+            )
+            if invocation.actual_cost is not None:
+                recorded = _money_amount(invocation.actual_cost)
+            else:
+                recorded = self._recorded_usage_cost(usage, price_item)
+            group["recorded"] = Decimal(str(group["recorded"])) + recorded
+
+        self._apply_balance_actual_fallback(groups, balance_actual_costs)
+        line_items = self._billing_line_items(groups)
+        estimated_total = sum(
+            (item.estimated_cost.amount for item in line_items),
+            Decimal("0"),
+        )
+        recorded_total = sum(
+            (item.recorded_usage_cost.amount for item in line_items),
+            Decimal("0"),
+        )
+        currency = line_items[0].estimated_cost.currency if line_items else "CNY"
         return ReconcileBillingResponse(
             reconciliation_run_id=reconciliation_run_id,
-            status="queued",
+            status="completed",
+            estimated_cost=Money(amount=estimated_total, currency=currency),
+            recorded_usage_cost=Money(amount=recorded_total, currency=currency),
+            variance=Money(amount=recorded_total - estimated_total, currency=currency),
+            line_items=line_items,
             request_id=request_id,
         )
+
+    def _recorded_usage_cost(
+        self,
+        usage: UsageMeterRecordRow | None,
+        price_item: ProviderPriceItemRow | None,
+    ) -> Decimal:
+        if price_item is not None:
+            unit_price = _money_amount(price_item.unit_price)
+            if price_item.unit == "call":
+                return unit_price
+            if usage is not None:
+                return unit_price * self._usage_quantity(usage, price_item.unit)
+        raw_usage_cost = self._raw_usage_cost(usage.raw_usage) if usage is not None else None
+        return raw_usage_cost or Decimal("0")
+
+    def _usage_quantity(self, usage: UsageMeterRecordRow, unit: str) -> Decimal:
+        if unit == "input_token":
+            return Decimal(usage.input_tokens or 0)
+        if unit == "output_token":
+            return Decimal(usage.output_tokens or 0)
+        if unit == "media_second":
+            return Decimal(str((usage.audio_seconds or 0) + (usage.video_seconds or 0)))
+        return Decimal("0")
+
+    def _raw_usage_cost(self, raw_usage: dict | None) -> Decimal | None:
+        if not raw_usage:
+            return None
+        for key in ("recorded_cost", "actual_cost", "cost", "total_cost"):
+            value = raw_usage.get(key)
+            if isinstance(value, dict):
+                try:
+                    return Money.model_validate(value).amount
+                except Exception:
+                    continue
+            if value is not None:
+                try:
+                    return Decimal(str(value))
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    def _balance_actual_costs(
+        self,
+        session: Session,
+        payload: ReconcileBillingRequest,
+    ) -> dict[str, Decimal]:
+        statement = (
+            select(ProviderBalanceSnapshotRow)
+            .where(ProviderBalanceSnapshotRow.checked_at >= payload.window_start)
+            .where(ProviderBalanceSnapshotRow.checked_at <= payload.window_end)
+            .order_by(
+                ProviderBalanceSnapshotRow.provider_id.asc(),
+                ProviderBalanceSnapshotRow.account_group.asc(),
+                ProviderBalanceSnapshotRow.checked_at.asc(),
+            )
+        )
+        if payload.provider_id:
+            statement = statement.where(ProviderBalanceSnapshotRow.provider_id == payload.provider_id)
+        snapshots_by_account: dict[tuple[str, str | None, str], list[ProviderBalanceSnapshotRow]] = {}
+        for snapshot in session.scalars(statement):
+            if snapshot.balance_amount is None or not snapshot.currency:
+                continue
+            key = (snapshot.provider_id, snapshot.account_group, snapshot.currency)
+            snapshots_by_account.setdefault(key, []).append(snapshot)
+        totals: dict[str, Decimal] = defaultdict(Decimal)
+        for (provider_id, _account_group, _currency), snapshots in snapshots_by_account.items():
+            if len(snapshots) < 2:
+                continue
+            delta = Decimal(str(snapshots[0].balance_amount)) - Decimal(
+                str(snapshots[-1].balance_amount)
+            )
+            if delta > 0:
+                totals[provider_id] += delta
+        return totals
+
+    def _apply_balance_actual_fallback(
+        self,
+        groups: dict[tuple[str, str], dict[str, Decimal | str]],
+        balance_actual_costs: dict[str, Decimal],
+    ) -> None:
+        if not balance_actual_costs:
+            return
+        keys_by_provider: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for key in groups:
+            keys_by_provider[key[0]].append(key)
+        for provider_id, actual_cost in balance_actual_costs.items():
+            keys = keys_by_provider.get(provider_id, [])
+            if not keys:
+                groups[(provider_id, "balance.snapshot")] = {
+                    "estimated": Decimal("0"),
+                    "recorded": actual_cost,
+                    "currency": "CNY",
+                }
+                continue
+            provider_recorded = sum(
+                (Decimal(str(groups[key]["recorded"])) for key in keys),
+                Decimal("0"),
+            )
+            if provider_recorded == 0 and len(keys) == 1:
+                groups[keys[0]]["recorded"] = actual_cost
+
+    def _billing_line_items(
+        self,
+        groups: dict[tuple[str, str], dict[str, Decimal | str]],
+    ) -> list[ReconcileBillingLineItem]:
+        items: list[ReconcileBillingLineItem] = []
+        for (provider_id, capability_id), group in sorted(groups.items()):
+            estimated = Decimal(str(group["estimated"]))
+            recorded = Decimal(str(group["recorded"]))
+            currency = str(group["currency"] or "CNY")
+            items.append(
+                ReconcileBillingLineItem(
+                    provider_id=provider_id,
+                    capability_id=capability_id,
+                    estimated_cost=Money(amount=estimated, currency=currency),
+                    recorded_usage_cost=Money(amount=recorded, currency=currency),
+                    variance=Money(amount=recorded - estimated, currency=currency),
+                )
+            )
+        return items
 
     def _record_audit(
         self,
