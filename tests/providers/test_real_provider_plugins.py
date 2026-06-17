@@ -1085,6 +1085,366 @@ def test_runninghub_heygem_failed_status_reports_task_id(tmp_path, media_fixture
     assert "FAILED" in invocation.error.message
 
 
+def test_runninghub_heygem_submit_surfaces_queue_limit_and_retries(tmp_path, media_fixture_factory):
+    """RunningHub returns HTTP 200 with an application-level code on capacity
+    limits (415/421). The old code dropped `data: null` to the misleading
+    "missing task ID"; instead surface the real msg and retry the transient
+    capacity condition before giving up."""
+    source_video = media_fixture_factory.video(duration_sec=1.0, filename="portrait.mp4")
+    source_audio = media_fixture_factory.audio(duration_sec=1.0, filename="speech.wav")
+    run_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal run_calls
+        if request.url.path == "/openapi/v2/media/upload/binary":
+            return httpx.Response(200, json={"data": {"fileName": "input.bin"}})
+        if request.url.path == "/task/openapi/ai-app/run":
+            run_calls += 1
+            return httpx.Response(
+                200, json={"code": 421, "msg": "TASK_QUEUE_MAXED", "data": None}
+            )
+        return httpx.Response(404, text=str(request.url))
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+    video_stored = store_file(gateway.object_store, source_video, purpose="test-video")  # type: ignore[arg-type]
+    audio_stored = store_file(gateway.object_store, source_audio, purpose="test-audio")  # type: ignore[arg-type]
+    secret_ref = gateway.secret_store.put("runninghub-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="runninghub.heygem",
+        capability="lipsync.video",
+        model_id="heygem-webapp",
+        secret_ref=secret_ref,
+        default_options={
+            "base_url": "https://www.runninghub.ai",
+            "webapp_id": "webapp-1",
+            "video_node_id": "video-node",
+            "audio_node_id": "audio-node",
+            "retry_base_delay": 0,
+        },
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            case_id="case_demo",
+            provider_profile_id=profile.id,
+            capability_id="lipsync.video",
+            input={
+                "portrait_uri": video_stored.ref.uri,
+                "audio_uri": audio_stored.ref.uri,
+                "duration_sec": 1.0,
+            },
+        )
+    )
+
+    assert result is None
+    assert invocation.status == ProviderStatus.failed
+    assert invocation.error
+    # Real reason surfaced, not the misleading generic message.
+    assert "TASK_QUEUE_MAXED" in invocation.error.message
+    assert "421" in invocation.error.message
+    assert "missing task ID" not in invocation.error.message
+    # Transient capacity limit is retried before giving up.
+    assert run_calls == 3
+
+
+def test_runninghub_heygem_submit_does_not_retry_transport_error(tmp_path, media_fixture_factory):
+    """A transport error (timeout / reset / network 5xx) on the task-CREATING
+    /run endpoint must NOT be retried: /run carries no idempotency key, so a
+    request that already created (and billed) a task server-side before its
+    response was lost would be duplicated by a retry. Only explicit capacity
+    codes (415/421), which reject before task creation, are retried. Upload/poll
+    still retry transport errors — only the billable /run submit is exempt."""
+    source_video = media_fixture_factory.video(duration_sec=1.0, filename="portrait.mp4")
+    source_audio = media_fixture_factory.audio(duration_sec=1.0, filename="speech.wav")
+    run_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal run_calls
+        if request.url.path == "/openapi/v2/media/upload/binary":
+            return httpx.Response(200, json={"data": {"fileName": "input.bin"}})
+        if request.url.path == "/task/openapi/ai-app/run":
+            run_calls += 1
+            raise httpx.TimeoutException("slow", request=request)
+        return httpx.Response(404, text=str(request.url))
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+    video_stored = store_file(gateway.object_store, source_video, purpose="test-video")  # type: ignore[arg-type]
+    audio_stored = store_file(gateway.object_store, source_audio, purpose="test-audio")  # type: ignore[arg-type]
+    secret_ref = gateway.secret_store.put("runninghub-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="runninghub.heygem",
+        capability="lipsync.video",
+        model_id="heygem-webapp",
+        secret_ref=secret_ref,
+        default_options={
+            "base_url": "https://www.runninghub.ai",
+            "webapp_id": "webapp-1",
+            "video_node_id": "video-node",
+            "audio_node_id": "audio-node",
+            "retry_base_delay": 0,
+        },
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            case_id="case_demo",
+            provider_profile_id=profile.id,
+            capability_id="lipsync.video",
+            input={
+                "portrait_uri": video_stored.ref.uri,
+                "audio_uri": audio_stored.ref.uri,
+                "duration_sec": 1.0,
+            },
+        )
+    )
+
+    assert result is None
+    assert invocation.status == ProviderStatus.timed_out
+    # The non-idempotent create is sent exactly once on a transport error.
+    assert run_calls == 1
+
+
+def test_runninghub_heygem_submit_surfaces_insufficient_balance_without_retry(
+    tmp_path, media_fixture_factory
+):
+    """Balance exhaustion (416) is a hard failure: surface it as a quota error
+    and do NOT waste retries on it."""
+    source_video = media_fixture_factory.video(duration_sec=1.0, filename="portrait.mp4")
+    source_audio = media_fixture_factory.audio(duration_sec=1.0, filename="speech.wav")
+    run_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal run_calls
+        if request.url.path == "/openapi/v2/media/upload/binary":
+            return httpx.Response(200, json={"data": {"fileName": "input.bin"}})
+        if request.url.path == "/task/openapi/ai-app/run":
+            run_calls += 1
+            return httpx.Response(
+                200,
+                json={
+                    "code": 416,
+                    "msg": "TASK_CREATE_FAILED_BY_NOT_ENOUGH_WALLET",
+                    "data": None,
+                },
+            )
+        return httpx.Response(404, text=str(request.url))
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+    video_stored = store_file(gateway.object_store, source_video, purpose="test-video")  # type: ignore[arg-type]
+    audio_stored = store_file(gateway.object_store, source_audio, purpose="test-audio")  # type: ignore[arg-type]
+    secret_ref = gateway.secret_store.put("runninghub-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="runninghub.heygem",
+        capability="lipsync.video",
+        model_id="heygem-webapp",
+        secret_ref=secret_ref,
+        default_options={
+            "base_url": "https://www.runninghub.ai",
+            "webapp_id": "webapp-1",
+            "video_node_id": "video-node",
+            "audio_node_id": "audio-node",
+            "retry_base_delay": 0,
+        },
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            case_id="case_demo",
+            provider_profile_id=profile.id,
+            capability_id="lipsync.video",
+            input={
+                "portrait_uri": video_stored.ref.uri,
+                "audio_uri": audio_stored.ref.uri,
+                "duration_sec": 1.0,
+            },
+        )
+    )
+
+    assert result is None
+    assert invocation.error
+    assert invocation.error.code == ErrorCode.provider_quota_exceeded
+    assert "416" in invocation.error.message
+    assert run_calls == 1
+
+
+def test_runninghub_heygem_submit_surfaces_invalid_api_key(tmp_path, media_fixture_factory):
+    """An invalid API key (802) is surfaced as an auth failure, not the generic
+    "missing task ID", and is not retried."""
+    source_video = media_fixture_factory.video(duration_sec=1.0, filename="portrait.mp4")
+    source_audio = media_fixture_factory.audio(duration_sec=1.0, filename="speech.wav")
+    run_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal run_calls
+        if request.url.path == "/openapi/v2/media/upload/binary":
+            return httpx.Response(200, json={"data": {"fileName": "input.bin"}})
+        if request.url.path == "/task/openapi/ai-app/run":
+            run_calls += 1
+            return httpx.Response(
+                200, json={"code": 802, "msg": "APIKEY_UNAUTHORIZED", "data": None}
+            )
+        return httpx.Response(404, text=str(request.url))
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+    video_stored = store_file(gateway.object_store, source_video, purpose="test-video")  # type: ignore[arg-type]
+    audio_stored = store_file(gateway.object_store, source_audio, purpose="test-audio")  # type: ignore[arg-type]
+    secret_ref = gateway.secret_store.put("runninghub-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="runninghub.heygem",
+        capability="lipsync.video",
+        model_id="heygem-webapp",
+        secret_ref=secret_ref,
+        default_options={
+            "base_url": "https://www.runninghub.ai",
+            "webapp_id": "webapp-1",
+            "video_node_id": "video-node",
+            "audio_node_id": "audio-node",
+            "retry_base_delay": 0,
+        },
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            case_id="case_demo",
+            provider_profile_id=profile.id,
+            capability_id="lipsync.video",
+            input={
+                "portrait_uri": video_stored.ref.uri,
+                "audio_uri": audio_stored.ref.uri,
+                "duration_sec": 1.0,
+            },
+        )
+    )
+
+    assert result is None
+    assert invocation.error
+    assert invocation.error.code == ErrorCode.provider_auth_failed
+    assert "APIKEY_UNAUTHORIZED" in invocation.error.message
+    assert run_calls == 1
+
+
+def test_runninghub_heygem_submit_does_not_retry_unrecognised_rejection(
+    tmp_path, media_fixture_factory
+):
+    """An unrecognised non-zero code is surfaced verbatim but treated as
+    terminal — only the known transient capacity codes get retried."""
+    source_video = media_fixture_factory.video(duration_sec=1.0, filename="portrait.mp4")
+    source_audio = media_fixture_factory.audio(duration_sec=1.0, filename="speech.wav")
+    run_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal run_calls
+        if request.url.path == "/openapi/v2/media/upload/binary":
+            return httpx.Response(200, json={"data": {"fileName": "input.bin"}})
+        if request.url.path == "/task/openapi/ai-app/run":
+            run_calls += 1
+            return httpx.Response(200, json={"code": 804, "msg": "APIKEY_TASK_IS_RUNNING", "data": None})
+        return httpx.Response(404, text=str(request.url))
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+    video_stored = store_file(gateway.object_store, source_video, purpose="test-video")  # type: ignore[arg-type]
+    audio_stored = store_file(gateway.object_store, source_audio, purpose="test-audio")  # type: ignore[arg-type]
+    secret_ref = gateway.secret_store.put("runninghub-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="runninghub.heygem",
+        capability="lipsync.video",
+        model_id="heygem-webapp",
+        secret_ref=secret_ref,
+        default_options={
+            "base_url": "https://www.runninghub.ai",
+            "webapp_id": "webapp-1",
+            "video_node_id": "video-node",
+            "audio_node_id": "audio-node",
+            "retry_base_delay": 0,
+        },
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            case_id="case_demo",
+            provider_profile_id=profile.id,
+            capability_id="lipsync.video",
+            input={
+                "portrait_uri": video_stored.ref.uri,
+                "audio_uri": audio_stored.ref.uri,
+                "duration_sec": 1.0,
+            },
+        )
+    )
+
+    assert result is None
+    assert invocation.error
+    assert "APIKEY_TASK_IS_RUNNING" in invocation.error.message
+    assert "804" in invocation.error.message
+    assert run_calls == 1
+
+
+def test_runninghub_heygem_submit_accepts_explicit_success_envelope(tmp_path, media_fixture_factory):
+    """The real RunningHub success envelope carries `code: 0` alongside the
+    taskId; the success path must keep working with the code present."""
+    result_video = media_fixture_factory.video(duration_sec=1.0, filename="heygem-result.mp4")
+    source_video = media_fixture_factory.video(duration_sec=1.0, filename="portrait.mp4")
+    source_audio = media_fixture_factory.audio(duration_sec=1.0, filename="speech.wav")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/openapi/v2/media/upload/binary":
+            return httpx.Response(200, json={"data": {"fileName": "input.bin"}})
+        if request.url.path == "/task/openapi/ai-app/run":
+            return httpx.Response(
+                200, json={"code": 0, "msg": "success", "data": {"taskId": "rh-job-1"}}
+            )
+        if request.url.path == "/task/openapi/status":
+            return httpx.Response(200, json={"data": {"status": "success"}})
+        if request.url.path == "/task/openapi/outputs":
+            return httpx.Response(
+                200, json={"data": {"fileUrl": "https://files.example/heygem-result.mp4"}}
+            )
+        if str(request.url) == "https://files.example/heygem-result.mp4":
+            return httpx.Response(200, content=result_video.read_bytes())
+        return httpx.Response(404, text=str(request.url))
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+    video_stored = store_file(gateway.object_store, source_video, purpose="test-video")  # type: ignore[arg-type]
+    audio_stored = store_file(gateway.object_store, source_audio, purpose="test-audio")  # type: ignore[arg-type]
+    secret_ref = gateway.secret_store.put("runninghub-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="runninghub.heygem",
+        capability="lipsync.video",
+        model_id="heygem-webapp",
+        secret_ref=secret_ref,
+        default_options={
+            "base_url": "https://www.runninghub.ai",
+            "webapp_id": "webapp-1",
+            "video_node_id": "video-node",
+            "audio_node_id": "audio-node",
+            "poll_interval": 0,
+            "poll_max_attempts": 1,
+        },
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            case_id="case_demo",
+            provider_profile_id=profile.id,
+            capability_id="lipsync.video",
+            input={
+                "portrait_uri": video_stored.ref.uri,
+                "audio_uri": audio_stored.ref.uri,
+                "duration_sec": 1.0,
+            },
+        )
+    )
+
+    assert invocation.status == ProviderStatus.succeeded
+    assert invocation.external_job_id == "rh-job-1"
+
+
 _PNG_1x1 = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f"
     "15c4890000000b49444154789c6360000200000500017a5eab3f00000000"

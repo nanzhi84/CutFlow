@@ -4,7 +4,7 @@ import mimetypes
 import time
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 from urllib.parse import urlencode
 
 import httpx
@@ -21,6 +21,21 @@ from packages.core.contracts import ArtifactKind, ErrorCode
 RUNNINGHUB_RETRY_ATTEMPTS = 3
 RUNNINGHUB_RETRY_BASE_DELAY = 1.0
 RUNNINGHUB_RETRY_MAX_DELAY = 4.0
+
+# RunningHub returns HTTP 200 even on application-level failures, carrying the
+# real outcome in the envelope ``code``/``msg`` (success is ``code == 0``, or no
+# code at all). Capacity limits are transient and should be retried; auth and
+# balance failures are terminal and must be surfaced verbatim — not collapsed
+# into the misleading "missing task ID". Codes per RunningHub API error docs.
+RUNNINGHUB_OK_CODES = {"0", "200"}
+# 415 TASK_INSTANCE_MAXED / 421 TASK_QUEUE_MAXED / 500 / 1000 UNKNOWN_ERROR.
+RUNNINGHUB_RETRYABLE_CODES = {"415", "421", "500", "1000"}
+# 801/802/806 APIKEY_* / 811 CORPAPIKEY_INVALID / 1002 invalid key.
+RUNNINGHUB_AUTH_CODES = {"801", "802", "806", "811", "1002"}
+# 416 not-enough-wallet / 812 enterprise funds exhausted.
+RUNNINGHUB_QUOTA_CODES = {"416", "812"}
+
+_T = TypeVar("_T")
 
 
 class RunningHubHeyGemProvider:
@@ -142,22 +157,30 @@ class RunningHubHeyGemProvider:
                 },
             ],
         }
-        response = request(
-            self.client,
-            "POST",
-            f"{base_url}/task/openapi/ai-app/run",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json_body=payload,
-            timeout=float(timeout_sec),
-        )
-        data = extract_data(response_json(response))
-        if isinstance(data, dict):
-            task_id = first_value(data, "taskId", "task_id", "id")
-            if task_id:
-                return str(task_id)
-        if isinstance(data, str) and data:
-            return data
-        raise ProviderRuntimeError(ErrorCode.provider_remote_failed, "RunningHub submit response missing task ID.")
+
+        def attempt() -> str:
+            response = request(
+                self.client,
+                "POST",
+                f"{base_url}/task/openapi/ai-app/run",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json_body=payload,
+                timeout=float(timeout_sec),
+            )
+            body = response_json(response)
+            data = extract_data(body)
+            if isinstance(data, dict):
+                task_id = first_value(data, "taskId", "task_id", "id")
+                if task_id:
+                    return str(task_id)
+            if isinstance(data, str) and data:
+                return data
+            # No task id: surface the real envelope reason instead of the
+            # misleading "missing task ID". Capacity limits raise a retryable
+            # error so this loop rides out a transient spike before falling back.
+            raise _runninghub_submit_error(body)
+
+        return self._with_retry(attempt, options, retryable=_runninghub_submit_retryable)
 
     def _resolve_nodes(
         self,
@@ -245,6 +268,45 @@ class RunningHubHeyGemProvider:
         )
         return response_json(response)
 
+    def _with_retry(
+        self,
+        fn: Callable[[], _T],
+        options: dict[str, Any],
+        *,
+        retryable: Callable[[ProviderRuntimeError], bool] | None = None,
+    ) -> _T:
+        """Run ``fn`` with exponential backoff.
+
+        By default only transport-level errors (``provider_remote_failed`` /
+        ``provider_timeout``) are retried; terminal errors (auth, quota,
+        unsupported option) propagate immediately. Callers that classify their
+        own application-level errors pass ``retryable`` to decide per-exception
+        (it still falls back to the transport rule for unmarked errors)."""
+        attempts = int(options.get("retry_attempts") or RUNNINGHUB_RETRY_ATTEMPTS)
+        base_delay = float(
+            options["retry_base_delay"]
+            if options.get("retry_base_delay") is not None
+            else RUNNINGHUB_RETRY_BASE_DELAY
+        )
+        max_delay = float(options.get("retry_max_delay") or RUNNINGHUB_RETRY_MAX_DELAY)
+        for attempt in range(1, attempts + 1):
+            try:
+                return fn()
+            except ProviderRuntimeError as exc:
+                if retryable is not None:
+                    should_retry = retryable(exc)
+                else:
+                    should_retry = exc.code in {
+                        ErrorCode.provider_remote_failed,
+                        ErrorCode.provider_timeout,
+                    }
+                if attempt >= attempts or not should_retry:
+                    raise
+                delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                if delay > 0:
+                    time.sleep(delay)
+        raise ProviderRuntimeError(ErrorCode.provider_remote_failed, "RunningHub retry loop exhausted.")
+
     def _request_with_retry(
         self,
         method: str,
@@ -257,35 +319,19 @@ class RunningHubHeyGemProvider:
         files: dict[str, Any] | None = None,
         timeout: float | None = None,
     ) -> httpx.Response:
-        attempts = int(options.get("retry_attempts") or RUNNINGHUB_RETRY_ATTEMPTS)
-        base_delay = float(
-            options["retry_base_delay"]
-            if options.get("retry_base_delay") is not None
-            else RUNNINGHUB_RETRY_BASE_DELAY
+        return self._with_retry(
+            lambda: request(
+                self.client,
+                method,
+                url,
+                headers=headers,
+                json_body=json_body,
+                data=data,
+                files=files,
+                timeout=timeout,
+            ),
+            options,
         )
-        max_delay = float(options.get("retry_max_delay") or RUNNINGHUB_RETRY_MAX_DELAY)
-        for attempt in range(1, attempts + 1):
-            try:
-                return request(
-                    self.client,
-                    method,
-                    url,
-                    headers=headers,
-                    json_body=json_body,
-                    data=data,
-                    files=files,
-                    timeout=timeout,
-                )
-            except ProviderRuntimeError as exc:
-                if attempt >= attempts or exc.code not in {
-                    ErrorCode.provider_remote_failed,
-                    ErrorCode.provider_timeout,
-                }:
-                    raise
-                delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
-                if delay > 0:
-                    time.sleep(delay)
-        raise ProviderRuntimeError(ErrorCode.provider_remote_failed, "RunningHub retry loop exhausted.")
 
     @staticmethod
     def _normalize_status(payload: Any) -> str:
@@ -321,6 +367,68 @@ class RunningHubHeyGemProvider:
                 if found:
                     return found
         return None
+
+
+def _runninghub_submit_error(payload: dict[str, Any]) -> ProviderRuntimeError:
+    """Translate a RunningHub run-response that carries no task id into a
+    meaningful, correctly-classified error.
+
+    RunningHub answers HTTP 200 even when it refuses the task, putting the
+    reason in ``code``/``msg``. Only the transient capacity codes are tagged
+    ``rh_retryable`` (consumed by :meth:`_runninghub_submit_retryable`) so the
+    submit loop rides out a brief spike before the pipeline falls back; auth,
+    balance and unrecognised rejections are terminal and surfaced verbatim
+    instead of the misleading "missing task ID". Falls back to the legacy
+    message only when there is no envelope to report (e.g. a malformed body)."""
+    code = payload.get("code")
+    code_str = "" if code is None else str(code).strip()
+    msg = str(payload.get("msg") or payload.get("message") or "").strip()
+    detail = " ".join(part for part in (f"code={code_str}" if code_str else "", msg) if part).strip()
+
+    # No envelope to report, or a success code that simply lacks a task id:
+    # the legacy message is the accurate description in both cases.
+    if (not code_str and not msg) or code_str in RUNNINGHUB_OK_CODES:
+        return _mark(ProviderRuntimeError(
+            ErrorCode.provider_remote_failed, "RunningHub submit response missing task ID."
+        ), retryable=False)
+    if code_str in RUNNINGHUB_RETRYABLE_CODES:
+        return _mark(ProviderRuntimeError(
+            ErrorCode.provider_remote_failed,
+            f"RunningHub 任务提交受限，请稍后重试（{detail}）。",
+        ), retryable=True)
+    if code_str in RUNNINGHUB_AUTH_CODES:
+        return _mark(ProviderRuntimeError(
+            ErrorCode.provider_auth_failed,
+            f"RunningHub APIKey 鉴权失败（{detail}）。",
+        ), retryable=False)
+    if code_str in RUNNINGHUB_QUOTA_CODES:
+        return _mark(ProviderRuntimeError(
+            ErrorCode.provider_quota_exceeded,
+            f"RunningHub 账户余额/额度不足（{detail}）。",
+        ), retryable=False)
+    return _mark(ProviderRuntimeError(
+        ErrorCode.provider_remote_failed,
+        f"RunningHub 拒绝任务提交（{detail}）。",
+    ), retryable=False)
+
+
+def _mark(error: ProviderRuntimeError, *, retryable: bool) -> ProviderRuntimeError:
+    """Tag a classified submit error with whether the submit loop should retry."""
+    error.rh_retryable = retryable
+    return error
+
+
+def _runninghub_submit_retryable(error: ProviderRuntimeError) -> bool:
+    """Retry decision for the submit loop: honour ONLY the explicit capacity tag
+    set by :func:`_runninghub_submit_error` (415/421/500/1000 -> True; auth /
+    balance / unrecognised -> False).
+
+    Transport/HTTP errors raised by ``request`` (timeout, reset, network 5xx) are
+    deliberately NOT retried here: the /run submit creates — and bills — a task
+    and carries no idempotency key, so re-sending it after a lost response would
+    duplicate the task. Upload/poll are idempotent and still retry transport
+    errors via the default rule in :meth:`_with_retry`; only /run is exempt."""
+    return bool(getattr(error, "rh_retryable", False))
 
 
 def _nested_get(payload: dict[str, Any], *keys: str) -> Any:
