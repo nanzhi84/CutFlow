@@ -106,6 +106,7 @@ export default function StudioCreatePage() {
     title?: string | null,
     scriptVersionId: string | null = null,
   ): VideoJobPayload {
+    const isBrollOnly = form.contentMode === "broll_only";
     return {
       schema_version: "digital_human_video_request.v1",
       case_id: caseId,
@@ -113,7 +114,7 @@ export default function StudioCreatePage() {
       script: script.trim(),
       publish_content: "",
       script_version_id: scriptVersionId,
-      workflow_template_id: "digital_human_v2",
+      workflow_template_id: isBrollOnly ? "broll_only_v1" : "digital_human_v2",
       voice: {
         voice_id: selectedVoice,
         speed: form.speed,
@@ -126,7 +127,7 @@ export default function StudioCreatePage() {
         template_sequence_ids: [],
       },
       broll: {
-        enabled: form.brollEnabled,
+        enabled: isBrollOnly ? true : form.brollEnabled,
         max_inserts: form.maxInserts,
         min_segment_duration: 3,
       },

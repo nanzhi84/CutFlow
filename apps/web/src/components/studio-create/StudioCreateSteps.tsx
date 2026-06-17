@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import {
+  contentModeLabel,
   emotionOptions,
   lipsyncPresets,
   portraitModeLabel,
@@ -59,22 +60,27 @@ export function ScriptStep({
 }
 
 export function TemplateStep({ form, setField }: { form: FormState; setField: SetField }) {
+  const contentModeOptions: Array<{ value: FormState["contentMode"]; label: string; detail: string }> = [
+    { value: "digital_human", label: "数字人口播", detail: "使用数字人模板、口型同步和 B-roll 插入。" },
+    { value: "broll_only", label: "仅 B_roll 画外音", detail: "不出现数字人，用画外音 + 素材画面铺满，保留字幕/BGM。" },
+  ];
   const options: Array<{ value: FormState["portraitMode"]; label: string; detail: string }> = [
     { value: "agent", label: "自动模板", detail: "由系统按脚本和案例素材选择人像模板。" },
     { value: "specific", label: "指定模板", detail: "素材库接入后可选择固定模板。" },
     { value: "sequence", label: "模板序列", detail: "素材库接入后可编排模板序列。" },
   ];
+  const isBrollOnly = form.contentMode === "broll_only";
   return (
     <div className="grid gap-4">
-      <SectionTitle icon={Film} title="模板" description="本阶段沿用 M6a-1 的自动模板策略，指定模板与序列后续接入素材库。" />
-      <div className="divide-y divide-border/60 border-y border-border/60 md:grid md:grid-cols-3 md:divide-x md:divide-y-0">
-        {options.map((option) => (
+      <SectionTitle icon={Film} title="模板" description="先选择内容模式；数字人口播沿用自动模板策略，指定模板与序列后续接入素材库。" />
+      <div className="divide-y divide-border/60 border-y border-border/60 md:grid md:grid-cols-2 md:divide-x md:divide-y-0">
+        {contentModeOptions.map((option) => (
           <button
             type="button"
             key={option.value}
-            onClick={() => setField("portraitMode", option.value)}
+            onClick={() => setField("contentMode", option.value)}
             className={`px-3 py-4 text-left transition-colors ${
-              form.portraitMode === option.value ? "bg-accent/10 text-accent" : "hover:bg-hover"
+              form.contentMode === option.value ? "bg-accent/10 text-accent" : "hover:bg-hover"
             }`}
           >
             <span className="font-semibold text-text-primary">{option.label}</span>
@@ -82,19 +88,42 @@ export function TemplateStep({ form, setField }: { form: FormState; setField: Se
           </button>
         ))}
       </div>
-      {form.portraitMode !== "agent" ? (
-        <div className="stateBox danger">
-          <span>当前版本请切回自动模板后继续。</span>
+      {isBrollOnly ? (
+        <div className="stateBox muted">
+          <span>仅 B_roll 模式会跳过数字人模板和口型同步。</span>
         </div>
-      ) : null}
-      <label>
-        <span>剪辑节奏</span>
-        <select value={form.rhythmPreset} onChange={(event) => setField("rhythmPreset", event.target.value as FormState["rhythmPreset"])}>
-          <option value="steady">稳</option>
-          <option value="balanced">均衡</option>
-          <option value="fast">快</option>
-        </select>
-      </label>
+      ) : (
+        <>
+          <div className="divide-y divide-border/60 border-y border-border/60 md:grid md:grid-cols-3 md:divide-x md:divide-y-0">
+            {options.map((option) => (
+              <button
+                type="button"
+                key={option.value}
+                onClick={() => setField("portraitMode", option.value)}
+                className={`px-3 py-4 text-left transition-colors ${
+                  form.portraitMode === option.value ? "bg-accent/10 text-accent" : "hover:bg-hover"
+                }`}
+              >
+                <span className="font-semibold text-text-primary">{option.label}</span>
+                <span className="mt-2 block text-sm text-text-secondary">{option.detail}</span>
+              </button>
+            ))}
+          </div>
+          {form.portraitMode !== "agent" ? (
+            <div className="stateBox danger">
+              <span>当前版本请切回自动模板后继续。</span>
+            </div>
+          ) : null}
+          <label>
+            <span>剪辑节奏</span>
+            <select value={form.rhythmPreset} onChange={(event) => setField("rhythmPreset", event.target.value as FormState["rhythmPreset"])}>
+              <option value="steady">稳</option>
+              <option value="balanced">均衡</option>
+              <option value="fast">快</option>
+            </select>
+          </label>
+        </>
+      )}
     </div>
   );
 }
@@ -110,6 +139,7 @@ export function ProductionStep({
   selectedVoice: string;
   voiceOptions: Array<{ id: string; display_name: string }>;
 }) {
+  const isBrollOnly = form.contentMode === "broll_only";
   return (
     <div className="grid gap-4">
       <SectionTitle icon={Mic2} title="成片配置" description="配置声音、口型同步和 B-roll 策略。" />
@@ -144,47 +174,59 @@ export function ProductionStep({
           </select>
         </label>
       </div>
-      <ToggleLine checked={form.lipsyncEnabled} onChange={(checked) => setField("lipsyncEnabled", checked)} label="启用口型同步" />
-      {form.lipsyncEnabled ? (
-        <div className="grid gap-3 border-t border-border/60 pt-4">
-          <div className="grid gap-3 md:grid-cols-2">
-            {(Object.keys(lipsyncPresets) as LipSyncPreset[]).map((preset) => (
-              <button
-                type="button"
-                key={preset}
-                onClick={() => {
-                  setField("lipsyncPreset", preset);
-                  setField("lipsyncVideoExtension", lipsyncPresets[preset].videoExtension);
-                }}
-                className={`border-l-2 px-3 py-2 text-left transition-colors ${
-                  form.lipsyncPreset === preset ? "border-accent bg-accent/10" : "border-border/60 hover:bg-hover"
-                }`}
-              >
-                <span className="font-medium text-text-primary">{lipsyncPresets[preset].label}</span>
-                <span className="mt-1 block text-xs text-text-secondary">{lipsyncPresets[preset].description}</span>
-              </button>
-            ))}
-          </div>
-          <ToggleLine checked={form.lipsyncVideoExtension} onChange={(checked) => setField("lipsyncVideoExtension", checked)} label="允许视频时长扩展" />
-          <label>
-            <span>超时时间（分钟）</span>
-            <input
-              type="number"
-              min={5}
-              max={90}
-              value={form.lipsyncTimeoutMinutes}
-              onChange={(event) => setField("lipsyncTimeoutMinutes", Number(event.target.value))}
-            />
-          </label>
+      {isBrollOnly ? (
+        <div className="stateBox muted">
+          <span>B_roll 已固定启用并铺满全片。</span>
         </div>
-      ) : null}
-      <ToggleLine checked={form.brollEnabled} onChange={(checked) => setField("brollEnabled", checked)} label="启用 B-roll 插入" />
-      {form.brollEnabled ? (
-        <label>
-          <span>B-roll 最大插入数</span>
-          <input type="number" min={0} max={20} value={form.maxInserts} onChange={(event) => setField("maxInserts", Number(event.target.value))} />
-        </label>
-      ) : null}
+      ) : (
+        <>
+          <ToggleLine checked={form.lipsyncEnabled} onChange={(checked) => setField("lipsyncEnabled", checked)} label="启用口型同步" />
+          {form.lipsyncEnabled ? (
+            <div className="grid gap-3 border-t border-border/60 pt-4">
+              <div className="grid gap-3 md:grid-cols-2">
+                {(Object.keys(lipsyncPresets) as LipSyncPreset[]).map((preset) => (
+                  <button
+                    type="button"
+                    key={preset}
+                    onClick={() => {
+                      setField("lipsyncPreset", preset);
+                      setField("lipsyncVideoExtension", lipsyncPresets[preset].videoExtension);
+                    }}
+                    className={`border-l-2 px-3 py-2 text-left transition-colors ${
+                      form.lipsyncPreset === preset ? "border-accent bg-accent/10" : "border-border/60 hover:bg-hover"
+                    }`}
+                  >
+                    <span className="font-medium text-text-primary">{lipsyncPresets[preset].label}</span>
+                    <span className="mt-1 block text-xs text-text-secondary">{lipsyncPresets[preset].description}</span>
+                  </button>
+                ))}
+              </div>
+              <ToggleLine
+                checked={form.lipsyncVideoExtension}
+                onChange={(checked) => setField("lipsyncVideoExtension", checked)}
+                label="允许视频时长扩展"
+              />
+              <label>
+                <span>超时时间（分钟）</span>
+                <input
+                  type="number"
+                  min={5}
+                  max={90}
+                  value={form.lipsyncTimeoutMinutes}
+                  onChange={(event) => setField("lipsyncTimeoutMinutes", Number(event.target.value))}
+                />
+              </label>
+            </div>
+          ) : null}
+          <ToggleLine checked={form.brollEnabled} onChange={(checked) => setField("brollEnabled", checked)} label="启用 B-roll 插入" />
+          {form.brollEnabled ? (
+            <label>
+              <span>B-roll 最大插入数</span>
+              <input type="number" min={0} max={20} value={form.maxInserts} onChange={(event) => setField("maxInserts", Number(event.target.value))} />
+            </label>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
@@ -238,9 +280,16 @@ export function SubmitStep({ form, selectedVoiceLabel, scriptCount }: { form: Fo
       <SectionTitle icon={Play} title="提交" description="确认配置后提交生产任务，成功后自动跳转到成片页。" />
       <div className="grid gap-3 md:grid-cols-2">
         <ReviewItem label="脚本" value={`${scriptCount} 字`} />
+        <ReviewItem label="内容模式" value={contentModeLabel(form.contentMode)} />
         <ReviewItem label="声音" value={`${selectedVoiceLabel} · ${form.speed.toFixed(1)}x`} />
-        <ReviewItem label="模板" value={`${portraitModeLabel(form.portraitMode)} · ${rhythmLabel(form.rhythmPreset)}`} />
-        <ReviewItem label="口型" value={form.lipsyncEnabled ? lipsyncPresets[form.lipsyncPreset].label : "关闭"} />
+        {form.contentMode === "digital_human" ? (
+          <>
+            <ReviewItem label="模板" value={`${portraitModeLabel(form.portraitMode)} · ${rhythmLabel(form.rhythmPreset)}`} />
+            <ReviewItem label="口型" value={form.lipsyncEnabled ? lipsyncPresets[form.lipsyncPreset].label : "关闭"} />
+          </>
+        ) : (
+          <ReviewItem label="画面" value="B_roll 铺满全片" />
+        )}
         <ReviewItem label="字幕" value={form.subtitleEnabled ? `${subtitleLabel(form.subtitleStyle)} · ${form.subtitleSize}px` : "关闭"} />
         <ReviewItem label="BGM" value={form.bgmEnabled ? `${Math.round(form.bgmVolume * 100)}%` : "关闭"} />
       </div>
@@ -256,9 +305,14 @@ export function ConfigSummary({ form, selectedVoiceLabel, scriptCount }: { form:
         <p className="text-sm">偏好会自动保存，刷新页面后继续沿用。</p>
       </div>
       <div className="divide-y divide-border/60">
+        <SummaryRow icon={Film} label="内容模式" value={contentModeLabel(form.contentMode)} />
         <SummaryRow icon={Mic2} label="声音" value={`${selectedVoiceLabel} · ${form.speed.toFixed(1)}x`} />
-        <SummaryRow icon={Film} label="模板" value={`${portraitModeLabel(form.portraitMode)} · ${rhythmLabel(form.rhythmPreset)}`} />
-        <SummaryRow icon={Sparkles} label="口型" value={form.lipsyncEnabled ? lipsyncPresets[form.lipsyncPreset].label : "关闭"} />
+        {form.contentMode === "digital_human" ? (
+          <>
+            <SummaryRow icon={Film} label="模板" value={`${portraitModeLabel(form.portraitMode)} · ${rhythmLabel(form.rhythmPreset)}`} />
+            <SummaryRow icon={Sparkles} label="口型" value={form.lipsyncEnabled ? lipsyncPresets[form.lipsyncPreset].label : "关闭"} />
+          </>
+        ) : null}
         <SummaryRow icon={Captions} label="字幕" value={form.subtitleEnabled ? `${subtitleLabel(form.subtitleStyle)} · ${form.subtitleSize}px` : "关闭"} />
         <SummaryRow icon={Music} label="BGM" value={form.bgmEnabled ? `${Math.round(form.bgmVolume * 100)}%` : "关闭"} />
         <div className="flex items-baseline justify-between gap-3 py-3">

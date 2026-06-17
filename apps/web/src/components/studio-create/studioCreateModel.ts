@@ -1,6 +1,7 @@
 export type StudioStep = 0 | 1 | 2 | 3 | 4;
 
 export type LipSyncPreset = "balanced" | "large_motion" | "strict_face" | "audio_priority";
+export type ContentMode = "digital_human" | "broll_only";
 
 export type FormState = {
   title: string;
@@ -9,6 +10,7 @@ export type FormState = {
   // or a generated script version, so the digital-human job carries the canonical
   // script_version_id instead of only the raw text. Cleared on manual script edits.
   scriptVersionId: string | null;
+  contentMode: ContentMode;
   voiceId: string;
   speed: number;
   emotion: string;
@@ -35,6 +37,7 @@ const defaultForm: FormState = {
   title: "",
   script: "先指出内容生产低效。再展示 Case Memory 如何复用经验。最后推动发布复盘。",
   scriptVersionId: null,
+  contentMode: "digital_human",
   voiceId: "",
   speed: 1,
   emotion: "neutral",
@@ -82,9 +85,11 @@ export function loadStoredForm(): FormState {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) return defaultForm;
     const parsed = JSON.parse(saved) as Partial<FormState>;
+    const contentMode = parsed.contentMode === "broll_only" ? "broll_only" : defaultForm.contentMode;
     return {
       ...defaultForm,
       ...parsed,
+      contentMode,
       speed: clampNumber(Number(parsed.speed ?? defaultForm.speed), 0.5, 2, defaultForm.speed),
       maxInserts: clampNumber(Number(parsed.maxInserts ?? defaultForm.maxInserts), 0, 20, defaultForm.maxInserts),
       subtitleSize: clampNumber(Number(parsed.subtitleSize ?? defaultForm.subtitleSize), 12, 96, defaultForm.subtitleSize),
@@ -103,7 +108,9 @@ export function loadStoredForm(): FormState {
 
 export function validateStep(step: StudioStep, form: FormState, selectedVoice: string) {
   if (step === 0 && !form.script.trim()) return "请先输入脚本正文";
-  if (step === 1 && form.portraitMode !== "agent") return "当前版本请使用自动模板，指定模板和序列将在素材库里程碑接入";
+  if (step === 1 && form.contentMode === "digital_human" && form.portraitMode !== "agent") {
+    return "当前版本请使用自动模板，指定模板和序列将在素材库里程碑接入";
+  }
   if (step === 2 && !selectedVoice) return "请选择可用声音";
   if (step === 2 && (form.speed < 0.5 || form.speed > 2)) return "语速需在 0.5 到 2.0 之间";
   if (step === 3 && form.subtitleEnabled && (form.subtitleSize < 12 || form.subtitleSize > 96)) return "字幕字号需在 12 到 96 之间";
@@ -117,6 +124,11 @@ export function validateAll(form: FormState, selectedVoice: string) {
     if (message) return { step: index as StudioStep, message };
   }
   return null;
+}
+
+export function contentModeLabel(value: FormState["contentMode"]) {
+  if (value === "broll_only") return "仅 B_roll 画外音";
+  return "数字人口播";
 }
 
 export function portraitModeLabel(value: FormState["portraitMode"]) {
