@@ -9,7 +9,10 @@ work for a node should edit only that node's module.
 from __future__ import annotations
 
 from packages.production.pipeline.nodes import (
+    broll_coverage_planning,
     broll_planning,
+    broll_render_base,
+    broll_timeline_planning,
     export_finished_video,
     finalize_run_report,
     lipsync,
@@ -28,7 +31,10 @@ from packages.production.pipeline.nodes import (
 )
 
 __all__ = [
+    "broll_coverage_planning",
     "broll_planning",
+    "broll_render_base",
+    "broll_timeline_planning",
     "export_finished_video",
     "finalize_run_report",
     "lipsync",

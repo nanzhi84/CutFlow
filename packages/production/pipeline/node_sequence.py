@@ -27,11 +27,28 @@ NODE_SEQUENCE = [
     "FinalizeRunReport",
 ]
 
+BROLL_ONLY_SEQUENCE = [
+    "ValidateRequest",
+    "LoadCaseContext",
+    "ResolveCreativeIntent",
+    "TTS",
+    "MaterialPackPlanning",
+    "NarrationAlignment",
+    "BrollCoveragePlanning",
+    "StylePlanning",
+    "BrollTimelinePlanning",
+    "BrollRenderBase",
+    "SubtitleAndBgmMix",
+    "ExportFinishedVideo",
+    "FinalizeRunReport",
+]
+
 # Expected total node count per workflow template id. Used to render run progress
 # as completed / total across the *whole* pipeline (node runs are created lazily,
 # so the count of existing node runs is not the denominator).
 WORKFLOW_TEMPLATE_NODE_COUNTS = {
     "digital_human_v2": len(NODE_SEQUENCE),
+    "broll_only_v1": len(BROLL_ONLY_SEQUENCE),
 }
 
 

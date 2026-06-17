@@ -61,7 +61,7 @@ class NodeContext:
 
     @property
     def template(self) -> WorkflowTemplate:
-        return self.adapter.template
+        return self.adapter._template_for_run(self.run)
 
     @property
     def request(self) -> DigitalHumanVideoRequest:

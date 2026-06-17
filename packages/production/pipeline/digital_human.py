@@ -47,7 +47,7 @@ from packages.core.storage import Repository
 from packages.core.storage.object_store import get_object_store
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError, NodeOutput, WorkflowRuntimeAdapter, manifest_hash
-from packages.production.pipeline.node_sequence import NODE_SEQUENCE
+from packages.production.pipeline.node_sequence import BROLL_ONLY_SEQUENCE, NODE_SEQUENCE
 from packages.media.assets import local_object_path, store_file
 from packages.media.rendering import generate_seed_audio, generate_seed_video
 from packages.media.video.ffmpeg import FfmpegCommandError, probe_media
@@ -73,9 +73,12 @@ from packages.production.pipeline.reuse import ReusePlan, ReuseSourceRun, comput
 
 __all__ = [
     "NODE_SEQUENCE",
+    "BROLL_ONLY_SEQUENCE",
     "RunState",
     "degradation_notice",
+    "broll_only_template",
     "digital_human_template",
+    "template_for",
     "LocalRuntimeAdapter",
     "DigitalHumanWorkflow",
     "build_digital_human_workflow",
@@ -94,11 +97,14 @@ NODE_HANDLERS = {
     "NarrationAlignment": nodes.narration_alignment.run,
     "PortraitPlanning": nodes.portrait_planning.run,
     "BrollPlanning": nodes.broll_planning.run,
+    "BrollCoveragePlanning": nodes.broll_coverage_planning.run,
     "StylePlanning": nodes.style_planning.run,
     "TimelinePlanning": nodes.timeline_planning.run,
+    "BrollTimelinePlanning": nodes.broll_timeline_planning.run,
     "PortraitTrackBuild": nodes.portrait_track_build.run,
     "LipSync": nodes.lipsync.run,
     "RenderFinalTimeline": nodes.render_final_timeline.run,
+    "BrollRenderBase": nodes.broll_render_base.run,
     "SubtitleAndBgmMix": nodes.subtitle_and_bgm_mix.run,
     "ExportFinishedVideo": nodes.export_finished_video.run,
     "FinalizeRunReport": nodes.finalize_run_report.run,
@@ -106,72 +112,84 @@ NODE_HANDLERS = {
 
 logger = logging.getLogger(__name__)
 
-def digital_human_template() -> WorkflowTemplate:
+_PROVIDER_SIDE_EFFECT_NODES = {"TTS", "ResolveCreativeIntent", "LipSync", "ExportFinishedVideo"}
+
+_NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
+    "ValidateRequest": [ArtifactKind.validated_production_spec],
+    "LoadCaseContext": [ArtifactKind.case_context],
+    "ResolveCreativeIntent": [ArtifactKind.creative_intent],
+    "TTS": [ArtifactKind.audio_tts],
+    "MaterialPackPlanning": [ArtifactKind.plan_material_pack],
+    "NarrationAlignment": [ArtifactKind.audio_alignment, ArtifactKind.narration_units],
+    "PortraitPlanning": [ArtifactKind.plan_portrait],
+    "BrollPlanning": [ArtifactKind.plan_broll],
+    "BrollCoveragePlanning": [ArtifactKind.plan_broll],
+    "StylePlanning": [ArtifactKind.plan_style],
+    "TimelinePlanning": [ArtifactKind.plan_timeline, ArtifactKind.plan_render],
+    "BrollTimelinePlanning": [ArtifactKind.plan_timeline, ArtifactKind.plan_render],
+    "PortraitTrackBuild": [ArtifactKind.video_portrait_track],
+    "LipSync": [ArtifactKind.video_lipsync, ArtifactKind.lipsync_report],
+    "RenderFinalTimeline": [ArtifactKind.video_rendered],
+    "BrollRenderBase": [ArtifactKind.video_rendered],
+    "SubtitleAndBgmMix": [ArtifactKind.video_final, ArtifactKind.subtitle_ass],
+    "ExportFinishedVideo": [
+        ArtifactKind.video_finished,
+        ArtifactKind.cover_image,
+        ArtifactKind.publish_package,
+    ],
+    "FinalizeRunReport": [ArtifactKind.run_report_public, ArtifactKind.run_report_debug],
+}
+
+
+def _build_template(template_id: str, version: str, sequence: list[str]) -> WorkflowTemplate:
     # ExportFinishedVideo makes a PAID image.generate call on the gated AI-cover
     # path, so it is declared here too: this gives it a non-None idempotency_key so
     # the reuse planner accounts for the side effect and can safely replay it,
     # instead of treating the node as pure and silently re-firing the paid call.
-    provider_side_effect_nodes = {"TTS", "ResolveCreativeIntent", "LipSync", "ExportFinishedVideo"}
-    nodes = [
+    node_specs = [
         NodeSpec(
             node_id=node_id,
             input_schema=f"{node_id}.input.v1",
-            output_artifact_kinds=[],
-            side_effects=["provider_call"] if node_id in provider_side_effect_nodes else [],
+            output_artifact_kinds=list(_NODE_OUTPUT_KINDS[node_id]),
+            side_effects=["provider_call"] if node_id in _PROVIDER_SIDE_EFFECT_NODES else [],
             idempotency_key=(
-                f"digital_human_v2:{node_id}:{{input_manifest_hash}}"
-                if node_id in provider_side_effect_nodes
+                f"{template_id}:{node_id}:{{input_manifest_hash}}"
+                if node_id in _PROVIDER_SIDE_EFFECT_NODES
                 else None
             ),
         )
-        for node_id in NODE_SEQUENCE
+        for node_id in sequence
     ]
-    for spec in nodes:
-        if spec.node_id == "ValidateRequest":
-            spec.output_artifact_kinds.append(ArtifactKind.validated_production_spec)
-        elif spec.node_id == "LoadCaseContext":
-            spec.output_artifact_kinds.append(ArtifactKind.case_context)
-        elif spec.node_id == "ResolveCreativeIntent":
-            spec.output_artifact_kinds.append(ArtifactKind.creative_intent)
-        elif spec.node_id == "TTS":
-            spec.output_artifact_kinds.append(ArtifactKind.audio_tts)
-        elif spec.node_id == "MaterialPackPlanning":
-            spec.output_artifact_kinds.append(ArtifactKind.plan_material_pack)
-        elif spec.node_id == "NarrationAlignment":
-            spec.output_artifact_kinds.extend([ArtifactKind.audio_alignment, ArtifactKind.narration_units])
-        elif spec.node_id == "PortraitPlanning":
-            spec.output_artifact_kinds.append(ArtifactKind.plan_portrait)
-        elif spec.node_id == "BrollPlanning":
-            spec.output_artifact_kinds.append(ArtifactKind.plan_broll)
-        elif spec.node_id == "StylePlanning":
-            spec.output_artifact_kinds.append(ArtifactKind.plan_style)
-        elif spec.node_id == "TimelinePlanning":
-            spec.output_artifact_kinds.extend([ArtifactKind.plan_timeline, ArtifactKind.plan_render])
-        elif spec.node_id == "PortraitTrackBuild":
-            spec.output_artifact_kinds.append(ArtifactKind.video_portrait_track)
-        elif spec.node_id == "LipSync":
-            spec.output_artifact_kinds.extend([ArtifactKind.video_lipsync, ArtifactKind.lipsync_report])
-        elif spec.node_id == "RenderFinalTimeline":
-            spec.output_artifact_kinds.append(ArtifactKind.video_rendered)
-        elif spec.node_id == "SubtitleAndBgmMix":
-            spec.output_artifact_kinds.extend([ArtifactKind.video_final, ArtifactKind.subtitle_ass])
-        elif spec.node_id == "ExportFinishedVideo":
-            spec.output_artifact_kinds.extend(
-                [ArtifactKind.video_finished, ArtifactKind.cover_image, ArtifactKind.publish_package]
-            )
-        elif spec.node_id == "FinalizeRunReport":
-            spec.output_artifact_kinds.extend(
-                [ArtifactKind.run_report_public, ArtifactKind.run_report_debug]
-            )
     return WorkflowTemplate(
-        workflow_template_id="digital_human_v2",
-        version="v1",
-        nodes=nodes,
+        workflow_template_id=template_id,
+        version=version,
+        nodes=node_specs,
         edges=[
-            WorkflowEdge(from_node_id=NODE_SEQUENCE[index], to_node_id=NODE_SEQUENCE[index + 1])
-            for index in range(len(NODE_SEQUENCE) - 1)
+            WorkflowEdge(from_node_id=sequence[index], to_node_id=sequence[index + 1])
+            for index in range(len(sequence) - 1)
         ],
     )
+
+
+def digital_human_template() -> WorkflowTemplate:
+    return _build_template("digital_human_v2", "v1", NODE_SEQUENCE)
+
+
+def broll_only_template() -> WorkflowTemplate:
+    return _build_template("broll_only_v1", "v1", BROLL_ONLY_SEQUENCE)
+
+
+_TEMPLATE_BUILDERS = {
+    "digital_human_v2": digital_human_template,
+    "broll_only_v1": broll_only_template,
+}
+
+
+def template_for(workflow_template_id: str) -> WorkflowTemplate:
+    try:
+        return _TEMPLATE_BUILDERS[workflow_template_id]()
+    except KeyError as exc:
+        raise ValueError(f"Unknown workflow template id: {workflow_template_id}") from exc
 
 
 class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
@@ -339,7 +357,8 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         )
         if mode == "resume" and from_run_id:
             start_index = self._reuse_prefix(run, state, from_run_id, reuse_plan)
-        for index, node_id in enumerate(NODE_SEQUENCE[start_index:], start=start_index):
+        sequence = self._sequence_for_run(run)
+        for _index, node_id in enumerate(sequence[start_index:], start=start_index):
             if self.repository.runs[run.id].status == RunStatus.cancelled:
                 return
             if not self._execute_node(node_id, run, state):
@@ -382,7 +401,8 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             )
         if self.repository.runs[run_id].status != RunStatus.running:
             return self._node_activity_summary(run_id, node_id)
-        if self._execute_node(node_id, self.repository.runs[run_id], state) and node_id == NODE_SEQUENCE[-1]:
+        run = self.repository.runs[run_id]
+        if self._execute_node(node_id, run, state) and node_id == self._sequence_for_run(run)[-1]:
             self._complete_run(run_id)
         return self._node_activity_summary(run_id, node_id)
 
@@ -403,15 +423,22 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
     def request_cancel(self, run_id: str, *, force: bool = False, reason: str | None = None) -> WorkflowRun:
         return self.cancel_run(run_id, force=force, reason=reason)
 
-    @staticmethod
-    def _next_unfinished_node_id(node_runs: list[NodeRun]) -> str | None:
+    def _template_for_run(self, run: WorkflowRun) -> WorkflowTemplate:
+        return template_for(run.workflow_template_id)
+
+    def _sequence_for_run(self, run: WorkflowRun) -> list[str]:
+        return [spec.node_id for spec in self._template_for_run(run).nodes]
+
+    def _next_unfinished_node_id(
+        self, run: WorkflowRun, node_runs: list[NodeRun]
+    ) -> str | None:
         """First template node not yet completed — the node that was due to run."""
         done = {
             node_run.node_id
             for node_run in node_runs
             if node_run.status in {NodeStatus.succeeded, NodeStatus.skipped, NodeStatus.degraded}
         }
-        return next((node_id for node_id in NODE_SEQUENCE if node_id not in done), None)
+        return next((node_id for node_id in self._sequence_for_run(run) if node_id not in done), None)
 
     def mark_run_failed(self, run_id: str, *, reason: str = "Worker lost or node activity timed out.") -> WorkflowRun:
         """Fail a run whose node activity died without writing a terminal status.
@@ -461,7 +488,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             )
             node_runs[running_index] = failed_node
         else:
-            next_node_id = self._next_unfinished_node_id(node_runs)
+            next_node_id = self._next_unfinished_node_id(run, node_runs)
             failed_node = None
             if next_node_id is not None:
                 failed_node = NodeRun(
@@ -897,7 +924,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                     run=self.repository.runs[from_run_id],
                     node_runs=previous,
                 ),
-                self.template,
+                template_for(run.workflow_template_id),
                 self.repository.artifacts,
             )
         previous_by_node = {node.node_id: node for node in previous}
