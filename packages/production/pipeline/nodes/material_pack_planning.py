@@ -29,6 +29,7 @@ from packages.planning.material.broll_pack import _MIN_CLEAN_SPAN_SEC
 from packages.production.pipeline._node_context import NodeContext
 
 _BROLL_RECENT_SELECTION_LIMIT = 80
+_PORTRAIT_MIN_CLEAN_SPAN_SEC = 0.08
 
 
 def run(ctx: NodeContext) -> NodeOutput:
@@ -82,11 +83,16 @@ def run(ctx: NodeContext) -> NodeOutput:
         for asset in portrait_visual_assets
         if (annotation := repo.annotation_v4_for_asset(asset.id)) is not None
     }
+    portrait_avoid_cache: dict[str, list[tuple[float, float]]] = {}
     for clip_candidate in rank_portrait_clip_candidates(
         annotations=portrait_annotations,
         required_duration=0.0,
         ledger_entries=portrait_ledger,
     ):
+        avoid = portrait_avoid_cache.get(clip_candidate.asset_id)
+        if avoid is None:
+            avoid = avoid_intervals(portrait_annotations[clip_candidate.asset_id])
+            portrait_avoid_cache[clip_candidate.asset_id] = avoid
         portrait_candidates.append(
             MaterialCandidate(
                 asset_id=clip_candidate.asset_id,
@@ -99,6 +105,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                     "source_start": clip_candidate.source_start,
                     "source_end": clip_candidate.source_end,
                     "duration": clip_candidate.duration,
+                    "avoid_spans": [[float(s), float(e)] for s, e in avoid],
                 },
             )
         )
@@ -108,6 +115,7 @@ def run(ctx: NodeContext) -> NodeOutput:
     _portrait_from_video_count = sum(
         1 for c in portrait_candidates if (c.metadata or {}).get("clip_id")
     )
+    portrait_motion_excluded = _portrait_motion_excluded_count(portrait_annotations)
 
     # --- b-roll (real annotation matching; no annotation -> no candidate) -----
     keywords = extract_keywords(request.script)
@@ -202,6 +210,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             and not broll_annotations,
             "broll_person_excluded": broll_person_excluded,
             "broll_motion_excluded": broll_motion_excluded,
+            "portrait_motion_excluded": portrait_motion_excluded,
             "bgm_missing": request.bgm.enabled and not bgm_candidates,
             # Unified video bucket visibility: how many portrait candidates came from
             # per-clip lip-sync windows, and the honest "operator uploaded visual
@@ -248,6 +257,31 @@ def _broll_motion_excluded_count(annotations, *, asset_kinds: dict[str, str]) ->
                 clip.end,
                 bad_spans,
                 min_len=_MIN_CLEAN_SPAN_SEC,
+            )
+            original_span = (round(float(clip.start), 3), round(float(clip.end), 3))
+            if not clean_spans or clean_spans != [original_span]:
+                excluded += 1
+    return excluded
+
+
+def _portrait_motion_excluded_count(annotations) -> int:
+    excluded = 0
+    for annotation in annotations.values():
+        bad_spans = avoid_intervals(annotation)
+        if not bad_spans:
+            continue
+        for clip in annotation.clips:
+            if clip.usage.role.value == "avoid":
+                continue
+            if not clip_is_lip_sync_usable(clip):
+                continue
+            if not _clip_overlaps_bad_span(clip, bad_spans):
+                continue
+            clean_spans = subtract_bad_spans(
+                clip.start,
+                clip.end,
+                bad_spans,
+                min_len=_PORTRAIT_MIN_CLEAN_SPAN_SEC,
             )
             original_span = (round(float(clip.start), 3), round(float(clip.end), 3))
             if not clean_spans or clean_spans != [original_span]:
