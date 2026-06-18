@@ -3,7 +3,7 @@ import { useCallback, useState } from "react";
 import { resolveAcceptedDropFiles } from "./dropZoneModel";
 
 type DropZoneProps = {
-  onFilesDrop: (files: File[]) => void;
+  onFilesDrop: (files: File[], details: { acceptedFiles: File[] }) => void;
   accept?: string;
   multiple?: boolean;
   maxSize?: number;
@@ -36,7 +36,7 @@ export function DropZone({
       setError(result.error);
       if (result.acceptedFiles.length === 0) return;
       setSelectedFiles(result.files);
-      onFilesDrop(result.acceptedFiles);
+      onFilesDrop(result.files, { acceptedFiles: result.acceptedFiles });
     },
     [accept, maxSize, multiple, onFilesDrop, selectedFiles],
   );
@@ -75,7 +75,10 @@ export function DropZone({
           className="hidden"
           accept={accept}
           multiple={multiple}
-          onChange={(event) => commitFiles(Array.from(event.target.files ?? []))}
+          onChange={(event) => {
+            commitFiles(Array.from(event.target.files ?? []));
+            event.currentTarget.value = "";
+          }}
         />
       </label>
       {error ? <p className="mt-2 text-sm text-status-error">{error}</p> : null}
@@ -91,7 +94,7 @@ export function DropZone({
                 onClick={() => {
                   const next = selectedFiles.filter((_, itemIndex) => itemIndex !== index);
                   setSelectedFiles(next);
-                  onFilesDrop(next);
+                  onFilesDrop(next, { acceptedFiles: [] });
                 }}
                 className="rounded-lg p-1 text-text-tertiary hover:bg-surface hover:text-text-primary"
                 aria-label="移除文件"

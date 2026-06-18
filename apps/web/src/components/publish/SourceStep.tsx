@@ -5,7 +5,7 @@ import { useToast } from "../ui/Toast";
 import { useUpload } from "../../hooks/useUpload";
 import { formatDuration } from "../../lib/format";
 import { PlatformChips } from "./PlatformChips";
-import type { BatchDefaults, SourcePoolItem } from "./publishModel";
+import { displayFinishedVideoTitle, type BatchDefaults, type SourcePoolItem } from "./publishModel";
 
 type SourceStepProps = {
   embedded: boolean;
@@ -100,9 +100,10 @@ export function SourceStep({
             </div>
             {isVideosLoading ? <Loader2 className="h-5 w-5 animate-spin text-text-tertiary" /> : null}
           </div>
-          <div className="grid gap-2">
+          <div className="grid max-h-[min(520px,calc(100vh-18rem))] gap-2 overflow-y-auto pr-1">
             {videos.map((video) => {
               const active = poolIds.has(`finished:${video.id}`);
+              const displayTitle = displayFinishedVideoTitle(video);
               return (
                 <button
                   key={video.id}
@@ -117,7 +118,7 @@ export function SourceStep({
                       <Film className="h-4 w-4" />
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate font-semibold text-text-primary">{video.title}</span>
+                      <span className="block truncate font-semibold text-text-primary">{displayTitle}</span>
                       <span className="mt-0.5 block text-xs text-text-tertiary">
                         {formatDuration(video.duration_sec)} · QC {video.qc_status}
                       </span>
@@ -146,7 +147,7 @@ export function SourceStep({
             accept={VIDEO_ACCEPT}
             multiple
             maxSize={600}
-            onFilesDrop={(files) => void uploadFiles(files)}
+            onFilesDrop={(_files, details) => void uploadFiles(details.acceptedFiles)}
             label="拖拽外部视频到此处"
           />
           {upload.status !== "idle" ? (

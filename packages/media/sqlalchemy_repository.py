@@ -258,6 +258,27 @@ class SqlAlchemyMediaRepository:
             )
             if artifact is None:
                 raise NodeExecutionError(ErrorCode.artifact_missing, "Completed upload artifact is missing.")
+            thumbnails = list(
+                session.scalars(
+                    select(ArtifactRow)
+                    .where(ArtifactRow.kind == ArtifactKind.cover_image.value)
+                    .where(ArtifactRow.payload.contains({"source_artifact_id": artifact.id}))
+                    .order_by(ArtifactRow.created_at.desc())
+                )
+            )
+            thumbnail = next(
+                (
+                    row
+                    for row in thumbnails
+                    if isinstance(row.payload, dict) and row.payload.get("thumbnail_label") == "mid"
+                ),
+                thumbnails[0] if thumbnails else None,
+            )
+            media_info = (
+                MediaInfo.model_validate(artifact.media_info)
+                if isinstance(artifact.media_info, dict)
+                else None
+            )
             row = MediaAssetRow(
                 id=new_id("asset"),
                 case_id=payload.case_id,
@@ -267,11 +288,18 @@ class SqlAlchemyMediaRepository:
                 tags=payload.tags,
                 annotation_status="pending",
                 usable=True,
+                thumbnail_uri=thumbnail.uri if thumbnail is not None else None,
+                duration_sec=media_info.duration_sec if media_info is not None else None,
+                width=media_info.width if media_info is not None else None,
+                height=media_info.height if media_info is not None else None,
             )
             session.add(row)
             session.commit()
             session.refresh(row)
-            return media_asset_row_to_contract(row)
+            return media_asset_row_to_contract(
+                row,
+                thumbnail_url=self._signed_thumbnail_url(row.thumbnail_uri),
+            )
 
     def media_source_for_asset(self, asset_id: str) -> tuple[str, MediaInfo | None] | None:
         # Returns the source artifact's (uri, media_info) so the preview endpoint can

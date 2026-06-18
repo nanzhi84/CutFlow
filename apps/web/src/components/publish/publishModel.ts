@@ -146,3 +146,13 @@ export function itemCanPublish(item: PublishBatchItem) {
 export function itemCanRetry(item: PublishBatchItem) {
   return item.status === "publish_failed";
 }
+
+export function displayFinishedVideoTitle(video: Pick<FinishedVideo, "id" | "title" | "video_number">) {
+  const number = video.video_number?.trim() || video.id.slice(0, 11);
+  const title = publishTitleForFinishedVideo(video);
+  return `${number} · ${title}`;
+}
+
+export function publishTitleForFinishedVideo(video: Pick<FinishedVideo, "title">) {
+  return video.title?.trim() || "未命名成片";
+}

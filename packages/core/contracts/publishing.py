@@ -15,6 +15,7 @@ class FinishedVideo(EntityMeta):
     case_id: str
     run_id: str | None = None
     title: str
+    video_number: str | None = None
     video_artifact: ArtifactRef
     cover_artifact: ArtifactRef | None = None
     subtitle_artifact: ArtifactRef | None = None

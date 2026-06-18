@@ -6,6 +6,7 @@ import { DropZone } from "../ui/DropZone";
 import { Modal } from "../ui/Modal";
 import { useToast } from "../ui/Toast";
 import { templateKindLabels, type TemplateKind, type UploadPlaceholder, uploadStageLabel } from "./libraryModel";
+import { buildUploadPlaceholders } from "./libraryInteractionModel";
 
 type TemplateUploadModalProps = {
   isOpen: boolean;
@@ -50,53 +51,70 @@ export function TemplateUploadModal({
     }
     setError(null);
     setIsSubmitting(true);
-    const replaceUploadIds: string[] = [];
-    const successfulPlaceholders: string[] = [];
-    for (const file of files) {
-      const placeholderId = `${file.name}_${file.lastModified}_${Math.random().toString(16).slice(2)}`;
-      onPlaceholder({ id: placeholderId, name: file.name, kind, status: "uploading", progress: 30 });
-      try {
-        const result = await upload.uploadFile({
-          file,
-          kind: kind as UploadKind,
-          caseId,
-          stabilize,
-          metadata: {
-            title: file.name,
-            scene: scene.trim(),
-            ...(mode === "replace" ? { template_mode: "replace" } : {}),
-          },
-        });
-        onPlaceholder({ id: placeholderId, name: file.name, kind, status: "uploading", progress: 100 });
-        if (mode === "replace") {
-          replaceUploadIds.push(result.upload_session.id);
-          successfulPlaceholders.push(placeholderId);
-        } else {
-          await onSuccess(placeholderId);
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "上传失败";
-        onPlaceholder({ id: placeholderId, name: file.name, kind, status: "failed", progress: 100, error: message });
-      }
-    }
-    if (mode === "replace" && replaceUploadIds.length > 0) {
-      try {
-        await onAutoReplace(replaceUploadIds);
-        await Promise.all(successfulPlaceholders.map((placeholderId) => onSuccess(placeholderId)));
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "自动匹配替换失败";
-        setError(message);
-        setIsSubmitting(false);
-        toast.error("自动匹配替换失败", err);
-        return;
-      }
-    }
-    setIsSubmitting(false);
-    toast.success(mode === "replace" ? "替换处理完成" : "上传处理完成", "成功素材会进入当前案例网格，失败卡片会保留错误。");
+    const submittedFiles = [...files];
+    const submittedScene = scene.trim();
+    const submittedStabilize = stabilize;
+    const submittedMode = mode;
+    const submittedPlaceholders = buildUploadPlaceholders(submittedFiles, kind);
+    submittedPlaceholders.forEach(onPlaceholder);
     setFiles([]);
     setStabilize(false);
     upload.reset();
     onClose();
+    setIsSubmitting(false);
+
+    void processUploads(submittedFiles, submittedPlaceholders, {
+      scene: submittedScene,
+      stabilize: submittedStabilize,
+      mode: submittedMode,
+      caseId,
+    });
+  }
+
+  async function processUploads(
+    submittedFiles: File[],
+    submittedPlaceholders: UploadPlaceholder[],
+    options: { scene: string; stabilize: boolean; mode: UploadMode; caseId: string },
+  ) {
+    const replaceUploadIds: string[] = [];
+    const successfulPlaceholders: string[] = [];
+    for (let index = 0; index < submittedFiles.length; index += 1) {
+      const file = submittedFiles[index];
+      const placeholder = submittedPlaceholders[index];
+      try {
+        const result = await upload.uploadFile({
+          file,
+          kind: kind as UploadKind,
+          caseId: options.caseId,
+          stabilize: options.stabilize,
+          metadata: {
+            title: file.name,
+            scene: options.scene,
+            ...(options.mode === "replace" ? { template_mode: "replace" } : {}),
+          },
+        });
+        onPlaceholder({ ...placeholder, progress: 100 });
+        if (options.mode === "replace") {
+          replaceUploadIds.push(result.upload_session.id);
+          successfulPlaceholders.push(placeholder.id);
+        } else {
+          await onSuccess(placeholder.id);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "上传失败";
+        onPlaceholder({ ...placeholder, status: "failed", progress: 100, error: message });
+      }
+    }
+    if (options.mode === "replace" && replaceUploadIds.length > 0) {
+      try {
+        await onAutoReplace(replaceUploadIds);
+        await Promise.all(successfulPlaceholders.map((placeholderId) => onSuccess(placeholderId)));
+      } catch (err) {
+        toast.error("自动匹配替换失败", err);
+        return;
+      }
+    }
+    toast.success(options.mode === "replace" ? "替换处理完成" : "上传处理完成", "成功素材会进入当前案例网格，失败卡片会保留错误。");
   }
 
   return (

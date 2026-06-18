@@ -18,6 +18,8 @@ import {
   defaultBatchDefaults,
   isBatchActive,
   itemPatchFromDraft,
+  displayFinishedVideoTitle,
+  publishTitleForFinishedVideo,
 } from "../../components/publish/publishModel";
 import { StudioTabs } from "../../components/StudioTabs";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
@@ -112,7 +114,8 @@ export default function PublishCenterPage() {
 
   function addFinished(video: FinishedVideo) {
     const id = `finished:${video.id}`;
-    setSourcePool((current) => (current.some((item) => item.id === id) ? current : [...current, { id, type: "finished", title: video.title, video }]));
+    const title = displayFinishedVideoTitle(video);
+    setSourcePool((current) => (current.some((item) => item.id === id) ? current : [...current, { id, type: "finished", title, video }]));
   }
 
   function addUpload(file: File, publishPackage: PublishPackage) {
@@ -131,7 +134,7 @@ export default function PublishCenterPage() {
         } else {
           const created = await api.publishing.createPackage({
             source_finished_video_id: source.video.id,
-            title: source.video.title,
+            title: publishTitleForFinishedVideo(source.video),
             description: "",
           });
           packageIds.push(created.id);

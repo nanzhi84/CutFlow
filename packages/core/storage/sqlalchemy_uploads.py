@@ -115,16 +115,37 @@ class SqlAlchemyUploadRepository:
     def create_artifact_from_upload(
         self, upload: UploadSession, *, media_info: MediaInfo | None = None
     ) -> Artifact:
+        return self.create_artifact(
+            kind=ArtifactKind.uploaded_file,
+            uri=upload.object_uri,
+            size_bytes=upload.size_bytes,
+            sha256=upload.sha256,
+            media_info=media_info,
+            payload_schema="UploadedFileArtifact.v1",
+            payload=upload.model_dump(mode="json"),
+        )
+
+    def create_artifact(
+        self,
+        *,
+        kind: ArtifactKind,
+        payload_schema: str,
+        payload,
+        uri: str | None = None,
+        size_bytes: int | None = None,
+        sha256: str | None = None,
+        media_info: MediaInfo | None = None,
+    ) -> Artifact:
         with self.session_factory() as session:
             row = ArtifactRow(
                 id=new_id("art"),
-                kind=ArtifactKind.uploaded_file.value,
-                uri=upload.object_uri,
-                size_bytes=upload.size_bytes,
-                sha256=upload.sha256,
+                kind=kind.value,
+                uri=uri,
+                size_bytes=size_bytes,
+                sha256=sha256,
                 media_info=media_info.model_dump(mode="json") if media_info else None,
-                payload_schema="UploadedFileArtifact.v1",
-                payload=upload.model_dump(mode="json"),
+                payload_schema=payload_schema,
+                payload=payload,
             )
             session.add(row)
             session.commit()

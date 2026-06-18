@@ -4402,6 +4402,8 @@ export interface components {
             run_id?: string | null;
             /** Title */
             title: string;
+            /** Video Number */
+            video_number?: string | null;
             video_artifact: components["schemas"]["ArtifactRef"];
             cover_artifact?: components["schemas"]["ArtifactRef"] | null;
             subtitle_artifact?: components["schemas"]["ArtifactRef"] | null;

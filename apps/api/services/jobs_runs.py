@@ -86,6 +86,14 @@ def _admit_run(
         next_job_status = c.JobStatus.queued
     elif (
         next_job_status == c.JobStatus.failed
+        and mode == "retry"
+        and from_run_id is not None
+        and repo.runs[from_run_id].status == c.RunStatus.failed
+    ):
+        assert_transition("job", next_job_status, c.JobStatus.queued)
+        next_job_status = c.JobStatus.queued
+    elif (
+        next_job_status == c.JobStatus.failed
         and mode == "resume"
         and from_run_id is not None
         and _run_has_retryable_failure(repo, from_run_id)

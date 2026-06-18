@@ -754,11 +754,13 @@ class RubricBumpProposalRow(TimestampMixin, Base):
 
 class FinishedVideoRow(TimestampMixin, Base):
     __tablename__ = "finished_videos"
+    __table_args__ = (UniqueConstraint("case_id", "video_number", name="uq_finished_videos_case_video_number"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
     run_id: Mapped[str | None] = mapped_column(ForeignKey("workflow_runs.id"))
     title: Mapped[str] = mapped_column(String, nullable=False)
+    video_number: Mapped[str | None] = mapped_column(String)
     video_artifact: Mapped[dict] = mapped_column(JSONB, nullable=False)
     cover_artifact: Mapped[dict | None] = mapped_column(JSONB)
     subtitle_artifact: Mapped[dict | None] = mapped_column(JSONB)

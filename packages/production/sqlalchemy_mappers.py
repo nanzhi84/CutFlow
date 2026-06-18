@@ -175,6 +175,7 @@ def finished_video_row_to_contract(row: FinishedVideoRow) -> FinishedVideo:
         case_id=row.case_id,
         run_id=row.run_id,
         title=row.title,
+        video_number=row.video_number,
         video_artifact=ArtifactRef.model_validate(row.video_artifact),
         cover_artifact=ArtifactRef.model_validate(row.cover_artifact) if row.cover_artifact else None,
         subtitle_artifact=ArtifactRef.model_validate(row.subtitle_artifact) if row.subtitle_artifact else None,

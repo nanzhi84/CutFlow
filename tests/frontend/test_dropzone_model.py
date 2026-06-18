@@ -34,6 +34,7 @@ const single = resolveAcceptedDropFiles(incomingFiles, {
 });
 console.log(JSON.stringify({
   batchNames: batch.files.map((file) => file.name),
+  acceptedNames: batch.acceptedFiles.map((file) => file.name),
   singleNames: single.files.map((file) => file.name),
   batchError: batch.error,
   singleError: single.error,
@@ -53,6 +54,7 @@ def test_dropzone_multiple_mode_reports_the_full_accumulated_selection() -> None
     result = _run_dropzone_model_probe()
 
     assert result["batchNames"] == ["first.mp4", "second.mov", "third.mp4"]
+    assert result["acceptedNames"] == ["second.mov", "third.mp4"]
     assert result["singleNames"] == ["second.mov"]
     assert result["batchError"] is None
     assert result["singleError"] is None

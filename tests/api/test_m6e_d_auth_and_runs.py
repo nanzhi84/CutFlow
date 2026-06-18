@@ -49,6 +49,17 @@ def _seed_run(app, *, status: c.RunStatus) -> tuple[c.Job, c.WorkflowRun]:
     return job, run
 
 
+class _NoopWorkflow:
+    def start_run(self, *, job, run, template):
+        return None
+
+    def resume_run(self, *, source_run_id, new_run, reuse_plan):
+        return None
+
+    def cancel_run(self, run_id, *, force: bool = False, reason: str | None = None):
+        return None
+
+
 def test_login_accepts_identifier_email_or_display_name() -> None:
     with TestClient(create_app()) as client:
         by_name = client.post(
@@ -148,3 +159,28 @@ def test_delete_run_record_removes_terminal_record_but_keeps_finished_video() ->
         listed = client.get("/api/cases/case_demo/runs")
         assert listed.status_code == 200, listed.text
         assert all(item["run_id"] != run.id for item in listed.json()["items"])
+
+
+def test_retry_failed_run_requeues_failed_job_without_invalid_transition() -> None:
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.workflow = _NoopWorkflow()
+        _login_admin(client)
+        job, run = _seed_run(app, status=c.RunStatus.failed)
+        app.state.repository.jobs[job.id] = job.model_copy(
+            update={
+                "active_run_id": run.id,
+                "status": c.JobStatus.failed,
+            }
+        )
+
+        response = client.post(f"/api/runs/{run.id}/retry", json={"reason": "pytest"})
+
+        assert response.status_code == 201, response.text
+        retry_runs = [
+            item
+            for item in app.state.repository.runs.values()
+            if item.retry_of_run_id == run.id
+        ]
+        assert len(retry_runs) == 1
+        assert app.state.repository.jobs[job.id].status == c.JobStatus.queued

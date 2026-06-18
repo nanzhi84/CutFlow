@@ -79,7 +79,7 @@ def _node_run() -> NodeRun:
     )
 
 
-def _seed_state(repository, object_store, factory, *, lipsync_report: dict | None) -> RunState:
+def _seed_state(repository, object_store, factory, *, lipsync_report: dict | None, title: str | None = "归因测试") -> RunState:
     video_file = factory.video(duration_sec=1.0, filename="final.mp4")
     stored = store_file(object_store, video_file, purpose="final-video")
     final = repository.create_artifact(
@@ -122,7 +122,7 @@ def _seed_state(repository, object_store, factory, *, lipsync_report: dict | Non
         artifacts[ArtifactKind.lipsync_report] = report
     request = DigitalHumanVideoRequest(
         case_id="case_demo",
-        title="归因测试",
+        title=title,
         publish_content="案例",
         script="第一句。第二句。",
         voice={"voice_id": "voice_sandbox"},
@@ -131,11 +131,11 @@ def _seed_state(repository, object_store, factory, *, lipsync_report: dict | Non
     return RunState(request=request, artifacts=artifacts)
 
 
-def _export(adapter, object_store, media_fixture_factory, monkeypatch, *, lipsync_report):
+def _export(adapter, object_store, media_fixture_factory, monkeypatch, *, lipsync_report, title: str | None = "归因测试"):
     monkeypatch.setattr(
         "packages.production.pipeline.digital_human.get_object_store", lambda: object_store
     )
-    state = _seed_state(adapter.repository, object_store, media_fixture_factory, lipsync_report=lipsync_report)
+    state = _seed_state(adapter.repository, object_store, media_fixture_factory, lipsync_report=lipsync_report, title=title)
     ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
     from packages.production.pipeline import nodes
 
@@ -161,6 +161,14 @@ def test_primary_heygem_attribution(tmp_path, media_fixture_factory, monkeypatch
     assert finished.lipsync_provider_id == HEYGEM_PROVIDER
     assert finished.lipsync_fallback_used is False
     assert finished.lipsync_fallback_reason is None
+
+
+def test_blank_title_uses_finished_video_fallback(tmp_path, media_fixture_factory, monkeypatch):
+    adapter, object_store = _adapter(tmp_path)
+    finished = _export(
+        adapter, object_store, media_fixture_factory, monkeypatch, lipsync_report=None, title=None
+    )
+    assert finished.title == "未命名成片"
 
 
 def test_fallback_videoretalk_attribution(tmp_path, media_fixture_factory, monkeypatch):

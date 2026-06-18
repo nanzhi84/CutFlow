@@ -170,7 +170,7 @@ def complete_upload(payload: c.CompleteUploadRequest, request: Request) -> c.Com
             media_info=media_info,
         )
         artifact_ref = repository(request).artifact_ref(artifact.id)
-        _create_upload_thumbnails(request, artifact)
+    _create_upload_thumbnails(request, artifact)
     media_asset = None
     publish_package = None
     replace_mode = payload.metadata.get("template_mode") == "replace"
@@ -319,17 +319,28 @@ def _create_upload_thumbnails(request: Request, artifact: c.Artifact) -> None:
     for thumbnail in thumbnails:
         ref = object_store(request).prepare_upload(thumbnail.path.name, "thumbnails")
         stored = object_store(request).put_bytes(ref, thumbnail.path.read_bytes())
-        repository(request).create_artifact(
-            kind=c.ArtifactKind.cover_image,
-            payload_schema="uri-only",
-            payload={
-                "source_artifact_id": artifact.id,
-                "thumbnail_label": thumbnail.label,
-            },
-            uri=stored.ref.uri,
-            sha256=stored.sha256,
-            media_info=thumbnail.media_info,
-        )
+        payload = {
+            "source_artifact_id": artifact.id,
+            "thumbnail_label": thumbnail.label,
+        }
+        if upload_repository(request) is not None:
+            upload_repository(request).create_artifact(
+                kind=c.ArtifactKind.cover_image,
+                payload_schema="uri-only",
+                payload=payload,
+                uri=stored.ref.uri,
+                sha256=stored.sha256,
+                media_info=thumbnail.media_info,
+            )
+        else:
+            repository(request).create_artifact(
+                kind=c.ArtifactKind.cover_image,
+                payload_schema="uri-only",
+                payload=payload,
+                uri=stored.ref.uri,
+                sha256=stored.sha256,
+                media_info=thumbnail.media_info,
+            )
 
 
 def cancel_upload(upload_session_id: str, request: Request) -> c.UploadSession:

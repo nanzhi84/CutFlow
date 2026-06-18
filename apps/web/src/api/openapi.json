@@ -12700,6 +12700,17 @@
             "type": "string",
             "title": "Title"
           },
+          "video_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Number"
+          },
           "video_artifact": {
             "$ref": "#/components/schemas/ArtifactRef"
           },

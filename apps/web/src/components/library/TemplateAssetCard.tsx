@@ -1,7 +1,8 @@
 import { Clock, Download, Eye, Loader2, Maximize2, Play, RefreshCw, Upload } from "lucide-react";
 import type { MaterialUsageRankingItem, MediaAssetCard } from "../../api/client";
 import { formatDuration, formatRelativeTime, shortId } from "../../lib/format";
-import { annotationStatusLabels, annotationTone, readAssetDurationSec, readAssetThumbnailUrl } from "./libraryModel";
+import { annotationStatusLabels, annotationTone, readAssetDurationSec } from "./libraryModel";
+import { readCardThumbnailUrl } from "./libraryInteractionModel";
 
 type TemplateAssetCardProps = {
   card: MediaAssetCard;
@@ -39,7 +40,7 @@ export function TemplateAssetCard({
   onOpenAnnotation,
 }: TemplateAssetCardProps) {
   const asset = card.asset;
-  const thumbnailUrl = readAssetThumbnailUrl(asset);
+  const thumbnailUrl = readCardThumbnailUrl(card);
   const durationSec = readAssetDurationSec(asset);
   return (
     <article
@@ -58,10 +59,16 @@ export function TemplateAssetCard({
             <input type="checkbox" checked={selected} onChange={onToggleSelected} aria-label="选择素材" />
           </label>
         ) : null}
-        {previewUrl ? (
+        {thumbnailUrl ? (
+          <button type="button" onClick={onPreview} className="relative flex aspect-video w-full items-center justify-center" aria-label="放大预览">
+            <img src={thumbnailUrl} alt={asset.title} className="aspect-video w-full object-cover opacity-90 transition-opacity group-hover:opacity-100" />
+            <span className="absolute grid h-12 w-12 place-items-center rounded-full bg-black/45 text-white/90">
+              <Play className="h-6 w-6 translate-x-0.5" />
+            </span>
+          </button>
+        ) : previewUrl ? (
           <video
             src={previewUrl}
-            poster={thumbnailUrl ?? undefined}
             muted
             loop
             playsInline
@@ -70,13 +77,6 @@ export function TemplateAssetCard({
             onMouseEnter={(event) => void event.currentTarget.play().catch(() => undefined)}
             onMouseLeave={(event) => event.currentTarget.pause()}
           />
-        ) : thumbnailUrl ? (
-          <button type="button" onClick={onPreview} className="relative flex aspect-video w-full items-center justify-center" aria-label="放大预览">
-            <img src={thumbnailUrl} alt={asset.title} className="aspect-video w-full object-cover opacity-90 transition-opacity group-hover:opacity-100" />
-            <span className="absolute grid h-12 w-12 place-items-center rounded-full bg-black/45 text-white/90">
-              <Play className="h-6 w-6 translate-x-0.5" />
-            </span>
-          </button>
         ) : (
           <button type="button" onClick={onPreview} className="flex aspect-video w-full items-center justify-center text-white/75" aria-label="放大预览">
             <Play className="h-9 w-9" />

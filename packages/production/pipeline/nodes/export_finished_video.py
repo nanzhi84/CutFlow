@@ -32,6 +32,7 @@ from packages.media.assets import store_file
 from packages.media.cover import CoverPromptInputs, build_cover_prompt
 from packages.media.video.ffmpeg import FfmpegCommandError, extract_thumbnails
 from packages.core.observability import record_funnel_event
+from packages.production.finished_video_numbering import next_finished_video_number
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline.degradation_policies import COVER_FALLBACK_POLICY
 
@@ -69,6 +70,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         case_id=state.request.case_id,
         run_id=run.id,
         title=state.request.title or script.title,
+        video_number=_next_video_number(repository, state.request.case_id),
         video_artifact=repository.artifact_ref(video_artifact.id),
         cover_artifact=repository.artifact_ref(cover_artifact.id),
         subtitle_artifact=(
@@ -130,6 +132,12 @@ def run(ctx: NodeContext) -> NodeOutput:
     )
 
 
+def _next_video_number(repository, case_id: str) -> str:
+    return next_finished_video_number(
+        video.video_number for video in repository.finished_videos.values() if video.case_id == case_id
+    )
+
+
 def _resolve_script_version(state, repository) -> ScriptVersion:
     """Link the adopted ScriptVersion for this run.
 
@@ -152,7 +160,7 @@ def _resolve_script_version(state, repository) -> ScriptVersion:
     return ScriptVersion(
         id=requested_id or new_id("script"),
         case_id=state.request.case_id,
-        title=state.request.title or "Untitled script",
+        title=state.request.title or "未命名成片",
         script=state.request.script,
         creative_intent_artifact_id=creative_intent_artifact_id,
     )

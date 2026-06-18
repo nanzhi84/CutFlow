@@ -121,6 +121,7 @@ def import_batch(payload: c.CreateImportBatchRequest, request: Request) -> c.Imp
                     id=internal_id,
                     case_id=str(row.get("case_id", "case_demo")),
                     title=str(row.get("title", "Imported finished video")),
+                    video_number=str(row.get("video_number")) if row.get("video_number") else None,
                     video_artifact=repository(request).artifact_ref(artifact.id),
                     duration_sec=float(row.get("duration_sec", 0)),
                     qc_status=str(row.get("qc_status", "pending")),

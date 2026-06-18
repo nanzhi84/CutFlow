@@ -14,6 +14,7 @@ import {
   type UploadPlaceholder,
   readPreviewUrlMeta,
 } from "../../components/library/libraryModel";
+import { addPendingIds, removePendingId, removePendingIds } from "../../components/library/libraryInteractionModel";
 import { toDisplayUrl } from "../../lib/url";
 import { SearchInput } from "../../components/ui/SearchInput";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
@@ -54,6 +55,8 @@ export function TemplatesTab() {
   const [previewPlayable, setPreviewPlayable] = useState<Record<string, boolean>>({});
   const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
   const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null);
+  const [analyzingAssetIds, setAnalyzingAssetIds] = useState<Set<string>>(() => new Set());
+  const [batchAnnotationPending, setBatchAnnotationPending] = useState(false);
 
   const casesQuery = useQuery({
     queryKey: ["library", "cases", caseSearch],
@@ -158,15 +161,6 @@ export function TemplatesTab() {
 
   const visiblePlaceholders = placeholders.filter((item) => item.kind === "video");
 
-  const rerunMutation = useMutation({
-    mutationFn: (assetId: string) => api.annotations.rerun(assetId, { force: false }),
-    onSuccess: async (response) => {
-      await queryClient.invalidateQueries({ queryKey: ["library", "media", selectedCaseId] });
-      toast.success("分析任务已提交", response.run_id ? `运行 ID：${shortId(response.run_id)}` : "已更新标注状态");
-    },
-    onError: (error) => toast.error("分析失败", error),
-  });
-
   const stabilizeMutation = useMutation({
     mutationFn: (assetIds: string[]) => api.mediaAssets.batchStabilize({ asset_ids: assetIds }),
     onSuccess: async (response) => {
@@ -182,40 +176,26 @@ export function TemplatesTab() {
     onError: (error) => toast.error("批量增稳失败", error),
   });
 
-  // Batch annotation (force=false): VLM-analyzes the selected assets, skipping
-  // any that are already annotated so it never re-bills annotated material.
-  const annotateMutation = useMutation({
-    mutationFn: (assetIds: string[]) =>
-      api.annotations.batch({ schema_version: "annotation_batch_request.v1", asset_ids: assetIds, force: false }),
-    onSuccess: async (response) => {
-      await queryClient.invalidateQueries({ queryKey: ["library", "media", selectedCaseId] });
-      toast.success(
-        "批量标注已提交",
-        `新标注 ${response.completed_count} 个 · 跳过 ${response.skipped_count} 个已标注 · 失败 ${response.failed_count} 个`,
-      );
-      setSelectedAssetIds([]);
-      setAnnotateTargetIds(null);
-    },
-    onError: (error) => {
-      toast.error("批量标注失败", error);
-      setAnnotateTargetIds(null);
-    },
-  });
-
   // All loaded assets in the current view that are not yet annotated — the
   // 智能标注 target and the count force=false will actually bill the VLM for.
   const unannotatedAssetIds = useMemo(
-    () => activeItems.filter((card) => card.asset.annotation_status !== "annotated").map((card) => card.asset.id),
-    [activeItems],
+    () =>
+      activeItems
+        .filter((card) => card.asset.annotation_status !== "annotated" && !analyzingAssetIds.has(card.asset.id))
+        .map((card) => card.asset.id),
+    [activeItems, analyzingAssetIds],
   );
   // Of the ids queued for the confirm dialog, how many are unannotated (the ones
   // that will really hit the VLM; already-annotated ones are skipped server-side).
   const annotateTargetUnannotatedCount = useMemo(
     () =>
       activeItems.filter(
-        (card) => annotateTargetIds?.includes(card.asset.id) && card.asset.annotation_status !== "annotated",
+        (card) =>
+          annotateTargetIds?.includes(card.asset.id) &&
+          card.asset.annotation_status !== "annotated" &&
+          !analyzingAssetIds.has(card.asset.id),
       ).length,
-    [activeItems, annotateTargetIds],
+    [activeItems, annotateTargetIds, analyzingAssetIds],
   );
 
   // Batch delete: the backend exposes per-asset DELETE, so fan out one call per
@@ -253,6 +233,56 @@ export function TemplatesTab() {
       document.getElementById(`asset-${assetId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 60);
     window.setTimeout(() => setHighlightAssetId((current) => (current === assetId ? null : current)), 2600);
+  }
+
+  function runAnnotation(assetId: string) {
+    if (analyzingAssetIds.has(assetId)) return;
+    setAnalyzingAssetIds((current) => addPendingIds(current, [assetId]));
+    void api.annotations
+      .rerun(assetId, { force: false })
+      .then(async (response) => {
+        await queryClient.invalidateQueries({ queryKey: ["library", "media", selectedCaseId] });
+        toast.success("分析任务已提交", response.run_id ? `运行 ID：${shortId(response.run_id)}` : "已更新标注状态");
+      })
+      .catch((error) => toast.error("分析失败", error))
+      .finally(() => {
+        setAnalyzingAssetIds((current) => removePendingId(current, assetId));
+      });
+  }
+
+  function runAnnotationBatch(assetIds: string[]) {
+    if (batchAnnotationPending) return;
+    const requestedIds = new Set(assetIds);
+    const targetIds = activeItems
+      .filter(
+        (card) =>
+          requestedIds.has(card.asset.id) &&
+          card.asset.annotation_status !== "annotated" &&
+          !analyzingAssetIds.has(card.asset.id),
+      )
+      .map((card) => card.asset.id);
+    setAnnotateTargetIds(null);
+    setSelectedAssetIds([]);
+    if (targetIds.length === 0) {
+      toast.info("无需标注", "选中的素材已经标注。");
+      return;
+    }
+    setBatchAnnotationPending(true);
+    setAnalyzingAssetIds((current) => addPendingIds(current, targetIds));
+    void api.annotations
+      .batch({ schema_version: "annotation_batch_request.v1", asset_ids: targetIds, force: false })
+      .then(async (response) => {
+        await queryClient.invalidateQueries({ queryKey: ["library", "media", selectedCaseId] });
+        toast.success(
+          "批量标注已提交",
+          `新标注 ${response.completed_count} 个 · 跳过 ${response.skipped_count} 个已标注 · 失败 ${response.failed_count} 个`,
+        );
+      })
+      .catch((error) => toast.error("批量标注失败", error))
+      .finally(() => {
+        setBatchAnnotationPending(false);
+        setAnalyzingAssetIds((current) => removePendingIds(current, targetIds));
+      });
   }
 
   const replaceMutation = useMutation({
@@ -344,9 +374,7 @@ export function TemplatesTab() {
   }
 
   function clearSuccessfulPlaceholder(id: string) {
-    window.setTimeout(() => {
-      setPlaceholders((current) => current.filter((item) => item.id !== id));
-    }, 900);
+    setPlaceholders((current) => current.filter((item) => item.id !== id));
   }
 
   if (!selectedCaseId) {
@@ -436,12 +464,12 @@ export function TemplatesTab() {
             <button
               className="btn-secondary"
               type="button"
-              disabled={!selectedCaseId || unannotatedAssetIds.length === 0 || annotateMutation.isPending}
+              disabled={!selectedCaseId || unannotatedAssetIds.length === 0 || batchAnnotationPending}
               onClick={() => setAnnotateTargetIds(unannotatedAssetIds)}
               title="自动选择未标注的素材并发起 VLM 标注"
             >
-              {annotateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
-              <span>智能标注{unannotatedAssetIds.length > 0 ? ` (${unannotatedAssetIds.length})` : ""}</span>
+              {batchAnnotationPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
+              <span>{batchAnnotationPending ? "标注中" : `智能标注${unannotatedAssetIds.length > 0 ? ` (${unannotatedAssetIds.length})` : ""}`}</span>
             </button>
             <button className="btn-secondary" type="button" onClick={() => setBatchMode((value) => !value)}>
               <CheckCircle2 className="h-4 w-4" />
@@ -485,7 +513,7 @@ export function TemplatesTab() {
             selectedCount={selectedAssetIds.length}
             totalCount={filteredItems.length}
             isStabilizing={stabilizeMutation.isPending}
-            isAnnotating={annotateMutation.isPending}
+            isAnnotating={batchAnnotationPending || analyzingAssetIds.size > 0}
             isDeleting={deleteMutation.isPending}
             onSelectAll={() => setSelectedAssetIds(filteredItems.map((card) => card.asset.id))}
             onStabilize={() => stabilizeMutation.mutate(selectedAssetIds)}
@@ -511,7 +539,7 @@ export function TemplatesTab() {
               previewUrl={toDisplayUrl(previewUrls[card.asset.id] ?? card.preview_url)}
               batchMode={batchMode}
               selected={selectedAssetIds.includes(card.asset.id)}
-              isAnalyzing={rerunMutation.isPending && rerunMutation.variables === card.asset.id}
+              isAnalyzing={analyzingAssetIds.has(card.asset.id)}
               isReplacing={replaceMutation.isPending && replaceMutation.variables?.assetId === card.asset.id}
               isPreviewLoading={previewLoadingId === card.asset.id}
               usage={usageByAssetId.get(card.asset.id)}
@@ -521,7 +549,7 @@ export function TemplatesTab() {
                 )
               }
               onPreview={() => void openPreview(card.asset.id)}
-              onAnalyze={() => rerunMutation.mutate(card.asset.id)}
+              onAnalyze={() => runAnnotation(card.asset.id)}
               onReplaceSource={() => openReplacePicker(card.asset.id)}
               onOpenAnnotation={() => setAnnotationAssetId(card.asset.id)}
             />
@@ -567,8 +595,8 @@ export function TemplatesTab() {
         kind="video"
         onPlaceholder={setPlaceholder}
         onSuccess={async (placeholderId) => {
-          clearSuccessfulPlaceholder(placeholderId);
           await queryClient.invalidateQueries({ queryKey: ["library", "media", selectedCaseId] });
+          clearSuccessfulPlaceholder(placeholderId);
         }}
         onAutoReplace={autoReplaceUploads}
       />
@@ -582,7 +610,7 @@ export function TemplatesTab() {
       <ConfirmDialog
         isOpen={annotateTargetIds !== null}
         onClose={() => setAnnotateTargetIds(null)}
-        onConfirm={() => annotateMutation.mutate(annotateTargetIds ?? [])}
+        onConfirm={() => runAnnotationBatch(annotateTargetIds ?? [])}
         title="批量标注素材"
         message={`将对 ${annotateTargetIds?.length ?? 0} 个素材中未标注的部分调用 VLM 视觉模型标注；已标注的会自动跳过。`}
         consequences={[
@@ -592,7 +620,7 @@ export function TemplatesTab() {
         ]}
         confirmText="开始标注"
         type="warning"
-        isLoading={annotateMutation.isPending}
+        isLoading={batchAnnotationPending}
       />
       <ConfirmDialog
         isOpen={deleteConfirmOpen}

@@ -4,6 +4,7 @@ import mimetypes
 from pathlib import Path
 
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from packages.core.contracts import (
@@ -102,6 +103,7 @@ from packages.media.sqlalchemy_repository import (
 )
 from packages.media.video.ffmpeg import probe_media
 from packages.production.editor_handoff import EditorHandoffAsset, EditorHandoffBuilder, EditorHandoffInput
+from packages.production.finished_video_numbering import next_finished_video_number
 from packages.production.pipeline.node_sequence import expected_node_count
 from packages.production.jianying_draft import JianyingDraftBuilder, JianyingDraftInput
 from packages.production.sqlalchemy_mappers import (
@@ -138,6 +140,9 @@ SUPPORTED_IMPORT_TYPES = {
     "prompt_seed",
     "provider_price",
 }
+
+_FINISHED_VIDEO_NUMBER_RETRY_LIMIT = 3
+_FINISHED_VIDEO_NUMBER_CONSTRAINT = "uq_finished_videos_case_video_number"
 
 NODE_LABELS = {
     "ValidateRequest": "校验请求",
@@ -261,6 +266,21 @@ class SqlAlchemyProductionRepository:
         run: WorkflowRun,
         repository: Repository,
     ) -> None:
+        for attempt in range(_FINISHED_VIDEO_NUMBER_RETRY_LIMIT):
+            try:
+                self._sync_workflow_snapshot_once(job=job, run=run, repository=repository)
+                return
+            except IntegrityError as exc:
+                if attempt == _FINISHED_VIDEO_NUMBER_RETRY_LIMIT - 1 or not self._is_finished_video_number_conflict(exc):
+                    raise
+
+    def _sync_workflow_snapshot_once(
+        self,
+        *,
+        job: Job,
+        run: WorkflowRun,
+        repository: Repository,
+    ) -> None:
         with self.session_factory() as session:
             session.merge(self._job_row(job))
             session.flush()
@@ -302,9 +322,14 @@ class SqlAlchemyProductionRepository:
             finished_video_ids = set()
             for finished in repository.finished_videos.values():
                 if finished.run_id == run.id:
+                    existing = session.get(FinishedVideoRow, finished.id)
+                    if existing is None:
+                        finished = finished.model_copy(
+                            update={"video_number": self._next_finished_video_number(session, finished.case_id)}
+                        )
                     finished_video_ids.add(finished.id)
                     session.merge(self._finished_video_row(finished))
-            session.flush()
+                    session.flush()
 
             for version in repository.video_versions.values():
                 if version.finished_video_id in finished_video_ids:
@@ -333,6 +358,18 @@ class SqlAlchemyProductionRepository:
                 if entry.run_id == run.id:
                     session.merge(self._selection_ledger_row(entry))
             session.commit()
+
+    @staticmethod
+    def _is_finished_video_number_conflict(exc: IntegrityError) -> bool:
+        original = getattr(exc, "orig", None)
+        diagnostic = getattr(original, "diag", None)
+        constraint_name = getattr(diagnostic, "constraint_name", None)
+        if constraint_name == _FINISHED_VIDEO_NUMBER_CONSTRAINT:
+            return True
+        message = str(original or exc)
+        return _FINISHED_VIDEO_NUMBER_CONSTRAINT in message or (
+            "finished_videos.case_id" in message and "finished_videos.video_number" in message
+        )
 
     def case_run_cards(self, *, case_id: str, request_id: str, limit: int = 50) -> PageResponse[RunCard] | None:
         with self.session_factory() as session:
@@ -457,6 +494,10 @@ class SqlAlchemyProductionRepository:
                         if artifact_row is not None:
                             contract = artifact_row_to_contract(artifact_row)
                             repository.artifacts[contract.id] = contract
+                for video_row in session.scalars(
+                    select(FinishedVideoRow).where(FinishedVideoRow.case_id == run.case_id)
+                ):
+                    repository.finished_videos[video_row.id] = finished_video_row_to_contract(video_row)
             run_ids = {run_id}
             if run.resume_from_run_id:
                 source_row = session.get(WorkflowRunRow, run.resume_from_run_id)
@@ -607,10 +648,6 @@ class SqlAlchemyProductionRepository:
                 if row.node_run_id in node_ids:
                     row.node_run_id = None
                 row.updated_at = now
-            if node_ids:
-                for row in session.scalars(select(MediaAssetRow).where(MediaAssetRow.node_run_id.in_(node_ids))):
-                    row.node_run_id = None
-                    row.updated_at = now
             for row in session.scalars(select(ProviderInvocationRow).where(ProviderInvocationRow.run_id == run_id)):
                 row.run_id = None
                 if row.node_run_id in node_ids:
@@ -645,6 +682,11 @@ class SqlAlchemyProductionRepository:
                     session.delete(job)
             session.commit()
             return True
+
+    def _next_finished_video_number(self, session: Session, case_id: str) -> str:
+        return next_finished_video_number(
+            session.scalars(select(FinishedVideoRow.video_number).where(FinishedVideoRow.case_id == case_id))
+        )
 
     def list_finished_videos(self, *, case_id: str, limit: int = 50) -> list[FinishedVideo]:
         with self.session_factory() as session:
@@ -1178,6 +1220,7 @@ class SqlAlchemyProductionRepository:
                     id=internal_id,
                     case_id=case_id,
                     title=str(row.get("title", "Imported finished video")),
+                    video_number=_optional_str(row.get("video_number")),
                     video_artifact=artifact_ref_from_row(artifact).model_dump(mode="json"),
                     duration_sec=float(row.get("duration_sec", 0)),
                     qc_status=str(row.get("qc_status", "pending")),
@@ -1620,6 +1663,7 @@ class SqlAlchemyProductionRepository:
             case_id=finished.case_id,
             run_id=finished.run_id,
             title=finished.title,
+            video_number=finished.video_number,
             video_artifact=finished.video_artifact.model_dump(mode="json"),
             cover_artifact=finished.cover_artifact.model_dump(mode="json") if finished.cover_artifact else None,
             subtitle_artifact=(
