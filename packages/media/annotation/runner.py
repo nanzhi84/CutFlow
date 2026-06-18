@@ -354,7 +354,9 @@ class SensorDeps:
         import time
 
         def _detect_quality_events(video_path: str) -> list[dict]:
-            return list(sensors.detect_cv_quality_events(video_path) or [])
+            return list(sensors.detect_cv_quality_events(video_path) or []) + list(
+                sensors.detect_motion_events(video_path) or []
+            )
 
         def _detect_speech_islands(video_path: str) -> list:
             return list(sensors.detect_speech_islands(video_path) or [])

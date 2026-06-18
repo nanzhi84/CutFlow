@@ -99,6 +99,17 @@ const ROLE_LABELS: Record<string, string> = {
   avoid: "避用",
 };
 const RISK_TIER_LABELS: Record<string, string> = { hard: "硬风险", soft: "软风险" };
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  camera_drop: "收机下坠",
+  shake: "镜头抖动",
+  blur: "失焦模糊",
+  occlusion: "遮挡/黑屏",
+  blooper_laugh: "笑场/NG",
+  look_off_camera: "视线离镜",
+  exit_frame: "出画",
+  retake_pause: "重拍停顿",
+  manual_note: "人工备注",
+};
 
 function translateToken(value: string | undefined | null, labels: Record<string, string>, fallback = "未标注"): string {
   const token = String(value ?? "").trim().toLowerCase();
@@ -567,7 +578,7 @@ function QualityEventRow({ event }: { event: AnnotationQualityEvent }) {
     <div className={`grid gap-1.5 rounded-2xl border p-3 ${hard ? "border-status-error/30 bg-status-error/5" : "border-status-warning/30 bg-status-warning/5"}`}>
       <div className="flex flex-wrap items-center gap-2">
         <AlertTriangle className={`h-4 w-4 shrink-0 ${hard ? "text-status-error" : "text-status-warning"}`} />
-        <span className="text-sm font-semibold text-text-primary">{event.event_type || "质量事件"}</span>
+        <span className="text-sm font-semibold text-text-primary">{translateToken(event.event_type, EVENT_TYPE_LABELS, "质量事件")}</span>
         <span className={`badge ${hard ? "badge-error" : "badge-warning"}`}>{translateToken(event.risk_tier, RISK_TIER_LABELS, "未分级")}</span>
         <span className="ml-auto font-mono text-xs text-text-tertiary">{formatWindow(event.start, event.end)}</span>
         {event.confidence !== undefined ? <span className="text-xs text-text-tertiary">置信度 {formatPercent(event.confidence)}</span> : null}
