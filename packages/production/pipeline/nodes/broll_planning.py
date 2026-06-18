@@ -20,6 +20,8 @@ from packages.planning.material import (
 )
 from packages.core.workflow import NodeOutput
 from packages.production.pipeline._node_context import NodeContext
+
+_BROLL_RECENT_SELECTION_LIMIT = 80
 from packages.production.pipeline._run_state import degradation_notice
 
 
@@ -74,7 +76,11 @@ def run(ctx: NodeContext) -> NodeOutput:
         for asset_id in dict.fromkeys(candidate_asset_ids)
         if (annotation := ctx.repository.annotation_v4_for_asset(asset_id)) is not None
     }
-    ledger_entries = ctx.repository.recent_selections(case_id=state.request.case_id, medium="broll")
+    ledger_entries = ctx.repository.recent_selections(
+        case_id=state.request.case_id,
+        medium="broll",
+        limit=_BROLL_RECENT_SELECTION_LIMIT,
+    )
     candidates = rank_broll_candidates(
         annotations=annotations,
         segments=segments,
@@ -84,6 +90,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         candidates=candidates,
         units=units,
         max_inserts=state.request.broll.max_inserts,
+        freshness_seed=ctx.run.id,
     )
 
     if not insertions:

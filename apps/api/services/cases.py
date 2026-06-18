@@ -22,7 +22,7 @@ ACTIVE_RUN_STATUSES = {
 }
 # Media-asset kinds that count toward a case's reusable material library (mirrors
 # MATERIAL_ASSET_KINDS in the SQLAlchemy repository).
-MATERIAL_ASSET_KINDS = {"portrait", "broll", "bgm", "font"}
+MATERIAL_ASSET_KINDS = {"portrait", "broll", "video", "bgm", "font"}
 
 def list_cases(
     request: Request,

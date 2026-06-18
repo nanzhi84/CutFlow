@@ -62,7 +62,9 @@ def build_semantic_audio_boundary_entries(
     semantic_candidates: list[dict[str, Any]] = []
 
     for unit in narration_units or []:
-        if not (unit.portrait_cut_allowed or unit.hard_end):
+        primary_boundary = bool(unit.portrait_cut_allowed or unit.hard_end)
+        capacity_boundary = _is_capacity_boundary_candidate(unit)
+        if not (primary_boundary or capacity_boundary):
             continue
         semantic_boundary = util.round_time(util.clamp(unit.end, 0.0, target_ceiling))
         if not (0.08 < semantic_boundary < target_ceiling - 0.08):
@@ -75,18 +77,9 @@ def build_semantic_audio_boundary_entries(
             "boundary_score": unit.boundary_score,
             "pause_after_ms": unit.pause_after_ms,
         }
-        semantic_candidates.append(
-            {
-                **entry,
-                "boundary": semantic_boundary,
-                "boundary_source": "semantic_only",
-                "pause_window_start": None,
-                "pause_window_end": None,
-                "pause_duration_ms": 0,
-                "distance_to_boundary": None,
-            }
-        )
+        semantic_entry = _boundary_entry(entry, boundary=semantic_boundary, source="semantic_only")
         if use_audio_pauses:
+            pause_entry: dict[str, Any] | None = None
             matched_pause = audio_pause.match_audio_pause_window(
                 semantic_boundary,
                 pause_windows,
@@ -94,7 +87,24 @@ def build_semantic_audio_boundary_entries(
                 allow_delay=True,
                 allow_advance=False,
             )
-            if not matched_pause:
+            if matched_pause:
+                resolved_boundary = util.round_time(
+                    util.clamp(matched_pause["cut_point"], 0.0, target_ceiling)
+                )
+                if 0.08 < resolved_boundary < target_ceiling - 0.08:
+                    pause_entry = _boundary_entry(
+                        entry,
+                        boundary=resolved_boundary,
+                        source="semantic_audio_pause",
+                        pause=matched_pause,
+                    )
+            if primary_boundary:
+                semantic_candidates.append(pause_entry or semantic_entry)
+            elif pause_entry:
+                semantic_candidates.append(pause_entry)
+            if not primary_boundary:
+                continue
+            if pause_entry is None:
                 trace.append(
                     {
                         "strategy": "semantic_audio_boundary_filter",
@@ -105,21 +115,8 @@ def build_semantic_audio_boundary_entries(
                     }
                 )
                 continue
-            resolved_boundary = util.round_time(
-                util.clamp(matched_pause["cut_point"], 0.0, target_ceiling)
-            )
-            if not (0.08 < resolved_boundary < target_ceiling - 0.08):
-                continue
-            entry.update(
-                {
-                    "boundary": resolved_boundary,
-                    "boundary_source": "semantic_audio_pause",
-                    "pause_window_start": matched_pause.get("start"),
-                    "pause_window_end": matched_pause.get("end"),
-                    "pause_duration_ms": int(round(util.as_float(matched_pause.get("duration"), 0.0) * 1000)),
-                    "distance_to_boundary": matched_pause.get("distance_to_boundary"),
-                }
-            )
+            resolved_boundary = util.round_time(pause_entry["boundary"])
+            entry.update(pause_entry)
             trace.append(
                 {
                     "strategy": "semantic_audio_boundary_filter",
@@ -132,16 +129,10 @@ def build_semantic_audio_boundary_entries(
                 }
             )
         else:
-            entry.update(
-                {
-                    "boundary": semantic_boundary,
-                    "boundary_source": "semantic_only",
-                    "pause_window_start": None,
-                    "pause_window_end": None,
-                    "pause_duration_ms": 0,
-                    "distance_to_boundary": None,
-                }
-            )
+            semantic_candidates.append(semantic_entry)
+            if not primary_boundary:
+                continue
+            entry.update(semantic_entry)
         entries.append(entry)
 
     entries = sorted(entries, key=lambda item: float(item.get("boundary", 0.0)))
@@ -162,7 +153,7 @@ def build_semantic_audio_boundary_entries(
                 deduped[-1] = {**entry, "boundary": boundary}
             continue
         deduped.append({**entry, "boundary": boundary})
-    if use_audio_pauses:
+    if use_audio_pauses or max_gap_duration is not None:
         deduped, long_gap_trace = inject_semantic_fallbacks_for_long_gaps(
             boundary_entries=deduped,
             semantic_candidates=semantic_candidates,
@@ -173,6 +164,33 @@ def build_semantic_audio_boundary_entries(
     return deduped, trace
 
 
+def _is_capacity_boundary_candidate(unit: NarrationUnit) -> bool:
+    if unit.portrait_cut_allowed or unit.hard_end:
+        return True
+    reason = str(unit.boundary_reason or "").strip()
+    return bool(reason) and unit.boundary_score > 0
+
+
+def _boundary_entry(
+    base: dict[str, Any],
+    *,
+    boundary: float,
+    source: str,
+    pause: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        **base,
+        "boundary": boundary,
+        "boundary_source": source,
+        "pause_window_start": pause.get("start") if pause else None,
+        "pause_window_end": pause.get("end") if pause else None,
+        "pause_duration_ms": (
+            int(round(util.as_float(pause.get("duration"), 0.0) * 1000)) if pause else 0
+        ),
+        "distance_to_boundary": pause.get("distance_to_boundary") if pause else None,
+    }
+
+
 def select_semantic_fallback_for_long_gap(
     *,
     gap_start: float,
@@ -181,8 +199,9 @@ def select_semantic_fallback_for_long_gap(
     existing_boundaries: set[float],
     max_gap_duration: float | None = None,
 ) -> dict[str, Any] | None:
-    lower = util.round_time(gap_start + BOUNDARY_LONG_GAP_MIN_SEGMENT)
-    upper = util.round_time(gap_end - BOUNDARY_LONG_GAP_MIN_SEGMENT)
+    min_segment = _capacity_min_segment(max_gap_duration)
+    lower = util.round_time(gap_start + min_segment)
+    upper = util.round_time(gap_end - min_segment)
     if upper <= lower:
         return None
 
@@ -229,8 +248,9 @@ def select_audio_pause_fallback_for_long_gap(
     existing_boundaries: set[float],
     max_gap_duration: float,
 ) -> dict[str, Any] | None:
-    lower = util.round_time(gap_start + BOUNDARY_LONG_GAP_MIN_SEGMENT)
-    upper = util.round_time(gap_end - BOUNDARY_LONG_GAP_MIN_SEGMENT)
+    min_segment = _capacity_min_segment(max_gap_duration)
+    lower = util.round_time(gap_start + min_segment)
+    upper = util.round_time(gap_end - min_segment)
     if upper <= lower:
         return None
 
@@ -321,6 +341,13 @@ def select_audio_pause_fallback_for_long_gap(
             -util.as_float(candidate.get("pause_duration_ms"), 0.0),
         ),
     )
+
+
+def _capacity_min_segment(max_gap_duration: float | None) -> float:
+    if max_gap_duration is None:
+        return BOUNDARY_LONG_GAP_MIN_SEGMENT
+    effective_max_gap = util.round_time(max_gap_duration)
+    return min(BOUNDARY_LONG_GAP_MIN_SEGMENT, max(1.5, effective_max_gap * 0.35))
 
 
 def inject_semantic_fallbacks_for_long_gaps(

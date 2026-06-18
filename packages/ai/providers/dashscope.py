@@ -127,7 +127,7 @@ class DashScopeVLMProvider:
         content = _message_content(result)
         canonical = _parse_json_object(content)
         return ProviderResult(
-            output={"canonical": canonical, "annotation_status": "annotated"},
+            output={"canonical": canonical, "content": content, "annotation_status": "annotated"},
             input_tokens=_usage(result, "prompt_tokens"),
             output_tokens=_usage(result, "completion_tokens"),
             image_count=1,

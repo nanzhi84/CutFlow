@@ -226,6 +226,7 @@ class StaticHydrateSession:
     def __init__(self, rows_by_model: dict[type, list[object]], rows_by_key: dict[tuple[type, str], object]) -> None:
         self.rows_by_model = rows_by_model
         self.rows_by_key = rows_by_key
+        self.statements = []
 
     def __enter__(self):
         return self
@@ -237,6 +238,7 @@ class StaticHydrateSession:
         return self.rows_by_key.get((model, key))
 
     def scalars(self, statement):
+        self.statements.append(statement)
         entity = statement.column_descriptions[0]["entity"]
         return self.rows_by_model.get(entity, [])
 
@@ -414,6 +416,109 @@ def test_hydrate_workflow_runtime_snapshot_loads_case_media_asset_source_artifac
 
     assert runtime_repository.media_assets[media_asset.id].source_artifact_id == source_artifact.id
     assert runtime_repository.artifacts[source_artifact.id].uri == "local://cutagent-local/uploads/real-portrait.mp4"
+
+
+def test_hydrate_workflow_runtime_snapshot_queries_global_media_assets():
+    job = _timestamped(
+        JobRow(
+            id="job_db_global_bgm",
+            type=JobType.digital_human_video.value,
+            status=JobStatus.queued.value,
+            case_id="case_demo",
+            created_by="usr_admin",
+            request_schema="DigitalHumanVideoRequest.v1",
+            request={
+                "case_id": "case_demo",
+                "title": "DB BGM run",
+                "script": "全局 BGM 也需要进入 worker。",
+                "voice": {"voice_id": "voice_demo_cn"},
+                "strictness": {"strict_timestamps": False},
+            },
+        )
+    )
+    run = _timestamped(
+        WorkflowRunRow(
+            id="run_db_global_bgm",
+            job_id=job.id,
+            case_id="case_demo",
+            workflow_template_id="digital_human_video",
+            workflow_version="v1",
+            status=RunStatus.admitted.value,
+            requested_by="usr_admin",
+            run_attempt=1,
+        )
+    )
+    case = _timestamped(
+        CaseRow(
+            id="case_demo",
+            name="Demo Case",
+            owner_user_id="usr_admin",
+            status="active",
+            description=None,
+            industry=None,
+            product=None,
+            target_audience=None,
+        )
+    )
+    global_bgm_artifact = _timestamped(
+        ArtifactRow(
+            id="art_global_bgm",
+            case_id=None,
+            run_id=None,
+            node_run_id=None,
+            kind=ArtifactKind.uploaded_file.value,
+            uri="local://cutagent-local/uploads/global-bgm.mp3",
+            local_path=None,
+            oss_uri=None,
+            size_bytes=1024,
+            immutable=True,
+            retention_policy="default",
+            sha256="sha256-global-bgm",
+            media_info={"media_type": "audio", "codec": "mp3", "format": "mp3", "duration_sec": 10.0},
+            payload_schema="UploadedFileArtifact.v1",
+            payload={"filename": "global-bgm.mp3"},
+            created_by_node_run_id=None,
+        )
+    )
+    global_bgm = _timestamped(
+        MediaAssetRow(
+            id="asset_global_bgm",
+            case_id=None,
+            title="Global BGM",
+            kind="bgm",
+            source_artifact_id=global_bgm_artifact.id,
+            tags=["bgm"],
+            annotation_status="annotated",
+            usable=True,
+        )
+    )
+    session = StaticHydrateSession(
+        rows_by_model={
+            NodeRunRow: [],
+            VoiceProfileRow: [],
+            MediaAssetRow: [global_bgm],
+            ArtifactRow: [],
+        },
+        rows_by_key={
+            (JobRow, job.id): job,
+            (WorkflowRunRow, run.id): run,
+            (CaseRow, case.id): case,
+            (ArtifactRow, global_bgm_artifact.id): global_bgm_artifact,
+        },
+    )
+    production_repository = SqlAlchemyProductionRepository(lambda: session)
+    runtime_repository = Repository()
+
+    production_repository.hydrate_workflow_runtime_snapshot(runtime_repository, run.id)
+
+    media_statements = [
+        str(statement)
+        for statement in session.statements
+        if statement.column_descriptions[0]["entity"] is MediaAssetRow
+    ]
+    assert any("media_assets.case_id IS NULL" in statement for statement in media_statements)
+    assert runtime_repository.media_assets[global_bgm.id].case_id is None
+    assert runtime_repository.artifacts[global_bgm_artifact.id].uri == "local://cutagent-local/uploads/global-bgm.mp3"
 
 
 def test_tts_node_uses_voice_provider_profile_when_request_omits_override():

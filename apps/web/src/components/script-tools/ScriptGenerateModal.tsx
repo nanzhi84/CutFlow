@@ -159,7 +159,10 @@ export function ScriptGenerateModal({
       const items = drafts.map((draft) => ({
         id: draft.id || newScriptToolId("draft"),
         caseId,
-        title: !draft.title || draft.title === "Memory-guided draft" ? friendlyTitle : draft.title,
+        title:
+          !draft.title || draft.title === "Memory-guided draft" || draft.title === "Rubric-scored draft"
+            ? friendlyTitle
+            : draft.title,
         script: draft.script,
         source: "ai" as const,
         createdAt: draft.created_at ?? new Date().toISOString(),

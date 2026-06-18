@@ -143,7 +143,8 @@ def generate_script_with_memory(
 ) -> c.ScriptDraft:
     get_case(request, case_id)
     memories = _active_memory_insights(request, case_id, payload.memory_ids)
-    provider_script = generate_script_with_llm(
+    recent_script_texts = _recent_script_texts(request, case_id)
+    provider_result = generate_script_with_llm(
         case_id,
         payload.brief,
         payload.memory_ids,
@@ -154,19 +155,23 @@ def generate_script_with_memory(
         strategy_tags=payload.strategy_tags,
         reference_script=payload.reference_script,
         duration=payload.duration,
+        recent_script_texts=recent_script_texts,
     )
+    draft_title = provider_result.title if provider_result and provider_result.title else _draft_title(payload)
+    provider_script = provider_result.script if provider_result else None
 
     if case_learning_repository(request) is not None:
         draft = case_learning_repository(request).generate_script_with_memory(
             case_id=case_id,
             payload=payload,
             script_override=provider_script,
+            title_override=draft_title,
         )
     else:
         draft = c.ScriptDraft(
             id=new_id("draft"),
             case_id=case_id,
-            title="Rubric-scored draft",
+            title=draft_title,
             script=provider_script or f"{payload.brief}\n\n参考记忆：{' / '.join(memories) if memories else '暂无'}",
             memory_ids=payload.memory_ids,
         )
@@ -185,6 +190,55 @@ def _active_memory_insights(request: Request, case_id: str, memory_ids: list[str
     else:
         memories = [item for item in repository(request).memories.values() if item.case_id == case_id]
     return [memory.insight for memory in memories if memory.id in wanted and memory.status == "active"]
+
+
+def _recent_script_texts(request: Request, case_id: str, limit: int = 8) -> list[str]:
+    if case_learning_repository(request) is not None:
+        return case_learning_repository(request).recent_script_texts(case_id=case_id, limit=limit)
+    repo = repository(request)
+    rows: list[tuple[object, str]] = []
+    rows.extend(
+        (draft.updated_at, draft.script)
+        for draft in repo.drafts.values()
+        if draft.case_id == case_id and draft.script.strip()
+    )
+    rows.extend(
+        (script.updated_at, script.script)
+        for script in repo.scripts.values()
+        if script.case_id == case_id and script.script.strip()
+    )
+    rows.sort(key=lambda item: item[0], reverse=True)
+    return _dedupe_texts([text for _, text in rows], limit=limit)
+
+
+def _dedupe_texts(texts: list[str], *, limit: int) -> list[str]:
+    results: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        normalized = " ".join(text.split()).strip()
+        if not normalized:
+            continue
+        key = normalized[:100]
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(normalized)
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _draft_title(payload: c.GenerateScriptWithMemoryRequest) -> str:
+    operation_labels = {
+        "polish": "润色脚本",
+        "fresh": "全新创作脚本",
+        "remix": "参考爆款脚本",
+        "clone": "爆款复刻脚本",
+        "generate": "AI 生成脚本",
+        "semantic": "语义提炼脚本",
+    }
+    scene_label = "硬广" if payload.persona_mode == "hard_ad" else "IP人设"
+    return f"{scene_label} · {operation_labels.get(payload.operation, 'AI 生成脚本')}"
 
 
 def _score_drafts(request: Request, case_id: str, draft: c.ScriptDraft) -> None:

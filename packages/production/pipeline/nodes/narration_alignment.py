@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-
 from packages.ai.gateway import ProviderCall
 from packages.core.contracts import (
     ArtifactKind,
@@ -18,6 +16,7 @@ from packages.core.contracts.artifacts import (
     NarrationUnitsArtifact,
 )
 from packages.core.workflow import NodeExecutionError, NodeOutput
+from packages.planning.editing import build_narration_units
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline.degradation_policies import ASR_ESTIMATED_FALLBACK_POLICY
 
@@ -35,28 +34,21 @@ def run(ctx: NodeContext) -> NodeOutput:
         warnings: list[WarningCode] | None = None,
         degradations: list[DegradationNotice] | None = None,
     ) -> NodeOutput:
-        parts = [part.strip() for part in re.split(r"[。！？.!?；;]+", state.request.script) if part.strip()]
-        if not parts:
-            parts = [state.request.script]
-        weights = [max(1, len([char for char in part if not char.isspace()])) for part in parts]
-        total_weight = sum(weights)
-        units: list[NarrationUnit] = []
-        cursor = 0.0
-        for index, (text, weight) in enumerate(zip(parts, weights, strict=True)):
-            if index == len(parts) - 1:
-                end = duration
-            else:
-                end = cursor + duration * (weight / total_weight)
-            units.append(
+        units = build_narration_units(
+            script=state.request.script,
+            asr_segments=None,
+            video_duration=duration,
+        )
+        if not units:
+            units = [
                 NarrationUnit(
-                    unit_id=f"unit_{index + 1}",
-                    text=text,
-                    start=round(cursor, 3),
-                    end=round(end, 3),
+                    unit_id="unit_001",
+                    text=state.request.script,
+                    start=0,
+                    end=round(duration, 3),
                     confidence=0.5,
                 )
-            )
-            cursor = end
+            ]
         alignment = AlignmentArtifact(
             audio_artifact_id=tts.id,
             segments=[
@@ -134,7 +126,11 @@ def run(ctx: NodeContext) -> NodeOutput:
     # TTS path ran; with no secret the scratch is empty and we fall through.
     subtitle_segments = state.scratch.get("tts_subtitle_segments")
     if isinstance(subtitle_segments, list) and subtitle_segments:
-        units = ctx.narration_units_from_segments(subtitle_segments, duration)
+        units = ctx.narration_units_from_segments(
+            subtitle_segments,
+            duration,
+            script=state.request.script,
+        )
         invocation_id = state.scratch.get("tts_subtitle_invocation_id")
         return alignment_output(
             units,
@@ -184,7 +180,11 @@ def run(ctx: NodeContext) -> NodeOutput:
                 invocation.error.message if invocation.error else "ASR provider failed.",
                 retryable=True,
             )
-        units = ctx.narration_units_from_segments(result.output.get("segments", []), duration)
+        units = ctx.narration_units_from_segments(
+            result.output.get("segments", []),
+            duration,
+            script=state.request.script,
+        )
         return alignment_output(
             units,
             source="asr",

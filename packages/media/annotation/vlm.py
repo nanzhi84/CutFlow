@@ -210,11 +210,9 @@ def parse_window_response(
         raise SchemaError(f"VLM response is not parseable JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise SchemaError("VLM response top level is not a JSON object")
-    if "segments" not in data:
+    segments = _segments_from_payload(data)
+    if segments is None:
         raise SchemaError("VLM response is missing the segments field")
-    segments = data["segments"]
-    if not isinstance(segments, list):
-        raise SchemaError("segments is not a list")
 
     # Empty segments = "no window coverage at all" = semantic, not format.
     if not segments:
@@ -268,6 +266,28 @@ def parse_window_response(
     _assert_window_coverage(clips, window_start, window_end)
 
     return clips
+
+
+def _segments_from_payload(data: dict, *, depth: int = 0) -> list | None:
+    if depth > 2:
+        return None
+    if "segments" in data:
+        segments = data["segments"]
+        if not isinstance(segments, list):
+            raise SchemaError("segments is not a list")
+        return segments
+    if "clips" in data:
+        clips = data["clips"]
+        if not isinstance(clips, list):
+            raise SchemaError("clips is not a list")
+        return clips
+    for key in ("canonical", "output", "result", "annotation", "data"):
+        nested = data.get(key)
+        if isinstance(nested, dict):
+            segments = _segments_from_payload(nested, depth=depth + 1)
+            if segments is not None:
+                return segments
+    return None
 
 
 def _assert_window_coverage(clips: list[ClipV4], window_start: float, window_end: float) -> None:

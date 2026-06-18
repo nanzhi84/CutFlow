@@ -78,8 +78,12 @@ class SuccessfulAsrGateway:
         )
         result = ProviderResult(
             output={
-                "text": "第一句介绍痛点",
-                "segments": [{"start": 0.0, "end": 2.0, "text": "第一句介绍痛点"}],
+                "text": "第一句介绍痛点。第二句说明方案。第三句引导行动。",
+                "segments": [
+                    {"start": 0.0, "end": 2.0, "text": "第一句介绍痛点。"},
+                    {"start": 2.25, "end": 4.0, "text": "第二句说明方案。"},
+                    {"start": 4.25, "end": 6.0, "text": "第三句引导行动。"},
+                ],
                 "source": "asr",
             },
             audio_seconds=2.0,
@@ -199,6 +203,81 @@ def test_narration_alignment_sends_signed_https_url_to_asr(monkeypatch: pytest.M
     assert gateway.calls[0].input["audio_uri"] == "https://media.example/signed/tts.mp3"
     assert output.provider_invocation_ids == ["pinv_success_asr"]
     assert narration["source"] == "asr"
+    assert narration["units"][0]["pause_after_ms"] == 250
+    assert narration["units"][0]["portrait_cut_allowed"] is True
+    assert narration["units"][0]["boundary_score"] > 0
+
+
+def test_narration_alignment_uses_script_text_not_asr_typos(monkeypatch: pytest.MonkeyPatch):
+    class TypoAsrGateway(SuccessfulAsrGateway):
+        def invoke(self, call):
+            invocation, result = super().invoke(call)
+            result.output["segments"] = [
+                {"start": 0.0, "end": 1.3, "text": "第一句介绍统点，"},
+                {"start": 1.45, "end": 2.7, "text": "马上就懂"},
+                {"start": 2.85, "end": 4.2, "text": "第二句说明方按，"},
+                {"start": 4.35, "end": 6.0, "text": "第三句引到行动"},
+            ]
+            return invocation, result
+
+    class FakeObjectStore:
+        def signed_url(self, uri):
+            return SignedUrlResponse(
+                url="https://media.example/signed/tts.mp3",
+                expires_at=utcnow() + timedelta(minutes=15),
+                request_id="req_signed",
+            )
+
+    workflow, _gateway = _workflow_with_successful_asr()
+    workflow.provider_gateway = TypoAsrGateway()
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store",
+        lambda: FakeObjectStore(),
+    )
+
+    output = workflow._narration_alignment(
+        _run(),
+        _node_run(),
+        _run_state(strict_timestamps=True, tts_uri="s3://cutagent-demo/generated-audio/tts.mp3"),
+    )
+
+    narration = {artifact.kind: artifact for artifact in output.artifacts}[ArtifactKind.narration_units].payload
+    assert [unit["text"] for unit in narration["units"]] == [
+        "第一句介绍痛点。",
+        "第二句说明方案。",
+        "第三句引导行动。",
+    ]
+    assert all(
+        "统点" not in unit["text"]
+        and "方按" not in unit["text"]
+        and "引到" not in unit["text"]
+        for unit in narration["units"]
+    )
+
+
+def test_narration_alignment_splits_glued_tts_subtitle_by_script_punctuation():
+    workflow, _gateway = _workflow_with_successful_asr()
+    state = _run_state(strict_timestamps=True)
+    state.scratch["tts_subtitle_segments"] = [
+        {
+            "start": 0.0,
+            "end": 6.0,
+            "text": "第一句介绍痛点第二句说明方案第三句引导行动",
+        }
+    ]
+    state.scratch["tts_subtitle_invocation_id"] = "pinv_tts"
+
+    output = workflow._narration_alignment(_run(), _node_run(), state)
+
+    narration = {artifact.kind: artifact for artifact in output.artifacts}[ArtifactKind.narration_units].payload
+    assert narration["source"] == "tts_subtitle"
+    assert output.provider_invocation_ids == ["pinv_tts"]
+    assert [unit["text"] for unit in narration["units"]] == [
+        "第一句介绍痛点。",
+        "第二句说明方案。",
+        "第三句引导行动。",
+    ]
+    assert [unit["start"] for unit in narration["units"]] == [0.0, 2.0, 4.0]
 
 
 def test_narration_alignment_non_strict_estimates_when_asr_fails():

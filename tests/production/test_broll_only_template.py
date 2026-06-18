@@ -119,6 +119,10 @@ def test_digital_human_template_keeps_existing_sequence_edges_and_outputs():
         ],
         "FinalizeRunReport": [ArtifactKind.run_report_public, ArtifactKind.run_report_debug],
     }
+    specs = {spec.node_id: spec for spec in template.nodes}
+    assert specs["PortraitPlanning"].reuse_policy == "never"
+    assert specs["BrollPlanning"].reuse_policy == "never"
+    assert specs["TimelinePlanning"].reuse_policy == "never"
 
 
 def test_broll_only_template_declares_new_node_outputs_and_provider_side_effects():
@@ -138,6 +142,8 @@ def test_broll_only_template_declares_new_node_outputs_and_provider_side_effects
     assert specs["ResolveCreativeIntent"].side_effects == ["provider_call"]
     assert specs["BrollCoveragePlanning"].side_effects == []
     assert specs["BrollCoveragePlanning"].idempotency_key is None
+    assert specs["BrollCoveragePlanning"].reuse_policy == "never"
+    assert specs["BrollTimelinePlanning"].reuse_policy == "never"
 
 
 def test_validate_request_skips_lipsync_provider_when_template_has_no_lipsync_node():

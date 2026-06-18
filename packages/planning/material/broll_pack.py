@@ -82,7 +82,7 @@ def clip_shows_person(clip) -> bool:
     if sem.contains_face is True:
         return True
     fcm = sem.face_count_max
-    if fcm is not None and fcm >= 2:
+    if sem.contains_face is not False and fcm is not None and fcm >= 2:
         return True
     if sem.mouth_moving is True or sem.gaze_to_camera is True:
         return True
@@ -153,6 +153,7 @@ def rank_broll_candidates(
     segments: Sequence[ScriptSegment],
     ledger_entries: Sequence[SelectionLedgerEntry] = (),
     recency_cfg: RecencyConfig | None = None,
+    include_generic_coverage: bool = False,
 ) -> list[BrollCandidate]:
     """Rank b-roll clips across annotated assets against the script beats.
 
@@ -160,7 +161,7 @@ def rank_broll_candidates(
     ``ledger_entries`` are this case's recent b-roll selections (most-recent
     first); a previously-picked asset/cluster is demoted. Returns candidates
     sorted by final score descending. Empty when nothing clears the relevance
-    floor (the honest "no usable material" signal).
+    floor unless generic coverage is enabled for full-coverage flows.
     """
     seg_list = list(segments)
     candidates: list[BrollCandidate] = []
@@ -168,11 +169,7 @@ def rank_broll_candidates(
         material_type = (asset_kinds or {}).get(asset_id) or annotation.meta.material_type
         from_unified_video = is_video(material_type)
         for clip in annotation.clips:
-            # Legacy b-roll keeps the historical rule: only ``avoid`` is unusable.
-            # Unified video clips are split into A-roll (lip-sync-usable) vs B-roll,
-            # but B-roll must be *person-free* scene footage: a clip showing a real
-            # person as its subject (presenter / talking-head / 出镜人物) belongs to
-            # NEITHER pool — it is not a clean cover even when it cannot be lip-synced.
+            # Unified-video B-roll must be person-free cover footage.
             if clip.usage.role.value == "avoid":
                 continue
             if from_unified_video and clip_is_lip_sync_usable(clip):
@@ -182,6 +179,18 @@ def rank_broll_candidates(
             scene = _scene_from_clip(asset_id, clip)
             best_segment, match = best_match(seg_list, scene)
             if not match.has_overlap or match.similarity < _MIN_SIMILARITY:
+                if include_generic_coverage:
+                    candidates.append(
+                        _generic_coverage_candidate(
+                            asset_id=asset_id,
+                            annotation=annotation,
+                            clip=clip,
+                            scene=scene,
+                            best_segment=best_segment,
+                            ledger_entries=ledger_entries,
+                            recency_cfg=recency_cfg,
+                        )
+                    )
                 continue
             usage_cover = _usage_cover_ratio(annotation, clip)
             quality = float(annotation.quality_report.get("usable_ratio") or 0.5)
@@ -216,5 +225,86 @@ def rank_broll_candidates(
                 )
             )
 
-    candidates.sort(key=lambda c: (-c.score, c.asset_id, c.clip_id))
+    candidates.sort(key=lambda c: _recent_reuse_sort_key(c, ledger_entries))
     return candidates
+
+
+def _recent_reuse_sort_key(
+    candidate: BrollCandidate, ledger_entries: Sequence[SelectionLedgerEntry]
+) -> tuple[int, int, int, int, int, float, str, str]:
+    """Keep recent b-roll reuse behind fresh clips for coverage planning."""
+    rank = 0
+    exact_count = 0
+    asset_count = 0
+    cluster_count = 0
+    most_recent_pos: int | None = None
+    for pos, entry in enumerate(ledger_entries):
+        if entry.medium != "broll":
+            continue
+        same_asset = entry.asset_id == candidate.asset_id
+        same_clip = same_asset and bool(entry.clip_id) and entry.clip_id == candidate.clip_id
+        same_cluster = bool(candidate.diversity_key) and entry.diversity_key == candidate.diversity_key
+        if same_clip:
+            exact_count += 1
+            asset_count += 1
+            rank = max(rank, 3)
+            if most_recent_pos is None:
+                most_recent_pos = pos
+        elif same_asset:
+            asset_count += 1
+            rank = max(rank, 2)
+            if most_recent_pos is None:
+                most_recent_pos = pos
+        elif same_cluster:
+            cluster_count += 1
+            rank = max(rank, 1)
+            if most_recent_pos is None:
+                most_recent_pos = pos
+    last_used_sort = -(most_recent_pos if most_recent_pos is not None else len(ledger_entries) + 1)
+    return (
+        rank,
+        exact_count,
+        asset_count,
+        cluster_count,
+        last_used_sort,
+        -candidate.score,
+        candidate.asset_id,
+        candidate.clip_id,
+    )
+
+
+def _generic_coverage_candidate(
+    *,
+    asset_id: str,
+    annotation: AnnotationV4,
+    clip,
+    scene: BrollScene,
+    best_segment: ScriptSegment | None,
+    ledger_entries: Sequence[SelectionLedgerEntry],
+    recency_cfg: RecencyConfig | None,
+) -> BrollCandidate:
+    usage_cover = _usage_cover_ratio(annotation, clip)
+    quality = float(annotation.quality_report.get("usable_ratio") or 0.5)
+    duration = max(0.0, scene.end - scene.start)
+    base = 12.0 + usage_cover * 8.0 + quality * 8.0 + min(duration, 8.0) * _DURATION_WEIGHT
+    diversity_key = _diversity_key(clip)
+    penalty = recency_penalty_for(
+        ledger_entries,
+        asset_id=asset_id,
+        diversity_key=diversity_key,
+        cfg=recency_cfg,
+    )
+    final = max(0.0, base - penalty * _RECENCY_WEIGHT)
+    return BrollCandidate(
+        asset_id=asset_id,
+        clip_id=clip.segment_id,
+        score=round(final, 3),
+        base_score=round(base, 3),
+        recency_penalty=round(penalty, 3),
+        matched_keywords=(),
+        scene_name=scene.name,
+        source_start=round(scene.start, 3),
+        source_end=round(scene.end, 3),
+        diversity_key=diversity_key,
+        best_segment=best_segment,
+    )

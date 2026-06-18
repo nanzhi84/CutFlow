@@ -66,12 +66,32 @@ class SqlAlchemyCaseLearningRepository:
             )
             return [case_memory_row_to_contract(row) for row in session.scalars(statement)]
 
+    def recent_script_texts(self, *, case_id: str, limit: int = 8) -> list[str]:
+        with self.session_factory() as session:
+            draft_rows = session.scalars(
+                select(ScriptDraftRow)
+                .where(ScriptDraftRow.case_id == case_id)
+                .order_by(ScriptDraftRow.updated_at.desc())
+                .limit(limit)
+            )
+            script_rows = session.scalars(
+                select(ScriptVersionRow)
+                .where(ScriptVersionRow.case_id == case_id)
+                .order_by(ScriptVersionRow.updated_at.desc())
+                .limit(limit)
+            )
+            rows = [(row.updated_at, row.script) for row in draft_rows]
+            rows.extend((row.updated_at, row.script) for row in script_rows)
+            rows.sort(key=lambda item: item[0], reverse=True)
+            return _dedupe_texts([text for _, text in rows], limit=limit)
+
     def generate_script_with_memory(
         self,
         *,
         case_id: str,
         payload: GenerateScriptWithMemoryRequest,
         script_override: str | None = None,
+        title_override: str | None = None,
     ) -> ScriptDraft:
         with self.session_factory() as session:
             memories = []
@@ -82,7 +102,7 @@ class SqlAlchemyCaseLearningRepository:
             draft = ScriptDraftRow(
                 id=new_id("draft"),
                 case_id=case_id,
-                title="Rubric-scored draft",
+                title=title_override or "AI 生成脚本",
                 script=script_override or f"{payload.brief}\n\n参考记忆：{' / '.join(memories) if memories else '暂无'}",
                 status="draft",
                 memory_ids=payload.memory_ids,
@@ -91,3 +111,20 @@ class SqlAlchemyCaseLearningRepository:
             session.commit()
             session.refresh(draft)
             return script_draft_row_to_contract(draft)
+
+
+def _dedupe_texts(texts: list[str], *, limit: int) -> list[str]:
+    results: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        normalized = " ".join(text.split()).strip()
+        if not normalized:
+            continue
+        key = normalized[:100]
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(normalized)
+        if len(results) >= limit:
+            break
+    return results

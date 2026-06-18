@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from packages.core.contracts import ArtifactKind, ArtifactRef
-from packages.production.pipeline._timeline_grid import build_tracks, validate_timeline
+from packages.production.pipeline._timeline_grid import (
+    align_broll_to_portrait_cuts,
+    build_tracks,
+    validate_timeline,
+)
 
 
 def _ref(artifact_id: str, kind: ArtifactKind = ArtifactKind.plan_broll) -> ArtifactRef:
@@ -55,6 +59,42 @@ def test_build_tracks_prefers_explicit_frame_grid_and_falls_back_to_seconds():
     assert tracks[1].track_id == "broll"
     assert tracks[1].timeline_start_frame == 25
     assert tracks[1].timeline_end_frame == 50
+
+
+def test_align_broll_end_snaps_to_nearby_portrait_cut():
+    raw_segments = [
+        _segment(
+            track_id="portrait",
+            segment_id="portrait_1",
+            start_sec=0.0,
+            end_sec=5.0,
+            timeline_start_frame=0,
+            timeline_end_frame=150,
+        ),
+        _segment(
+            track_id="portrait",
+            segment_id="portrait_2",
+            start_sec=5.0,
+            end_sec=10.0,
+            timeline_start_frame=150,
+            timeline_end_frame=300,
+        ),
+        _segment(
+            track_id="broll",
+            segment_id="broll_1",
+            start_sec=3.0,
+            end_sec=4.9,
+        ),
+    ]
+
+    aligned = align_broll_to_portrait_cuts(raw_segments, fps=30, max_gap_frames=6)
+    broll = next(segment for segment in aligned if segment["track_id"] == "broll")
+
+    assert broll["timeline_start_frame"] == 90
+    assert broll["timeline_end_frame"] == 150
+    assert broll["source_start_frame"] == 90
+    assert broll["source_end_frame"] == 150
+    assert broll["end_sec"] == 5.0
 
 
 def test_validate_timeline_reports_valid_grid_for_portrait_and_broll_tracks():

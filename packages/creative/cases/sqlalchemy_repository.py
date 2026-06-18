@@ -17,7 +17,7 @@ from packages.core.storage.repository import new_id
 ACTIVE_RUN_STATUSES = {"created", "admitted", "running", "cancelling"}
 ACTIVE_JOB_STATUSES = {"draft", "queued", "running"}
 # Media-asset kinds that count toward a case's reusable material library.
-MATERIAL_ASSET_KINDS = {"portrait", "broll", "bgm", "font"}
+MATERIAL_ASSET_KINDS = {"portrait", "broll", "video", "bgm", "font"}
 
 
 def case_row_to_detail(row: CaseRow) -> CaseDetail:

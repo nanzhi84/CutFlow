@@ -23,6 +23,28 @@ _RECENCY_WEIGHT = 12.0
 # chunk and would only fragment the portrait track, so it is never offered.
 _MIN_LIPSYNC_CLIP_SEC = 0.6
 
+_PERSON_SUBJECT_TERMS = (
+    "presenter",
+    "salesperson",
+    "spokes",
+    "host",
+    "anchor",
+    "streamer",
+    "influencer",
+    "person",
+    "people",
+    "human",
+    "speaker",
+    "主播",
+    "真人",
+    "导购",
+    "模特",
+    "口播",
+    "出镜",
+    "人物",
+    "讲解",
+)
+
 
 @dataclass(frozen=True)
 class SimpleCandidate:
@@ -41,14 +63,7 @@ def _coverage_ratio(source_duration: float, required_duration: float) -> float:
 
 @dataclass(frozen=True)
 class PortraitClipCandidate:
-    """One lip-sync-usable clip window inside a unified visual asset.
-
-    ``source_start``/``source_end`` are the clip's span in the source asset's own
-    timeline (seconds) — the portrait track build cuts exactly that range. Unlike
-    the legacy whole-asset portrait candidate, a single mixed video yields one
-    candidate per talking-head clip (the b-roll clips of the same asset flow into
-    the b-roll pool instead).
-    """
+    """One lip-sync-usable clip window inside a unified visual asset."""
 
     asset_id: str
     clip_id: str
@@ -63,20 +78,34 @@ class PortraitClipCandidate:
 
 
 def clip_is_lip_sync_usable(clip) -> bool:
-    """Whether one ``ClipV4`` can serve as a lip-sync (A-roll) source window.
-
-    Requires the VLM's ``recommended_for_lip_sync`` and a non-``avoid`` role, the
-    deterministic CV multi-face gate (``face_count_max`` must not exceed 1 — a
-    frame with >1 face cannot be lip-synced), and a minimum duration. ``face_count_max``
-    of None/0 is fail-open (CV unavailable) and does not block on its own.
-    """
+    """Whether one ``ClipV4`` can serve as a lip-sync source window."""
     usage = clip.usage
-    if usage.role.value == "avoid" or not usage.recommended_for_lip_sync:
+    if usage.role.value == "avoid":
         return False
     fcm = clip.semantics.face_count_max
     if fcm is not None and fcm > 1:
         return False
-    return (float(clip.end) - float(clip.start)) >= _MIN_LIPSYNC_CLIP_SEC
+    if (float(clip.end) - float(clip.start)) < _MIN_LIPSYNC_CLIP_SEC:
+        return False
+    if usage.recommended_for_lip_sync:
+        return True
+    return _looks_like_static_lipsync_source(clip)
+
+
+def _looks_like_static_lipsync_source(clip) -> bool:
+    sem = clip.semantics
+    subject = (sem.subject_type or "").lower()
+    if not any(term in subject for term in _PERSON_SUBJECT_TERMS):
+        return False
+    if sem.contains_face is False and sem.face_count_max == 0:
+        return False
+    orientation = (sem.body_orientation or "").lower()
+    return (
+        sem.mouth_visible is True
+        or sem.gaze_to_camera is True
+        or "frontal" in orientation
+        or "camera" in orientation
+    )
 
 
 def rank_portrait_clip_candidates(

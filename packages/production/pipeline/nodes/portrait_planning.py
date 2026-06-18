@@ -1,35 +1,18 @@
-"""PortraitPlanning node: the real boundary/timeline portrait plan.
-
-Thin wiring around the PURE planner in :mod:`packages.planning.editing`. It feeds the
-planner three honest inputs and emits the frame-contiguous portrait plan the render
-nodes consume — no seeded/placeholder timeline:
-
-  - narration units: re-derived through the editing-agent splitter so each unit
-    carries the boundary fields (``portrait_cut_allowed`` / ``hard_end`` /
-    ``boundary_score``) the boundary builder needs, while keeping the real aligned
-    timing from the NarrationAlignment artifact;
-  - portrait source-window candidates: each usable portrait material candidate's
-    clip source span ``[source_start, source_end]`` (ranked by the material pack);
-  - audio pauses: detected by running ffmpeg ``silencedetect`` on the produced TTS
-    audio. With real TTS this finds real 气口 and cuts snap into silences; with the
-    sandbox 440Hz tone it finds (near) none, so the planner falls back to
-    semantic-only boundaries. Pauses are NEVER fabricated.
-
-When the candidates cannot capacity-cover the audio the planner returns no segments
-and we soft-degrade honestly via ``material.insufficient.portrait`` — never a
-fabricated plan.
-"""
+"""PortraitPlanning node: build the frame-contiguous portrait track."""
 
 from __future__ import annotations
 
+from pydantic import ValidationError
+
 from packages.core.contracts import ArtifactKind, ErrorCode
-from packages.core.contracts.artifacts import PortraitPlanArtifact
+from packages.core.contracts.artifacts import NarrationUnit, PortraitPlanArtifact
 from packages.media.audio import detect_silence_windows
 from packages.planning.editing import (
     TIMELINE_FPS,
     BoundaryConstraints,
     SpokenSegment,
     build_narration_units,
+    build_narration_units_from_asr,
     plan_boundary_timeline,
 )
 from packages.planning.selection.recency_context import (
@@ -71,21 +54,11 @@ def run(ctx: NodeContext) -> NodeOutput:
             "Portrait source window cannot cover the full audio.",
         )
 
-    # Re-derive narration units through the editing splitter so boundary fields are
-    # populated, keeping the real aligned timing as the spoken-segment skeleton.
-    spoken = [
-        SpokenSegment(
-            start=float(unit.get("start", 0.0)),
-            end=float(unit.get("end", 0.0)),
-            text=str(unit.get("text") or ""),
-        )
-        for unit in raw_units
-        if str(unit.get("text") or "").strip()
-    ]
-    planner_units = build_narration_units(
+    planner_units = _planner_narration_units(
+        raw_units=raw_units,
+        source=str(narration.get("source") or ""),
         script=state.request.script,
-        asr_segments=spoken or None,
-        video_duration=duration,
+        duration=duration,
     )
 
     # Detect real audio pauses on the produced TTS audio (semantic-only fallback when
@@ -133,6 +106,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             "recovery_attempts": escalation["attempts"],
             "capacity_controlled_split": escalation["capacity_controlled_split"],
             "longest_usable_source_window": escalation["longest_usable_source_window"],
+            "audio_pause_capacity_cap": escalation.get("audio_pause_capacity_cap"),
             "recently_used_segment_count": sum(
                 1 for seg in segments if seg.get("recently_used_material")
             ),
@@ -184,11 +158,14 @@ def _plan_with_escalation(
             "attempts": attempts,
             "capacity_controlled_split": False,
             "longest_usable_source_window": round(longest_usable, 3),
+            "audio_pause_capacity_cap": None,
         }
 
     # Capacity-controlled split retry: shorten over-long chunks to the longest usable
-    # source window so shorter windows can cover them; ban unlimited reuse so this is a
-    # real coverage recovery, not the over-extension crutch.
+    # source window so shorter windows can cover them. Keep the unlimited scope enabled:
+    # with clip-level candidates, ``template_id`` is the source asset while ``window_id``
+    # is the actual non-overextendable source span; one uploaded video can legitimately
+    # provide several different lip-sync windows.
     if longest_usable > 0.08:
         split_plan = plan_boundary_timeline(
             narration_units=narration_units,
@@ -196,7 +173,7 @@ def _plan_with_escalation(
             constraints=BoundaryConstraints(
                 target_duration=duration,
                 max_chunk_duration=round(longest_usable, 3),
-                include_unlimited_reuse_scope=False,
+                include_unlimited_reuse_scope=True,
             ),
             audio_pauses=audio_pauses,
             fps=TIMELINE_FPS,
@@ -208,14 +185,92 @@ def _plan_with_escalation(
                 "attempts": attempts,
                 "capacity_controlled_split": True,
                 "longest_usable_source_window": round(longest_usable, 3),
+                "audio_pause_capacity_cap": None,
             }
+        if audio_pauses and longest_usable > 8.05:
+            pause_cap = 8.0
+            pause_split_plan = plan_boundary_timeline(
+                narration_units=narration_units,
+                portrait_candidates=candidates,
+                constraints=BoundaryConstraints(
+                    target_duration=duration,
+                    max_chunk_duration=pause_cap,
+                    include_unlimited_reuse_scope=True,
+                ),
+                audio_pauses=audio_pauses,
+                fps=TIMELINE_FPS,
+            )
+            attempts.append(
+                {
+                    "stage": "audio_pause_capacity_split",
+                    "ok": pause_split_plan.ok,
+                    "max_chunk_duration": pause_cap,
+                }
+            )
+            if pause_split_plan.ok:
+                return pause_split_plan, {
+                    "stage": "audio_pause_capacity_split",
+                    "attempts": attempts,
+                    "capacity_controlled_split": True,
+                    "longest_usable_source_window": round(longest_usable, 3),
+                    "audio_pause_capacity_cap": pause_cap,
+                }
 
     return plan, {
         "stage": "exhausted",
         "attempts": attempts,
         "capacity_controlled_split": False,
         "longest_usable_source_window": round(longest_usable, 3),
+        "audio_pause_capacity_cap": None,
     }
+
+
+def _planner_narration_units(
+    *,
+    raw_units: list[dict],
+    source: str = "",
+    script: str,
+    duration: float,
+) -> list[NarrationUnit]:
+    parsed: list[NarrationUnit] = []
+    has_boundary_signal = False
+    for raw in raw_units or []:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            unit = NarrationUnit.model_validate(raw)
+        except ValidationError:
+            continue
+        if unit.end <= unit.start:
+            continue
+        if unit.duration is None:
+            unit = unit.model_copy(update={"duration": round(unit.end - unit.start, 3)})
+        parsed.append(unit)
+        has_boundary_signal = has_boundary_signal or bool(
+            unit.portrait_cut_allowed
+            or unit.hard_end
+            or unit.pause_after_ms > 0
+            or unit.boundary_score > 0
+            or str(unit.boundary_reason or "").strip()
+        )
+    if parsed and has_boundary_signal:
+        return parsed
+
+    # Older artifacts only carried text/start/end; rebuild boundary fields on resume.
+    spoken = [
+        SpokenSegment(start=unit.start, end=unit.end, text=unit.text)
+        for unit in parsed
+        if str(unit.text or "").strip()
+    ]
+    if parsed and source in {"asr", "tts_subtitle"}:
+        units = build_narration_units_from_asr(spoken, duration)
+        if units:
+            return units
+    return build_narration_units(
+        script=script,
+        asr_segments=spoken or None,
+        video_duration=duration,
+    )
 
 
 def _portrait_window_candidates(ctx: NodeContext, items: list[dict], ledger) -> list[dict]:
@@ -283,10 +338,7 @@ def _detect_audio_pauses(ctx: NodeContext) -> list[dict]:
     audio = ctx.state.artifacts.get(ArtifactKind.audio_tts)
     if audio is None or not audio.uri:
         return []
-    try:
-        audio_path = ctx.artifact_path(audio)
-    except NodeExecutionError:
-        return []
+    audio_path = ctx.artifact_path(audio)
     return detect_silence_windows(audio_path)
 
 

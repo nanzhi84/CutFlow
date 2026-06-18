@@ -13,6 +13,8 @@ from packages.planning.material import (
 )
 from packages.production.pipeline._node_context import NodeContext
 
+_BROLL_RECENT_SELECTION_LIMIT = 80
+
 
 def _narration_segments(units: list[NarrationUnit]) -> list[ScriptSegment]:
     return [
@@ -48,17 +50,23 @@ def run(ctx: NodeContext) -> NodeOutput:
         for asset_id in dict.fromkeys(candidate_asset_ids)
         if (annotation := ctx.repository.annotation_v4_for_asset(asset_id)) is not None
     }
-    ledger_entries = ctx.repository.recent_selections(case_id=state.request.case_id, medium="broll")
+    ledger_entries = ctx.repository.recent_selections(
+        case_id=state.request.case_id,
+        medium="broll",
+        limit=_BROLL_RECENT_SELECTION_LIMIT,
+    )
     candidates = rank_broll_candidates(
         annotations=annotations,
         segments=segments,
         ledger_entries=ledger_entries,
+        include_generic_coverage=state.request.workflow_template_id == "broll_only_v1",
     )
     plan = plan_coverage(
         candidates=candidates,
         units=units,
         target_sec=target_sec,
         min_segment_duration=state.request.broll.min_segment_duration,
+        freshness_seed=ctx.run.id,
     )
     if not plan.sufficient:
         raise NodeExecutionError(

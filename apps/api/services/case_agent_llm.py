@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 
 from fastapi import Request
 
 from apps.api.common import get_case, provider_repository, repository
 from packages.ai.gateway import ProviderCall
-from packages.ai.prompts.registry import case_prompt_variables, extract_script_from_output
+from packages.ai.prompts.registry import (
+    case_prompt_variables,
+    extract_script_from_output,
+    extract_script_title_from_output,
+)
 from packages.core import contracts as c
 from packages.core.config.settings import sandbox_fallback_allowed
 from packages.core.workflow import NodeExecutionError
@@ -20,6 +25,8 @@ _FALLBACK_ERROR_CODES = frozenset(
 # Spec §2.3: prompt 输出不符合 schema 时重试，耗尽后 hard_fail: prompt.output_invalid.
 # Total attempts = 1 initial + _SCRIPT_OUTPUT_MAX_RETRIES re-tries.
 _SCRIPT_OUTPUT_MAX_RETRIES = 2
+_RECENT_SCRIPT_CONTEXT_LIMIT = 5
+_RECENT_SCRIPT_SNIPPET_CHARS = 220
 
 
 _RESPONSE_CONTRACT = (
@@ -30,6 +37,12 @@ _RESPONSE_CONTRACT = (
     "不要写「（停顿）」「（直视镜头）」「（语气转沉稳）」「（靠近镜头）」这类内容，只输出要念出来的话本身。"
     "只输出这一个脚本，不要输出思考过程、解释说明或多余文字。"
 )
+
+
+@dataclass(frozen=True)
+class GeneratedScript:
+    script: str
+    title: str | None = None
 
 
 def generate_script_with_llm(
@@ -43,7 +56,8 @@ def generate_script_with_llm(
     strategy_tags: list[str] | None = None,
     reference_script: str | None = None,
     duration: str | None = None,
-) -> str | None:
+    recent_script_texts: list[str] | None = None,
+) -> GeneratedScript | None:
     profile = _select_real_llm_profile(request)
     if profile is None:
         if not sandbox_fallback_allowed():
@@ -83,6 +97,15 @@ def generate_script_with_llm(
         case_id=case_id,
         provider_profile_id=profile.id,
     )
+    rendered = _append_generation_context(
+        rendered,
+        brief=brief,
+        memories=memories,
+        strategy_tags=tags,
+        reference_script=reference_script,
+        duration=duration,
+        recent_script_texts=recent_script_texts or [],
+    )
     rendered = f"{rendered}\n\n{_RESPONSE_CONTRACT}"
     registry = request.app.state.prompt_registry
     last_invalid: NodeExecutionError | None = None
@@ -102,6 +125,7 @@ def generate_script_with_llm(
                     "brief": brief,
                     "memory_ids": memory_ids,
                     "memories": memories,
+                    "recent_script_texts": recent_script_texts or [],
                     "attempt": attempt,
                 },
             )
@@ -126,7 +150,8 @@ def generate_script_with_llm(
             continue
         script = _strip_stage_cues(extract_script_from_output(result.output))
         if script:
-            return script
+            title = extract_script_title_from_output(result.output) or None
+            return GeneratedScript(script=script, title=title)
         last_invalid = NodeExecutionError(
             c.ErrorCode.prompt_output_invalid, "Case agent LLM output missing script."
         )
@@ -183,6 +208,71 @@ def _select_real_llm_profile(request: Request) -> c.ProviderProfile | None:
             continue
         return profile
     return None
+
+
+def _append_generation_context(
+    rendered: str,
+    *,
+    brief: str,
+    memories: list[str],
+    strategy_tags: list[str],
+    reference_script: str | None,
+    duration: str | None,
+    recent_script_texts: list[str],
+) -> str:
+    lines = [
+        "",
+        "【本轮用户要求】",
+        brief.strip() or "未填写",
+    ]
+    if strategy_tags:
+        lines.extend(["", f"【策略标签】{'、'.join(strategy_tags)}"])
+    if duration:
+        lines.extend(["", f"【时长偏好】{duration}"])
+    if reference_script and reference_script.strip():
+        lines.extend(["", "【用户补充/参考文本】", reference_script.strip()])
+    if memories:
+        lines.extend(["", "【案例记忆】", " / ".join(memories)])
+    recent = _recent_script_snippets(recent_script_texts)
+    if recent:
+        lines.extend(
+            [
+                "",
+                "【历史避重要求】",
+                "下面是同一 case 最近已经生成或采用过的脚本。禁止复用或近似改写这些脚本的开头句、核心场景、段落顺序、CTA 和连续短语；本次必须换一个明显不同的切口、叙述结构或痛点路径。",
+                *[f"{index}. {text}" for index, text in enumerate(recent, start=1)],
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "【差异化硬约束】",
+            "- 如果本轮用户要求里包含版本序号，必须让该版本拥有独立切口，不能只替换几个同义词。",
+            "- 全新创作必须优先新开场、新场景、新结构；不得把最近脚本压缩、扩写或轻微改写后输出。",
+            "- 只能使用当前 case 信息、用户补充、案例记忆中明确给出的事实，不得编造价格、距离、优惠、销量、资质或承诺。",
+        ]
+    )
+    context = "\n".join(lines)
+    return f"{rendered}\n{context}"
+
+
+def _recent_script_snippets(texts: list[str]) -> list[str]:
+    snippets: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        normalized = re.sub(r"\s+", " ", text).strip()
+        if not normalized:
+            continue
+        key = normalized[:80]
+        if key in seen:
+            continue
+        seen.add(key)
+        if len(normalized) > _RECENT_SCRIPT_SNIPPET_CHARS:
+            normalized = f"{normalized[:_RECENT_SCRIPT_SNIPPET_CHARS]}..."
+        snippets.append(normalized)
+        if len(snippets) >= _RECENT_SCRIPT_CONTEXT_LIMIT:
+            break
+    return snippets
 
 
 _STAGE_CUE_KEYWORDS = (

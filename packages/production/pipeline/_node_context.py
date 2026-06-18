@@ -114,8 +114,14 @@ class NodeContext:
     def select_lipsync_fallback_profile(self, current_profile, error_message: str):
         return self.adapter._select_lipsync_fallback_profile(current_profile, error_message)
 
-    def narration_units_from_segments(self, segments, fallback_duration: float) -> list[NarrationUnit]:
-        return self.adapter._narration_units_from_segments(segments, fallback_duration)
+    def narration_units_from_segments(
+        self,
+        segments,
+        fallback_duration: float,
+        *,
+        script: str | None = None,
+    ) -> list[NarrationUnit]:
+        return self.adapter._narration_units_from_segments(segments, fallback_duration, script=script)
 
     def write_report(self, *, failed: bool) -> tuple[Artifact, Artifact]:
         return self.adapter._write_report(self.run, self.state, failed=failed, node_run=self.node_run)

@@ -229,6 +229,51 @@ def test_broll_insert_never_spills_past_a_short_narration_beat():
     assert insertions == []
 
 
+def test_broll_insertions_use_freshness_seed_for_new_timing_and_trim():
+    units = [
+        NarrationUnit(
+            unit_id="u1", text="展示门店货架和热销商品。", start=0.0, end=7.0, confidence=1.0
+        )
+    ]
+    beat = ScriptSegment(text=units[0].text, start=0.0, end=7.0, keywords=("门店", "商品"))
+    candidate = BrollCandidate(
+        asset_id="asset_a",
+        clip_id="clip_a",
+        score=90.0,
+        base_score=90.0,
+        recency_penalty=0.0,
+        matched_keywords=("门店",),
+        scene_name="货架",
+        source_start=0.0,
+        source_end=9.0,
+        best_segment=beat,
+    )
+
+    first = plan_insertions(
+        candidates=[candidate],
+        units=units,
+        max_inserts=1,
+        freshness_seed="run_a",
+    )
+    second = plan_insertions(
+        candidates=[candidate],
+        units=units,
+        max_inserts=1,
+        freshness_seed="run_b",
+    )
+
+    assert first and second
+    assert (
+        first[0].timeline_start,
+        first[0].source_start,
+    ) != (
+        second[0].timeline_start,
+        second[0].source_start,
+    )
+    assert first[0].timeline_end <= units[0].end
+    assert second[0].timeline_end <= units[0].end
+
+
 # --------------------------------------------------------------------------- (b)
 def test_recency_demotes_clip_picked_in_previous_run():
     units = _units()
@@ -260,6 +305,39 @@ def test_recency_demotes_clip_picked_in_previous_run():
     run2_by_asset = {c.asset_id: c for c in run2}
     assert run2_by_asset[winner.asset_id].recency_penalty > 0.0
     assert run2[0].asset_id != winner.asset_id  # fresh clip now ranks first
+
+
+def test_broll_recent_exact_clip_is_hard_ranked_after_fresh_clip():
+    units = _units()
+    segments = _narration_segments(units)
+    annotations = {
+        "asset_recent": _annotation(
+            "asset_recent",
+            [_clip("recent_clip", 0.0, 8.0, ["补漆", "效果", "对比", "打磨"])],
+            duration=8.0,
+            usable_ratio=1.0,
+        ),
+        "asset_fresh": _annotation(
+            "asset_fresh",
+            [_clip("fresh_clip", 0.0, 4.0, ["补漆"], scene_type="新鲜场景")],
+            usable_ratio=0.5,
+        ),
+    }
+    ledger = [
+        SelectionLedgerEntry(
+            case_id="case_demo",
+            run_id="run_1",
+            medium="broll",
+            asset_id="asset_recent",
+            clip_id="recent_clip",
+            slot_phase="broll_1",
+        )
+    ]
+
+    ranked = rank_broll_candidates(annotations=annotations, segments=segments, ledger_entries=ledger)
+
+    assert ranked[0].asset_id == "asset_fresh"
+    assert ranked[-1].asset_id == "asset_recent"
 
 
 def test_portrait_clip_recency_demotes_recently_used_portrait():

@@ -41,6 +41,35 @@ def test_quality_count_only_counts_qcd_videos_not_pending():
     assert item.quality_count == 3
 
 
+def test_material_count_includes_unified_video_assets():
+    case = c.CaseDetail(id="case_video_count", name="Video Count Case")
+    repo = SimpleNamespace(
+        media_assets={
+            "asset_video": SimpleNamespace(case_id="case_video_count", kind="video"),
+            "asset_portrait": SimpleNamespace(case_id="case_video_count", kind="portrait"),
+            "asset_voice": SimpleNamespace(case_id="case_video_count", kind="voice"),
+            "asset_other_case": SimpleNamespace(case_id="case_other", kind="video"),
+        },
+        scripts={},
+        finished_videos={},
+    )
+
+    item = _with_counts(repo, case)
+
+    assert item.material_count == 2
+    assert item.voice_count == 1
+
+
+def test_case_count_material_kind_allowlists_include_unified_video_assets():
+    from apps.api.services.cases import MATERIAL_ASSET_KINDS as API_MATERIAL_ASSET_KINDS
+    from packages.creative.cases.sqlalchemy_repository import (
+        MATERIAL_ASSET_KINDS as SQLA_MATERIAL_ASSET_KINDS,
+    )
+
+    assert "video" in API_MATERIAL_ASSET_KINDS
+    assert "video" in SQLA_MATERIAL_ASSET_KINDS
+
+
 def _login_admin(client: TestClient) -> None:
     response = client.post(
         "/api/auth/login",

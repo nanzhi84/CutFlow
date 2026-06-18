@@ -3,7 +3,7 @@ from __future__ import annotations
 import mimetypes
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from packages.core.contracts import (
@@ -427,7 +427,10 @@ class SqlAlchemyProductionRepository:
                     adopted_script = script_version_row_to_contract(script_row)
                     repository.scripts[adopted_script.id] = adopted_script
             if run.case_id:
-                for row in session.scalars(select(MediaAssetRow).where(MediaAssetRow.case_id == run.case_id)):
+                media_statement = select(MediaAssetRow).where(
+                    or_(MediaAssetRow.case_id == run.case_id, MediaAssetRow.case_id.is_(None))
+                )
+                for row in session.scalars(media_statement):
                     asset = media_asset_row_to_contract(row)
                     repository.media_assets[asset.id] = asset
                     # Hydrate the latest annotation so material planning (b-roll

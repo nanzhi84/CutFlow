@@ -92,6 +92,32 @@ def test_parse_valid_response_yields_clips():
     assert clip.segment_id.startswith("w0.000_4.000_seg")
 
 
+def test_parse_accepts_clips_alias_from_vlm():
+    clips = parse_window_response(
+        json.dumps({"clips": [_segment(start=0.0, end=4.0)]}),
+        material_type="broll",
+        window_start=0.0,
+        window_end=4.0,
+        duration=4.0,
+    )
+
+    assert len(clips) == 1
+    assert clips[0].usage.role == UsageRole.cover
+
+
+def test_parse_unwraps_common_output_container():
+    clips = parse_window_response(
+        json.dumps({"output": {"segments": [_segment(start=0.0, end=4.0)]}}),
+        material_type="broll",
+        window_start=0.0,
+        window_end=4.0,
+        duration=4.0,
+    )
+
+    assert len(clips) == 1
+    assert clips[0].usage.role == UsageRole.cover
+
+
 def test_parse_coerces_non_string_semantics_fields():
     # The VLM occasionally returns a bool/number for a string-typed semantics field
     # (e.g. ``retake_cue: false`` = "no retake"). The parser must coerce it instead of
@@ -134,7 +160,7 @@ def test_parse_non_json_raises_schema_error():
 def test_parse_missing_segments_raises_schema_error():
     with pytest.raises(SchemaError):
         parse_window_response(
-            json.dumps({"clips": []}),
+            json.dumps({"labels": []}),
             material_type="broll",
             window_start=0.0,
             window_end=4.0,

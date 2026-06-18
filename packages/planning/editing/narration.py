@@ -57,13 +57,30 @@ def _time_at_clean_char_boundary(
     return util.round_time(fallback_end if fallback_end > fallback_start else fallback_start)
 
 
+def _pause_after_boundary_ms(
+    *,
+    boundary: float,
+    asr_segments: Sequence[SpokenSegment],
+    tolerance_sec: float = 0.12,
+) -> int:
+    for index, segment in enumerate(asr_segments[:-1]):
+        seg_end = float(segment.end)
+        next_start = float(asr_segments[index + 1].start)
+        pause_sec = max(0.0, next_start - seg_end)
+        if pause_sec <= 0:
+            continue
+        if abs(float(boundary) - seg_end) <= tolerance_sec:
+            return int(round(pause_sec * 1000))
+    return 0
+
+
 def build_narration_units_from_script_sentences(
     *,
     script: str,
     asr_segments: Sequence[SpokenSegment],
     video_duration: float,
 ) -> list[NarrationUnit]:
-    sentences = narration_text.split_script_sentences(script)
+    sentences = narration_text.split_script_reading_chunks(script)
     if len(sentences) <= 1 or not asr_segments:
         return []
 
@@ -111,8 +128,14 @@ def build_narration_units_from_script_sentences(
         end = util.round_time(max(start, boundaries[idx + 1]))
         if end - start <= 0.08:
             continue
-        next_start = boundaries[idx + 1] if idx + 1 < len(boundaries) else max(end, video_duration)
-        pause_after_ms = int(round(max(0.0, float(next_start) - end) * 1000))
+        pause_after_ms = (
+            0
+            if idx == len(sentences) - 1
+            else _pause_after_boundary_ms(
+                boundary=end,
+                asr_segments=ordered,
+            )
+        )
         hard_end = idx == len(sentences) - 1 or narration_text.is_hard_sentence_end(sentence)
         boundary_score = 0.35
         if narration_text.is_hard_sentence_end(sentence):
@@ -135,7 +158,7 @@ def build_narration_units_from_script_sentences(
                 boundary_score=boundary_score,
                 portrait_cut_allowed=bool(hard_end),
                 broll_overlay_allowed=end - start >= 0.18,
-                boundary_reason="脚本句尾" if hard_end else "脚本句内连续表达",
+                boundary_reason="脚本句尾" if hard_end else "脚本阅读分句",
             )
         )
     return units
@@ -215,11 +238,7 @@ def build_narration_units_without_asr(
     script: str,
     video_duration: float,
 ) -> list[NarrationUnit]:
-    sentences = [
-        item.strip()
-        for item in re.split(r"(?<=[。！？!?；;])|\n+", str(script or ""))
-        if item and item.strip()
-    ]
+    sentences = narration_text.split_script_reading_chunks(script)
     if not sentences:
         return []
     total_chars = sum(max(1, len(re.sub(r"\s+", "", sentence))) for sentence in sentences)

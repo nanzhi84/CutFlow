@@ -34,13 +34,17 @@ def _clip(
     lip_sync=True,
     face_count_max=1,
     keywords=("内容",),
+    semantics: dict | None = None,
 ):
+    semantic_payload = {"scene_type": "场景", "face_count_max": face_count_max}
+    if semantics:
+        semantic_payload.update(semantics)
     return ClipV4(
         segment_id=segment_id,
         start=start,
         end=end,
         duration=end - start,
-        semantics=ClipSemanticsV4(scene_type="场景", face_count_max=face_count_max),
+        semantics=ClipSemanticsV4(**semantic_payload),
         usage=ClipUsageV4(role=role, recommended_for_lip_sync=lip_sync),
         retrieval=ClipRetrievalV4(
             summary=" ".join(keywords),
@@ -76,6 +80,31 @@ def test_clip_is_lip_sync_usable_gates():
     assert not clip_is_lip_sync_usable(_clip("avoid", 0.0, 5.0, role=UsageRole.avoid))
     # face_count_max None (CV unavailable) is fail-open -> still usable
     assert clip_is_lip_sync_usable(_clip("nofcm", 2.0, 9.0, face_count_max=None))
+
+
+def test_static_single_face_person_clip_can_feed_lipsync_source():
+    static_person = _clip(
+        "static_person",
+        0.0,
+        7.0,
+        role=UsageRole.cover,
+        lip_sync=False,
+        semantics={
+            "subject_type": "person",
+            "gaze_to_camera": True,
+            "mouth_visible": True,
+            "mouth_moving": False,
+            "body_orientation": "frontal",
+        },
+    )
+
+    assert clip_is_lip_sync_usable(static_person)
+
+    candidates = rank_portrait_clip_candidates(
+        annotations={"vid_person": _video_annotation("vid_person", [static_person])},
+        required_duration=0.0,
+    )
+    assert [candidate.clip_id for candidate in candidates] == ["static_person"]
 
 
 def test_rank_portrait_clips_picks_only_lipsync_clips_with_source_windows():
@@ -123,6 +152,37 @@ def test_video_talking_head_clips_stay_out_of_broll_pool():
     clip_ids = {c.clip_id for c in broll}
     assert "talk" not in clip_ids
     assert "cover" in clip_ids
+
+
+def test_broll_generic_cover_backfill_is_opt_in():
+    annotation = _video_annotation(
+        "vid_shelf",
+        [
+            _clip(
+                "shelf_cover",
+                0.0,
+                5.0,
+                role=UsageRole.cover,
+                lip_sync=False,
+                keywords=("货架", "商品"),
+                semantics={"subject_type": "product"},
+            )
+        ],
+    )
+    segments = [
+        ScriptSegment(text="顺手买点啥，真的不贵。", start=0.0, end=5.0, keywords=("顺手", "不贵"))
+    ]
+
+    assert rank_broll_candidates(annotations={"vid_shelf": annotation}, segments=segments) == []
+    coverage = rank_broll_candidates(
+        annotations={"vid_shelf": annotation},
+        segments=segments,
+        include_generic_coverage=True,
+    )
+
+    assert [candidate.clip_id for candidate in coverage] == ["shelf_cover"]
+    assert coverage[0].matched_keywords == ()
+    assert coverage[0].score < 50
 
 
 def test_video_backup_lipsync_clip_stays_out_of_broll_pool():

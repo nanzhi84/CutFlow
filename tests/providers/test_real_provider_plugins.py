@@ -750,8 +750,43 @@ def test_dashscope_vlm_uses_openai_compatible_multimodal_payload(tmp_path):
     assert invocation.status == ProviderStatus.succeeded
     assert result is not None
     assert result.output["canonical"]["quality"]["valid"] is True
+    assert result.output["content"] == '{"labels": ["broll"], "quality": {"valid": true, "issues": []}}'
     assert result.input_tokens == 21
     assert result.output_tokens == 13
+
+
+def test_dashscope_vlm_preserves_unparseable_content(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"segments": [{"start": 0.0}'}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1200},
+            },
+        )
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+    secret_ref = gateway.secret_store.put("dashscope-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="dashscope.vlm",
+        capability="vlm.annotation",
+        model_id="qwen-vl-max-latest",
+        secret_ref=secret_ref,
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            provider_profile_id=profile.id,
+            capability_id="vlm.annotation",
+            input={"messages": [{"role": "user", "content": [{"type": "text", "text": "Return JSON."}]}]},
+        )
+    )
+
+    assert invocation.status == ProviderStatus.succeeded
+    assert result is not None
+    assert result.output["canonical"] == {}
+    assert result.output["content"] == '{"segments": [{"start": 0.0}'
 
 
 def test_runninghub_heygem_records_external_job_and_stores_polled_video(

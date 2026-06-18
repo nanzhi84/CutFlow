@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -13,6 +14,7 @@ from packages.core.workflow import NodeExecutionError
 # Both the provider_seed CaseAgentScriptGenerate template (case_agent_script.output)
 # and the migrated script-variant templates (prompt.script.output) share this rule.
 SCRIPT_OUTPUT_SCHEMA_IDS = frozenset({"case_agent_script.output", "prompt.script.output"})
+_PROMPT_VARIABLE_RE = re.compile(r"(?<!\{)\{([A-Za-z_][A-Za-z0-9_]*)\}(?!\})|\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
 
 
 def _json_object(value: str) -> dict | None:
@@ -25,6 +27,15 @@ def _json_object(value: str) -> dict | None:
     except (json.JSONDecodeError, ValueError):
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _missing_prompt_variables(content: str, variables: dict) -> list[str]:
+    missing: list[str] = []
+    for match in _PROMPT_VARIABLE_RE.finditer(content):
+        name = match.group(1) or match.group(2)
+        if name not in variables:
+            missing.append(name)
+    return missing
 
 
 def extract_script_from_output(output: Any) -> str:
@@ -61,12 +72,37 @@ def extract_script_from_output(output: Any) -> str:
     return ""
 
 
+def extract_script_title_from_output(output: Any) -> str:
+    if not isinstance(output, dict):
+        return ""
+    title = _title_from_items(output.get("items"))
+    if title:
+        return title
+    value = output.get("title")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    content = output.get("content")
+    if isinstance(content, str) and content.strip():
+        parsed = _json_object(content)
+        if parsed is not None:
+            return extract_script_title_from_output(parsed)
+    return ""
+
+
 def _script_from_items(items: Any) -> str:
     if isinstance(items, list) and items and isinstance(items[0], dict):
         for nested_key in ("script", "content", "draft"):
             nested = items[0].get(nested_key)
             if isinstance(nested, str) and nested.strip():
                 return nested.strip()
+    return ""
+
+
+def _title_from_items(items: Any) -> str:
+    if isinstance(items, list) and items and isinstance(items[0], dict):
+        title = items[0].get("title")
+        if isinstance(title, str) and title.strip():
+            return title.strip()
     return ""
 
 
@@ -194,11 +230,7 @@ class PromptRegistry:
             case_id=case_id,
             provider_profile_id=provider_profile_id,
         )
-        missing = [
-            token.split("}", 1)[0]
-            for token in version.content.split("{")
-            if "}" in token and token.split("}", 1)[0] not in variables
-        ]
+        missing = _missing_prompt_variables(version.content, variables)
         if missing:
             raise NodeExecutionError(
                 ErrorCode.prompt_render_error,
@@ -207,6 +239,7 @@ class PromptRegistry:
             )
         rendered = version.content
         for key, value in variables.items():
+            rendered = rendered.replace("{{" + key + "}}", str(value))
             rendered = rendered.replace("{" + key + "}", str(value))
         invocation = PromptInvocation(
             id=new_id("prinv"),

@@ -618,7 +618,17 @@ def test_resume_from_successful_run_reuses_prefix_and_keeps_report_readable():
     assert new_run["status"] == "succeeded"
     detail = client.get(f"/api/runs/{new_run['id']}").json()
     assert detail["node_runs"]
-    assert all(node["status"] == "skipped" for node in detail["node_runs"])
+    skipped = {node["node_id"] for node in detail["node_runs"] if node["status"] == "skipped"}
+    assert {
+        "ValidateRequest",
+        "LoadCaseContext",
+        "ResolveCreativeIntent",
+        "TTS",
+        "MaterialPackPlanning",
+        "NarrationAlignment",
+    } <= skipped
+    assert "PortraitPlanning" not in skipped
+    assert "TimelinePlanning" not in skipped
     report = client.get(f"/api/runs/{new_run['id']}/report")
     assert report.status_code == 200, report.text
 

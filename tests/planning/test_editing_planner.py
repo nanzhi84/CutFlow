@@ -18,6 +18,7 @@ import math
 
 import pytest
 
+from packages.core.contracts.artifacts import NarrationUnit
 from packages.planning.editing import (
     BoundaryConstraints,
     SpokenSegment,
@@ -211,6 +212,186 @@ def test_capacity_cap_keeps_chunks_within_cap() -> None:
         # +1 frame slack for the grid boundary
         assert seg.timeline_length_frames <= 6 * TIMELINE_FPS + 1
     _assert_contiguous_frame_exact(plan)
+
+
+def test_capacity_split_uses_script_reading_boundaries_without_audio_pauses() -> None:
+    units = [
+        NarrationUnit(
+            unit_id="u1",
+            text="第一句。",
+            start=0.0,
+            end=3.0,
+            confidence=1.0,
+            hard_end=True,
+            portrait_cut_allowed=True,
+            boundary_reason="脚本句尾",
+        ),
+        NarrationUnit(
+            unit_id="u2",
+            text="第二句。",
+            start=3.0,
+            end=6.0,
+            confidence=1.0,
+            hard_end=True,
+            portrait_cut_allowed=True,
+            boundary_reason="脚本句尾",
+        ),
+        NarrationUnit(
+            unit_id="u3",
+            text="需要靠阅读分句拆开的前半句，",
+            start=6.0,
+            end=9.5,
+            confidence=1.0,
+            hard_end=False,
+            portrait_cut_allowed=False,
+            boundary_score=0.43,
+            boundary_reason="脚本阅读分句",
+        ),
+        NarrationUnit(
+            unit_id="u4",
+            text="后半句到这里结束。",
+            start=9.5,
+            end=13.0,
+            confidence=1.0,
+            hard_end=True,
+            portrait_cut_allowed=True,
+            boundary_reason="脚本句尾",
+        ),
+        NarrationUnit(
+            unit_id="u5",
+            text="最后一句。",
+            start=13.0,
+            end=17.0,
+            confidence=1.0,
+            hard_end=True,
+            portrait_cut_allowed=True,
+            boundary_reason="脚本句尾",
+        ),
+    ]
+    cands = [_portrait_window(f"w{i}", f"T{i}", 4.2, confidence=0.8) for i in range(5)]
+
+    plan = plan_boundary_timeline(
+        narration_units=units,
+        portrait_candidates=cands,
+        constraints=BoundaryConstraints(target_duration=17.0, max_chunk_duration=4.0),
+    )
+
+    assert plan.ok
+    assert plan.used_audio_pauses is False
+    assert any(seg.boundary_source == "semantic_capacity_fallback" for seg in plan.segments)
+    assert all(seg.timeline_length_frames <= 4 * TIMELINE_FPS + 1 for seg in plan.segments)
+
+
+def test_capacity_split_snaps_script_reading_boundaries_to_audio_pauses() -> None:
+    units = [
+        NarrationUnit(
+            unit_id="u1",
+            text="第一句。",
+            start=0.0,
+            end=3.0,
+            confidence=1.0,
+            hard_end=True,
+            portrait_cut_allowed=True,
+            boundary_reason="脚本句尾",
+        ),
+        NarrationUnit(
+            unit_id="u2",
+            text="第二句。",
+            start=3.0,
+            end=6.0,
+            confidence=1.0,
+            hard_end=True,
+            portrait_cut_allowed=True,
+            boundary_reason="脚本句尾",
+        ),
+        NarrationUnit(
+            unit_id="u3",
+            text="需要靠阅读分句拆开的前半句，",
+            start=6.0,
+            end=9.5,
+            confidence=1.0,
+            hard_end=False,
+            portrait_cut_allowed=False,
+            boundary_score=0.43,
+            boundary_reason="脚本阅读分句",
+        ),
+        NarrationUnit(
+            unit_id="u4",
+            text="后半句到这里结束。",
+            start=9.5,
+            end=13.0,
+            confidence=1.0,
+            hard_end=True,
+            portrait_cut_allowed=True,
+            boundary_reason="脚本句尾",
+        ),
+        NarrationUnit(
+            unit_id="u5",
+            text="最后一句。",
+            start=13.0,
+            end=17.0,
+            confidence=1.0,
+            hard_end=True,
+            portrait_cut_allowed=True,
+            boundary_reason="脚本句尾",
+        ),
+    ]
+    pauses = [
+        {"start": 2.98, "end": 3.22, "duration": 0.24},
+        {"start": 5.98, "end": 6.22, "duration": 0.24},
+        {"start": 9.48, "end": 9.72, "duration": 0.24},
+        {"start": 12.98, "end": 13.22, "duration": 0.24},
+    ]
+    cands = [_portrait_window(f"w{i}", f"T{i}", 4.2, confidence=0.8) for i in range(5)]
+
+    plan = plan_boundary_timeline(
+        narration_units=units,
+        portrait_candidates=cands,
+        constraints=BoundaryConstraints(target_duration=17.0, max_chunk_duration=4.0),
+        audio_pauses=pauses,
+    )
+
+    assert plan.ok
+    assert plan.used_audio_pauses is True
+    assert any(seg.boundary_source == "semantic_capacity_fallback" for seg in plan.segments)
+    assert all(seg.timeline_length_frames <= 4 * TIMELINE_FPS + 1 for seg in plan.segments)
+
+
+def test_capacity_split_accepts_near_three_second_script_reading_boundary() -> None:
+    units = [
+        NarrationUnit(
+            unit_id="u1",
+            text="前半句稍短，",
+            start=0.0,
+            end=2.88,
+            confidence=1.0,
+            hard_end=False,
+            portrait_cut_allowed=False,
+            boundary_score=0.43,
+            boundary_reason="脚本阅读分句",
+        ),
+        NarrationUnit(
+            unit_id="u2",
+            text="后半句到这里结束。",
+            start=2.88,
+            end=7.5,
+            confidence=1.0,
+            hard_end=True,
+            portrait_cut_allowed=True,
+            boundary_reason="脚本句尾",
+        ),
+    ]
+    cands = [_portrait_window(f"w{i}", f"T{i}", 5.0, confidence=0.8) for i in range(2)]
+
+    plan = plan_boundary_timeline(
+        narration_units=units,
+        portrait_candidates=cands,
+        constraints=BoundaryConstraints(target_duration=7.5, max_chunk_duration=5.0),
+    )
+
+    assert plan.ok
+    assert len(plan.segments) == 2
+    assert plan.segments[0].timeline_end_frame == frame_index(2.88)
 
 
 def test_backtracking_rescue_finds_feasible_packing_when_greedy_beam_fails() -> None:

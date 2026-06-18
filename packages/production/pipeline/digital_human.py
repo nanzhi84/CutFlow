@@ -70,6 +70,12 @@ from packages.production.pipeline.ephemeral_gc import (
     record_ephemeral_gc_event,
 )
 from packages.production.pipeline.reuse import ReusePlan, ReuseSourceRun, compute_reuse_plan
+from packages.planning.editing import (
+    SpokenSegment,
+    build_narration_units_from_asr,
+    build_narration_units_from_script_sentences,
+    build_narration_units_without_asr,
+)
 
 __all__ = [
     "NODE_SEQUENCE",
@@ -113,6 +119,13 @@ NODE_HANDLERS = {
 logger = logging.getLogger(__name__)
 
 _PROVIDER_SIDE_EFFECT_NODES = {"TTS", "ResolveCreativeIntent", "LipSync", "ExportFinishedVideo"}
+_TIMELINE_REUSE_BREAK_NODES = {
+    "PortraitPlanning",
+    "BrollPlanning",
+    "BrollCoveragePlanning",
+    "TimelinePlanning",
+    "BrollTimelinePlanning",
+}
 
 _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
     "ValidateRequest": [ArtifactKind.validated_production_spec],
@@ -157,6 +170,7 @@ def _build_template(template_id: str, version: str, sequence: list[str]) -> Work
                 if node_id in _PROVIDER_SIDE_EFFECT_NODES
                 else None
             ),
+            reuse_policy="never" if node_id in _TIMELINE_REUSE_BREAK_NODES else "strict",
         )
         for node_id in sequence
     ]
@@ -1162,11 +1176,17 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                 return profile
         return None
 
-    def _narration_units_from_segments(self, segments, fallback_duration: float) -> list[NarrationUnit]:
-        units: list[NarrationUnit] = []
+    def _narration_units_from_segments(
+        self,
+        segments,
+        fallback_duration: float,
+        *,
+        script: str | None = None,
+    ) -> list[NarrationUnit]:
+        spoken: list[SpokenSegment] = []
         if not isinstance(segments, list):
             segments = []
-        for index, segment in enumerate(segments, start=1):
+        for segment in segments:
             if not isinstance(segment, dict):
                 continue
             text = str(segment.get("text") or "").strip()
@@ -1176,15 +1196,18 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             end = float(segment.get("end") or segment.get("end_sec") or start)
             if end <= start:
                 end = start + 0.3
-            units.append(
-                NarrationUnit(
-                    unit_id=f"unit_{index}",
-                    text=text,
-                    start=round(start, 3),
-                    end=round(end, 3),
-                    confidence=float(segment.get("confidence") or segment.get("word_confidence") or 0.8),
-                )
+            spoken.append(SpokenSegment(start=round(start, 3), end=round(end, 3), text=text))
+        script_text = str(script or "").strip()
+        if script_text:
+            units = build_narration_units_from_script_sentences(
+                script=script_text,
+                asr_segments=spoken,
+                video_duration=fallback_duration,
             )
+            if not units:
+                units = build_narration_units_without_asr(script_text, fallback_duration)
+        else:
+            units = build_narration_units_from_asr(spoken, fallback_duration)
         if units:
             return units
         return [

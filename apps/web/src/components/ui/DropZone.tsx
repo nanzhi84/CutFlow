@@ -1,5 +1,6 @@
 import { File, Upload, X } from "lucide-react";
 import { useCallback, useState } from "react";
+import { resolveAcceptedDropFiles } from "./dropZoneModel";
 
 type DropZoneProps = {
   onFilesDrop: (files: File[]) => void;
@@ -10,18 +11,6 @@ type DropZoneProps = {
   label?: string;
   children?: React.ReactNode;
 };
-
-function matchesAccept(file: File, accept?: string) {
-  if (!accept) return true;
-  const tokens = accept.split(",").map((token) => token.trim().toLowerCase()).filter(Boolean);
-  const extension = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
-  const mime = (file.type || "").toLowerCase();
-  return tokens.some((token) => {
-    if (token.startsWith(".")) return extension === token;
-    if (token.endsWith("/*")) return mime.startsWith(token.slice(0, -1));
-    return mime === token;
-  });
-}
 
 export function DropZone({
   onFilesDrop,
@@ -36,31 +25,20 @@ export function DropZone({
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const validateFile = useCallback(
-    (file: File) => {
-      if (maxSize && file.size > maxSize * 1024 * 1024) {
-        setError(`文件大小不能超过 ${maxSize}MB`);
-        return false;
-      }
-      if (!matchesAccept(file, accept)) {
-        setError(`不支持的文件类型，请上传 ${accept} 格式的文件`);
-        return false;
-      }
-      return true;
-    },
-    [accept, maxSize],
-  );
-
   const commitFiles = useCallback(
     (files: File[]) => {
-      setError(null);
-      const validFiles = files.filter(validateFile);
-      if (validFiles.length === 0) return;
-      const nextFiles = multiple ? [...selectedFiles, ...validFiles] : [validFiles[0]];
-      setSelectedFiles(nextFiles);
-      onFilesDrop(multiple ? validFiles : [validFiles[0]]);
+      const result = resolveAcceptedDropFiles(files, {
+        accept,
+        multiple,
+        maxSizeMb: maxSize,
+        currentFiles: selectedFiles,
+      });
+      setError(result.error);
+      if (result.acceptedFiles.length === 0) return;
+      setSelectedFiles(result.files);
+      onFilesDrop(result.acceptedFiles);
     },
-    [multiple, onFilesDrop, selectedFiles, validateFile],
+    [accept, maxSize, multiple, onFilesDrop, selectedFiles],
   );
 
   return (

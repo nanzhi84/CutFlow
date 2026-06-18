@@ -4,7 +4,15 @@ from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
 from packages.ai.gateway.provider_gateway import ProviderCall, ProviderResult
-from packages.core.contracts import ProviderOptionsSchemaRef, ProviderProfile
+from packages.core.contracts import (
+    PromptBinding,
+    PromptSchemaRef,
+    PromptTemplate,
+    PromptVersion,
+    ProviderOptionsSchemaRef,
+    ProviderProfile,
+    ScriptDraft,
+)
 
 
 def _login_admin(client: TestClient) -> None:
@@ -69,6 +77,67 @@ def test_case_agent_generate_with_memory_uses_real_llm_profile():
         assert provider.calls[0].provider_profile_id == profile.id
         prompt_invocations = list(repository.prompt_invocations.values())
         assert prompt_invocations[-1].provider_invocation_id
+
+
+def test_case_agent_generation_prompt_appends_brief_and_recent_scripts_for_variant_prompt():
+    with TestClient(create_app()) as client:
+        _login_admin(client)
+        repository = client.app.state.repository
+        provider = FakeLLMProvider()
+        client.app.state.provider_gateway.register(provider)
+        profile = _llm_profile()
+        repository.provider_profiles[profile.id] = profile
+        template = PromptTemplate(
+            id="prompt_script_variant_test",
+            name="Script Variant Test",
+            purpose="prompt.script.hard_ad.fresh",
+            variables_schema_ref=PromptSchemaRef(schema_id="prompt.script.variables"),
+            output_schema_ref=PromptSchemaRef(schema_id="prompt.script.output"),
+            status="active",
+        )
+        version = PromptVersion(
+            id="prompt_script_variant_test_v1",
+            prompt_template_id=template.id,
+            content="只看产品：{product_name}",
+            status="published",
+        )
+        binding = PromptBinding(
+            id="prompt_binding_variant_test",
+            prompt_template_id=template.id,
+            prompt_version_id=version.id,
+            node_id="CaseAgentScriptGenerate.hard_ad.fresh",
+            priority=1,
+        )
+        repository.prompt_templates[template.id] = template
+        repository.prompt_versions[version.id] = version
+        repository.prompt_bindings[binding.id] = binding
+        repository.drafts["draft_recent"] = ScriptDraft(
+            id="draft_recent",
+            case_id="case_demo",
+            title="旧草稿",
+            script="旧开场不要重复，旧结构也不要重复。",
+        )
+
+        response = client.post(
+            "/api/cases/case_demo/scripts/generate-with-memory",
+            json={
+                "brief": "请生成一版全新脚本。\n版本序号：2",
+                "memory_ids": [],
+                "persona_mode": "hard_ad",
+                "operation": "fresh",
+                "strategy_tags": ["开场钩子"],
+                "variation_count": 1,
+            },
+        )
+
+        assert response.status_code == 202, response.text
+        assert response.json()["title"] == "硬广 · 全新创作脚本"
+        prompt = provider.calls[0].input["prompt"]
+        assert "【本轮用户要求】" in prompt
+        assert "版本序号：2" in prompt
+        assert "【历史避重要求】" in prompt
+        assert "旧开场不要重复" in prompt
+        assert "【策略标签】开场钩子" in prompt
 
 
 class _InvalidThenValidLLMProvider:

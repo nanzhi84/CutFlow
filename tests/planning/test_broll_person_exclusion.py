@@ -92,6 +92,16 @@ def test_clip_shows_person_helper():
     assert not clip_shows_person(
         _clip("one_face", 0.0, 5.0, subject_type="furniture_showroom", face_count_max=1)
     )
+    assert not clip_shows_person(
+        _clip(
+            "product_detector_noise",
+            0.0,
+            5.0,
+            subject_type="product",
+            contains_face=False,
+            face_count_max=20,
+        )
+    )
 
 
 def test_presenter_clip_excluded_from_broll_pool():

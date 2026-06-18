@@ -24,6 +24,8 @@ from packages.planning.material import (
 from packages.core.workflow import NodeOutput
 from packages.production.pipeline._node_context import NodeContext
 
+_BROLL_RECENT_SELECTION_LIMIT = 80
+
 
 def run(ctx: NodeContext) -> NodeOutput:
     request = ctx.state.request
@@ -106,7 +108,11 @@ def run(ctx: NodeContext) -> NodeOutput:
     # --- b-roll (real annotation matching; no annotation -> no candidate) -----
     keywords = extract_keywords(request.script)
     segments = segment_script(request.script, keywords=keywords)
-    broll_ledger = repo.recent_selections(case_id=request.case_id, medium="broll")
+    broll_ledger = repo.recent_selections(
+        case_id=request.case_id,
+        medium="broll",
+        limit=_BROLL_RECENT_SELECTION_LIMIT,
+    )
     broll_annotations = {
         asset.id: annotation
         for asset in broll_visual_assets
@@ -131,6 +137,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         asset_kinds=broll_asset_kinds,
         segments=segments,
         ledger_entries=broll_ledger,
+        include_generic_coverage=request.workflow_template_id == "broll_only_v1",
     ):
         broll_candidates.append(
             MaterialCandidate(

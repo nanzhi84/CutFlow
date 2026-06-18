@@ -2,7 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.main import app, repository
-from packages.ai.prompts.registry import PromptRegistry
+from packages.ai.prompts.registry import PromptRegistry, extract_script_title_from_output
 from packages.core.contracts import (
     ErrorCode,
     PromptBinding,
@@ -45,6 +45,44 @@ def test_prompt_render_requires_all_variables():
     with pytest.raises(NodeExecutionError) as exc:
         registry.render(node_id="TestNode", variables={"name": "Ada"})
     assert exc.value.error.code == ErrorCode.prompt_render_error
+
+
+def test_prompt_render_replaces_double_braced_variables():
+    repository = Repository()
+    template = PromptTemplate(
+        id="prompt_test",
+        name="Variable Test",
+        purpose="test",
+        variables_schema_ref=PromptSchemaRef(schema_id="test.variables"),
+        output_schema_ref=PromptSchemaRef(schema_id="test.output"),
+        status="active",
+    )
+    version = PromptVersion(
+        id="prompt_test_v1",
+        prompt_template_id=template.id,
+        content="产品：{{product_name}}\n输出示例：{{\"script\":\"...\"}}",
+        status="published",
+    )
+    binding = PromptBinding(
+        id="binding_test",
+        prompt_template_id=template.id,
+        prompt_version_id=version.id,
+        node_id="TestNode",
+        priority=1,
+    )
+    repository.prompt_templates[template.id] = template
+    repository.prompt_versions[version.id] = version
+    repository.prompt_bindings[binding.id] = binding
+    registry = PromptRegistry(repository)
+
+    _invocation, rendered = registry.render(
+        node_id="TestNode",
+        variables={"product_name": "旭通超市"},
+    )
+
+    assert "产品：旭通超市" in rendered
+    assert "{旭通超市}" not in rendered
+    assert '{{"script":"..."}}' in rendered
 
 
 def test_prompt_output_schema_validation_rejects_invalid_creative_intent():
@@ -124,6 +162,15 @@ def test_script_variant_output_schema_validation_uses_prompt_script_output():
     registry.validate_output(
         prompt_version_id="prompt_script_hard_ad_fresh_generate_v1",
         output={"items": [{"script": "脚本。"}]},
+    )
+
+
+def test_extract_script_title_from_nested_output():
+    assert (
+        extract_script_title_from_output(
+            {"content": '{"items": [{"title": "海风小镇便利钩子", "script": "脚本。"}]}'}
+        )
+        == "海风小镇便利钩子"
     )
 
 

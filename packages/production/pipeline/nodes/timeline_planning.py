@@ -8,7 +8,11 @@ from packages.core.contracts.artifacts import (
     TimelinePlanArtifact,
 )
 from packages.core.workflow import NodeExecutionError, NodeOutput
-from packages.production.pipeline._timeline_grid import build_tracks, validate_timeline
+from packages.production.pipeline._timeline_grid import (
+    align_broll_to_portrait_cuts,
+    build_tracks,
+    validate_timeline,
+)
 from packages.production.pipeline._node_context import NodeContext
 
 
@@ -65,6 +69,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             }
         )
 
+    raw_segments = align_broll_to_portrait_cuts(raw_segments, fps)
     validation = validate_timeline(raw_segments, fps, total_frames)
     if not validation.valid:
         raise NodeExecutionError(ErrorCode.render_invalid_timeline, "Timeline validation failed.")

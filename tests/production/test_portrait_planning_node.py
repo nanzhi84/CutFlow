@@ -223,6 +223,131 @@ def test_boundaries_land_on_detected_pauses(monkeypatch, tmp_path):
     assert "semantic_audio_pause" in sources
 
 
+def test_unreadable_tts_audio_does_not_silently_disable_pause_detection(monkeypatch, tmp_path):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    state = _state(adapter, candidate_ids=["asset_portrait_demo"])
+    state.artifacts[ArtifactKind.audio_tts] = Artifact(
+        id="art_tts",
+        case_id="case_demo",
+        run_id="run_1",
+        node_run_id="nr_tts",
+        kind=ArtifactKind.audio_tts,
+        uri="s3://foreign-bucket/generated-audio/missing.mp3",
+        payload_schema="uri-only",
+    )
+
+    with pytest.raises(NodeExecutionError) as exc:
+        _run_node(adapter, state)
+
+    assert exc.value.error.code == ErrorCode.artifact_missing
+
+
+def test_legacy_asr_narration_units_are_rehydrated_with_pause_boundaries():
+    from packages.production.pipeline.nodes import portrait_planning as pp
+
+    units = pp._planner_narration_units(
+        raw_units=[
+            {
+                "unit_id": "unit_1",
+                "text": "第一句介绍痛点。",
+                "start": 0.0,
+                "end": 2.0,
+                "confidence": 0.8,
+            },
+            {
+                "unit_id": "unit_2",
+                "text": "第二句说明方案。",
+                "start": 2.26,
+                "end": 4.0,
+                "confidence": 0.8,
+            },
+        ],
+        source="asr",
+        script="第一句介绍痛点。第二句说明方案。",
+        duration=4.0,
+    )
+
+    assert units[0].pause_after_ms == 260
+    assert units[0].portrait_cut_allowed is True
+    assert units[0].boundary_score > 0
+
+
+def test_escalation_uses_real_pause_capacity_split_below_longest_window():
+    from packages.planning.editing import SpokenSegment, build_narration_units_from_asr
+    from packages.production.pipeline.nodes import portrait_planning as pp
+
+    spoken = [
+        SpokenSegment(start=0.20, end=4.07, text="你还在超市门口犹豫要不要进去，别纠结了。"),
+        SpokenSegment(start=4.41, end=10.77, text="就在邻水海丰小镇旭通超市，一家真接地气的小超市，"),
+        SpokenSegment(start=10.77, end=16.79, text="搞花里胡哨就卖你每天要用的日用品，价格实在到让你"),
+        SpokenSegment(start=16.79, end=18.46, text="纸巾都舍不得放回去。"),
+        SpokenSegment(start=18.85, end=24.89, text="不是连锁大店，但东西全价儿低，老板熟，买啥都"),
+        SpokenSegment(start=24.89, end=26.97, text="像回自己家楼下那家店。"),
+        SpokenSegment(start=27.37, end=33.44, text="现在路过海丰小镇，认准旭通超市，进店看看，顺手买"),
+        SpokenSegment(start=33.82, end=34.74, text="真的不贵。"),
+    ]
+    units = build_narration_units_from_asr(spoken, 34.74)
+    pauses = [
+        {"start": 3.898, "end": 4.504, "duration": 0.606, "center": 4.201},
+        {"start": 10.069, "end": 10.731, "duration": 0.663, "center": 10.4},
+        {"start": 11.745, "end": 12.345, "duration": 0.6, "center": 12.045},
+        {"start": 14.284, "end": 14.849, "duration": 0.565, "center": 14.566},
+        {"start": 18.325, "end": 18.945, "duration": 0.62, "center": 18.635},
+        {"start": 23.721, "end": 24.352, "duration": 0.632, "center": 24.037},
+        {"start": 26.847, "end": 27.361, "duration": 0.514, "center": 27.104},
+        {"start": 33.324, "end": 33.897, "duration": 0.573, "center": 33.61},
+    ]
+    windows = [
+        ("asset_1dec3fdcf42c", "w10.000_20.000_seg0", 9.92),
+        ("asset_a73194405891", "w10.000_20.000_seg0", 9.92),
+        ("asset_1fc8ae367f8a", "w0.000_10.000_seg2", 7.184),
+        ("asset_a73194405891", "w0.000_10.000_seg2", 6.704),
+        ("asset_a73194405891", "w20.000_30.064_seg0", 6.688),
+        ("asset_a73194405891", "w30.064_36.733_seg0", 6.589),
+        ("asset_1dec3fdcf42c", "w0.000_10.000_seg2", 6.576),
+        ("asset_1fc8ae367f8a", "w10.000_16.400_seg0", 6.32),
+        ("asset_a73194405891", "w20.000_30.064_seg1", 3.216),
+        ("asset_1dec3fdcf42c", "w0.000_10.000_seg1", 2.448),
+        ("asset_a73194405891", "w0.000_10.000_seg1", 2.032),
+        ("asset_1fc8ae367f8a", "w0.000_10.000_seg1", 1.648),
+        ("asset_1dec3fdcf42c", "w20.000_21.467_seg0", 1.387),
+        ("asset_a73194405891", "w0.000_10.000_seg0", 1.024),
+        ("asset_1fc8ae367f8a", "w0.000_10.000_seg0", 0.928),
+        ("asset_1dec3fdcf42c", "w0.000_10.000_seg0", 0.736),
+    ]
+    candidates = [
+        {
+            "window_id": f"{asset_id}:{clip_id}",
+            "template_id": asset_id,
+            "template_name": asset_id,
+            "start": 0.0,
+            "end": duration,
+            "duration": duration,
+            "role": "main",
+            "confidence": 0.9,
+            "source_mode_hint": "lipsynced",
+            "recent_usage": {},
+            "recency_penalty": 0.0,
+        }
+        for asset_id, clip_id, duration in windows
+    ]
+
+    plan, escalation = pp._plan_with_escalation(
+        narration_units=units,
+        candidates=candidates,
+        duration=34.74,
+        audio_pauses=pauses,
+    )
+
+    assert plan.ok
+    assert plan.used_audio_pauses is True
+    assert escalation["stage"] == "capacity_controlled_split"
+    assert escalation["capacity_controlled_split"] is True
+    assert escalation["audio_pause_capacity_cap"] is None
+
+
 def test_plan_is_frame_contiguous_and_covers_full_audio(monkeypatch, tmp_path):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
@@ -370,10 +495,9 @@ def test_capacity_controlled_split_retry_drives_recovery(monkeypatch, tmp_path):
     diag = _portrait_payload(output)["diagnostics"]
     assert diag["recovery_stage"] == "capacity_controlled_split"
     assert diag["capacity_controlled_split"] is True
-    # The escalation drove a SECOND call with a real max_chunk_duration cap and reuse off.
     assert calls[0]["max_chunk_duration"] is None
     assert calls[1]["max_chunk_duration"] is not None
-    assert calls[1]["include_unlimited_reuse_scope"] is False
+    assert calls[1]["include_unlimited_reuse_scope"] is True
     assert isinstance(_BC, type)
 
 

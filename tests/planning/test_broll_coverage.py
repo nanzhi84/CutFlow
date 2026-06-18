@@ -117,3 +117,29 @@ def test_plan_coverage_uses_ranked_order_so_high_relevance_clip_enters_first():
 
     assert [segment.clip_id for segment in plan.segments] == ["clip_high", "clip_low"]
     assert plan.segments[0].confidence > plan.segments[1].confidence
+
+
+def test_plan_coverage_uses_freshness_seed_for_source_trim_variation():
+    candidate = _candidate("asset_a", "clip_a", score=90.0, source_start=0.0, source_end=10.0)
+    units = [_unit("u1", 0.0, 5.0)]
+
+    first = plan_coverage(
+        candidates=[candidate],
+        units=units,
+        target_sec=4.0,
+        min_segment_duration=1.0,
+        freshness_seed="run_a",
+    )
+    second = plan_coverage(
+        candidates=[candidate],
+        units=units,
+        target_sec=4.0,
+        min_segment_duration=1.0,
+        freshness_seed="run_b",
+    )
+
+    assert first.sufficient is True
+    assert second.sufficient is True
+    assert first.segments[0].source_start != second.segments[0].source_start
+    assert first.segments[0].source_end <= 10.0
+    assert second.segments[0].source_end <= 10.0

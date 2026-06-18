@@ -84,12 +84,48 @@ def test_write_ass_subtitles_uses_resolved_font_name(tmp_path):
         narration={"units": [{"text": "hi", "start": 0.0, "end": 1.0}]},
         style={"subtitle": {"font_size": 48}},
         width=1080,
-        height=1920,
+        height=1080,
         font_name="My Brand Sans",
     )
     text = out.read_text(encoding="utf-8")
     assert "Style: Default,My Brand Sans,48," in text
     assert "Arial" not in text
+
+
+def test_write_ass_subtitles_scales_ui_size_for_portrait_output(tmp_path):
+    out = tmp_path / "sub.ass"
+    write_ass_subtitles(
+        out,
+        narration={"units": [{"text": "hi", "start": 0.0, "end": 1.0}]},
+        style={"subtitle": {"font_size": 38}},
+        width=1080,
+        height=1920,
+    )
+    assert "Style: Default,Arial,68," in out.read_text(encoding="utf-8")
+
+
+def test_write_ass_subtitles_wraps_long_portrait_text_inside_safe_width(tmp_path):
+    out = tmp_path / "sub.ass"
+    write_ass_subtitles(
+        out,
+        narration={
+            "units": [
+                {
+                    "text": "就在邻水海风小镇旭通超市进店看看顺手买真的不贵",
+                    "start": 0.0,
+                    "end": 2.0,
+                }
+            ]
+        },
+        style={"subtitle": {"font_size": 38}},
+        width=1080,
+        height=1920,
+    )
+
+    dialogue = next(
+        line for line in out.read_text(encoding="utf-8").splitlines() if line.startswith("Dialogue:")
+    )
+    assert r"\N" in dialogue
 
 
 def test_write_ass_subtitles_defaults_to_arial_without_font(tmp_path):

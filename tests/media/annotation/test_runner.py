@@ -154,6 +154,30 @@ def test_real_vlm_completed_with_semantics(tmp_path):
     # The paid call went through the gateway and was recorded.
     assert result.provider_invocation_ids
     assert plugin.calls and plugin.calls[0].idempotency_key  # idempotency set
+    assert plugin.calls[0].input["max_tokens"] == 4096
+
+
+def test_vlm_profile_max_tokens_override_is_preserved(tmp_path):
+    repository, gateway = _gateway(tmp_path)
+    profile = _real_vlm_profile(repository, gateway)
+    profile = profile.model_copy(update={"default_options": {"max_tokens": 2048}})
+    repository.provider_profiles[profile.id] = profile
+    plugin = _FakeVLMPlugin({"canonical": {"segments": [_segment(0.0, 4.0)]}})
+    gateway.register(plugin)
+
+    annotate_asset(
+        asset_id="asset1",
+        case_id="case1",
+        material_type="broll",
+        video_path="/fake/video.mp4",
+        duration=4.0,
+        gateway=gateway,
+        vlm_profile=profile,
+        sensor_deps=_mock_sensors(),
+    )
+
+    assert "messages" in plugin.calls[0].input
+    assert "max_tokens" not in plugin.calls[0].input
 
 
 def test_idempotency_key_stable_across_identical_retries(tmp_path):
