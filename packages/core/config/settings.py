@@ -255,6 +255,31 @@ class MediaSettings(BaseModel):
     ffprobe_bin: str | None = None
 
 
+class MotionGuardSettings(BaseModel):
+    """Deterministic motion-guard sensor knobs (``settings.motion_guard.*``)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    # CUTAGENT_MOTION_GUARD_SAMPLE_FPS / _WIDTH / _WINDOW_SEC / _HOP_SEC.
+    sample_fps: float = 10.0
+    width: int = 360
+    window_sec: float = 1.5
+    hop_sec: float = 0.75
+    # Pixel thresholds are normalized to a 360px-wide grayscale stream (px360).
+    active_px: float = 1.5
+    hard_px: float = 3.0
+    p95_hard_px: float = 7.0
+    tail_y_range_hard_px: float = 70.0
+    tail_net_y_hard_px: float = 65.0
+    smooth_move_straightness: float = 0.88
+    smooth_move_flip_ratio: float = 0.16
+    sweep_axis_ratio: float = 2.3
+    jitter_flip_ratio: float = 0.22
+    jitter_jerk_ratio: float = 0.65
+    refine_min_duration: float = 0.8
+    refine_round_sec: float = 0.1
+
+
 class UploadSettings(BaseModel):
     """Upload ingestion knobs (``settings.upload.*``).
 
@@ -372,6 +397,7 @@ class Settings(BaseModel):
     auth: AuthSettings = Field(default_factory=AuthSettings)
     secret_store: SecretStoreSettings = Field(default_factory=SecretStoreSettings)
     media: MediaSettings = Field(default_factory=MediaSettings)
+    motion_guard: MotionGuardSettings = Field(default_factory=MotionGuardSettings)
     upload: UploadSettings = Field(default_factory=UploadSettings)
     api: ApiSettings = Field(default_factory=ApiSettings)
     balance: BalanceSettings = Field(default_factory=BalanceSettings)
@@ -486,6 +512,38 @@ def build_settings() -> Settings:
         media=MediaSettings(
             ffmpeg_bin=os.getenv("CUTAGENT_FFMPEG_BIN"),
             ffprobe_bin=os.getenv("CUTAGENT_FFPROBE_BIN"),
+        ),
+        motion_guard=MotionGuardSettings(
+            sample_fps=_env_float("CUTAGENT_MOTION_GUARD_SAMPLE_FPS", 10.0),
+            width=_env_int("CUTAGENT_MOTION_GUARD_WIDTH", 360),
+            window_sec=_env_float("CUTAGENT_MOTION_GUARD_WINDOW_SEC", 1.5),
+            hop_sec=_env_float("CUTAGENT_MOTION_GUARD_HOP_SEC", 0.75),
+            active_px=_env_float("CUTAGENT_MOTION_GUARD_ACTIVE_PX", 1.5),
+            hard_px=_env_float("CUTAGENT_MOTION_GUARD_HARD_PX", 3.0),
+            p95_hard_px=_env_float("CUTAGENT_MOTION_GUARD_P95_HARD_PX", 7.0),
+            tail_y_range_hard_px=_env_float(
+                "CUTAGENT_MOTION_GUARD_TAIL_Y_RANGE_HARD_PX", 70.0
+            ),
+            tail_net_y_hard_px=_env_float(
+                "CUTAGENT_MOTION_GUARD_TAIL_NET_Y_HARD_PX", 65.0
+            ),
+            smooth_move_straightness=_env_float(
+                "CUTAGENT_MOTION_GUARD_SMOOTH_MOVE_STRAIGHTNESS", 0.88
+            ),
+            smooth_move_flip_ratio=_env_float(
+                "CUTAGENT_MOTION_GUARD_SMOOTH_MOVE_FLIP_RATIO", 0.16
+            ),
+            sweep_axis_ratio=_env_float("CUTAGENT_MOTION_GUARD_SWEEP_AXIS_RATIO", 2.3),
+            jitter_flip_ratio=_env_float(
+                "CUTAGENT_MOTION_GUARD_JITTER_FLIP_RATIO", 0.22
+            ),
+            jitter_jerk_ratio=_env_float(
+                "CUTAGENT_MOTION_GUARD_JITTER_JERK_RATIO", 0.65
+            ),
+            refine_min_duration=_env_float(
+                "CUTAGENT_MOTION_GUARD_REFINE_MIN_DURATION", 0.8
+            ),
+            refine_round_sec=_env_float("CUTAGENT_MOTION_GUARD_REFINE_ROUND_SEC", 0.1),
         ),
         upload=UploadSettings(
             max_size_bytes=_env_int(

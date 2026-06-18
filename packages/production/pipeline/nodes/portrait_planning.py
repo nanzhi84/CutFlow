@@ -15,6 +15,7 @@ from packages.planning.editing import (
     build_narration_units_from_asr,
     plan_boundary_timeline,
 )
+from packages.planning.material import subtract_bad_spans
 from packages.planning.selection.recency_context import (
     build_portrait_recency_context_from_ledger,
 )
@@ -305,32 +306,45 @@ def _portrait_window_candidates(ctx: NodeContext, items: list[dict], ledger) -> 
             win_end = min(round(source_duration, 3), float(meta.get("source_end")))
         except (TypeError, ValueError):
             continue
-        window_id = f"{asset_id}:{clip_id}"
         if win_end - win_start <= 0.08:
+            continue
+        try:
+            avoid_spans = [(float(a), float(b)) for a, b in (meta.get("avoid_spans") or [])]
+        except (TypeError, ValueError):
+            avoid_spans = []
+        clean_spans = subtract_bad_spans(win_start, win_end, avoid_spans, min_len=0.08)
+        if not clean_spans:
             continue
         recent_usage = build_portrait_recency_context_from_ledger(
             entries=ledger,
             template_id=asset_id,
             diversity_key=None,
         )
-        candidates.append(
-            {
-                "window_id": window_id,
-                "template_id": asset_id,
-                "template_name": asset_id,
-                "start": round(win_start, 3),
-                "end": round(win_end, 3),
-                "duration": round(win_end - win_start, 3),
-                "role": "main",
-                # Material pack ranks by score desc; turn rank into a stable
-                # confidence so the highest-ranked usable window wins ties.
-                "confidence": round(max(0.1, 0.9 - rank * 0.05), 3),
-                "source_mode_hint": "lipsynced",
-                "recent_usage": recent_usage,
-                "recency_penalty": recent_usage.get("recency_penalty", 0.0),
-                "diversity_key": None,
-            }
-        )
+        confidence = round(max(0.1, 0.9 - rank * 0.05), 3)
+        for clean_index, (clean_start, clean_end) in enumerate(clean_spans):
+            window_id = (
+                f"{asset_id}:{clip_id}"
+                if clean_index == 0
+                else f"{asset_id}:{clip_id}:m{clean_index}"
+            )
+            candidates.append(
+                {
+                    "window_id": window_id,
+                    "template_id": asset_id,
+                    "template_name": asset_id,
+                    "start": round(clean_start, 3),
+                    "end": round(clean_end, 3),
+                    "duration": round(clean_end - clean_start, 3),
+                    "role": "main",
+                    # Material pack ranks by score desc; turn rank into a stable
+                    # confidence so the highest-ranked usable window wins ties.
+                    "confidence": confidence,
+                    "source_mode_hint": "lipsynced",
+                    "recent_usage": recent_usage,
+                    "recency_penalty": recent_usage.get("recency_penalty", 0.0),
+                    "diversity_key": None,
+                }
+            )
     return candidates
 
 

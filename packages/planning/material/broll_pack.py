@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 from packages.core.contracts import AnnotationV4, SelectionLedgerEntry
 from packages.media.annotation._material import is_video
+from packages.planning.material._avoid import avoid_intervals, subtract_bad_spans
 from packages.planning.material.keywords import ScriptSegment
 from packages.planning.material.matching import BrollScene, best_match
 from packages.planning.material.portrait_pack import clip_is_lip_sync_usable
@@ -33,6 +34,7 @@ _RECENCY_WEIGHT = 12.0
 # semantic overlap (``MatchResult.has_overlap``) — the duration-fit tie-breaker
 # alone never makes an unrelated clip relevant.
 _MIN_SIMILARITY = 0.05
+_MIN_CLEAN_SPAN_SEC = 1.0
 
 # Subject-type surface forms that mark a clip as person-centric (a presenter /
 # talking-head / 出镜人物). Substring match against ``ClipSemanticsV4.subject_type``.
@@ -104,9 +106,12 @@ class BrollCandidate:
     best_segment: ScriptSegment | None = field(default=None)
 
 
-def _scene_from_clip(asset_id: str, clip) -> BrollScene:
+def _scene_from_clip(
+    asset_id: str, clip, span: tuple[float, float] | None = None
+) -> BrollScene:
     semantics = clip.semantics
     retrieval = clip.retrieval
+    start, end = span if span is not None else (clip.start, clip.end)
     name = (
         semantics.narrative_role
         or semantics.action
@@ -121,25 +126,28 @@ def _scene_from_clip(asset_id: str, clip) -> BrollScene:
         name=name,
         description=description,
         keywords=keywords,
-        start=float(clip.start),
-        end=float(clip.end),
+        start=float(start),
+        end=float(end),
     )
 
 
-def _usage_cover_ratio(annotation: AnnotationV4, clip) -> float:
-    """Fraction of the clip overlapped by a recommended usage window (0..1)."""
+def _usage_cover_ratio(
+    annotation: AnnotationV4, clip, span: tuple[float, float] | None = None
+) -> float:
+    """Fraction of the candidate span overlapped by a recommended usage window."""
     if not annotation.usage_windows:
         return 0.0
-    clip_span = max(0.0, float(clip.end) - float(clip.start))
-    if clip_span <= 0:
+    start, end = span if span is not None else (clip.start, clip.end)
+    span_len = max(0.0, float(end) - float(start))
+    if span_len <= 0:
         return 0.0
     covered = 0.0
     for win in annotation.usage_windows:
-        lo = max(float(clip.start), float(win.start))
-        hi = min(float(clip.end), float(win.end))
+        lo = max(float(start), float(win.start))
+        hi = min(float(end), float(win.end))
         if hi > lo:
             covered += hi - lo
-    return min(1.0, covered / clip_span)
+    return min(1.0, covered / span_len)
 
 
 def _diversity_key(clip) -> str:
@@ -168,6 +176,7 @@ def rank_broll_candidates(
     for asset_id, annotation in annotations.items():
         material_type = (asset_kinds or {}).get(asset_id) or annotation.meta.material_type
         from_unified_video = is_video(material_type)
+        bad_spans = avoid_intervals(annotation)
         for clip in annotation.clips:
             # Unified-video B-roll must be person-free cover footage.
             if clip.usage.role.value == "avoid":
@@ -176,57 +185,72 @@ def rank_broll_candidates(
                 continue
             if clip_shows_person(clip):
                 continue
-            scene = _scene_from_clip(asset_id, clip)
-            best_segment, match = best_match(seg_list, scene)
-            if not match.has_overlap or match.similarity < _MIN_SIMILARITY:
-                if include_generic_coverage:
-                    candidates.append(
-                        _generic_coverage_candidate(
-                            asset_id=asset_id,
-                            annotation=annotation,
-                            clip=clip,
-                            scene=scene,
-                            best_segment=best_segment,
-                            ledger_entries=ledger_entries,
-                            recency_cfg=recency_cfg,
+            clean_spans = subtract_bad_spans(
+                clip.start,
+                clip.end,
+                bad_spans,
+                min_len=_MIN_CLEAN_SPAN_SEC,
+            )
+            for span_index, clean_span in enumerate(clean_spans):
+                scene = _scene_from_clip(asset_id, clip, span=clean_span)
+                candidate_clip_id = _clip_id_for_clean_span(clip.segment_id, span_index)
+                best_segment, match = best_match(seg_list, scene)
+                if not match.has_overlap or match.similarity < _MIN_SIMILARITY:
+                    if include_generic_coverage:
+                        candidates.append(
+                            _generic_coverage_candidate(
+                                asset_id=asset_id,
+                                annotation=annotation,
+                                clip=clip,
+                                clip_id=candidate_clip_id,
+                                scene=scene,
+                                best_segment=best_segment,
+                                ledger_entries=ledger_entries,
+                                recency_cfg=recency_cfg,
+                            )
                         )
-                    )
-                continue
-            usage_cover = _usage_cover_ratio(annotation, clip)
-            quality = float(annotation.quality_report.get("usable_ratio") or 0.5)
-            duration = max(0.0, scene.end - scene.start)
-            base = (
-                match.similarity * _SEMANTIC_WEIGHT
-                + usage_cover * _USAGE_COVER_WEIGHT
-                + quality * _QUALITY_WEIGHT
-                + min(duration, 8.0) * _DURATION_WEIGHT
-            )
-            diversity_key = _diversity_key(clip)
-            penalty = recency_penalty_for(
-                ledger_entries,
-                asset_id=asset_id,
-                diversity_key=diversity_key,
-                cfg=recency_cfg,
-            )
-            final = max(0.0, base - penalty * _RECENCY_WEIGHT)
-            candidates.append(
-                BrollCandidate(
-                    asset_id=asset_id,
-                    clip_id=clip.segment_id,
-                    score=round(final, 3),
-                    base_score=round(base, 3),
-                    recency_penalty=round(penalty, 3),
-                    matched_keywords=match.matched_keywords,
-                    scene_name=scene.name,
-                    source_start=round(scene.start, 3),
-                    source_end=round(scene.end, 3),
-                    diversity_key=diversity_key,
-                    best_segment=best_segment,
+                    continue
+                usage_cover = _usage_cover_ratio(annotation, clip, span=clean_span)
+                quality = float(annotation.quality_report.get("usable_ratio") or 0.5)
+                duration = max(0.0, scene.end - scene.start)
+                base = (
+                    match.similarity * _SEMANTIC_WEIGHT
+                    + usage_cover * _USAGE_COVER_WEIGHT
+                    + quality * _QUALITY_WEIGHT
+                    + min(duration, 8.0) * _DURATION_WEIGHT
                 )
-            )
+                diversity_key = _diversity_key(clip)
+                penalty = recency_penalty_for(
+                    ledger_entries,
+                    asset_id=asset_id,
+                    diversity_key=diversity_key,
+                    cfg=recency_cfg,
+                )
+                final = max(0.0, base - penalty * _RECENCY_WEIGHT)
+                candidates.append(
+                    BrollCandidate(
+                        asset_id=asset_id,
+                        clip_id=candidate_clip_id,
+                        score=round(final, 3),
+                        base_score=round(base, 3),
+                        recency_penalty=round(penalty, 3),
+                        matched_keywords=match.matched_keywords,
+                        scene_name=scene.name,
+                        source_start=round(scene.start, 3),
+                        source_end=round(scene.end, 3),
+                        diversity_key=diversity_key,
+                        best_segment=best_segment,
+                    )
+                )
 
     candidates.sort(key=lambda c: _recent_reuse_sort_key(c, ledger_entries))
     return candidates
+
+
+def _clip_id_for_clean_span(segment_id: str, span_index: int) -> str:
+    if span_index == 0:
+        return segment_id
+    return f"{segment_id}-m{span_index}"
 
 
 def _recent_reuse_sort_key(
@@ -278,12 +302,13 @@ def _generic_coverage_candidate(
     asset_id: str,
     annotation: AnnotationV4,
     clip,
+    clip_id: str,
     scene: BrollScene,
     best_segment: ScriptSegment | None,
     ledger_entries: Sequence[SelectionLedgerEntry],
     recency_cfg: RecencyConfig | None,
 ) -> BrollCandidate:
-    usage_cover = _usage_cover_ratio(annotation, clip)
+    usage_cover = _usage_cover_ratio(annotation, clip, span=(scene.start, scene.end))
     quality = float(annotation.quality_report.get("usable_ratio") or 0.5)
     duration = max(0.0, scene.end - scene.start)
     base = 12.0 + usage_cover * 8.0 + quality * 8.0 + min(duration, 8.0) * _DURATION_WEIGHT
@@ -297,7 +322,7 @@ def _generic_coverage_candidate(
     final = max(0.0, base - penalty * _RECENCY_WEIGHT)
     return BrollCandidate(
         asset_id=asset_id,
-        clip_id=clip.segment_id,
+        clip_id=clip_id,
         score=round(final, 3),
         base_score=round(base, 3),
         recency_penalty=round(penalty, 3),

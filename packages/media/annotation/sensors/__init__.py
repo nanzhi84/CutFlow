@@ -19,6 +19,13 @@ from .faces import (
     reset_detector_cache,
 )
 from .frames import extract_frame_at_time, extract_frames_for_times
+from .motion import (
+    classify_window,
+    detect_motion_events,
+    merge_adjacent_events,
+    refine_drop_window,
+    summarize_window,
+)
 from .shots import detect_shot_cuts
 from .voice_activity import detect_speech_islands, merge_speech_probabilities
 
@@ -27,6 +34,11 @@ __all__ = [
     "parse_blackdetect",
     "parse_freezedetect",
     "merge_blur_segments",
+    "detect_motion_events",
+    "summarize_window",
+    "classify_window",
+    "refine_drop_window",
+    "merge_adjacent_events",
     "count_faces_in_image",
     "max_faces_in_frame_paths",
     "reset_detector_cache",
