@@ -144,6 +144,7 @@ def classify_window(
     x_range = abs(_as_float(metrics.get("cum_x_range"), 0.0))
     y_range = abs(_as_float(metrics.get("cum_y_range"), 0.0))
     net_y = _as_float(metrics.get("net_y"), 0.0)
+    net_y_abs = abs(net_y)
     straightness = _as_float(metrics.get("straightness_ratio"), 0.0)
     direction_flip_ratio = _as_float(metrics.get("direction_flip_ratio"), 0.0)
     jerk_p90 = _as_float(metrics.get("jerk_p90"), 0.0)
@@ -154,32 +155,12 @@ def classify_window(
         return None
 
     high_step_motion = p95 >= float(resolved["p95_hard_px"]) and hard_ratio >= 0.55
-    vertical_drop = (
-        y_range >= float(resolved["tail_y_range_hard_px"])
-        and net_y >= float(resolved["tail_net_y_hard_px"])
-        and y_range >= max(25.0, x_range * 1.25)
-    )
-    tail_weighted_drop = (
-        is_tail
-        and high_step_motion
-        and net_y >= float(resolved["tail_net_y_hard_px"]) * 0.75
-        and y_range >= 55.0
-        and y_range >= x_range
-    )
 
-    if vertical_drop or tail_weighted_drop:
-        confidence = 0.86 + min(0.1, max(0.0, (y_range - 70.0) / 250.0))
-        return {
-            "event_type": QualityEventType.camera_drop.value,
-            "risk_tier": "hard" if vertical_drop else "soft",
-            "confidence": round(_clamp(confidence, 0.0, 0.96), 3),
-            "severity": 0.88 if vertical_drop else 0.68,
-            "description": (
-                f"收机下坠（垂直累计{y_range:.1f}px、净下沉{net_y:.1f}px、"
-                f"p95位移{p95:.1f}px）"
-            ),
-        }
-
+    # Smooth intentional camera moves (deliberate pans/tilts/sweeps) must not be
+    # flagged. This gate protects BOTH shake and camera_drop: a careless 收机下坠
+    # is a jittery/non-smooth vertical sink (low straightness, direction flips),
+    # whereas a deliberate tilt or sweep is smooth (high straightness, few flips)
+    # and is suppressed even when its vertical magnitude is large.
     dominant_axis = max(x_range, y_range)
     minor_axis = max(1.0, min(x_range, y_range))
     smooth_sweep = (
@@ -192,6 +173,33 @@ def classify_window(
         straightness >= float(resolved["smooth_move_straightness"])
         and direction_flip_ratio <= float(resolved["smooth_move_flip_ratio"])
     ) or smooth_sweep
+
+    vertical_drop = (
+        y_range >= float(resolved["tail_y_range_hard_px"])
+        and net_y_abs >= float(resolved["tail_net_y_hard_px"])
+        and y_range >= max(25.0, x_range * 1.25)
+    )
+    tail_weighted_drop = (
+        is_tail
+        and high_step_motion
+        and net_y_abs >= float(resolved["tail_net_y_hard_px"]) * 0.75
+        and y_range >= 55.0
+        and y_range >= x_range
+    )
+
+    if (vertical_drop or tail_weighted_drop) and not smooth_camera_move:
+        confidence = 0.86 + min(0.1, max(0.0, (y_range - 70.0) / 250.0))
+        return {
+            "event_type": QualityEventType.camera_drop.value,
+            "risk_tier": "hard" if vertical_drop else "soft",
+            "confidence": round(_clamp(confidence, 0.0, 0.96), 3),
+            "severity": 0.88 if vertical_drop else 0.68,
+            "description": (
+                f"收机下坠（垂直累计{y_range:.1f}px、净下沉{net_y_abs:.1f}px、"
+                f"p95位移{p95:.1f}px）"
+            ),
+        }
+
     jitter_like = (
         direction_flip_ratio >= float(resolved["jitter_flip_ratio"])
         or (
@@ -250,10 +258,12 @@ def refine_drop_window(
         return None
 
     net_y = sum(values)
-    if net_y < max(3.0, float(resolved["active_px"]) * 2.0):
+    if abs(net_y) < max(3.0, float(resolved["active_px"]) * 2.0):
         return None
 
-    positive_steps = [value for value in values if value > 0]
+    direction = 1.0 if net_y >= 0 else -1.0
+    directional = [direction * value for value in values]
+    positive_steps = [value for value in directional if value > 0]
     if len(positive_steps) < 3:
         return None
 
@@ -263,7 +273,9 @@ def refine_drop_window(
         _percentile(positive_steps, 45) * 0.35,
     )
     motion_threshold = max(1.0, float(resolved["active_px"]) * 0.7)
-    flags = [value >= directional_threshold and abs(value) >= motion_threshold for value in values]
+    flags = [
+        value >= directional_threshold and abs(value) >= motion_threshold for value in directional
+    ]
     if not any(flags):
         return None
 
@@ -283,12 +295,12 @@ def refine_drop_window(
     scored_runs: list[tuple[float, int, int, float]] = []
     for left, right in runs:
         run_pairs = right - left + 1
-        displacement = sum(max(0.0, value) for value in values[left : right + 1])
-        if run_pairs < min_pairs and displacement < max(8.0, net_y * 0.18):
+        displacement = sum(max(0.0, value) for value in directional[left : right + 1])
+        if run_pairs < min_pairs and displacement < max(8.0, abs(net_y) * 0.18):
             continue
         run_end_time = float(window_start) + (right + 1) * step
         recency_bonus = 1.0 if run_end_time >= tail_bias_start else 0.0
-        score = displacement + recency_bonus * max(12.0, net_y * 0.25) + run_pairs * 0.2
+        score = displacement + recency_bonus * max(12.0, abs(net_y) * 0.25) + run_pairs * 0.2
         scored_runs.append((score, left, right, displacement))
     if not scored_runs:
         return None

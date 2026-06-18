@@ -43,7 +43,9 @@ def test_smooth_single_direction_motion_is_suppressed() -> None:
 
 
 def test_tail_vertical_drop_classifies_and_refines_to_drop_subwindow() -> None:
-    pairs = [(0.0, 0.0, 0.0)] * 3 + [(0.5, 6.0, 0.0)] * 12
+    # A real 收机下坠 is a JITTERY vertical sink (dx flips -> low straightness),
+    # not a smooth tilt; leading still frames let refine localize the drop.
+    pairs = [(0.0, 0.0, 0.0)] * 3 + [(4.0 * (-1) ** idx, 6.0, 0.0) for idx in range(12)]
 
     metrics = summarize_window(pairs, thresholds=_thresholds())
     event = classify_window(metrics, thresholds=_thresholds(), is_head=False, is_tail=True)
@@ -60,6 +62,42 @@ def test_tail_vertical_drop_classifies_and_refines_to_drop_subwindow() -> None:
     assert refined is not None
     assert 0.0 < refined[0] < refined[1] <= 1.5
     assert refined[1] - refined[0] < 1.5
+
+
+def test_tail_vertical_drop_accepts_negative_net_y_direction() -> None:
+    # Negative net_y (camera drops -> scene moves up) must still fire camera_drop
+    # (the abs/direction fix), and it must be JITTERY to clear the smooth gate.
+    pairs = [(4.0 * (-1) ** idx, -6.0, 0.0) for idx in range(14)]
+
+    metrics = summarize_window(pairs, thresholds=_thresholds())
+    event = classify_window(metrics, thresholds=_thresholds(), is_head=False, is_tail=True)
+    refined = refine_drop_window(
+        [dy for _dx, dy, _rot in pairs],
+        0.0,
+        0.1,
+        thresholds=_thresholds(),
+    )
+
+    assert event is not None
+    assert event["event_type"] == QualityEventType.camera_drop.value
+    assert "净下沉84.0px" in event["description"]
+    assert refined is not None
+    assert 0.0 <= refined[0] < refined[1] <= 1.5
+
+
+def test_smooth_vertical_tilt_not_flagged_as_camera_drop() -> None:
+    # A smooth, sustained downward move (constant velocity -> straightness≈1,
+    # no direction flips) is a deliberate tilt/crane, NOT a careless drop, even
+    # though its vertical magnitude exceeds the camera_drop thresholds. The
+    # smooth-move gate must suppress it (no false-positive camera_drop).
+    pairs = [(0.5, -6.0, 0.0)] * 13
+
+    metrics = summarize_window(pairs, thresholds=_thresholds())
+    event = classify_window(metrics, thresholds=_thresholds(), is_head=False, is_tail=True)
+
+    assert metrics["cum_y_range"] >= _thresholds()["tail_y_range_hard_px"]  # would-be drop
+    assert metrics["straightness_ratio"] >= _thresholds()["smooth_move_straightness"]
+    assert event is None  # suppressed as intentional smooth motion
 
 
 def test_sustained_pair_and_duration_boundaries_do_not_misclassify() -> None:
