@@ -565,7 +565,7 @@ class ClipV4(ContractModel):
 
 
 class BgmSegmentRole(str, Enum):
-    """BGM 推荐使用片段的用途。"""
+    """BGM full-track segment role."""
 
     hook = "hook"
     climax = "climax"
@@ -573,10 +573,10 @@ class BgmSegmentRole(str, Enum):
     general = "general"
 
 
-class BgmUsageWindowV4(ContractModel):
-    """BGM 推荐使用片段：整轨里值得用的一小段（非铺满整轨）。
+class BgmSegmentV4(ContractModel):
+    """BGM full-track segment.
 
-    时间由 librosa 确定性产出（精确到秒、snap 到节拍）；语义由 Qwen-Omni 听音频回填。
+    Time bounds are deterministic sensor output; Qwen-Omni only enriches semantics.
     """
 
     segment_id: str
@@ -594,7 +594,7 @@ class BgmUsageWindowV4(ContractModel):
     source: str = "sensor"
 
     @model_validator(mode="after")
-    def _validate(self) -> "BgmUsageWindowV4":
+    def _validate(self) -> "BgmSegmentV4":
         if self.end <= self.start:
             raise ValueError(f"end ({self.end}) must be greater than start ({self.start})")
         derived = round(self.end - self.start, 3)
@@ -692,7 +692,7 @@ class AnnotationV4(ContractModel):
 
     meta: AnnotationMetaV4
     clips: list[ClipV4] = Field(default_factory=list)
-    bgm_usage_windows: list[BgmUsageWindowV4] = Field(default_factory=list)
+    bgm_segments: list[BgmSegmentV4] = Field(default_factory=list)
     quality_events: list[QualityEventV4] = Field(default_factory=list)
     quality_report: dict[str, Any] = Field(default_factory=dict)
     usage_windows: list[UsageWindowV4] = Field(default_factory=list)
@@ -710,10 +710,10 @@ class AnnotationV4(ContractModel):
                         f"clip {clip.segment_id} time [{clip.start}, {clip.end}] "
                         f"out of bounds [0, {duration}]"
                     )
-            for win in self.bgm_usage_windows:
-                if win.start < 0 or win.end > upper:
+            for segment in self.bgm_segments:
+                if segment.start < 0 or segment.end > upper:
                     raise ValueError(
-                        f"bgm_usage_window {win.segment_id} time [{win.start}, {win.end}] "
+                        f"bgm_segment {segment.segment_id} time [{segment.start}, {segment.end}] "
                         f"out of bounds [0, {duration}]"
                     )
             for ev in self.quality_events:

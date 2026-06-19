@@ -2602,8 +2602,8 @@ export interface components {
             meta: components["schemas"]["AnnotationMetaV4"];
             /** Clips */
             clips?: components["schemas"]["ClipV4"][];
-            /** Bgm Usage Windows */
-            bgm_usage_windows?: components["schemas"]["BgmUsageWindowV4"][];
+            /** Bgm Segments */
+            bgm_segments?: components["schemas"]["BgmSegmentV4"][];
             /** Quality Events */
             quality_events?: components["schemas"]["QualityEventV4"][];
             /** Quality Report */
@@ -2870,17 +2870,17 @@ export interface components {
         };
         /**
          * BgmSegmentRole
-         * @description BGM 推荐使用片段的用途。
+         * @description BGM full-track segment role.
          * @enum {string}
          */
         BgmSegmentRole: "hook" | "climax" | "outro" | "general";
         /**
-         * BgmUsageWindowV4
-         * @description BGM 推荐使用片段：整轨里值得用的一小段（非铺满整轨）。
+         * BgmSegmentV4
+         * @description BGM full-track segment.
          *
-         *     时间由 librosa 确定性产出（精确到秒、snap 到节拍）；语义由 Qwen-Omni 听音频回填。
+         *     Time bounds are deterministic sensor output; Qwen-Omni only enriches semantics.
          */
-        BgmUsageWindowV4: {
+        BgmSegmentV4: {
             /** Segment Id */
             segment_id: string;
             /** Start */
@@ -8284,10 +8284,6 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
-            /** Input */
-            input?: unknown;
-            /** Context */
-            ctx?: Record<string, never>;
         };
         /** VideoVersion */
         VideoVersion: {

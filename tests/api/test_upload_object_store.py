@@ -1,4 +1,8 @@
 import hashlib
+import io
+import math
+import struct
+import wave
 
 from fastapi.testclient import TestClient
 
@@ -19,6 +23,20 @@ def login_admin():
         json={"email": "admin@local.cutagent", "password": "local-admin"},
     )
     assert response.status_code == 200, response.text
+
+
+def _wav_bytes(duration_sec: float = 0.25, sample_rate: int = 8000) -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        frames = bytearray()
+        for i in range(int(sample_rate * duration_sec)):
+            t = i / sample_rate
+            frames.extend(struct.pack("<h", int(0.2 * 32767 * math.sin(2 * math.pi * 220 * t))))
+        wav.writeframes(bytes(frames))
+    return buffer.getvalue()
 
 
 def test_upload_flow_uses_object_store_uri_and_validates_integrity():
@@ -57,6 +75,49 @@ def test_upload_flow_uses_object_store_uri_and_validates_integrity():
     assert artifact["kind"] == "uploaded.file"
     assert completed.json()["media_asset"]["kind"] == "portrait"
     assert completed.json()["media_asset"]["source_artifact_id"] == artifact["artifact_id"]
+
+
+def test_local_media_preview_url_is_browser_playable_content_route():
+    login_admin()
+    content = _wav_bytes()
+    digest = hashlib.sha256(content).hexdigest()
+    prepared = client.post(
+        "/api/uploads/prepare",
+        json={
+            "kind": "bgm",
+            "filename": "preview.wav",
+            "content_type": "audio/wav",
+            "size_bytes": len(content),
+            "sha256": digest,
+        },
+    )
+    assert prepared.status_code == 201, prepared.text
+    upload = prepared.json()
+
+    uploaded = client.put(
+        f"/api/uploads/{upload['id']}/file",
+        files={"file": ("preview.wav", content, "audio/wav")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+
+    completed = client.post(
+        "/api/uploads/complete",
+        json={"upload_session_id": upload["id"], "size_bytes": len(content), "sha256": digest},
+    )
+    assert completed.status_code == 200, completed.text
+    asset_id = completed.json()["media_asset"]["id"]
+
+    preview = client.get(f"/api/media/assets/{asset_id}/preview-url")
+    assert preview.status_code == 200, preview.text
+    preview_body = preview.json()
+    assert preview_body["url"] == f"/api/media/assets/{asset_id}/content"
+    assert preview_body["playable"] is True
+    assert preview_body["content_type"].startswith("audio/")
+
+    media = client.get(preview_body["url"])
+    assert media.status_code == 200, media.text
+    assert media.headers["content-disposition"].startswith("inline;")
+    assert media.content == content
 
 
 def test_upload_file_rejects_size_mismatch_before_completion():

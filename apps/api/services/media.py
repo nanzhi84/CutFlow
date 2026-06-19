@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import Request
+from fastapi.responses import FileResponse
 
 from apps.api.common import (
     media_repository,
@@ -20,6 +21,7 @@ from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 from apps.api.services import annotation_batch as annotation_batch_service
 from apps.api.services import annotation_patch, asset_annotation, media_processing
+from packages.media.assets import local_object_path
 
 _PLAYABLE_MEDIA_TYPES = {"video", "audio"}
 
@@ -55,6 +57,33 @@ def _with_preview_playback(
             "playable": _playable_for(media_info, content_type),
         }
     )
+
+
+def _with_browser_preview_url(
+    request: Request,
+    asset_id: str,
+    response: c.SignedUrlResponse,
+    uri: str | None,
+    media_info: c.MediaInfo | None,
+) -> c.SignedUrlResponse:
+    response = _with_preview_playback(response, uri, media_info)
+    if response.url.startswith("local://"):
+        return response.model_copy(update={"url": f"/api/media/assets/{asset_id}/content"})
+    return response
+
+
+def _source_for_asset(request: Request, asset_id: str) -> tuple[str, c.MediaInfo | None] | None:
+    if media_repository(request) is not None:
+        return media_repository(request).media_source_for_asset(asset_id)
+    if asset_id not in repository(request).media_assets:
+        return None
+    asset = repository(request).media_assets[asset_id]
+    if asset.source_artifact_id and asset.source_artifact_id in repository(request).artifacts:
+        artifact = repository(request).artifacts[asset.source_artifact_id]
+        if artifact.uri:
+            return artifact.uri, artifact.media_info
+    return None
+
 
 def list_media_assets(
     request: Request,
@@ -132,27 +161,42 @@ def media_asset_detail(request: Request, asset_id: str) -> c.MediaAssetDetail:
 
 
 def media_asset_preview(request: Request, asset_id: str) -> c.SignedUrlResponse:
-
-    if media_repository(request) is not None:
-        source = media_repository(request).media_source_for_asset(asset_id)
-        if source is None:
+    source = _source_for_asset(request, asset_id)
+    if source is None:
+        if media_repository(request) is not None or asset_id not in repository(request).media_assets:
             raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
-        uri, media_info = source
-        if uri:
-            return _with_preview_playback(
-                object_store(request).signed_url(uri), uri, media_info
-            )
         return _with_preview_playback(signed(request, f"media/{asset_id}"), None, None)
-    if asset_id not in repository(request).media_assets:
-        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
-    asset = repository(request).media_assets[asset_id]
-    if asset.source_artifact_id and asset.source_artifact_id in repository(request).artifacts:
-        artifact = repository(request).artifacts[asset.source_artifact_id]
-        if artifact.uri:
-            return _with_preview_playback(
-                object_store(request).signed_url(artifact.uri), artifact.uri, artifact.media_info
-            )
+    uri, media_info = source
+    if uri:
+        return _with_browser_preview_url(
+            request,
+            asset_id,
+            object_store(request).signed_url(uri),
+            uri,
+            media_info,
+        )
     return _with_preview_playback(signed(request, f"media/{asset_id}"), None, None)
+
+
+def media_asset_content(request: Request, asset_id: str) -> FileResponse:
+    source = _source_for_asset(request, asset_id)
+    if source is None:
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
+    uri, media_info = source
+    if not uri.startswith("local://"):
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Local media object missing.")
+    try:
+        path = local_object_path(object_store(request), uri)
+    except (ValueError, OSError) as exc:
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Local media object missing.") from exc
+    if not path.exists():
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Local media object missing.")
+    return FileResponse(
+        path,
+        media_type=_content_type_for(uri, media_info),
+        filename=Path(urlsplit(uri).path).name,
+        content_disposition_type="inline",
+    )
 
 
 def delete_media_asset(request: Request, asset_id: str) -> c.OkResponse:

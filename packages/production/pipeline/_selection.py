@@ -99,7 +99,13 @@ def selection_entries_from_state(run: WorkflowRun, state: RunState) -> list[Sele
     subtitle = (
         style_payload.get("subtitle") if isinstance(style_payload.get("subtitle"), dict) else {}
     )
-    add("bgm", style_payload.get("bgm_asset_id") or bgm.get("asset_id"), "bgm")
+    if not bgm or bgm.get("enabled") is not False:
+        add(
+            "bgm",
+            style_payload.get("bgm_asset_id") or bgm.get("asset_id"),
+            "bgm",
+            clip_id=bgm.get("segment_id"),
+        )
     add(
         "font",
         style_payload.get("font_asset_id") or font.get("font_id") or subtitle.get("font_id"),

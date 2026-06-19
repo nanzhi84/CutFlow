@@ -26,10 +26,15 @@ from packages.planning.material import (
     subtract_bad_spans,
 )
 from packages.planning.material.broll_pack import _MIN_CLEAN_SPAN_SEC
+from packages.planning.selection.recency import recency_penalty_for
 from packages.production.pipeline._node_context import NodeContext
 
 _BROLL_RECENT_SELECTION_LIMIT = 80
 _PORTRAIT_MIN_CLEAN_SPAN_SEC = 0.08
+_BGM_BASE_SCORE = 70.0
+_BGM_ENERGY_WEIGHT = 5.0
+_BGM_CONFIDENCE_WEIGHT = 5.0
+_BGM_RECENCY_WEIGHT = 12.0
 
 
 def run(ctx: NodeContext) -> NodeOutput:
@@ -178,7 +183,12 @@ def run(ctx: NodeContext) -> NodeOutput:
     # --- bgm / font (availability + recency) ---------------------------------
     bgm_ledger = repo.recent_selections(case_id=request.case_id, medium="bgm")
     font_ledger = repo.recent_selections(case_id=request.case_id, medium="font")
-    bgm_candidates = _simple_candidates(bgm_assets, "bgm", bgm_ledger)
+    bgm_annotations = {
+        asset.id: annotation
+        for asset in bgm_assets
+        if (annotation := repo.annotation_v4_for_asset(asset.id)) is not None
+    }
+    bgm_candidates = _bgm_segment_candidates(bgm_assets, bgm_annotations, bgm_ledger)
     font_candidates = _simple_candidates(font_assets, "font", font_ledger)
 
     # §6.6 reserve: claim a TTL lease over each top candidate per medium so a
@@ -348,4 +358,68 @@ def _simple_candidates(assets, medium_label, ledger_entries) -> list[MaterialCan
             )
         )
     candidates.sort(key=lambda c: (-c.score, c.asset_id))
+    return candidates
+
+
+def _bgm_segment_candidates(assets, annotations, ledger_entries) -> list[MaterialCandidate]:
+    candidates: list[MaterialCandidate] = []
+    for asset in assets:
+        annotation = annotations.get(asset.id)
+        if annotation is None or not annotation.bgm_segments:
+            continue
+        for segment in annotation.bgm_segments:
+            segment_id = str(segment.segment_id or "").strip()
+            if not segment_id:
+                continue
+            source_start = round(float(segment.start), 3)
+            source_end = round(float(segment.end), 3)
+            duration = round(max(0.0, source_end - source_start), 3)
+            if duration <= 0:
+                continue
+            penalty = recency_penalty_for(
+                ledger_entries,
+                asset_id=asset.id,
+                clip_id=segment_id,
+            )
+            base = (
+                _BGM_BASE_SCORE
+                + float(segment.energy or 0.0) * _BGM_ENERGY_WEIGHT
+                + float(segment.confidence or 0.0) * _BGM_CONFIDENCE_WEIGHT
+            )
+            final = max(0.0, base - penalty * _BGM_RECENCY_WEIGHT)
+            role = segment.role.value if hasattr(segment.role, "value") else str(segment.role)
+            reason = segment.reason or f"BGM segment {duration:.1f}s"
+            if penalty > 0:
+                reason += "; recently used (demoted)"
+            candidates.append(
+                MaterialCandidate(
+                    asset_id=asset.id,
+                    score=round(final, 3),
+                    reason=reason,
+                    metadata={
+                        "base_score": round(base, 3),
+                        "recency_penalty": round(penalty, 3),
+                        "clip_id": segment_id,
+                        "source_start": source_start,
+                        "source_end": source_end,
+                        "duration": duration,
+                        "role": role,
+                        "drop_anchor_sec": segment.drop_anchor_sec,
+                        "energy": float(segment.energy or 0.0),
+                        "mood": segment.mood,
+                        "scene_fit": list(segment.scene_fit),
+                        "avoid_scene": list(segment.avoid_scene),
+                        "reason": segment.reason,
+                        "confidence": float(segment.confidence or 0.0),
+                    },
+                )
+            )
+    candidates.sort(
+        key=lambda c: (
+            -c.score,
+            c.asset_id,
+            float((c.metadata or {}).get("source_start") or 0.0),
+            str((c.metadata or {}).get("clip_id") or ""),
+        )
+    )
     return candidates

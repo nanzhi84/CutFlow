@@ -37,12 +37,12 @@ def _bgm_annotation(asset_id: str = "asset_bgm", *, status=c.AnnotationStatus.co
             duration=60.0,
             annotation_status=status,
         ),
-        bgm_usage_windows=[
-            c.BgmUsageWindowV4(
-                segment_id="win_drop",
+        bgm_segments=[
+            c.BgmSegmentV4(
+                segment_id="seg_drop",
                 start=12.0,
-                end=24.0,
-                duration=12.0,
+                end=60.0,
+                duration=48.0,
                 role=c.BgmSegmentRole.climax,
                 drop_anchor_sec=16.0,
                 energy=0.86,
@@ -62,7 +62,7 @@ def _bgm_annotation(asset_id: str = "asset_bgm", *, status=c.AnnotationStatus.co
     )
 
 
-def test_bgm_rerun_projection_exposes_windows_and_beats(monkeypatch):
+def test_bgm_rerun_projection_exposes_segments_and_beats(monkeypatch):
     calls: list[dict] = []
 
     def fake_annotate_bgm(**kwargs):
@@ -82,9 +82,14 @@ def test_bgm_rerun_projection_exposes_windows_and_beats(monkeypatch):
         assert response.status_code == 202, response.text
         editor = client.app.state.repository.annotations["asset_bgm_demo"]
         body = editor.model_dump(mode="json")
-        assert body["projection"]["bgm_usage_windows"][0]["segment_id"] == "win_drop"
+        assert "bgm_usage_windows" not in body["projection"]
+        assert body["projection"]["bgm_segments"][0]["segment_id"] == "seg_drop"
         assert body["projection"]["bgm"]["beats"] == [12.0, 16.0, 20.0]
-        assert "/canonical/bgm_usage_windows" in body["editable_paths"]
+        assert "/canonical/bgm_segments" in body["editable_paths"]
+        assert body["asset"]["annotation_status"] == "annotated"
+        assert body["asset"]["usable"] is True
+        assert client.app.state.repository.media_assets["asset_bgm_demo"].annotation_status == "annotated"
+        assert client.app.state.repository.media_assets["asset_bgm_demo"].usable is True
         assert calls and calls[0]["audio_profile"] is None
 
 
@@ -172,6 +177,8 @@ def test_sqlalchemy_bgm_rerun_uses_audio_understanding_profile_and_urlizer(monke
     assert calls and "audio_profile" in calls[0]
     assert "llm_profile" not in calls[0]
     assert callable(calls[0]["audio_url_for_window"])
-    assert media_repo.persisted[0]["projection"]["bgm_usage_windows"][0]["segment_id"] == "win_drop"
+    assert "bgm_usage_windows" not in media_repo.persisted[0]["projection"]
+    assert media_repo.persisted[0]["projection"]["bgm_segments"][0]["segment_id"] == "seg_drop"
     assert media_repo.persisted[0]["projection"]["bgm"]["beats"] == [12.0, 16.0, 20.0]
-    assert "/canonical/bgm_usage_windows" in media_repo.persisted[0]["editable_paths"]
+    assert media_repo.persisted[0]["usable"] is True
+    assert "/canonical/bgm_segments" in media_repo.persisted[0]["editable_paths"]

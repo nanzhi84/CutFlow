@@ -125,6 +125,31 @@ def test_reclipped_or_validated_returns_none_for_stub():
     assert reclipped_or_validated({"labels": [], "kind": "broll"}, old_duration=2.0, new_duration=1.0) is None
 
 
+def test_reclipped_or_validated_invalidates_bgm_segments_on_source_drift():
+    canonical = c.AnnotationV4(
+        meta=c.AnnotationMetaV4(asset_id="bgm1", case_id="case1", material_type="bgm", duration=120.0),
+        bgm_segments=[
+            c.BgmSegmentV4(
+                segment_id="bgm_segment_1",
+                start=0.0,
+                end=60.0,
+                duration=60.0,
+                role=c.BgmSegmentRole.hook,
+            ),
+            c.BgmSegmentV4(
+                segment_id="bgm_segment_2",
+                start=60.0,
+                end=120.0,
+                duration=60.0,
+                role=c.BgmSegmentRole.climax,
+            ),
+        ],
+        quality_report={"bgm": {"annotated_coverage_ratio": 1.0, "segment_count": 2}},
+    ).model_dump(mode="json")
+
+    assert reclipped_or_validated(canonical, old_duration=120.0, new_duration=180.0) is None
+
+
 def test_reclip_drops_segment_entirely_past_new_duration():
     # A mid-clip far past the new (much shorter) duration collapses and is dropped.
     canonical = _v4_canonical(duration=10.0, clip_end=9.0)

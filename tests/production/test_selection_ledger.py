@@ -109,6 +109,10 @@ def test_finalize_success_records_selected_assets_once(monkeypatch: pytest.Monke
                 ArtifactKind.plan_style,
                 {
                     "bgm_asset_id": "asset_bgm_demo",
+                    "bgm": {
+                        "asset_id": "asset_bgm_demo",
+                        "segment_id": "bgm_segment_2",
+                    },
                     "font_asset_id": "asset_font_demo",
                 },
             ),
@@ -135,12 +139,48 @@ def test_finalize_success_records_selected_assets_once(monkeypatch: pytest.Monke
     assert {
         (entry.medium, entry.slot_phase, entry.asset_id, entry.clip_id) for entry in entries
     } == {
-        ("bgm", "bgm", "asset_bgm_demo", None),
+        ("bgm", "bgm", "asset_bgm_demo", "bgm_segment_2"),
         ("broll", "broll_1", "asset_broll_demo", "cover_a"),
         ("broll", "broll_2", "asset_broll_demo", "cover_b"),
         ("font", "font", "asset_font_demo", None),
         ("portrait", "portrait_main", "asset_portrait_demo", None),
     }
+
+
+def test_finalize_does_not_record_disabled_bgm(monkeypatch: pytest.MonkeyPatch):
+    repository = Repository()
+    workflow = _workflow(repository)
+    run = _run()
+    node_run = _node_run(run.id)
+    repository.runs[run.id] = run
+    repository.node_runs[run.id] = [node_run]
+    state = RunState(
+        request=DigitalHumanVideoRequest(
+            case_id="case_demo",
+            script="hello",
+            voice={"voice_id": "voice_sandbox"},
+            bgm={"enabled": False},
+        ),
+        artifacts={
+            ArtifactKind.plan_style: _artifact(
+                ArtifactKind.plan_style,
+                {
+                    "bgm_asset_id": "asset_bgm_demo",
+                    "bgm": {
+                        "enabled": False,
+                        "asset_id": "asset_bgm_demo",
+                        "segment_id": "bgm_segment_2",
+                    },
+                    "font_asset_id": "asset_font_demo",
+                },
+            ),
+        },
+    )
+    monkeypatch.setattr(digital_human, "get_object_store", lambda: NoopDeleteStore())
+
+    workflow._finalize_run_report(run, node_run, state)
+
+    assert [entry.medium for entry in repository.selection_ledger.values()] == ["font"]
 
 
 def test_finalize_records_opening_segment_distinctly_and_commits_reservation(
@@ -414,7 +454,7 @@ def test_usage_ranking_keeps_portrait_and_broll_independent_for_same_clip():
     ]
 
 
-def test_usage_ranking_keeps_bgm_and_font_asset_grained_with_no_clip_id():
+def test_usage_ranking_tracks_bgm_by_segment_and_keeps_font_asset_grained():
     repository = Repository()
     repository.record_selection_ledger_entries(
         [
@@ -423,6 +463,7 @@ def test_usage_ranking_keeps_bgm_and_font_asset_grained_with_no_clip_id():
                 run_id="run_1",
                 medium="bgm",
                 asset_id="asset_bgm_demo",
+                clip_id="bgm_segment_1",
                 slot_phase="bgm",
             ),
             SelectionLedgerEntry(
@@ -430,6 +471,7 @@ def test_usage_ranking_keeps_bgm_and_font_asset_grained_with_no_clip_id():
                 run_id="run_2",
                 medium="bgm",
                 asset_id="asset_bgm_demo",
+                clip_id="bgm_segment_2",
                 slot_phase="bgm",
             ),
             SelectionLedgerEntry(
@@ -445,9 +487,10 @@ def test_usage_ranking_keeps_bgm_and_font_asset_grained_with_no_clip_id():
     bgm = repository.material_usage_ranking(kind="bgm", case_id="case_demo", top_n=10)
     font = repository.material_usage_ranking(kind="font", case_id="case_demo", top_n=10)
 
-    assert [(item.asset_id, item.clip_id, item.task_use_count) for item in bgm.items] == [
-        ("asset_bgm_demo", None, 2)
-    ]
+    assert {(item.asset_id, item.clip_id, item.task_use_count) for item in bgm.items} == {
+        ("asset_bgm_demo", "bgm_segment_1", 1),
+        ("asset_bgm_demo", "bgm_segment_2", 1),
+    }
     assert [(item.asset_id, item.clip_id, item.task_use_count) for item in font.items] == [
         ("asset_font_demo", None, 1)
     ]

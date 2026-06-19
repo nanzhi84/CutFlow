@@ -65,6 +65,9 @@ const ROLE_COLORS: Record<string, string> = {
   backup: "#6f8a66", // brand.mint
   cover: "#9cb4a2", // brand.cyan
   avoid: "#c56a5d", // status.error
+  climax: "#ef4444",
+  outro: "#22c55e",
+  general: "#3b82f6",
 };
 const SEGMENT_FALLBACK_COLOR = "#5e6d51";
 const HARD_RISK_COLOR = "#c56a5d"; // status.error
@@ -212,6 +215,13 @@ export function VideoPlayer({
     seekTo(parseFloat(e.target.value));
   }
 
+  function handleTimelineClick(e: React.MouseEvent<HTMLDivElement>) {
+    if (duration <= 0) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0;
+    seekTo(Math.max(0, Math.min(1, ratio)) * duration);
+  }
+
   function handleVolumeChange(e: React.ChangeEvent<HTMLInputElement>) {
     const vol = parseFloat(e.target.value);
     const video = videoRef.current;
@@ -276,6 +286,7 @@ export function VideoPlayer({
           className="relative mb-3 h-3 cursor-pointer"
           onMouseMove={handleProgressHover}
           onMouseLeave={() => setIsHoveringProgress(false)}
+          onClick={handleTimelineClick}
         >
           {/* Track */}
           <div className="absolute inset-x-0 top-1/2 h-2 -translate-y-1/2 overflow-hidden rounded-full bg-white/20">
@@ -304,7 +315,7 @@ export function VideoPlayer({
                       backgroundColor: roleColor(seg.role),
                       opacity: isActive ? 1 : 0.7,
                       outline: isActive ? "1px solid rgba(255,255,255,0.85)" : "none",
-                      zIndex: isActive ? 3 : 1,
+                      zIndex: isActive ? 5 : 3,
                     }}
                   />
                 );
@@ -327,7 +338,7 @@ export function VideoPlayer({
                   style={{
                     left: `${pct(ev.start)}%`,
                     backgroundColor: (ev.risk_tier ?? "").toLowerCase() === "soft" ? SOFT_RISK_COLOR : HARD_RISK_COLOR,
-                    zIndex: 4,
+                    zIndex: 6,
                   }}
                 />
               ))
@@ -339,7 +350,7 @@ export function VideoPlayer({
                 <button
                   key={`ev-frame-${i}`}
                   type="button"
-                  className="absolute top-1/2 z-[6] h-4 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/70 transition-transform hover:scale-y-125 hover:bg-white"
+                  className="absolute top-1/2 z-[7] h-4 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/70 transition-transform hover:scale-y-125 hover:bg-white"
                   title={`证据帧 ${formatClock(frame.time)}`}
                   onMouseEnter={() => setHoverFrameIndex(i)}
                   onMouseLeave={() => setHoverFrameIndex((current) => (current === i ? null : current))}
@@ -379,12 +390,12 @@ export function VideoPlayer({
             onChange={handleScrubberChange}
             onClick={(e) => e.stopPropagation()}
             aria-label="进度"
-            className="absolute inset-0 z-[5] h-full w-full cursor-pointer opacity-0"
+            className="pointer-events-none absolute inset-0 z-[1] h-full w-full cursor-pointer opacity-0"
           />
 
           {/* Playhead */}
           <div
-            className="pointer-events-none absolute top-1/2 z-[6] h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-lg"
+            className="pointer-events-none absolute top-1/2 z-[8] h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-lg"
             style={{ left: `${pct(currentTime)}%` }}
           />
 

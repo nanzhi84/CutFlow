@@ -43,6 +43,13 @@ class SubtitleStylePlan(ContractModel):
 class BgmPlan(ContractModel):
     enabled: bool = True
     asset_id: str | None = None
+    segment_id: str | None = None
+    source_start: float | None = None
+    source_end: float | None = None
+    duration: float | None = None
+    mood: str = ""
+    scene_fit: list[str] = Field(default_factory=list)
+    reason: str = ""
     volume: float = 0.25
     auto_mix: bool = True
 

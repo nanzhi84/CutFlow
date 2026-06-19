@@ -5,7 +5,13 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from packages.core.contracts import ArtifactKind, DegradationNotice, ErrorCode, NodeStatus, WarningCode
+from packages.core.contracts import (
+    ArtifactKind,
+    DegradationNotice,
+    ErrorCode,
+    NodeStatus,
+    WarningCode,
+)
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.media.assets import store_file
 from packages.media.rendering import validate_rendered_output
@@ -21,7 +27,9 @@ from packages.production.pipeline._subtitles import write_ass_subtitles
 _DEFAULT_FONT_SENTINEL = "case_default_font"
 
 
-def _resolve_selected_font(ctx: NodeContext, style: dict, runtime_dir) -> tuple[ResolvedFont | None, str | None]:
+def _resolve_selected_font(
+    ctx: NodeContext, style: dict, runtime_dir
+) -> tuple[ResolvedFont | None, str | None]:
     """Stage the user/agent-selected subtitle font for libass, or None to default.
 
     Reads the resolved font asset id from the style plan, loads its source file,
@@ -37,9 +45,7 @@ def _resolve_selected_font(ctx: NodeContext, style: dict, runtime_dir) -> tuple[
     subtitle = style.get("subtitle") if isinstance(style.get("subtitle"), dict) else {}
     font = style.get("font") if isinstance(style.get("font"), dict) else {}
     font_asset_id = (
-        style.get("font_asset_id")
-        or (font or {}).get("font_id")
-        or (subtitle or {}).get("font_id")
+        style.get("font_asset_id") or (font or {}).get("font_id") or (subtitle or {}).get("font_id")
     )
     if not font_asset_id or font_asset_id == _DEFAULT_FONT_SENTINEL:
         return None, None
@@ -79,7 +85,9 @@ def run(ctx: NodeContext) -> NodeOutput:
             subtitle_path = temp_dir / "subtitle.ass" if state.request.subtitle.enabled else None
             resolved_font: ResolvedFont | None = None
             if subtitle_path is not None:
-                resolved_font, unresolved_font_id = _resolve_selected_font(ctx, style, temp_dir / "fonts")
+                resolved_font, unresolved_font_id = _resolve_selected_font(
+                    ctx, style, temp_dir / "fonts"
+                )
                 # No silent fallback: a selected font whose file can't be staged
                 # must surface, not quietly burn the default Arial.
                 if unresolved_font_id:
@@ -108,6 +116,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             # auto_mix consumed here: LUFS-targeted volume + sidechain ducking +
             # fades when enabled (no longer a dead end-to-end flag).
             auto_mix = bool((bgm_plan or {}).get("auto_mix", state.request.bgm.auto_mix))
+            bgm_source_start = _float_or_zero((bgm_plan or {}).get("source_start"))
             mix_result = render_final_media(
                 rendered_path=ctx.artifact_path(rendered),
                 audio_path=ctx.artifact_path(audio),
@@ -119,11 +128,15 @@ def run(ctx: NodeContext) -> NodeOutput:
                 fps=fps,
                 fonts_dir=resolved_font.fonts_dir if resolved_font else None,
                 auto_mix=auto_mix,
+                bgm_source_start=bgm_source_start,
             )
             # No silent fallback: when auto-mix wanted LUFS targeting but the
             # loudness probe failed, the mixer quietly used the requested volume.
             # Surface that so the user knows the auto-balance was not applied.
-            if mix_result is not None and mix_result.metadata.get("fallback_reason") == "loudness_probe_failed":
+            if (
+                mix_result is not None
+                and mix_result.metadata.get("fallback_reason") == "loudness_probe_failed"
+            ):
                 degradations.append(
                     degradation_notice(
                         WarningCode.bgm_loudness_probe_failed,
@@ -149,7 +162,9 @@ def run(ctx: NodeContext) -> NodeOutput:
                     media_info=probe_media(subtitle_path),
                 )
     except FfmpegCommandError as exc:
-        code = ErrorCode.render_subtitle_failed if state.request.subtitle.enabled else exc.error_code
+        code = (
+            ErrorCode.render_subtitle_failed if state.request.subtitle.enabled else exc.error_code
+        )
         raise NodeExecutionError(code, "Subtitle/BGM mix rendering failed.") from exc
     final = ctx.artifact(
         ArtifactKind.video_final,
@@ -168,3 +183,10 @@ def run(ctx: NodeContext) -> NodeOutput:
         warnings=warnings,
         degradations=degradations,
     )
+
+
+def _float_or_zero(value) -> float:
+    try:
+        return max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        return 0.0

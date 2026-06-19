@@ -17,14 +17,23 @@ FEATURES = {
     "energy": 0.6,
     "tempo_bucket": "fast",
     "loudness_lufs": -14.0,
-    "beats": [0.0, 0.5, 45.0, 58.0, 75.0],
+    "beats": [0.0, 0.5, 45.0, 58.0, 75.0, 120.0],
     "drops": [58.0],
-    "candidate_windows": [
+    "segments": [
         {
-            "start": 45.0,
-            "end": 75.0,
+            "start": 0.0,
+            "end": 60.0,
+            "duration": 60.0,
+            "energy": 0.45,
+            "drop_anchor": None,
+            "role_hint": "hook",
+        },
+        {
+            "start": 60.0,
+            "end": 120.0,
+            "duration": 60.0,
             "energy": 0.8,
-            "drop_anchor": 58.0,
+            "drop_anchor": 75.0,
             "role_hint": "climax",
         },
     ],
@@ -77,7 +86,7 @@ class _FakeOmniPlugin:
         return ProviderResult(output={"intent": self.intent})
 
 
-def test_annotate_bgm_full_listen_produces_typed_windows(tmp_path):
+def test_annotate_bgm_full_listen_produces_typed_segments(tmp_path):
     repository, gateway = _gateway(tmp_path)
     profile = _audio_profile(repository, gateway)
     plugin = _FakeOmniPlugin(
@@ -95,7 +104,7 @@ def test_annotate_bgm_full_listen_produces_typed_windows(tmp_path):
         asset_id="a",
         case_id="c",
         audio_path="x.mp3",
-        duration=80.0,
+        duration=120.0,
         asset_title="一马当先",
         gateway=gateway,
         audio_profile=profile,
@@ -105,19 +114,26 @@ def test_annotate_bgm_full_listen_produces_typed_windows(tmp_path):
 
     ann = result.annotation
     assert ann.meta.material_type == "bgm"
-    assert len(ann.bgm_usage_windows) == 1
-    window = ann.bgm_usage_windows[0]
-    assert window.start == 45.0
-    assert window.end == 75.0
-    assert window.drop_anchor_sec == 58.0
-    assert window.role == c.BgmSegmentRole.climax
-    assert window.mood == "燃"
-    assert window.scene_fit == ["高光"]
-    assert window.source == "sensor+audio"
+    assert len(ann.bgm_segments) == 2
+    first, second = ann.bgm_segments
+    assert first.start == 0.0
+    assert first.end == 60.0
+    assert first.role == c.BgmSegmentRole.climax
+    assert first.mood == "燃"
+    assert first.scene_fit == ["高光"]
+    assert first.source == "sensor+audio"
+    assert second.start == 60.0
+    assert second.end == 120.0
+    assert second.drop_anchor_sec == 75.0
+    assert second.source == "sensor+audio"
     assert ann.quality_report["bgm"]["beats"] == FEATURES["beats"]
     assert ann.quality_report["bgm"]["drops"] == FEATURES["drops"]
+    assert ann.quality_report["bgm"]["segment_count"] == 2
+    assert ann.quality_report["bgm"]["annotated_coverage_sec"] == 120.0
+    assert len(plugin.calls) == 2
     assert plugin.calls[0].capability_id == "audio.understanding"
-    assert plugin.calls[0].input["audio_uri"] == "https://x/45.0-75.0.mp3"
+    assert plugin.calls[0].input["audio_uri"] == "https://x/0.0-60.0.mp3"
+    assert plugin.calls[1].input["audio_uri"] == "https://x/60.0-120.0.mp3"
 
 
 def test_annotate_bgm_no_audio_profile_degrades_to_sensor(tmp_path):
@@ -127,7 +143,7 @@ def test_annotate_bgm_no_audio_profile_degrades_to_sensor(tmp_path):
         asset_id="a",
         case_id="c",
         audio_path="x.mp3",
-        duration=80.0,
+        duration=120.0,
         asset_title="t",
         gateway=gateway,
         audio_profile=None,
@@ -137,15 +153,15 @@ def test_annotate_bgm_no_audio_profile_degrades_to_sensor(tmp_path):
 
     ann = result.annotation
     assert result.llm_configured is False
-    assert len(ann.bgm_usage_windows) == 1
-    window = ann.bgm_usage_windows[0]
-    assert window.source == "sensor"
-    assert window.mood == ""
-    assert window.role == c.BgmSegmentRole.climax
+    assert len(ann.bgm_segments) == 2
+    segment = ann.bgm_segments[0]
+    assert segment.source == "sensor"
+    assert segment.mood == ""
+    assert segment.role == c.BgmSegmentRole.hook
     assert ann.quality_report["bgm"]["beats"] == FEATURES["beats"]
 
 
-def test_annotate_bgm_no_librosa_degrades_without_windows(tmp_path):
+def test_annotate_bgm_no_librosa_degrades_without_segments(tmp_path):
     _repository, gateway = _gateway(tmp_path)
 
     result = annotate_bgm(
@@ -160,5 +176,5 @@ def test_annotate_bgm_no_librosa_degrades_without_windows(tmp_path):
     )
 
     ann = result.annotation
-    assert ann.bgm_usage_windows == []
+    assert ann.bgm_segments == []
     assert ann.meta.annotation_status == c.AnnotationStatus.failed

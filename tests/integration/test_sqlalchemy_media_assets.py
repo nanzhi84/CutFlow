@@ -93,7 +93,7 @@ def test_sqlalchemy_media_asset_flow_links_completed_upload_artifact():
 
         preview = client.get(f"/api/media/assets/{asset['id']}/preview-url")
         assert preview.status_code == 200, preview.text
-        assert preview.json()["url"] == context["object_uri"]
+        assert preview.json()["url"] == f"/api/media/assets/{asset['id']}/content"
 
     with session_factory() as session:
         row = session.get(MediaAssetRow, asset["id"])

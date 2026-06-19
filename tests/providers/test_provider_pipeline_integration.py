@@ -4,8 +4,16 @@ from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
 from packages.ai.gateway.provider_gateway import ProviderCall, ProviderResult
-from packages.core.contracts import ArtifactKind, ProviderOptionsSchemaRef, ProviderProfile, UploadSession, UploadStatus, UploadKind
+from packages.core.contracts import (
+    ArtifactKind,
+    ProviderOptionsSchemaRef,
+    ProviderProfile,
+    UploadSession,
+    UploadStatus,
+    UploadKind,
+)
 from packages.core.storage.repository import Repository
+from packages.media.annotation import bgm as bgm_annotation
 from packages.media.assets import store_file
 from packages.media.video.ffmpeg import probe_media
 
@@ -160,7 +168,9 @@ class FakeVoiceBuildProvider:
     def invoke(self, call: ProviderCall) -> ProviderResult:
         operation = str(call.input.get("operation") or "")
         self.operations.append(operation)
-        stored = store_file(self.object_store, self.source_audio, purpose=f"fake-{operation}-preview")
+        stored = store_file(
+            self.object_store, self.source_audio, purpose=f"fake-{operation}-preview"
+        )
         media_info = probe_media(self.source_audio)
         artifact = self.repository.create_artifact(
             kind=ArtifactKind.audio_tts,
@@ -225,7 +235,9 @@ def test_lipsync_node_uses_provider_video_artifact(media_fixture_factory):
 
         assert response.status_code == 201, response.text
         run_id = response.json()["initial_run"]["id"]
-        lipsync_node = next(node for node in repository.node_runs[run_id] if node.node_id == "LipSync")
+        lipsync_node = next(
+            node for node in repository.node_runs[run_id] if node.node_id == "LipSync"
+        )
         assert provider.artifact_id in lipsync_node.output_artifact_ids
 
 
@@ -250,9 +262,15 @@ def test_strict_alignment_uses_available_asr_provider(media_fixture_factory):
             if node.error
         ]
         assert run["status"] == "succeeded", failed_nodes
-        alignment_node = next(node for node in repository.node_runs[run["id"]] if node.node_id == "NarrationAlignment")
-        artifacts = [repository.artifacts[artifact_id] for artifact_id in alignment_node.output_artifact_ids]
-        narration = next(artifact for artifact in artifacts if artifact.kind == ArtifactKind.narration_units)
+        alignment_node = next(
+            node for node in repository.node_runs[run["id"]] if node.node_id == "NarrationAlignment"
+        )
+        artifacts = [
+            repository.artifacts[artifact_id] for artifact_id in alignment_node.output_artifact_ids
+        ]
+        narration = next(
+            artifact for artifact in artifacts if artifact.kind == ArtifactKind.narration_units
+        )
         assert narration.payload["source"] == "asr"
         assert narration.payload["strict"] is True
         assert narration.payload["warnings"] == []
@@ -296,13 +314,12 @@ def test_annotation_rerun_degrades_without_source_video():
         assert repository.media_assets[asset_id].annotation_status == "annotation_failed"
         # A persisted AnnotationV4 artifact must exist for the asset's case.
         assert any(
-            art.kind == ArtifactKind.material_annotation
-            for art in repository.artifacts.values()
+            art.kind == ArtifactKind.material_annotation for art in repository.artifacts.values()
         )
 
 
 class FakeBgmOmniProvider:
-    """Returns canned per-window semantics for the gated audio.understanding path."""
+    """Returns canned per-segment semantics for the gated audio.understanding path."""
 
     provider_id = "fake.bgmomni"
 
@@ -322,7 +339,7 @@ class FakeBgmOmniProvider:
 
 
 # Simulate librosa-present objective features (real librosa is an optional dep, absent
-# in CI): one usage window + a beat grid so the audio path has an excerpt to listen to.
+# in CI): full-track segments + a beat grid so the audio path has excerpts to listen to.
 def _fake_bgm_features(_audio_path):
     return {
         "librosa_available": True,
@@ -332,24 +349,29 @@ def _fake_bgm_features(_audio_path):
         "loudness_lufs": -14.0,
         "beats": [0.0, 0.5, 10.0, 18.0, 25.0],
         "drops": [18.0],
-        "candidate_windows": [
-            {"start": 10.0, "end": 25.0, "energy": 0.8, "drop_anchor": 18.0, "role_hint": "climax"},
+        "segments": [
+            {
+                "start": 0.0,
+                "end": 30.0,
+                "duration": 30.0,
+                "energy": 0.8,
+                "drop_anchor": 18.0,
+                "role_hint": "climax",
+            },
         ],
     }
 
 
 def test_bgm_annotation_rerun_uses_audio_path_and_omni_semantics(monkeypatch):
-    """Re-running annotation on a BGM asset takes the audio path: librosa-timed usage
-    windows (precise seconds + beat grid) enriched by a gated audio.understanding
-    (Qwen-Omni) listen per window -> typed bgm_usage_windows with mood/scene, asset
+    """Re-running annotation on a BGM asset takes the audio path: librosa-timed full
+    segments (precise seconds + beat grid) enriched by a gated audio.understanding
+    (Qwen-Omni) listen per segment -> typed bgm_segments with mood/scene, asset
     annotated + usable. The visual VLM path is never taken."""
-    monkeypatch.setattr(
-        "packages.media.annotation.bgm.extract_audio_features", _fake_bgm_features
-    )
+    monkeypatch.setattr("packages.media.annotation.bgm.extract_audio_features", _fake_bgm_features)
     # Force a presigned clip URL without real ffmpeg / object store in the test.
     monkeypatch.setattr(
         "apps.api.services.asset_annotation._bgm_audio_urlizer",
-        lambda request, path: (lambda start, end: "https://fake.local/clip.mp3"),
+        lambda request, path: lambda start, end: "https://fake.local/clip.mp3",
     )
     # Pin a known duration so the window stays in-bounds regardless of the demo seed.
     monkeypatch.setattr(
@@ -375,19 +397,20 @@ def test_bgm_annotation_rerun_uses_audio_path_and_omni_semantics(monkeypatch):
         canonical = body["canonical"]
         assert canonical["meta"]["material_type"] == "bgm"
         assert canonical["meta"]["annotation_status"] == "completed"
-        windows = canonical["bgm_usage_windows"]
-        assert len(windows) == 1
-        window = windows[0]
-        assert window["start"] == 10.0 and window["end"] == 25.0
-        assert window["drop_anchor_sec"] == 18.0
-        assert window["role"] == "climax"
-        assert window["mood"] == "calm"
-        assert "产品介绍" in window["scene_fit"]
-        assert window["source"] == "sensor+audio"
+        segments = canonical["bgm_segments"]
+        assert len(segments) == 1
+        segment = segments[0]
+        assert segment["segment_id"] == "bgm_segment_1"
+        assert segment["start"] == 0.0 and segment["end"] == 30.0
+        assert segment["drop_anchor_sec"] == 18.0
+        assert segment["role"] == "climax"
+        assert segment["mood"] == "calm"
+        assert "产品介绍" in segment["scene_fit"]
+        assert segment["source"] == "sensor+audio"
         # beat grid surfaced in quality_report + editor projection
         assert canonical["quality_report"]["bgm"]["beats"] == [0.0, 0.5, 10.0, 18.0, 25.0]
         assert body["projection"]["bgm"]["beats"]
-        assert body["projection"]["bgm_usage_windows"]
+        assert body["projection"]["bgm_segments"]
         assert body["projection"]["usable"] is True
         # asset is annotated + usable so it becomes an eligible BGM candidate
         assert repository.media_assets[asset_id].annotation_status == "annotated"
@@ -397,10 +420,11 @@ def test_bgm_annotation_rerun_uses_audio_path_and_omni_semantics(monkeypatch):
         )
 
 
-def test_bgm_annotation_rerun_degrades_without_librosa():
-    """Without librosa (optional dep, absent in CI) there are no usage windows, so the
-    BGM annotation degrades to features-unavailable, marks the asset failed, and never
-    fabricates semantics."""
+def test_bgm_annotation_rerun_degrades_when_features_unavailable(monkeypatch):
+    """When objective extraction yields no segments, BGM annotation degrades to
+    features-unavailable, marks the asset failed, and never fabricates semantics."""
+    monkeypatch.setattr(bgm_annotation, "extract_audio_features", lambda _path: {})
+
     with TestClient(create_app()) as client:
         _login_admin(client)
         repository = client.app.state.repository
@@ -413,7 +437,7 @@ def test_bgm_annotation_rerun_degrades_without_librosa():
         canonical = editor.json()["canonical"]
         assert canonical["meta"]["material_type"] == "bgm"
         assert canonical["meta"]["annotation_status"] == "failed"
-        assert canonical["bgm_usage_windows"] == []
+        assert canonical["bgm_segments"] == []
         bgm_report = canonical["quality_report"]["bgm"]
         assert bgm_report["status"] == "features_unavailable"
         assert bgm_report.get("mood") in (None, "")
@@ -458,7 +482,11 @@ def test_voice_design_uses_provider_voice_id_and_preview(media_fixture_factory):
 
         response = client.post(
             "/api/voices/design",
-            json={"display_name": "Provider Design", "prompt": "calm", "provider_profile_id": profile.id},
+            json={
+                "display_name": "Provider Design",
+                "prompt": "calm",
+                "provider_profile_id": profile.id,
+            },
         )
 
         assert response.status_code == 202, response.text

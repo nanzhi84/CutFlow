@@ -199,6 +199,20 @@ def _run_title(job: Job) -> str:
     return job.id
 
 
+def _selection_ledger_entry_from_row(row: SelectionLedgerRow) -> SelectionLedgerEntry:
+    return SelectionLedgerEntry(
+        id=row.id,
+        case_id=row.case_id,
+        run_id=row.run_id,
+        medium=row.medium,
+        asset_id=row.asset_id,
+        clip_id=row.clip_id,
+        slot_phase=row.slot_phase,
+        diversity_key=row.diversity_key,
+        created_at=row.created_at,
+    )
+
+
 def _run_warnings(node_runs: list[NodeRun]) -> list[str]:
     values: list[str] = []
     for node in node_runs:
@@ -502,6 +516,15 @@ class SqlAlchemyProductionRepository:
                     select(FinishedVideoRow).where(FinishedVideoRow.case_id == run.case_id)
                 ):
                     repository.finished_videos[video_row.id] = finished_video_row_to_contract(video_row)
+                ledger_statement = (
+                    select(SelectionLedgerRow)
+                    .where(SelectionLedgerRow.case_id == run.case_id)
+                    .order_by(SelectionLedgerRow.created_at.desc())
+                    .limit(100)
+                )
+                for ledger_row in session.scalars(ledger_statement):
+                    entry = _selection_ledger_entry_from_row(ledger_row)
+                    repository.selection_ledger[entry.id] = entry
             run_ids = {run_id}
             if run.resume_from_run_id:
                 source_row = session.get(WorkflowRunRow, run.resume_from_run_id)

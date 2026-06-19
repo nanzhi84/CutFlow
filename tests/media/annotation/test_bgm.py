@@ -5,8 +5,8 @@ provider plugin and the audio feature extractor is injected, so every branch run
 with zero IO.
 
 Covers:
-- a real ``llm.chat`` profile + valid semantics -> COMPLETED AnnotationV4 carrying
-  the BGM mood/genre/scene_fit in quality_report["bgm"];
+- a real ``audio.understanding`` profile + valid semantics -> COMPLETED AnnotationV4
+  carrying full-track BGM segments and BGM mood/scene_fit in quality_report["bgm"];
 - malformed / incomplete LLM output -> FAILED (not a crash), no fabricated semantics;
 - unconfigured (no real profile) -> degraded ``llm_unconfigured`` with features only;
 - librosa absent -> objective bpm/energy omitted but the run still completes (the
@@ -90,14 +90,23 @@ def _features_with_librosa(_path):
         "tempo_bucket": "mid",
         "beats": [0.0, 10.0, 20.0, 30.0],
         "drops": [20.0],
-        "candidate_windows": [
+        "segments": [
             {
-                "start": 10.0,
-                "end": 30.0,
+                "start": 0.0,
+                "end": 60.0,
+                "duration": 60.0,
+                "energy": 0.4,
+                "drop_anchor": None,
+                "role_hint": "hook",
+            },
+            {
+                "start": 60.0,
+                "end": 90.0,
+                "duration": 30.0,
                 "energy": 0.7,
-                "drop_anchor": 20.0,
+                "drop_anchor": 80.0,
                 "role_hint": "climax",
-            }
+            },
         ],
     }
 
@@ -136,11 +145,12 @@ def test_bgm_completed_with_semantics(tmp_path):
     ann = result.annotation
     assert ann.meta.annotation_status == AnnotationStatus.completed
     assert ann.meta.material_type == "bgm"
-    assert len(ann.bgm_usage_windows) == 1
-    window = ann.bgm_usage_windows[0]
-    assert window.source == "sensor+audio"
-    assert window.role.value == "climax"
-    assert window.mood == "upbeat"
+    assert len(ann.bgm_segments) == 2
+    first, second = ann.bgm_segments
+    assert first.source == "sensor+audio"
+    assert first.role.value == "climax"
+    assert first.mood == "upbeat"
+    assert second.source == "sensor+audio"
     report = ann.quality_report["bgm"]
     assert report["mood"] == "upbeat"
     assert report["tempo_bucket"] == "mid"  # objective-derived
@@ -148,7 +158,10 @@ def test_bgm_completed_with_semantics(tmp_path):
     assert "产品开箱" in report["scene_fit"]
     assert report["source"] == "sensor+audio"
     assert report["beats"] == [0.0, 10.0, 20.0, 30.0]
+    assert report["segment_count"] == 2
+    assert report["annotated_coverage_sec"] == 90.0
     assert result.provider_invocation_ids
+    assert len(plugin.calls) == 2
     assert plugin.calls and plugin.calls[0].idempotency_key == "bgm-omni-bgm1-0"
     assert plugin.calls[0].capability_id == "audio.understanding"
 
@@ -163,7 +176,7 @@ def test_bgm_incomplete_audio_output_does_not_fabricate(tmp_path):
         asset_id="bgm2",
         case_id="case1",
         audio_path="/fake/bgm.mp3",
-        duration=60.0,
+        duration=90.0,
         gateway=gateway,
         audio_profile=profile,
         audio_url_for_window=lambda s, e: f"https://x/{s}-{e}.mp3",
@@ -173,18 +186,18 @@ def test_bgm_incomplete_audio_output_does_not_fabricate(tmp_path):
     assert result.llm_configured is True
     ann = result.annotation
     assert ann.meta.annotation_status == AnnotationStatus.completed
-    window = ann.bgm_usage_windows[0]
-    assert window.mood == "calm"
-    assert window.scene_fit == []
-    assert window.avoid_scene == []
-    assert window.role.value == "climax"
+    segment = ann.bgm_segments[0]
+    assert segment.mood == "calm"
+    assert segment.scene_fit == []
+    assert segment.avoid_scene == []
+    assert segment.role.value == "hook"
     report = ann.quality_report["bgm"]
     assert report["status"] == "ok"
     assert report["bpm"] == 128.0
     assert "genre" not in report
 
 
-def test_bgm_provider_runtime_failure_keeps_sensor_window(tmp_path):
+def test_bgm_provider_runtime_failure_keeps_sensor_segment(tmp_path):
     repository, gateway = _gateway(tmp_path)
     profile = _real_audio_profile(repository, gateway)
     plugin = _FakeOmniPlugin("", fail=True)
@@ -194,7 +207,7 @@ def test_bgm_provider_runtime_failure_keeps_sensor_window(tmp_path):
         asset_id="bgm3",
         case_id="case1",
         audio_path="/fake/bgm.mp3",
-        duration=60.0,
+        duration=90.0,
         gateway=gateway,
         audio_profile=profile,
         audio_url_for_window=lambda s, e: f"https://x/{s}-{e}.mp3",
@@ -203,7 +216,7 @@ def test_bgm_provider_runtime_failure_keeps_sensor_window(tmp_path):
 
     assert result.llm_configured is True
     assert result.annotation.meta.annotation_status == AnnotationStatus.completed
-    assert result.annotation.bgm_usage_windows[0].source == "sensor"
+    assert result.annotation.bgm_segments[0].source == "sensor"
     assert result.annotation.quality_report["bgm"]["source"] == "sensor"
     assert result.provider_invocation_ids
 
@@ -218,7 +231,7 @@ def test_bgm_unconfigured_degrades_to_features_only(tmp_path):
         asset_id="bgm4",
         case_id="case1",
         audio_path="/fake/bgm.mp3",
-        duration=45.0,
+        duration=90.0,
         gateway=gateway,
         audio_profile=profile,
         audio_url_for_window=lambda _s, _e: None,
@@ -228,8 +241,8 @@ def test_bgm_unconfigured_degrades_to_features_only(tmp_path):
     assert result.llm_configured is False
     ann = result.annotation
     assert ann.meta.annotation_status == AnnotationStatus.completed
-    assert len(ann.bgm_usage_windows) == 1
-    assert ann.bgm_usage_windows[0].source == "sensor"
+    assert len(ann.bgm_segments) == 2
+    assert ann.bgm_segments[0].source == "sensor"
     report = ann.quality_report["bgm"]
     assert report["status"] == LLM_UNCONFIGURED
     # objective features still recorded; no fabricated semantics
@@ -239,7 +252,7 @@ def test_bgm_unconfigured_degrades_to_features_only(tmp_path):
 
 
 def test_bgm_completes_without_librosa(tmp_path):
-    """librosa absent: no candidate windows, so the BGM window path degrades."""
+    """librosa absent: no segments, so the BGM segment path degrades."""
     repository, gateway = _gateway(tmp_path)
     profile = _real_audio_profile(repository, gateway)
     plugin = _FakeOmniPlugin(_VALID_SEMANTIC_JSON)
@@ -257,7 +270,7 @@ def test_bgm_completes_without_librosa(tmp_path):
     )
 
     assert result.annotation.meta.annotation_status == AnnotationStatus.failed
-    assert result.annotation.bgm_usage_windows == []
+    assert result.annotation.bgm_segments == []
     report = result.annotation.quality_report["bgm"]
     assert report["librosa_available"] is False
     assert report["bpm"] is None

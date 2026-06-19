@@ -43,11 +43,13 @@ def reclip_canonical_to_duration(
 
     Out-of-bounds / collapsed time layers are clamped/dropped so the result always
     re-validates as AnnotationV4 against ``new_duration``. ``None`` signals the caller
-    that the stored canonical is not a real AnnotationV4 (a labels-only stub) and so
-    has no time layers to re-clip.
+    that the stored canonical is not a real AnnotationV4 (a labels-only stub) or is
+    a BGM annotation whose segment semantics must be regenerated from the new audio.
     """
     meta = canonical.get("meta") if isinstance(canonical, dict) else None
     if not (isinstance(meta, dict) and "asset_id" in meta):
+        return None
+    if str(meta.get("material_type") or "").lower() == "bgm":
         return None
 
     new_canonical = dict(canonical)

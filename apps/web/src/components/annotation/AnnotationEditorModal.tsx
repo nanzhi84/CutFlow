@@ -20,9 +20,9 @@ import { toDisplayUrl } from "../../lib/url";
 import { readAssetThumbnailUrl, readPreviewUrlMeta } from "../../components/library/libraryModel";
 import {
   BGM_ROLES,
-  bgmWindowsToCanonical,
+  bgmSegmentsToCanonical,
   canonicalToEvidenceFrames,
-  canonicalToBgmWindows,
+  canonicalToBgmSegments,
   canonicalToQualityEvents,
   canonicalToSegments,
   parseQualityEvents,
@@ -33,7 +33,7 @@ import {
   type AnnotationQualityEvent,
   type AnnotationSegmentQuality,
   type AnnotationTimelineSegment,
-  type BgmUsageWindow,
+  type BgmSegment,
 } from "../../utils/annotationV4";
 import { Modal } from "../ui/Modal";
 import { VideoPlayer, type VideoPlayerQualityEvent, type VideoPlayerSegment } from "../ui/VideoPlayer";
@@ -103,7 +103,7 @@ const ROLE_LABELS: Record<string, string> = {
   avoid: "避用",
 };
 const BGM_ROLE_LABELS: Record<string, string> = { hook: "开场钩子", climax: "高潮", outro: "收尾", general: "通用铺底" };
-const BGM_ROLE_COLORS: Record<BgmUsageWindow["role"], { bar: string; softBg: string; text: string; border: string }> = {
+const BGM_ROLE_COLORS: Record<BgmSegment["role"], { bar: string; softBg: string; text: string; border: string }> = {
   hook: { bar: "#f97316", softBg: "#fff7ed", text: "#c2410c", border: "#fed7aa" },
   climax: { bar: "#ef4444", softBg: "#fef2f2", text: "#b91c1c", border: "#fecaca" },
   outro: { bar: "#22c55e", softBg: "#f0fdf4", text: "#15803d", border: "#bbf7d0" },
@@ -151,6 +151,7 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewPlayable, setPreviewPlayable] = useState<boolean | undefined>(undefined);
   const [form, setForm] = useState<AnnotationForm>({ qualityStatus: "usable", usable: true, segments: [], qualityEvents: [] });
+  const [bgmForm, setBgmForm] = useState<BgmSegment[]>([]);
 
   const editorQuery = useQuery({
     queryKey: ["library", "annotation", assetId],
@@ -201,7 +202,7 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
     [canonical],
   );
   const totalDuration = useMemo(() => (canonical ? readDuration(canonical) : 0), [canonical]);
-  const bgmWindows = useMemo(() => canonical ? canonicalToBgmWindows(canonical) : [], [canonical]);
+  const bgmSegments = useMemo(() => canonical ? canonicalToBgmSegments(canonical) : [], [canonical]);
   const bgmReport = (projection.bgm ?? {}) as Record<string, unknown>;
 
   useEffect(() => {
@@ -214,6 +215,7 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
       segments: canonicalToSegments(editor.canonical),
       qualityEvents: projEvents.length > 0 ? projEvents : canonicalToQualityEvents(editor.canonical),
     });
+    setBgmForm(canonicalToBgmSegments(editor.canonical));
     setEditing(false);
     setRerunPreview(false);
     setActiveSegmentId(null);
@@ -221,6 +223,7 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
 
   const displaySegments = editing ? form.segments : readSegments;
   const displayEvents = editing ? form.qualityEvents : readEvents;
+  const displayBgmSegments = editing ? bgmForm : bgmSegments;
 
   const invalidDuration = useMemo(
     () => readInvalidSegments(projection).reduce((sum, item) => sum + Math.max(0, item.end_sec - item.start_sec), 0),
@@ -234,8 +237,8 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
   }, [projection, totalDuration, invalidDuration]);
 
   const playerSegments = useMemo<VideoPlayerSegment[]>(
-    () => displaySegments.map((segment, index) => toPlayerSegment(segment, index)),
-    [displaySegments],
+    () => (isBgm ? displayBgmSegments.map((segment, index) => toBgmPlayerSegment(segment, index)) : displaySegments.map((segment, index) => toPlayerSegment(segment, index))),
+    [displayBgmSegments, displaySegments, isBgm],
   );
   const playerEvents = useMemo<VideoPlayerQualityEvent[]>(
     () => displayEvents.map((event, index) => toPlayerEvent(event, index)),
@@ -250,6 +253,8 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
   const annotationVersionLabel = useMemo(() => formatAnnotationVersion(readMeta(canonical).annotation_version), [canonical]);
   const thumbnailUrl = editor ? readAssetThumbnailUrl(editor.asset) : null;
   const canPlay = Boolean(previewUrl) && previewPlayable !== false;
+  const bgmCoverage = useMemo(() => displayBgmSegments.reduce((sum, segment) => sum + Math.max(0, segment.end - segment.start), 0), [displayBgmSegments]);
+  const bgmCoverageRatio = totalDuration > 0 ? Math.min(1, bgmCoverage / totalDuration) : 0;
 
   const patchMutation = useMutation({
     mutationFn: async () => {
@@ -334,7 +339,7 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-lg font-semibold text-text-primary">{editor.asset.title}</h3>
-                <span className="badge bg-surface-hover text-text-secondary">{isPortrait ? "口播 / 数字人" : "B-roll"}</span>
+                <span className="badge bg-surface-hover text-text-secondary">{isBgm ? "BGM" : isPortrait ? "口播 / 数字人" : "B-roll"}</span>
                 {annotationVersionLabel ? <span className="badge bg-accent/12 text-accent">{annotationVersionLabel}</span> : null}
               </div>
               <p className="mt-1 font-mono text-xs text-text-tertiary">
@@ -346,10 +351,12 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
                 {rerunMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                 <span>{rerunMutation.isPending ? "分析中" : "重新分析"}</span>
               </button>
-              <button className="btn-secondary" type="button" onClick={() => trimMutation.mutate()} disabled={trimMutation.isPending}>
-                {trimMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Scissors className="h-4 w-4" />}
-                <span>{trimMutation.isPending ? "裁剪中" : "裁剪无效"}</span>
-              </button>
+              {!isBgm ? (
+                <button className="btn-secondary" type="button" onClick={() => trimMutation.mutate()} disabled={trimMutation.isPending}>
+                  {trimMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Scissors className="h-4 w-4" />}
+                  <span>{trimMutation.isPending ? "裁剪中" : "裁剪无效"}</span>
+                </button>
+              ) : null}
               <button className="btn-primary" type="button" onClick={() => setEditing((value) => !value)}>
                 {editing ? <Eye className="h-4 w-4" /> : <Edit3 className="h-4 w-4" />}
                 <span>{editing ? "查看只读" : "手动编辑"}</span>
@@ -390,7 +397,8 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
                     activeSegmentId={activeSegmentId}
                     onSegmentClick={(segment) => segment.id && setActiveSegmentId(segment.id)}
                     onTimeUpdate={(time) => {
-                      const hit = displaySegments.find((segment) => time >= segment.start && time <= segment.end);
+                      const active = isBgm ? displayBgmSegments : displaySegments;
+                      const hit = active.find((segment) => time >= segment.start && time <= segment.end);
                       setActiveSegmentId(hit?.segment_id ?? null);
                     }}
                   />
@@ -408,16 +416,26 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
                 )}
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-3">
-                <AnnotationMetric label="有效时长" value={formatDuration(validDuration)} tone="ok" />
-                <AnnotationMetric label="无效时长" value={formatDuration(invalidDuration)} tone="warn" />
-                <AnnotationMetric label="总时长" value={formatDuration(totalDuration > 0 ? totalDuration : undefined)} />
-              </div>
+              {isBgm ? (
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <AnnotationMetric label="标注覆盖" value={formatPercent(bgmCoverageRatio)} tone={bgmCoverageRatio >= 0.95 ? "ok" : "warn"} />
+                  <AnnotationMetric label="音乐段落" value={`${displayBgmSegments.length} 段`} />
+                  <AnnotationMetric label="总时长" value={formatDuration(totalDuration > 0 ? totalDuration : undefined)} />
+                </div>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <AnnotationMetric label="有效时长" value={formatDuration(validDuration)} tone="ok" />
+                  <AnnotationMetric label="无效时长" value={formatDuration(invalidDuration)} tone="warn" />
+                  <AnnotationMetric label="总时长" value={formatDuration(totalDuration > 0 ? totalDuration : undefined)} />
+                </div>
+              )}
 
               <p className="text-xs text-text-tertiary">
                 {playerSegments.length > 0
-                  ? `时间轴叠加 ${playerSegments.length} 个片段${playerEvents.length > 0 ? ` · ${playerEvents.length} 个质量事件` : ""}${evidenceFrames.length > 0 ? ` · ${evidenceFrames.length} 个证据帧` : ""}，点击可跳转并高亮。`
-                  : "该标注暂无可视化片段。"}
+                  ? isBgm
+                    ? `进度条叠加 ${playerSegments.length} 个音乐段落，点击可跳转并高亮。`
+                    : `时间轴叠加 ${playerSegments.length} 个片段${playerEvents.length > 0 ? ` · ${playerEvents.length} 个质量事件` : ""}${evidenceFrames.length > 0 ? ` · ${evidenceFrames.length} 个证据帧` : ""}，点击可跳转并高亮。`
+                  : isBgm ? "该 BGM 暂无音乐段落。" : "该标注暂无可视化片段。"}
               </p>
             </div>
 
@@ -428,13 +446,17 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
                     assetId={assetId ?? editor.asset.id}
                     caseId={caseId}
                     editor={editor}
-                    windows={bgmWindows}
+                    segments={bgmForm}
+                    setSegments={setBgmForm}
                     duration={totalDuration}
-                    onCancel={() => setEditing(false)}
+                    onCancel={() => {
+                      setBgmForm(bgmSegments);
+                      setEditing(false);
+                    }}
                     onSaved={() => setEditing(false)}
                   />
                 ) : (
-                  <BgmStructurePanel bgmReport={bgmReport} windows={bgmWindows} totalDuration={totalDuration > 0 ? totalDuration : undefined} />
+                  <BgmStructurePanel bgmReport={bgmReport} segments={displayBgmSegments} totalDuration={totalDuration > 0 ? totalDuration : undefined} />
                 )
               ) : editing ? (
                 <StructuredAnnotationForm
@@ -618,11 +640,11 @@ function QualityEventRow({ event }: { event: AnnotationQualityEvent }) {
 
 function BgmStructurePanel({
   bgmReport,
-  windows,
+  segments,
   totalDuration,
 }: {
   bgmReport: Record<string, unknown>;
-  windows: BgmUsageWindow[];
+  segments: BgmSegment[];
   totalDuration?: number;
 }) {
   const summaryItems = [
@@ -634,10 +656,8 @@ function BgmStructurePanel({
   ]
     .map(([key, label]) => ({ key, label, value: bgmReport[key] }))
     .filter((item) => item.value !== undefined && item.value !== null && String(item.value).trim().length > 0);
-  const beats = Array.isArray(bgmReport.beats) ? bgmReport.beats.filter((value): value is number => typeof value === "number" && Number.isFinite(value)) : [];
-  const drops = Array.isArray(bgmReport.drops) ? bgmReport.drops.filter((value): value is number => typeof value === "number" && Number.isFinite(value)) : [];
-  const duration = totalDuration ?? 0;
-  const showTimeline = duration > 0;
+  const coverage = segments.reduce((sum, segment) => sum + Math.max(0, segment.end - segment.start), 0);
+  const coverageRatio = totalDuration && totalDuration > 0 ? Math.min(1, coverage / totalDuration) : 0;
 
   return (
     <div className="grid gap-4">
@@ -657,66 +677,25 @@ function BgmStructurePanel({
         </section>
       ) : null}
 
-      {showTimeline ? (
-        <section className="grid gap-3">
-          <div className="flex items-center justify-between gap-3 text-sm font-semibold text-text-primary">
-            <span>节拍时间轴</span>
-            <span className="font-mono text-xs font-normal text-text-tertiary">{formatDuration(duration)}</span>
-          </div>
-          <div className="relative h-24 overflow-hidden rounded-2xl border border-border/80 bg-white/70">
-            {beats.map((beat, index) => (
-              <span
-                key={`beat-${beat}-${index}`}
-                className="absolute top-0 h-full w-px bg-text-tertiary/20"
-                style={{ left: `${Math.min(100, Math.max(0, (beat / duration) * 100))}%` }}
-              />
-            ))}
-            {drops.map((drop, index) => (
-              <span
-                key={`drop-${drop}-${index}`}
-                className="absolute top-0 h-full w-0.5 bg-status-error/70"
-                style={{ left: `${Math.min(100, Math.max(0, (drop / duration) * 100))}%` }}
-              >
-                <span className="absolute -left-1 top-2 h-2.5 w-2.5 rounded-full bg-status-error" />
-              </span>
-            ))}
-            {windows.map((item, index) => {
-              const startPct = Math.min(100, Math.max(0, (item.start / duration) * 100));
-              const endPct = Math.min(100, Math.max(startPct, (item.end / duration) * 100));
-              const roleColor = BGM_ROLE_COLORS[item.role];
-              return (
-                <span
-                  key={`bgm-window-${item.start}-${item.end}-${index}`}
-                  className="absolute top-10 h-8 overflow-hidden text-ellipsis whitespace-nowrap rounded-full border px-2 py-1 text-[11px] font-semibold text-white shadow-sm"
-                  style={{
-                    left: `${startPct}%`,
-                    width: `${Math.max(0.5, endPct - startPct)}%`,
-                    backgroundColor: roleColor.bar,
-                    borderColor: roleColor.bar,
-                  }}
-                >
-                  {BGM_ROLE_LABELS[item.role]}
-                </span>
-              );
-            })}
-          </div>
-        </section>
-      ) : null}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <AnnotationMetric label="标注覆盖" value={formatPercent(coverageRatio)} tone={coverageRatio >= 0.95 ? "ok" : "warn"} />
+        <AnnotationMetric label="音乐段落" value={`${segments.length} 段`} />
+      </div>
 
       <section className="grid gap-3">
         <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
           <Film className="h-4 w-4 text-accent" />
-          <span>BGM 使用窗口</span>
-          <span className="text-xs font-normal text-text-tertiary">共 {windows.length} 段</span>
+          <span>音乐段落</span>
+          <span className="text-xs font-normal text-text-tertiary">共 {segments.length} 段</span>
         </div>
-        {windows.length === 0 ? (
-          <p className="rounded-2xl border border-border/80 bg-white/65 p-4 text-sm text-text-secondary">暂无 BGM 使用窗口。</p>
+        {segments.length === 0 ? (
+          <p className="rounded-2xl border border-border/80 bg-white/65 p-4 text-sm text-text-secondary">暂无音乐段落。</p>
         ) : (
           <div className="grid gap-3">
-            {windows.map((item, index) => {
+            {segments.map((item, index) => {
               const roleColor = BGM_ROLE_COLORS[item.role];
               return (
-                <div key={`bgm-card-${item.start}-${item.end}-${index}`} className="grid gap-3 rounded-2xl border border-border/80 bg-white/70 p-4">
+                <div key={`bgm-segment-card-${item.start}-${item.end}-${index}`} className="grid gap-3 rounded-2xl border border-border/80 bg-white/70 p-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="rounded-full px-2.5 py-1 text-xs font-semibold" style={{ backgroundColor: roleColor.softBg, color: roleColor.text }}>
                       {formatWindow(item.start, item.end)}
@@ -752,7 +731,8 @@ function BgmAnnotationForm({
   assetId,
   caseId,
   editor,
-  windows,
+  segments,
+  setSegments,
   duration,
   onCancel,
   onSaved,
@@ -760,28 +740,35 @@ function BgmAnnotationForm({
   assetId: string;
   caseId: string | null;
   editor: AnnotationEditorVm;
-  windows: BgmUsageWindow[];
+  segments: BgmSegment[];
+  setSegments: Dispatch<SetStateAction<BgmSegment[]>>;
   duration: number;
   onCancel: () => void;
   onSaved: () => void;
 }) {
   const toast = useToast();
   const queryClient = useQueryClient();
-  const [bgmForm, setBgmForm] = useState<BgmUsageWindow[]>(windows);
   const roleOptions = BGM_ROLES.map((role) => [role, BGM_ROLE_LABELS[role] ?? role] as [string, string]);
 
-  useEffect(() => {
-    setBgmForm(windows);
-  }, [windows]);
+  const updateSegment = (index: number, patch: Partial<BgmSegment>) =>
+    setSegments((current) => current.map((item, i) => (i === index ? { ...item, ...patch } : item)));
 
-  const updateWindow = (index: number, patch: Partial<BgmUsageWindow>) =>
-    setBgmForm((current) => current.map((item, i) => (i === index ? { ...item, ...patch } : item)));
+  const removeSegment = (index: number) => setSegments((current) => current.filter((_, i) => i !== index));
 
-  const removeWindow = (index: number) => setBgmForm((current) => current.filter((_, i) => i !== index));
-
-  const addWindow = () => {
+  const addSegment = () => {
     const end = Math.min(Math.max(duration || 1, 0.5), 1);
-    setBgmForm((current) => [...current, { start: 0, end, role: "general", scene_fit: [] }]);
+    setSegments((current) => [
+      ...current,
+      {
+        segment_id: `manual_bgm_${Date.now()}`,
+        start: 0,
+        end,
+        duration: end,
+        role: "general",
+        scene_fit: [],
+        source: "manual",
+      },
+    ]);
   };
 
   const patchMutation = useMutation({
@@ -790,7 +777,7 @@ function BgmAnnotationForm({
         etag: editor.etag,
         patch: {
           operations: [
-            { op: "replace", path: "/canonical/bgm_usage_windows", value: bgmWindowsToCanonical(bgmForm) },
+            { op: "replace", path: "/canonical/bgm_segments", value: bgmSegmentsToCanonical(segments) },
             { op: "replace", path: "/projection/usable", value: true },
           ],
         },
@@ -798,7 +785,7 @@ function BgmAnnotationForm({
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["library", "annotation", assetId] });
       await queryClient.invalidateQueries({ queryKey: ["library", "media", caseId] });
-      toast.success("标注已保存", "BGM 使用窗口已更新。");
+      toast.success("标注已保存", "BGM 音乐段落已更新。");
       onSaved();
     },
     onError: (error) => {
@@ -821,26 +808,26 @@ function BgmAnnotationForm({
       <div className="grid gap-3">
         <div className="flex items-center justify-between gap-3">
           <h4 className="flex items-center gap-2 text-sm font-semibold text-text-primary">
-            <Film className="h-4 w-4 text-accent" /> BGM 使用窗口
+            <Film className="h-4 w-4 text-accent" /> 音乐段落
           </h4>
-          <button className="btn-secondary min-h-9 px-3" type="button" onClick={addWindow}>
+          <button className="btn-secondary min-h-9 px-3" type="button" onClick={addSegment}>
             <Plus className="h-4 w-4" />
-            <span>新增窗口</span>
+            <span>新增段落</span>
           </button>
         </div>
         <div className="grid gap-3">
-          {bgmForm.map((item, index) => (
+          {segments.map((item, index) => (
             <div key={`bgm-edit-${index}`} className="grid gap-3 rounded-2xl border border-border/80 bg-white/65 p-3">
               <div className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
-                <NumberField label="开始(s)" value={item.start} step={0.1} max={duration || undefined} onChange={(v) => updateWindow(index, { start: v })} />
-                <NumberField label="结束(s)" value={item.end} step={0.1} max={duration || undefined} onChange={(v) => updateWindow(index, { end: v })} />
+                <NumberField label="开始(s)" value={item.start} step={0.1} max={duration || undefined} onChange={(v) => updateSegment(index, { start: v })} />
+                <NumberField label="结束(s)" value={item.end} step={0.1} max={duration || undefined} onChange={(v) => updateSegment(index, { end: v })} />
                 <SelectField
                   label="角色"
                   value={item.role}
                   options={roleOptions}
-                  onChange={(v) => updateWindow(index, { role: v as BgmUsageWindow["role"] })}
+                  onChange={(v) => updateSegment(index, { role: v as BgmSegment["role"] })}
                 />
-                <button className="icon-button mt-5 self-start" type="button" onClick={() => removeWindow(index)} aria-label="删除窗口">
+                <button className="icon-button mt-5 self-start" type="button" onClick={() => removeSegment(index)} aria-label="删除段落">
                   <Trash2 className="h-4 w-4" />
                 </button>
               </div>
@@ -858,16 +845,16 @@ function BgmAnnotationForm({
                     onChange={(event) => {
                       const value = event.target.value;
                       const next = Number(value);
-                      updateWindow(index, { drop_anchor_sec: value === "" || !Number.isFinite(next) ? undefined : next });
+                      updateSegment(index, { drop_anchor_sec: value === "" || !Number.isFinite(next) ? undefined : next });
                     }}
                   />
                 </label>
-                <TextField label="情绪" value={item.mood ?? ""} onChange={(v) => updateWindow(index, { mood: v })} />
-                <TextField label="适配场景（逗号分隔）" value={(item.scene_fit ?? []).join(", ")} onChange={(v) => updateWindow(index, { scene_fit: splitTokens(v) })} />
+                <TextField label="情绪" value={item.mood ?? ""} onChange={(v) => updateSegment(index, { mood: v })} />
+                <TextField label="适配场景（逗号分隔）" value={(item.scene_fit ?? []).join(", ")} onChange={(v) => updateSegment(index, { scene_fit: splitTokens(v) })} />
               </div>
             </div>
           ))}
-          {bgmForm.length === 0 ? <p className="text-sm text-text-secondary">暂无 BGM 使用窗口，点击「新增窗口」添加。</p> : null}
+          {segments.length === 0 ? <p className="text-sm text-text-secondary">暂无音乐段落，点击「新增段落」添加。</p> : null}
         </div>
       </div>
 
@@ -1223,6 +1210,16 @@ function toPlayerSegment(segment: AnnotationTimelineSegment, index: number): Vid
     end: segment.end,
     label: segment.summary || segment.retrieval_sentence || segment.segment_id || `片段 ${index + 1}`,
     role: segment.usable_roles?.[0],
+  };
+}
+
+function toBgmPlayerSegment(segment: BgmSegment, index: number): VideoPlayerSegment {
+  return {
+    id: segment.segment_id || `bgm-seg-${index}`,
+    start: segment.start,
+    end: segment.end,
+    label: segment.mood || segment.reason || segment.segment_id || `音乐段落 ${index + 1}`,
+    role: segment.role,
   };
 }
 

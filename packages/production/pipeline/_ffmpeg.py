@@ -127,7 +127,10 @@ def resolve_adaptive_bgm_volume(
     metadata.update({"voice_lufs": voice_lufs, "bgm_lufs": bgm_lufs})
     if voice_lufs is None or bgm_lufs is None:
         metadata.update(
-            {"effective_bgm_volume": round(requested, 4), "fallback_reason": "loudness_probe_failed"}
+            {
+                "effective_bgm_volume": round(requested, 4),
+                "fallback_reason": "loudness_probe_failed",
+            }
         )
         return AdaptiveMixResult(bgm_volume=requested, metadata=metadata)
 
@@ -163,6 +166,7 @@ def _build_bgm_audio_filters(
     auto_mix: bool,
     fade_in: float,
     fade_out: float,
+    bgm_source_start: float = 0.0,
 ) -> str:
     """Build the voice+BGM filter graph yielding ``[a]``.
 
@@ -178,13 +182,19 @@ def _build_bgm_audio_filters(
         f"asetpts=PTS-STARTPTS{',asplit=2' if auto_mix else ''}{voice_targets}"
     )
 
-    bgm_chain = [f"[2:a]aresample=48000,volume={bgm_volume:.3f}"]
+    source_start = max(0.0, float(bgm_source_start or 0.0))
+    source_end = source_start + max(0.0, float(duration or 0.0))
+    bgm_chain = [
+        "[2:a]aresample=48000",
+        f"atrim={source_start:.3f}:{source_end:.3f}",
+        "asetpts=PTS-STARTPTS",
+        f"volume={bgm_volume:.3f}",
+    ]
     if fade_in > 0:
         bgm_chain.append(f"afade=t=in:st=0:d={fade_in:.3f}")
     if fade_out > 0:
         fade_start = max(0.0, duration - fade_out)
         bgm_chain.append(f"afade=t=out:st={fade_start:.3f}:d={fade_out:.3f}")
-    bgm_chain.extend([f"atrim=0:{duration:.3f}", "asetpts=PTS-STARTPTS"])
     parts.append(",".join(bgm_chain) + "[bgmraw]")
 
     if auto_mix:
@@ -214,6 +224,7 @@ def render_final_media(
     fonts_dir: Path | None = None,
     auto_mix: bool = False,
     bgm_margin_db: float | None = None,
+    bgm_source_start: float = 0.0,
     fade_in: float = 1.0,
     fade_out: float = 1.5,
 ) -> AdaptiveMixResult | None:
@@ -249,6 +260,7 @@ def render_final_media(
             auto_mix=auto_mix,
             bgm_margin_db=bgm_margin_db,
         )
+        mix_result.metadata["bgm_source_start"] = round(max(0.0, float(bgm_source_start or 0.0)), 3)
         args.extend(["-stream_loop", "-1", "-i", str(bgm_path)])
 
     video_filters = "[0:v]"
@@ -263,14 +275,14 @@ def render_final_media(
 
     if bgm_path is None or mix_result is None:
         audio_filters = (
-            f"[1:a]aresample=48000,apad=pad_dur=1,atrim=0:{duration:.3f},"
-            "asetpts=PTS-STARTPTS[a]"
+            f"[1:a]aresample=48000,apad=pad_dur=1,atrim=0:{duration:.3f},asetpts=PTS-STARTPTS[a]"
         )
     else:
         audio_filters = _build_bgm_audio_filters(
             bgm_volume=mix_result.bgm_volume,
             duration=duration,
             auto_mix=auto_mix,
+            bgm_source_start=bgm_source_start,
             fade_in=max(0.0, float(fade_in)),
             fade_out=max(0.0, float(fade_out)),
         )

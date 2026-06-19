@@ -168,32 +168,31 @@ def _persist_bgm(repo, asset: c.MediaAssetRecord, result: BgmAnnotationResult) -
         case_id=asset.case_id,
     )
     is_failed = _bgm_is_failed(result)
-    # A BGM annotation is usable when the real audio path produced at least one window.
+    # A BGM annotation is usable when the real audio path produced at least one segment.
     bgm_report = (
         canonical.get("quality_report", {}).get("bgm", {}) if isinstance(canonical, dict) else {}
     )
-    usable = not is_failed and result.llm_configured and (
-        bool(annotation.bgm_usage_windows) or bool(bgm_report.get("mood"))
+    usable = (not is_failed) and (bool(annotation.bgm_segments) or bool(bgm_report.get("mood")))
+    annotation_status = "annotation_failed" if is_failed else "annotated"
+    updated_asset = asset.model_copy(
+        update={"annotation_status": annotation_status, "usable": usable, "updated_at": c.utcnow()}
     )
     projection = build_projection(
         annotation,
-        asset,
+        updated_asset,
         annotation_artifact_id=artifact.id,
         llm_configured=result.llm_configured,
     )
     projection["usable"] = usable
     projection["bgm"] = bgm_report
     repo.annotations[asset.id] = c.AnnotationEditorVm(
-        asset=asset,
+        asset=updated_asset,
         etag=new_id("etag"),
         canonical=canonical,
         projection=projection,
-        editable_paths=["/labels", "/usable", "/title", "/canonical/bgm_usage_windows"],
+        editable_paths=["/labels", "/usable", "/title", "/canonical/bgm_segments"],
     )
-    annotation_status = "annotation_failed" if is_failed else "annotated"
-    repo.media_assets[asset.id] = asset.model_copy(
-        update={"annotation_status": annotation_status, "usable": usable, "updated_at": c.utcnow()}
-    )
+    repo.media_assets[asset.id] = updated_asset
 
 
 def _bgm_is_failed(result: BgmAnnotationResult) -> bool:
@@ -381,13 +380,11 @@ def _run_sqlalchemy_bgm_annotation(
     annotation = result.annotation
     canonical = annotation.model_dump(mode="json")
     is_failed = _bgm_is_failed(result)
-    # A BGM annotation is usable when the real audio path produced at least one window.
+    # A BGM annotation is usable when the real audio path produced at least one segment.
     bgm_report = (
         canonical.get("quality_report", {}).get("bgm", {}) if isinstance(canonical, dict) else {}
     )
-    usable = (not is_failed) and result.llm_configured and (
-        bool(annotation.bgm_usage_windows) or bool(bgm_report.get("mood"))
-    )
+    usable = (not is_failed) and (bool(annotation.bgm_segments) or bool(bgm_report.get("mood")))
     # canonical-owns-projection (Spec §12.1): rebuild the editor projection from the
     # canonical AnnotationV4, then surface the BGM-specific fields the editor reads.
     projection = build_projection(annotation, asset, llm_configured=result.llm_configured)
@@ -402,7 +399,7 @@ def _run_sqlalchemy_bgm_annotation(
         annotation_status=annotation_status,
         usable=usable,
         case_id=asset.case_id,
-        editable_paths=["/labels", "/usable", "/title", "/canonical/bgm_usage_windows"],
+        editable_paths=["/labels", "/usable", "/title", "/canonical/bgm_segments"],
     )
     if editor is None:
         return c.AnnotationRunResponse(asset_id=asset.id, run_id=None, status="failed")

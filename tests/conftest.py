@@ -87,12 +87,14 @@ class _ASGISyncTestClient:
         response_started: dict[str, object] = {}
         response_body = bytearray()
         request_sent = False
+        response_complete = anyio.Event()
 
         async def receive():
             nonlocal request_sent
             if not request_sent:
                 request_sent = True
                 return {"type": "http.request", "body": body, "more_body": False}
+            await response_complete.wait()
             return {"type": "http.disconnect"}
 
         async def send(message):
@@ -101,8 +103,14 @@ class _ASGISyncTestClient:
                 response_started["headers"] = message.get("headers", [])
             elif message["type"] == "http.response.body":
                 response_body.extend(message.get("body", b""))
+                if not message.get("more_body", False):
+                    response_complete.set()
 
-        await self.app(scope, receive, send)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            if not response_complete.is_set():
+                response_complete.set()
         response = httpx.Response(
             int(response_started.get("status", 500)),
             headers=[(key.decode("latin-1"), value.decode("latin-1")) for key, value in response_started.get("headers", [])],

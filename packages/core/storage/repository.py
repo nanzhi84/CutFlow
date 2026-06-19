@@ -15,6 +15,8 @@ from packages.core.contracts import (
     AnnotationMetaV4,
     AnnotationV4,
     Artifact,
+    BgmSegmentRole,
+    BgmSegmentV4,
     ClipRetrievalV4,
     ClipSemanticsV4,
     ClipUsageV4,
@@ -127,6 +129,46 @@ def demo_portrait_annotation_v4(case_id: str = "case_demo") -> AnnotationV4:
     )
 
 
+def demo_bgm_annotation_v4(case_id: str = "case_demo") -> AnnotationV4:
+    """Annotation backing the seeded ``asset_bgm_demo`` (15s demo audio)."""
+    return AnnotationV4(
+        meta=AnnotationMetaV4(
+            asset_id="asset_bgm_demo",
+            case_id=case_id,
+            material_type="bgm",
+            duration=15.0,
+        ),
+        bgm_segments=[
+            BgmSegmentV4(
+                segment_id="bgm_segment_demo",
+                start=0.0,
+                end=15.0,
+                duration=15.0,
+                role=BgmSegmentRole.hook,
+                energy=0.45,
+                mood="轻快",
+                scene_fit=["短视频口播", "产品介绍", "案例讲解"],
+                reason="种子 BGM 可作为演示口播视频的轻快铺底。",
+                confidence=0.85,
+                source="seed",
+            )
+        ],
+        quality_report={
+            "bgm": {
+                "status": "seed",
+                "librosa_available": False,
+                "segment_count": 1,
+                "annotated_coverage_sec": 15.0,
+                "annotated_coverage_ratio": 1.0,
+                "recommended_segment_ids": ["bgm_segment_demo"],
+                "source": "seed",
+                "mood": "轻快",
+                "scene_fit": ["短视频口播", "产品介绍", "案例讲解"],
+            }
+        },
+    )
+
+
 class Repository:
     """In-process repository boundary for the first clean-slate implementation slice."""
 
@@ -221,7 +263,9 @@ class Repository:
             created_at=utcnow(),
         )
         self.registration_codes[local_admin_registration_code.id] = local_admin_registration_code
-        self.registration_code_hashes[hash_registration_code("reg_local_admin")] = local_admin_registration_code.id
+        self.registration_code_hashes[hash_registration_code("reg_local_admin")] = (
+            local_admin_registration_code.id
+        )
         case = CaseDetail(
             id="case_demo",
             name="Demo Case",
@@ -256,6 +300,12 @@ class Repository:
             asset=self.media_assets["asset_portrait_demo"],
             etag="seed-portrait-demo",
             canonical=demo_portrait_annotation_v4(case.id),
+            projection={},
+        )
+        self.annotations["asset_bgm_demo"] = AnnotationEditorVm(
+            asset=self.media_assets["asset_bgm_demo"],
+            etag="seed-bgm-demo",
+            canonical=demo_bgm_annotation_v4(case.id),
             projection={},
         )
         self.voices["voice_sandbox"] = VoiceProfile(
@@ -423,12 +473,26 @@ class Repository:
         self, entries: Iterable[SelectionLedgerEntry]
     ) -> list[SelectionLedgerEntry]:
         existing = {
-            (entry.case_id, entry.run_id, entry.medium, entry.asset_id, entry.clip_id, entry.slot_phase)
+            (
+                entry.case_id,
+                entry.run_id,
+                entry.medium,
+                entry.asset_id,
+                entry.clip_id,
+                entry.slot_phase,
+            )
             for entry in self.selection_ledger.values()
         }
         recorded: list[SelectionLedgerEntry] = []
         for entry in entries:
-            key = (entry.case_id, entry.run_id, entry.medium, entry.asset_id, entry.clip_id, entry.slot_phase)
+            key = (
+                entry.case_id,
+                entry.run_id,
+                entry.medium,
+                entry.asset_id,
+                entry.clip_id,
+                entry.slot_phase,
+            )
             if key in existing:
                 continue
             self.selection_ledger[entry.id] = entry
@@ -585,9 +649,7 @@ class Repository:
         expired: list[SelectionReservationRecord] = []
         for reservation in list(self.selection_reservations.values()):
             if reservation.status == "reserved" and reservation.expires_at <= now:
-                updated = reservation.model_copy(
-                    update={"status": "expired", "released_at": now}
-                )
+                updated = reservation.model_copy(update={"status": "expired", "released_at": now})
                 self.selection_reservations[reservation.id] = updated
                 expired.append(updated)
         return expired
@@ -701,7 +763,9 @@ class Repository:
                 run_id,
                 {
                     "artifact_id": artifact.id,
-                    "artifact_kind": artifact.kind.value if hasattr(artifact.kind, "value") else str(artifact.kind),
+                    "artifact_kind": artifact.kind.value
+                    if hasattr(artifact.kind, "value")
+                    else str(artifact.kind),
                     "node_run_id": node_run_id,
                 },
                 dedupe_key=f"artifact:{artifact.id}",
@@ -720,7 +784,9 @@ class Repository:
             source_finished_video_id=finished_video.id,
             video_artifact=finished_video.video_artifact,
             cover_artifact=finished_video.cover_artifact,
-            platform_defaults=PublishDefaults(title=title or finished_video.title, description=description),
+            platform_defaults=PublishDefaults(
+                title=title or finished_video.title, description=description
+            ),
         )
         self.publish_packages[package.id] = package
         return package
@@ -763,13 +829,22 @@ class Repository:
 
         writer = OutboxWriter.in_memory(self)
         payload_data = payload if isinstance(payload, dict) else {}
-        effective_run_id = run_id or (aggregate_id if aggregate_type in {"run", "workflow_run"} else None)
+        effective_run_id = run_id or (
+            aggregate_id if aggregate_type in {"run", "workflow_run"} else None
+        )
         run = self.runs.get(effective_run_id or "")
-        effective_job_id = job_id or (run.job_id if run is not None else str(payload_data.get("job_id", "")))
-        effective_status = status or str(payload_data.get("status") or (run.status.value if run is not None else ""))
+        effective_job_id = job_id or (
+            run.job_id if run is not None else str(payload_data.get("job_id", ""))
+        )
+        effective_status = status or str(
+            payload_data.get("status") or (run.status.value if run is not None else "")
+        )
         effective_type = event_type or ("node_update" if ".node." in topic else "run_update")
         created_at = utcnow()
-        if effective_type in {"run_update", "node_update", "artifact_created", "warning", "error"} and effective_run_id:
+        if (
+            effective_type in {"run_update", "node_update", "artifact_created", "warning", "error"}
+            and effective_run_id
+        ):
             event_payload = RunEvent(
                 event_id=new_id("evt"),
                 run_id=effective_run_id,

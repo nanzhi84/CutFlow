@@ -1,23 +1,23 @@
-"""BGM / audio asset annotation: librosa-timed usage windows + gated audio listen.
+"""BGM / audio asset annotation: librosa full-track segments + gated audio listen.
 
 The unified visual annotation runner (:mod:`packages.media.annotation.runner`) is
 keyed on a readable *video* path and only fills portrait/b-roll semantic fields --
 it physically cannot annotate a BGM asset. This module is the audio counterpart so
 the must-retain '素材 AI 标注' flow covers the BGM library: it produces an
-:class:`~packages.core.contracts.AnnotationV4` carrying ``bgm_usage_windows``
-(1-3 recommended excerpts with precise seconds + role/mood/scene) plus a beat grid
-in ``quality_report["bgm"]`` that the editing-agent BGM selection consumes.
+:class:`~packages.core.contracts.AnnotationV4` carrying ``bgm_segments``
+(contiguous full-track segments with precise seconds + role/mood/scene) plus a
+beat grid in ``quality_report["bgm"]`` that BGM selection consumes.
 
 Two halves, mirroring the visual path's deterministic sensors + gated semantic split
 (sensors own all timestamps; the semantic model only listens, never reports seconds):
 
 - **objective features** (key-free, deterministic): BPM / energy / tempo_bucket /
-  beat grid / drops / candidate windows via ``librosa`` when it is installed, and
+  beat grid / drops / full-track segments via ``librosa`` when it is installed, and
   integrated loudness (LUFS) via ffmpeg's ``loudnorm`` pass. ``librosa`` is an
   OPTIONAL dependency imported lazily; when it is absent there are no windows/beats
   and the annotation degrades (LUFS-only), never crashing the runner.
-- **audio semantic** (gated, paid): a per-window ``audio.understanding`` call
-  (Qwen-Omni) that listens to each excerpt and fills mood / scene_fit / avoid_scene /
+- **audio semantic** (gated, paid): a per-segment ``audio.understanding`` call
+  (Qwen-Omni) that listens to each segment and fills mood / scene_fit / avoid_scene /
   role / reason. Gated behind a real profile + active secret exactly like the VLM
   path; without one (or when a clip's audio URL can't be produced) the window stays
   sensor-only and no semantics are fabricated.
@@ -44,7 +44,7 @@ from packages.core.contracts import (
     AnnotationV4,
     AnnotationVersion,
     BgmSegmentRole,
-    BgmUsageWindowV4,
+    BgmSegmentV4,
     ProviderProfile,
 )
 
@@ -140,9 +140,8 @@ def _extract_librosa_features(path: Path) -> dict[str, Any] | None:
         if samples is None or len(samples) == 0:
             return None
         tempo, beat_frames = librosa.beat.beat_track(y=samples, sr=sample_rate)
-        bpm = float(np.atleast_1d(tempo)[0])
-        if not math.isfinite(bpm) or bpm <= 0:
-            return None
+        detected_bpm = float(np.atleast_1d(tempo)[0])
+        bpm = detected_bpm if math.isfinite(detected_bpm) and detected_bpm > 0 else None
         beats = [
             round(float(t), 3)
             for t in librosa.frames_to_time(beat_frames, sr=sample_rate)
@@ -156,18 +155,20 @@ def _extract_librosa_features(path: Path) -> dict[str, Any] | None:
         energy_curve = [max(0.0, min(1.0, float(v))) for v in rms_frames]
         duration = float(len(samples) / sample_rate)
         drops = detect_drops(energy_curve, frame_times)
-        windows = candidate_windows(duration, energy_curve, frame_times, beats, drops)
+        segments = segment_audio_track(duration, energy_curve, frame_times, beats, drops)
     except Exception as exc:
         logger.warning("[bgm] librosa feature extraction failed for %s: %s", path, exc)
         return None
-    return {
-        "bpm": round(bpm, 2),
+    features = {
         "energy": round(energy, 4),
-        "tempo_bucket": _tempo_bucket(bpm),
         "beats": beats,
         "drops": [round(d, 3) for d in drops],
-        "candidate_windows": windows,
+        "segments": segments,
     }
+    if bpm is not None:
+        features["bpm"] = round(bpm, 2)
+        features["tempo_bucket"] = _tempo_bucket(bpm)
+    return features
 
 
 def _tempo_bucket(bpm: float) -> str:
@@ -203,68 +204,146 @@ def detect_drops(energy: list[float], times: list[float], *, z: float = 1.2) -> 
     return drops
 
 
-def candidate_windows(
+def segment_audio_track(
     duration: float,
     energy: list[float],
     times: list[float],
     beats: list[float],
     drops: list[float],
     *,
-    max_windows: int = 3,
-    target_len: float = 20.0,
+    min_len: float = 24.0,
+    target_len: float = 60.0,
+    max_len: float = 90.0,
 ) -> list[dict]:
-    """Pick 1-3 usable excerpt windows: drop-neighborhoods + highest-energy region.
-
-    Deterministic. start/end snapped to nearest beats and clamped to [0, duration].
-    Short tracks (<= target_len) collapse to a single whole-track window.
-    """
+    """Split the full BGM track into contiguous, beat-snapped segments."""
     if duration <= 0:
         return []
-    if duration <= target_len + 1e-6:
-        e = _mean(energy)
+    if duration <= target_len + 10.0:
+        anchor = _first_between(drops, 0.0, duration)
         return [
             {
                 "start": 0.0,
                 "end": round(duration, 3),
-                "energy": e,
-                "drop_anchor": drops[0] if drops else None,
-                "role_hint": "climax" if drops else "general",
+                "duration": round(duration, 3),
+                "energy": _mean(energy),
+                "drop_anchor": round(snap_to_beats(anchor, beats), 3) if anchor is not None else None,
+                "role_hint": "hook",
             }
         ]
 
-    raw: list[tuple[float, float, float | None, str]] = []
-    half = target_len / 2.0
-    for d in drops:
-        start = max(0.0, d - half * 0.4)
-        end = min(duration, start + target_len)
-        raw.append((start, end, d, "climax"))
-    peak_t = _peak_time(energy, times)
-    if peak_t is not None:
-        start = max(0.0, peak_t - half)
-        end = min(duration, start + target_len)
-        raw.append((start, end, None, "general"))
-    if not raw:
-        raw.append((0.0, min(duration, target_len), None, "hook"))
+    boundaries = _segment_boundaries(
+        duration,
+        beats,
+        min_len=min_len,
+        target_len=target_len,
+        max_len=max_len,
+    )
+    segments: list[dict] = []
+    raw_energies: list[float] = []
+    for start, end in zip(boundaries, boundaries[1:]):
+        start = round(max(0.0, min(duration, start)), 3)
+        end = round(max(start, min(duration, end)), 3)
+        if end <= start:
+            continue
+        raw_energies.append(_mean_between(energy, times, start, end))
+        anchor = _first_between(drops, start, end)
+        segments.append(
+            {
+                "start": start,
+                "end": end,
+                "duration": round(end - start, 3),
+                "energy": raw_energies[-1],
+                "drop_anchor": round(snap_to_beats(anchor, beats), 3) if anchor is not None else None,
+                "role_hint": "general",
+            }
+        )
+    if not segments:
+        return []
 
-    snapped: list[dict] = []
-    for start, end, anchor, hint in raw:
-        s = min(snap_to_beats(start, beats), duration)
-        e = min(snap_to_beats(end, beats), duration)
-        if e <= s:
-            e = min(duration, s + target_len)
-        win = {
-            "start": round(s, 3),
-            "end": round(e, 3),
-            "energy": _mean_between(energy, times, s, e),
-            "drop_anchor": (
-                round(snap_to_beats(anchor, beats), 3) if anchor is not None else None
-            ),
-            "role_hint": hint,
-        }
-        if not any(_overlaps(win, kept) for kept in snapped):
-            snapped.append(win)
-    snapped.sort(key=lambda w: w["energy"], reverse=True)
-    return snapped[:max_windows]
+    high_energy_threshold = _upper_quartile(raw_energies)
+    for index, segment in enumerate(segments):
+        is_first = index == 0
+        is_last = index == len(segments) - 1
+        if is_first:
+            role = "hook"
+        elif is_last and float(segment["energy"]) < high_energy_threshold:
+            role = "outro"
+        elif segment["drop_anchor"] is not None or float(segment["energy"]) >= high_energy_threshold:
+            role = "climax"
+        else:
+            role = "general"
+        segment["role_hint"] = role
+    return segments
+
+
+def _segment_boundaries(
+    duration: float,
+    beats: list[float],
+    *,
+    min_len: float,
+    target_len: float,
+    max_len: float,
+) -> list[float]:
+    clean_beats = sorted({round(float(b), 3) for b in beats if 0 < float(b) < duration})
+    boundaries = [0.0]
+    if len(clean_beats) >= 2:
+        intervals = [
+            clean_beats[i] - clean_beats[i - 1]
+            for i in range(1, len(clean_beats))
+            if clean_beats[i] > clean_beats[i - 1]
+        ]
+        beat_interval = _median(intervals) if intervals else 0.0
+        if beat_interval > 0:
+            beats_per_segment = max(8, round(target_len / beat_interval / 8) * 8)
+            for idx in range(beats_per_segment - 1, len(clean_beats), beats_per_segment):
+                boundary = clean_beats[idx]
+                if min_len <= boundary <= duration - min_len:
+                    boundaries.append(boundary)
+    if len(boundaries) == 1:
+        boundary = target_len
+        while boundary <= duration - min_len:
+            boundaries.append(round(boundary, 3))
+            boundary += target_len
+    boundaries.append(round(duration, 3))
+    boundaries = sorted({round(b, 3) for b in boundaries})
+    boundaries = _merge_short_segments(boundaries, min_len=min_len)
+    boundaries = _split_long_segments(boundaries, clean_beats, max_len=max_len, target_len=target_len)
+    return sorted({round(max(0.0, min(duration, b)), 3) for b in boundaries})
+
+
+def _merge_short_segments(boundaries: list[float], *, min_len: float) -> list[float]:
+    boundaries = list(boundaries)
+    index = 1
+    while len(boundaries) > 2 and index < len(boundaries):
+        span = boundaries[index] - boundaries[index - 1]
+        if span < min_len:
+            if index == len(boundaries) - 1:
+                boundaries.pop(index - 1)
+            else:
+                boundaries.pop(index)
+            index = max(1, index - 1)
+            continue
+        index += 1
+    return boundaries
+
+
+def _split_long_segments(
+    boundaries: list[float],
+    beats: list[float],
+    *,
+    max_len: float,
+    target_len: float,
+) -> list[float]:
+    output: list[float] = [boundaries[0]]
+    for start, end in zip(boundaries, boundaries[1:]):
+        cursor = start + target_len
+        while end - output[-1] > max_len and cursor < end:
+            boundary = snap_to_beats(cursor, beats)
+            if output[-1] < boundary < end:
+                output.append(round(boundary, 3))
+            cursor += target_len
+        output.append(end)
+    return output
 
 
 def _mean(values: list[float]) -> float:
@@ -280,16 +359,33 @@ def _mean_between(energy: list[float], times: list[float], start: float, end: fl
     return _mean(vals) if vals else _mean(energy)
 
 
-def _peak_time(energy: list[float], times: list[float]) -> float | None:
-    n = min(len(energy), len(times))
-    if n == 0:
-        return None
-    idx = max(range(n), key=lambda i: energy[i])
-    return times[idx]
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
 
 
-def _overlaps(a: dict, b: dict) -> bool:
-    return a["start"] < b["end"] and b["start"] < a["end"]
+def _upper_quartile(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, math.ceil(len(ordered) * 0.75) - 1))
+    return ordered[index]
+
+
+def _first_between(values: list[float], start: float, end: float) -> float | None:
+    for value in values:
+        try:
+            current = float(value)
+        except (TypeError, ValueError):
+            continue
+        if start <= current <= end:
+            return current
+    return None
 
 
 def _extract_loudnorm_json(output: str) -> dict | None:
@@ -355,7 +451,7 @@ def annotate_bgm(
     audio_url_for_window: Callable[[float, float], str | None] | None = None,
     feature_extractor: Callable[[str | Path], dict[str, Any]] | None = None,
 ) -> BgmAnnotationResult:
-    """Annotate one BGM/audio asset into objective windows plus optional audio semantics."""
+    """Annotate one BGM/audio asset into objective segments plus optional audio semantics."""
     extractor = feature_extractor or extract_audio_features
     try:
         features = dict(extractor(audio_path) or {})
@@ -363,8 +459,8 @@ def annotate_bgm(
         logger.warning("[bgm] feature extraction errored for %s: %s", asset_id, exc)
         features = {}
 
-    raw_windows = features.get("candidate_windows") or []
-    if not raw_windows:
+    raw_segments = features.get("segments") or []
+    if not raw_segments:
         annotation = _degraded_annotation(
             asset_id=asset_id,
             case_id=case_id,
@@ -378,38 +474,38 @@ def annotate_bgm(
         )
 
     invocation_ids: list[str] = []
-    windows = _sensor_windows(raw_windows)
+    segments = _sensor_segments(raw_segments)
     if audio_profile is not None and audio_url_for_window is not None:
-        enriched: list[BgmUsageWindowV4] = []
-        for index, window in enumerate(windows):
-            updated, invocation_id = _listen_to_window(
+        enriched: list[BgmSegmentV4] = []
+        for index, segment in enumerate(segments):
+            updated, invocation_id = _listen_to_segment(
                 gateway=gateway,
                 profile=audio_profile,
                 asset_id=asset_id,
                 case_id=case_id,
                 asset_title=asset_title,
                 features=features,
-                window=window,
+                segment=segment,
                 index=index,
                 audio_url_for_window=audio_url_for_window,
             )
             if invocation_id:
                 invocation_ids.append(invocation_id)
             enriched.append(updated)
-        windows = enriched
+        segments = enriched
 
-    if any(window.source == "sensor+audio" for window in windows):
+    if any(segment.source == "sensor+audio" for segment in segments):
         status = "ok"
     elif audio_profile is None:
         status = LLM_UNCONFIGURED
     else:
         status = "sensor"
-    annotation = _annotation_with_windows(
+    annotation = _annotation_with_segments(
         asset_id=asset_id,
         case_id=case_id,
         duration=duration,
         features=features,
-        windows=windows,
+        segments=segments,
         status=status,
     )
     return BgmAnnotationResult(
@@ -419,29 +515,29 @@ def annotate_bgm(
     )
 
 
-def _sensor_windows(raw_windows: list[Any]) -> list[BgmUsageWindowV4]:
-    windows: list[BgmUsageWindowV4] = []
-    for index, raw in enumerate(raw_windows):
+def _sensor_segments(raw_segments: list[Any]) -> list[BgmSegmentV4]:
+    segments: list[BgmSegmentV4] = []
+    for index, raw in enumerate(raw_segments):
         if not isinstance(raw, dict):
             continue
         start = float(raw.get("start") or 0.0)
         end = float(raw.get("end") or 0.0)
-        windows.append(
-            BgmUsageWindowV4(
-                segment_id=f"bgm_window_{index + 1}",
+        segments.append(
+            BgmSegmentV4(
+                segment_id=f"bgm_segment_{index + 1}",
                 start=start,
                 end=end,
-                duration=round(end - start, 3),
+                duration=float(raw.get("duration") or round(end - start, 3)),
                 role=_role_from_hint(raw.get("role_hint")),
                 drop_anchor_sec=raw.get("drop_anchor"),
                 energy=float(raw.get("energy") or 0.0),
                 source="sensor",
             )
         )
-    return windows
+    return segments
 
 
-def _listen_to_window(
+def _listen_to_segment(
     *,
     gateway: ProviderGateway,
     profile: ProviderProfile,
@@ -449,17 +545,17 @@ def _listen_to_window(
     case_id: str,
     asset_title: str,
     features: dict[str, Any],
-    window: BgmUsageWindowV4,
+    segment: BgmSegmentV4,
     index: int,
     audio_url_for_window: Callable[[float, float], str | None],
-) -> tuple[BgmUsageWindowV4, str | None]:
+) -> tuple[BgmSegmentV4, str | None]:
     try:
-        audio_uri = audio_url_for_window(window.start, window.end)
+        audio_uri = audio_url_for_window(segment.start, segment.end)
     except Exception as exc:
-        logger.warning("[bgm] audio window URL failed for %s/%s: %s", asset_id, index, exc)
-        return window, None
+        logger.warning("[bgm] audio segment URL failed for %s/%s: %s", asset_id, index, exc)
+        return segment, None
     if not audio_uri:
-        return window, None
+        return segment, None
     try:
         invocation, result = gateway.invoke(
             ProviderCall(
@@ -467,30 +563,30 @@ def _listen_to_window(
                 provider_profile_id=profile.id,
                 capability_id="audio.understanding",
                 input={
-                    "prompt": _build_window_prompt(
+                    "prompt": _build_segment_prompt(
                         asset_title=asset_title,
-                        window=window,
+                        segment=segment,
                         features=features,
                     ),
                     "audio_uri": audio_uri,
-                    "audio_seconds": window.duration,
+                    "audio_seconds": segment.duration,
                     "asset_id": asset_id,
-                    "segment_id": window.segment_id,
+                    "segment_id": segment.segment_id,
                 },
                 idempotency_key=f"bgm-omni-{asset_id}-{index}",
             )
         )
     except Exception as exc:
         logger.warning("[bgm] audio semantic annotation failed for %s/%s: %s", asset_id, index, exc)
-        return window, None
+        return segment, None
     if result is None or invocation.error is not None:
-        return window, invocation.id
+        return segment, invocation.id
     intent = _intent_from_output(result.output)
     if not intent:
-        return window, invocation.id
-    semantics = _normalize_window_semantics(intent, role_hint=window.role)
+        return segment, invocation.id
+    semantics = _normalize_segment_semantics(intent, role_hint=segment.role)
     return (
-        window.model_copy(
+        segment.model_copy(
             update={
                 "mood": semantics["mood"],
                 "scene_fit": semantics["scene_fit"],
@@ -504,19 +600,20 @@ def _listen_to_window(
     )
 
 
-def _build_window_prompt(
+def _build_segment_prompt(
     *,
     asset_title: str,
-    window: BgmUsageWindowV4,
+    segment: BgmSegmentV4,
     features: dict[str, Any],
 ) -> str:
     payload = {
         "bgm_name": asset_title,
-        "window": {
-            "start": window.start,
-            "end": window.end,
-            "energy": window.energy,
-            "has_drop": window.drop_anchor_sec is not None,
+        "segment": {
+            "start": segment.start,
+            "end": segment.end,
+            "duration": segment.duration,
+            "energy": segment.energy,
+            "has_drop": segment.drop_anchor_sec is not None,
         },
         "track": {
             "bpm": features.get("bpm"),
@@ -532,7 +629,7 @@ def _build_window_prompt(
         },
     }
     return (
-        "你在听一段BGM片段。结合你听到的音乐与给定信息，推断情绪/用途/适配场景，"
+        "你在听一段BGM音乐段落。结合你听到的音乐与给定信息，推断情绪/用途/适配场景，"
         "只返回一个合法 JSON 对象，不要 markdown 或多余文字。\n"
         f"{json.dumps(payload, ensure_ascii=False)}"
     )
@@ -546,7 +643,7 @@ def _intent_from_output(output: dict[str, Any]) -> dict[str, Any]:
     return _extract_json_object(content) or {}
 
 
-def _normalize_window_semantics(
+def _normalize_segment_semantics(
     raw: dict[str, Any],
     *,
     role_hint: BgmSegmentRole,
@@ -626,7 +723,7 @@ def _bgm_quality_report(
     *,
     features: dict[str, Any],
     status: str,
-    windows: list[BgmUsageWindowV4] | None = None,
+    segments: list[BgmSegmentV4] | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
     bgm: dict[str, Any] = {
@@ -639,24 +736,35 @@ def _bgm_quality_report(
         "beats": features.get("beats") or [],
         "drops": features.get("drops") or [],
     }
-    if windows is not None:
-        bgm["candidate_window_count"] = len(windows)
-        bgm["source"] = (
-            "sensor+audio" if any(w.source == "sensor+audio" for w in windows) else "sensor"
+    if segments is not None:
+        coverage_sec = round(sum(max(0.0, s.end - s.start) for s in segments), 3)
+        track_duration = max((s.end for s in segments), default=0.0)
+        bgm["segment_count"] = len(segments)
+        bgm["annotated_coverage_sec"] = coverage_sec
+        bgm["annotated_coverage_ratio"] = (
+            round(coverage_sec / track_duration, 4) if track_duration > 0 else 0.0
         )
-        semantic_window = next((w for w in windows if w.source == "sensor+audio"), None)
-        if semantic_window is not None:
+        bgm["recommended_segment_ids"] = [
+            s.segment_id
+            for s in segments
+            if s.role in {BgmSegmentRole.hook, BgmSegmentRole.climax}
+        ]
+        bgm["source"] = (
+            "sensor+audio" if any(s.source == "sensor+audio" for s in segments) else "sensor"
+        )
+        semantic_segment = next((s for s in segments if s.source == "sensor+audio"), None)
+        if semantic_segment is not None:
             bgm.update(
                 {
-                    "mood": semantic_window.mood,
-                    "scene_fit": semantic_window.scene_fit,
-                    "avoid_scene": semantic_window.avoid_scene,
+                    "mood": semantic_segment.mood,
+                    "scene_fit": semantic_segment.scene_fit,
+                    "avoid_scene": semantic_segment.avoid_scene,
                     "retrieval_text": " ".join(
                         part
                         for part in (
-                            semantic_window.mood,
-                            semantic_window.reason,
-                            *semantic_window.scene_fit,
+                            semantic_segment.mood,
+                            semantic_segment.reason,
+                            *semantic_segment.scene_fit,
                         )
                         if part
                     ),
@@ -683,21 +791,21 @@ def _meta(
     )
 
 
-def _annotation_with_windows(
+def _annotation_with_segments(
     *,
     asset_id: str,
     case_id: str,
     duration: float,
     features: dict[str, Any],
-    windows: list[BgmUsageWindowV4],
+    segments: list[BgmSegmentV4],
     status: str,
 ) -> AnnotationV4:
     return AnnotationV4(
         meta=_meta(asset_id, case_id, duration, AnnotationStatus.completed),
-        bgm_usage_windows=windows,
+        bgm_segments=segments,
         quality_report=_bgm_quality_report(
             features=features,
-            windows=windows,
+            segments=segments,
             status=status,
         ),
     )

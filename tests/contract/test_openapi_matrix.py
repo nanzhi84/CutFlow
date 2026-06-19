@@ -35,6 +35,7 @@ EXPECTED_PATHS = {
     "/api/media/assets",
     "/api/media/assets/{asset_id}",
     "/api/media/assets/{asset_id}/preview-url",
+    "/api/media/assets/{asset_id}/content",
     "/api/annotations/{asset_id}",
     "/api/annotations/{asset_id}/rerun",
     "/api/voices",

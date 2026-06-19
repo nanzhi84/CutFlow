@@ -17,7 +17,7 @@ def _asset() -> c.MediaAssetRecord:
     )
 
 
-def _window(start: float = 10.0, end: float = 22.0, *, role: str = "hook") -> dict:
+def _segment(start: float = 10.0, end: float = 22.0, *, role: str = "hook") -> dict:
     return {
         "segment_id": f"bgm_{start}_{end}",
         "start": start,
@@ -44,18 +44,19 @@ def _annotation(duration: float = 60.0) -> c.AnnotationV4:
             duration=duration,
             annotation_status=c.AnnotationStatus.completed,
         ),
-        bgm_usage_windows=[c.BgmUsageWindowV4.model_validate(_window())],
+        bgm_segments=[c.BgmSegmentV4.model_validate(_segment())],
     )
 
 
-def test_build_projection_exposes_bgm_usage_windows():
+def test_build_projection_exposes_bgm_segments():
     projection = build_projection(_annotation(), _asset())
 
-    assert projection["bgm_usage_windows"][0]["segment_id"] == "bgm_10.0_22.0"
-    assert projection["bgm_usage_windows"][0]["mood"] == "燃"
+    assert "bgm_usage_windows" not in projection
+    assert projection["bgm_segments"][0]["segment_id"] == "bgm_10.0_22.0"
+    assert projection["bgm_segments"][0]["mood"] == "燃"
 
 
-def test_patch_merges_bgm_usage_windows_into_canonical_and_projection():
+def test_patch_merges_bgm_segments_into_canonical_and_projection():
     canonical = _annotation().model_dump(mode="json")
 
     new_canonical, new_projection = apply_patch(
@@ -65,18 +66,20 @@ def test_patch_merges_bgm_usage_windows_into_canonical_and_projection():
         operations=[
             {
                 "op": "replace",
-                "path": "/canonical/bgm_usage_windows",
-                "value": [_window(24.0, 36.0, role="climax")],
+                "path": "/canonical/bgm_segments",
+                "value": [_segment(24.0, 36.0, role="climax")],
             }
         ],
     )
 
-    assert new_canonical["bgm_usage_windows"][0]["role"] == "climax"
-    assert new_projection["bgm_usage_windows"][0]["mood"] == "燃"
+    assert "bgm_usage_windows" not in new_canonical
+    assert "bgm_usage_windows" not in new_projection
+    assert new_canonical["bgm_segments"][0]["role"] == "climax"
+    assert new_projection["bgm_segments"][0]["mood"] == "燃"
     c.AnnotationV4.model_validate(new_canonical)
 
 
-def test_patch_rejects_bgm_usage_windows_outside_duration():
+def test_patch_rejects_bgm_segments_outside_duration():
     canonical = _annotation(duration=30.0).model_dump(mode="json")
 
     with pytest.raises(NodeExecutionError) as exc:
@@ -87,8 +90,8 @@ def test_patch_rejects_bgm_usage_windows_outside_duration():
             operations=[
                 {
                     "op": "replace",
-                    "path": "/canonical/bgm_usage_windows",
-                    "value": [_window(20.0, 40.0)],
+                    "path": "/canonical/bgm_segments",
+                    "value": [_segment(20.0, 40.0)],
                 }
             ],
         )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 from fastapi import APIRouter, Request
+from fastapi.responses import FileResponse
 
 from apps.api.dependencies import require_role
 from apps.api.services import media as service
@@ -76,6 +77,12 @@ def delete_media_asset(asset_id: str, request: Request) -> c.OkResponse:
 def media_asset_preview(request: Request, asset_id: str) -> c.SignedUrlResponse:
 
     return service.media_asset_preview(request, asset_id)
+
+
+@router.get("/api/media/assets/{asset_id}/content", response_class=FileResponse)
+def media_asset_content(request: Request, asset_id: str) -> FileResponse:
+
+    return service.media_asset_content(request, asset_id)
 
 
 @router.post("/api/annotations/batch", response_model=c.AnnotationBatchResponse, status_code=202)

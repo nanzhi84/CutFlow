@@ -27,6 +27,7 @@ from packages.core.storage.database import (
     JobRow,
     MediaAssetRow,
     NodeRunRow,
+    SelectionLedgerRow,
     VoiceProfileRow,
     WorkflowRunRow,
 )
@@ -314,6 +315,75 @@ def test_hydrate_workflow_runtime_snapshot_loads_db_voice_profiles():
     production_repository.hydrate_workflow_runtime_snapshot(runtime_repository, run.id)
 
     assert runtime_repository.voices["voice_db"].provider_profile_id == "fake.tts.default"
+
+
+def test_hydrate_workflow_runtime_snapshot_loads_case_selection_ledger():
+    job = _timestamped(
+        JobRow(
+            id="job_bgm_ledger",
+            type=JobType.digital_human_video.value,
+            status=JobStatus.queued.value,
+            case_id="case_demo",
+            created_by="usr_admin",
+            request_schema="DigitalHumanVideoRequest.v1",
+            request={
+                "case_id": "case_demo",
+                "script": "数据库 ledger 需要进入 worker。",
+                "voice": {"voice_id": "voice_demo_cn"},
+                "strictness": {"strict_timestamps": False},
+            },
+        )
+    )
+    run = _timestamped(
+        WorkflowRunRow(
+            id="run_bgm_ledger",
+            job_id=job.id,
+            case_id="case_demo",
+            workflow_template_id="digital_human_video",
+            workflow_version="v1",
+            status=RunStatus.admitted.value,
+            requested_by="usr_admin",
+            run_attempt=1,
+        )
+    )
+    case = _timestamped(
+        CaseRow(
+            id="case_demo",
+            name="Demo Case",
+            owner_user_id="usr_admin",
+            status="active",
+            description=None,
+            industry=None,
+            product=None,
+            target_audience=None,
+        )
+    )
+    ledger = SelectionLedgerRow(
+        id="sel_bgm_segment_1",
+        case_id="case_demo",
+        run_id="run_previous",
+        medium="bgm",
+        asset_id="asset_bgm_song",
+        clip_id="bgm_segment_1",
+        slot_phase="bgm",
+        diversity_key=None,
+        created_at=utcnow(),
+    )
+    rows_by_model = {NodeRunRow: [], VoiceProfileRow: [], SelectionLedgerRow: [ledger]}
+    rows_by_key = {
+        (JobRow, job.id): job,
+        (WorkflowRunRow, run.id): run,
+        (CaseRow, case.id): case,
+    }
+    production_repository = SqlAlchemyProductionRepository(lambda: StaticHydrateSession(rows_by_model, rows_by_key))
+    runtime_repository = Repository()
+
+    production_repository.hydrate_workflow_runtime_snapshot(runtime_repository, run.id)
+
+    recent = runtime_repository.recent_selections(case_id="case_demo", medium="bgm")
+    assert [(entry.asset_id, entry.clip_id) for entry in recent] == [
+        ("asset_bgm_song", "bgm_segment_1")
+    ]
 
 
 def test_hydrate_workflow_runtime_snapshot_loads_case_media_asset_source_artifact():

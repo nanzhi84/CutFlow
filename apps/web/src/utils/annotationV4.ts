@@ -448,7 +448,7 @@ export type BgmSegmentRole = "hook" | "climax" | "outro" | "general";
 
 export const BGM_ROLES: BgmSegmentRole[] = ["hook", "climax", "outro", "general"];
 
-export interface BgmUsageWindow {
+export interface BgmSegment {
   segment_id?: string;
   start: number;          // seconds
   end: number;            // seconds
@@ -471,8 +471,8 @@ export function asBgmRole(v: unknown): BgmSegmentRole {
   return "general";
 }
 
-export function canonicalToBgmWindows(canonical: Record<string, unknown>): BgmUsageWindow[] {
-  const arr = asArray(canonical["bgm_usage_windows"]);
+export function canonicalToBgmSegments(canonical: Record<string, unknown>): BgmSegment[] {
+  const arr = asArray(canonical["bgm_segments"]);
   return arr.map((item) => {
     const r = asRecord(item);
     return {
@@ -493,20 +493,20 @@ export function canonicalToBgmWindows(canonical: Record<string, unknown>): BgmUs
   });
 }
 
-export function bgmWindowsToCanonical(windows: BgmUsageWindow[]): Record<string, unknown>[] {
-  return windows.map((w) => ({
-    ...(w.segment_id ? { segment_id: w.segment_id } : {}),
-    start: w.start,
-    end: w.end,
-    duration: Math.max(0, Number((w.end - w.start).toFixed(3))),
-    role: w.role,
-    ...(w.energy !== undefined ? { energy: w.energy } : {}),
-    ...(w.drop_anchor_sec !== undefined ? { drop_anchor_sec: w.drop_anchor_sec } : {}),
-    ...(w.mood ? { mood: w.mood } : {}),
-    ...(w.scene_fit && w.scene_fit.length > 0 ? { scene_fit: w.scene_fit } : {}),
-    ...(w.avoid_scene && w.avoid_scene.length > 0 ? { avoid_scene: w.avoid_scene } : {}),
-    ...(w.reason ? { reason: w.reason } : {}),
-    ...(w.confidence !== undefined ? { confidence: w.confidence } : {}),
-    ...(w.source ? { source: w.source } : {}),
+export function bgmSegmentsToCanonical(segments: BgmSegment[]): Record<string, unknown>[] {
+  return segments.map((segment) => ({
+    ...(segment.segment_id ? { segment_id: segment.segment_id } : {}),
+    start: segment.start,
+    end: segment.end,
+    duration: Math.max(0, Number((segment.end - segment.start).toFixed(3))),
+    role: segment.role,
+    ...(segment.energy !== undefined ? { energy: segment.energy } : {}),
+    ...(segment.drop_anchor_sec !== undefined ? { drop_anchor_sec: segment.drop_anchor_sec } : {}),
+    ...(segment.mood ? { mood: segment.mood } : {}),
+    ...(segment.scene_fit && segment.scene_fit.length > 0 ? { scene_fit: segment.scene_fit } : {}),
+    ...(segment.avoid_scene && segment.avoid_scene.length > 0 ? { avoid_scene: segment.avoid_scene } : {}),
+    ...(segment.reason ? { reason: segment.reason } : {}),
+    ...(segment.confidence !== undefined ? { confidence: segment.confidence } : {}),
+    ...(segment.source ? { source: segment.source } : {}),
   }));
 }

@@ -33,7 +33,11 @@ def _asset(kind: str) -> c.MediaAssetRecord:
 
 
 def _bgm_annotation(*, status: c.AnnotationStatus, with_mood: bool) -> c.AnnotationV4:
-    bgm_report: dict = {"status": "ok" if with_mood else "failed", "bpm": 128.0, "source": "librosa+llm"}
+    bgm_report: dict = {
+        "status": "ok" if with_mood else "failed",
+        "bpm": 128.0,
+        "source": "librosa+llm",
+    }
     if with_mood:
         bgm_report.update({"mood": "upbeat", "genre": "edm"})
     return c.AnnotationV4(
@@ -44,6 +48,22 @@ def _bgm_annotation(*, status: c.AnnotationStatus, with_mood: bool) -> c.Annotat
             duration=90.0,
             annotation_status=status,
         ),
+        bgm_segments=[
+            c.BgmSegmentV4(
+                segment_id="bgm_segment_1",
+                start=0.0,
+                end=60.0,
+                duration=60.0,
+                role=c.BgmSegmentRole.hook,
+                energy=0.7,
+                mood="upbeat" if with_mood else "",
+                scene_fit=["产品宣传"] if with_mood else [],
+                reason="适合开场" if with_mood else "",
+                source="sensor+audio" if with_mood else "sensor",
+            )
+        ]
+        if with_mood
+        else [],
         quality_report={"bgm": bgm_report},
     )
 
@@ -119,8 +139,12 @@ def _wire(monkeypatch, asset: c.MediaAssetRecord) -> tuple[_FakeMediaRepo, dict]
     monkeypatch.setattr(asset_annotation, "provider_repository", lambda _req: None)
     # The s3:// -> local-path resolution is exercised elsewhere; stub it here so the
     # test stays offline regardless of object-store wiring.
-    monkeypatch.setattr(asset_annotation, "_sqlalchemy_local_audio_path", lambda *a, **k: "/tmp/bgm.mp3")
-    monkeypatch.setattr(asset_annotation, "_sqlalchemy_local_video_path", lambda *a, **k: "/tmp/clip.mp4")
+    monkeypatch.setattr(
+        asset_annotation, "_sqlalchemy_local_audio_path", lambda *a, **k: "/tmp/bgm.mp3"
+    )
+    monkeypatch.setattr(
+        asset_annotation, "_sqlalchemy_local_video_path", lambda *a, **k: "/tmp/clip.mp4"
+    )
 
     def fake_annotate_bgm(**kwargs):
         calls["bgm"].append(kwargs)

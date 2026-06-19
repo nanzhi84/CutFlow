@@ -9,14 +9,14 @@ def _run_annotation_v4_probe() -> dict:
 import * as esbuild from "esbuild";
 
 const probe = `
-import { bgmWindowsToCanonical, canonicalToBgmWindows } from "./src/utils/annotationV4";
-
-const windows = canonicalToBgmWindows({
-  bgm_usage_windows: [
-    {
-      segment_id: "win_drop",
-      start: 12,
-      end: 24,
+	import { bgmSegmentsToCanonical, canonicalToBgmSegments } from "./src/utils/annotationV4";
+	
+	const segments = canonicalToBgmSegments({
+	  bgm_segments: [
+	    {
+	      segment_id: "seg_drop",
+	      start: 12,
+	      end: 24,
       duration: 12,
       role: "climax",
       drop_anchor_sec: 16,
@@ -27,17 +27,21 @@ const windows = canonicalToBgmWindows({
       reason: "drop clear",
       confidence: 0.91,
       source: "sensor+audio",
-    },
-  ],
-});
-const canonical = bgmWindowsToCanonical(windows);
-const editedCanonical = bgmWindowsToCanonical([{ ...windows[0], end: 25.5 }]);
-
-console.log(JSON.stringify({
-  window: windows[0],
-  canonical: canonical[0],
-  editedCanonical: editedCanonical[0],
-}));
+	    },
+	  ],
+	});
+	const oldFieldSegments = canonicalToBgmSegments({
+	  bgm_usage_windows: [{ segment_id: "old", start: 0, end: 1, role: "hook" }],
+	});
+	const canonical = bgmSegmentsToCanonical(segments);
+	const editedCanonical = bgmSegmentsToCanonical([{ ...segments[0], end: 25.5 }]);
+	
+	console.log(JSON.stringify({
+	  segment: segments[0],
+	  oldFieldCount: oldFieldSegments.length,
+	  canonical: canonical[0],
+	  editedCanonical: editedCanonical[0],
+	}));
 `;
 const result = esbuild.buildSync({
   stdin: {
@@ -64,11 +68,12 @@ await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].te
     return json.loads(result.stdout)
 
 
-def test_bgm_windows_preserve_hidden_fields_when_round_tripped_for_save() -> None:
+def test_bgm_segments_preserve_hidden_fields_when_round_tripped_for_save() -> None:
     result = _run_annotation_v4_probe()
 
-    assert result["window"]["segment_id"] == "win_drop"
-    assert result["canonical"]["segment_id"] == "win_drop"
+    assert result["segment"]["segment_id"] == "seg_drop"
+    assert result["oldFieldCount"] == 0
+    assert result["canonical"]["segment_id"] == "seg_drop"
     assert result["canonical"]["duration"] == 12
     assert result["editedCanonical"]["duration"] == 13.5
     assert result["canonical"]["avoid_scene"] == ["静态讲解"]

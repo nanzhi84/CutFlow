@@ -20,13 +20,29 @@ import struct
 
 import pytest
 
+from packages.core.contracts import (
+    ArtifactKind,
+    DigitalHumanVideoRequest,
+    MediaAssetRecord,
+    MediaInfo,
+    NodeRun,
+    NodeStatus,
+    RunStatus,
+    WorkflowRun,
+)
+from packages.core.storage.object_store import LocalObjectStore
+from packages.core.storage.repository import Repository
 from packages.production.pipeline import _ffmpeg
 from packages.production.pipeline._ffmpeg import (
     AUTO_MIX_MAX_BGM_VOLUME,
     resolve_adaptive_bgm_volume,
 )
 from packages.production.pipeline._fonts import resolve_subtitle_font
+from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline._subtitles import write_ass_subtitles
+from packages.production.pipeline.digital_human import LocalRuntimeAdapter
+from packages.media.assets import store_file
 from packages.media.video.ffmpeg import FfmpegRunner, ffmpeg_bin, probe_media, probe_stream_types
 
 
@@ -50,7 +66,9 @@ def test_resolve_subtitle_font_reads_family_and_stages_file(tmp_path):
     font_file.write_bytes(_build_min_font("My Brand Sans"))
     runtime = tmp_path / "runtime_fonts"
 
-    resolved = resolve_subtitle_font(font_path=font_file, runtime_dir=runtime, fallback_name="ignored")
+    resolved = resolve_subtitle_font(
+        font_path=font_file, runtime_dir=runtime, fallback_name="ignored"
+    )
 
     assert resolved is not None
     assert resolved.family_name == "My Brand Sans"
@@ -64,14 +82,18 @@ def test_resolve_subtitle_font_uses_fallback_when_unparseable(tmp_path):
     font_file.write_bytes(b"not a real font")
     runtime = tmp_path / "rt"
 
-    resolved = resolve_subtitle_font(font_path=font_file, runtime_dir=runtime, fallback_name="案例字体")
+    resolved = resolve_subtitle_font(
+        font_path=font_file, runtime_dir=runtime, fallback_name="案例字体"
+    )
 
     assert resolved is not None
     assert resolved.family_name == "案例字体"
 
 
 def test_resolve_subtitle_font_none_for_missing_or_non_font(tmp_path):
-    assert resolve_subtitle_font(font_path=tmp_path / "nope.ttf", runtime_dir=tmp_path / "r") is None
+    assert (
+        resolve_subtitle_font(font_path=tmp_path / "nope.ttf", runtime_dir=tmp_path / "r") is None
+    )
     not_font = tmp_path / "image.png"
     not_font.write_bytes(b"\x89PNG")
     assert resolve_subtitle_font(font_path=not_font, runtime_dir=tmp_path / "r2") is None
@@ -123,7 +145,9 @@ def test_write_ass_subtitles_wraps_long_portrait_text_inside_safe_width(tmp_path
     )
 
     dialogue = next(
-        line for line in out.read_text(encoding="utf-8").splitlines() if line.startswith("Dialogue:")
+        line
+        for line in out.read_text(encoding="utf-8").splitlines()
+        if line.startswith("Dialogue:")
     )
     assert r"\N" in dialogue
 
@@ -197,6 +221,153 @@ def test_mix_filter_graph_has_ducking_and_fades_only_when_auto():
     assert "anull[bgm]" in plain
 
 
+def test_mix_filter_graph_trims_bgm_from_selected_segment_start():
+    graph = _ffmpeg._build_bgm_audio_filters(
+        bgm_volume=0.2,
+        duration=5.0,
+        auto_mix=False,
+        fade_in=0.0,
+        fade_out=0.0,
+        bgm_source_start=62.5,
+    )
+
+    assert "atrim=62.500:67.500" in graph
+    assert "asetpts=PTS-STARTPTS" in graph
+
+
+def test_subtitle_bgm_mix_passes_selected_bgm_segment_start(monkeypatch, tmp_path):
+    repository = Repository()
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store", lambda: object_store
+    )
+
+    def stored_artifact(kind: ArtifactKind, filename: str, *, media_type: str):
+        path = tmp_path / filename
+        path.write_bytes(b"test")
+        stored = store_file(object_store, path, purpose=kind.value)
+        return repository.create_artifact(
+            kind=kind,
+            payload_schema="uri-only",
+            payload=None,
+            case_id="case_demo",
+            uri=stored.ref.uri,
+            sha256=stored.sha256,
+            media_info=MediaInfo(
+                media_type=media_type,
+                codec="h264" if media_type == "video" else "mp3",
+                format="mp4" if media_type == "video" else "mp3",
+                duration_sec=2.0,
+            ),
+        )
+
+    rendered = stored_artifact(ArtifactKind.video_rendered, "rendered.mp4", media_type="video")
+    audio = stored_artifact(ArtifactKind.audio_tts, "voice.wav", media_type="audio")
+    bgm_source = stored_artifact(ArtifactKind.uploaded_file, "bgm.mp3", media_type="audio")
+    repository.media_assets["asset_bgm_demo"] = MediaAssetRecord(
+        id="asset_bgm_demo",
+        case_id="case_demo",
+        title="BGM demo",
+        kind="bgm",
+        source_artifact_id=bgm_source.id,
+        usable=True,
+    )
+
+    timeline = repository.create_artifact(
+        kind=ArtifactKind.plan_timeline,
+        payload_schema="TimelinePlanArtifact.v1",
+        payload={"fps": 30, "total_frames": 60, "tracks": [], "validation": {"valid": True}},
+        case_id="case_demo",
+    )
+    style = repository.create_artifact(
+        kind=ArtifactKind.plan_style,
+        payload_schema="StylePlanArtifact.v1",
+        payload={
+            "subtitle": {"enabled": False},
+            "bgm_asset_id": "asset_bgm_demo",
+            "bgm": {
+                "enabled": True,
+                "asset_id": "asset_bgm_demo",
+                "segment_id": "bgm_segment_2",
+                "source_start": 62.5,
+                "source_end": 122.5,
+                "volume": 0.21,
+                "auto_mix": False,
+            },
+        },
+        case_id="case_demo",
+    )
+    narration = repository.create_artifact(
+        kind=ArtifactKind.narration_units,
+        payload_schema="NarrationUnitsArtifact.v1",
+        payload={"source": "estimated", "units": [], "strict": False},
+        case_id="case_demo",
+    )
+
+    adapter = object.__new__(LocalRuntimeAdapter)
+    adapter.repository = repository
+    state = RunState(
+        request=DigitalHumanVideoRequest(
+            case_id="case_demo",
+            script="hello",
+            voice={"voice_id": "voice_sandbox"},
+            subtitle={"enabled": False},
+            bgm={"enabled": True},
+        ),
+        artifacts={
+            ArtifactKind.video_rendered: rendered,
+            ArtifactKind.audio_tts: audio,
+            ArtifactKind.plan_timeline: timeline,
+            ArtifactKind.plan_style: style,
+            ArtifactKind.narration_units: narration,
+        },
+    )
+    ctx = NodeContext(
+        adapter=adapter,
+        run=WorkflowRun(
+            id="run_mix",
+            job_id="job_mix",
+            case_id="case_demo",
+            workflow_template_id="digital_human_v2",
+            workflow_version="v1",
+            status=RunStatus.running,
+        ),
+        node_run=NodeRun(
+            id="nr_mix",
+            run_id="run_mix",
+            node_id="SubtitleAndBgmMix",
+            node_version="v1",
+            status=NodeStatus.running,
+            input_manifest_hash="sha256:test",
+        ),
+        state=state,
+    )
+
+    captured = {}
+
+    def fake_render_final_media(**kwargs):
+        captured.update(kwargs)
+        kwargs["output_path"].write_bytes(b"fake video")
+        return None
+
+    monkeypatch.setattr(
+        "packages.production.pipeline.nodes.subtitle_and_bgm_mix.render_final_media",
+        fake_render_final_media,
+    )
+    monkeypatch.setattr(
+        "packages.production.pipeline.nodes.subtitle_and_bgm_mix.validate_rendered_output",
+        lambda *_args, **_kwargs: MediaInfo(
+            media_type="video", codec="h264", format="mp4", duration_sec=2.0
+        ),
+    )
+
+    from packages.production.pipeline import nodes
+
+    nodes.subtitle_and_bgm_mix.run(ctx)
+
+    assert captured["bgm_source_start"] == 62.5
+
+
 # --- gap 2+3: real ffmpeg end-to-end burn --------------------------------------
 @pytest.mark.skipif(shutil.which(ffmpeg_bin()) is None, reason="ffmpeg not available")
 def test_render_final_media_auto_mix_and_fontsdir_real_ffmpeg(tmp_path):
@@ -209,24 +380,56 @@ def test_render_final_media_auto_mix_and_fontsdir_real_ffmpeg(tmp_path):
     bgm = tmp_path / "bgm.wav"
     FfmpegRunner().run(
         [
-            ffmpeg_bin(), "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "lavfi", "-i", f"testsrc2=size=480x854:rate={fps}",
-            "-t", f"{duration:.3f}", "-pix_fmt", "yuv420p", "-c:v", "libx264",
-            "-preset", "ultrafast", str(video),
+            ffmpeg_bin(),
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc2=size=480x854:rate={fps}",
+            "-t",
+            f"{duration:.3f}",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            str(video),
         ]
     )
     FfmpegRunner().run(
         [
-            ffmpeg_bin(), "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "lavfi", "-i", f"sine=frequency=220:sample_rate=48000:duration={duration:.3f}",
-            "-ac", "2", str(voice),
+            ffmpeg_bin(),
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=220:sample_rate=48000:duration={duration:.3f}",
+            "-ac",
+            "2",
+            str(voice),
         ]
     )
     FfmpegRunner().run(
         [
-            ffmpeg_bin(), "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=48000:duration={duration:.3f}",
-            "-ac", "2", str(bgm),
+            ffmpeg_bin(),
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:sample_rate=48000:duration={duration:.3f}",
+            "-ac",
+            "2",
+            str(bgm),
         ]
     )
     # Stage a (synthetic) font into a fontsdir and burn a subtitle that references it.

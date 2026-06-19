@@ -2348,6 +2348,38 @@
         }
       }
     },
+    "/api/media/assets/{asset_id}/content": {
+      "get": {
+        "summary": "Media Asset Content",
+        "operationId": "media_asset_content_api_media_assets__asset_id__content_get",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Asset Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/annotations/batch": {
       "post": {
         "summary": "Batch Annotation",
@@ -8351,12 +8383,12 @@
             "type": "array",
             "title": "Clips"
           },
-          "bgm_usage_windows": {
+          "bgm_segments": {
             "items": {
-              "$ref": "#/components/schemas/BgmUsageWindowV4"
+              "$ref": "#/components/schemas/BgmSegmentV4"
             },
             "type": "array",
-            "title": "Bgm Usage Windows"
+            "title": "Bgm Segments"
           },
           "quality_events": {
             "items": {
@@ -9025,9 +9057,9 @@
           "general"
         ],
         "title": "BgmSegmentRole",
-        "description": "BGM 推荐使用片段的用途。"
+        "description": "BGM full-track segment role."
       },
-      "BgmUsageWindowV4": {
+      "BgmSegmentV4": {
         "properties": {
           "segment_id": {
             "type": "string",
@@ -9115,8 +9147,8 @@
           "end",
           "duration"
         ],
-        "title": "BgmUsageWindowV4",
-        "description": "BGM 推荐使用片段：整轨里值得用的一小段（非铺满整轨）。\n\n时间由 librosa 确定性产出（精确到秒、snap 到节拍）；语义由 Qwen-Omni 听音频回填。"
+        "title": "BgmSegmentV4",
+        "description": "BGM full-track segment.\n\nTime bounds are deterministic sensor output; Qwen-Omni only enriches semantics."
       },
       "Body_upload_file_api_uploads__upload_session_id__file_put": {
         "properties": {
@@ -9124,7 +9156,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "contentMediaType": "application/octet-stream"
+                "format": "binary"
               },
               {
                 "type": "null"
@@ -23035,13 +23067,6 @@
           "type": {
             "type": "string",
             "title": "Error Type"
-          },
-          "input": {
-            "title": "Input"
-          },
-          "ctx": {
-            "type": "object",
-            "title": "Context"
           }
         },
         "type": "object",

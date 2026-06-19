@@ -10,9 +10,13 @@
 #   scripts/dev_up.sh logs [name] tail a component log (api|worker|web)
 #
 # Config (env file): CUTAGENT_ENV_FILE, else <repo>/.env.local (template: .env.example).
-# Overridable: CUTAGENT_API_PORT (8000), CUTAGENT_WEB_PORT (5176), CUTAGENT_VENV.
+# Overridable: CUTAGENT_API_PORT (8000), CUTAGENT_WEB_PORT (8001), CUTAGENT_VENV.
 #
 set -euo pipefail
+
+# Non-login SSH sessions on macOS often miss Homebrew/Docker CLI paths. Keep
+# this script self-contained so Mac mini restarts do not depend on shell init.
+export PATH="/opt/homebrew/bin:/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:$PATH"
 
 # ── paths ──────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +26,8 @@ cd "$ROOT"
 ENV_FILE="${CUTAGENT_ENV_FILE:-$ROOT/.env.local}"
 API_HOST=127.0.0.1
 API_PORT="${CUTAGENT_API_PORT:-8000}"
-WEB_PORT="${CUTAGENT_WEB_PORT:-5176}"
+# dev.shuying.cyou's reverse tunnel maps its web upstream to local :8001.
+WEB_PORT="${CUTAGENT_WEB_PORT:-8001}"
 RUN_DIR="$ROOT/.data/dev"
 INFRA_SERVICES=(postgres redis minio temporal temporal-ui)
 
@@ -87,7 +92,11 @@ proc_alive() { # proc_alive <name> → 0 if the recorded pid is running
 
 start_bg() { # start_bg <name> <cmd...>   (own process group so we can kill the tree)
   local name="$1"; shift
-  setsid bash -c 'exec "$@"' _ "$@" >"$(logfile "$name")" 2>&1 &
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash -c 'exec "$@"' _ "$@" >"$(logfile "$name")" 2>&1 &
+  else
+    nohup bash -c 'exec "$@"' _ "$@" >"$(logfile "$name")" 2>&1 &
+  fi
   echo $! >"$(pidfile "$name")"
 }
 
