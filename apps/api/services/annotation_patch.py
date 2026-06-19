@@ -36,6 +36,8 @@ from packages.core.workflow import NodeExecutionError
 _SEGMENT_PATHS = {"/canonical/segments", "/projection/segments", "/canonical/clips"}
 # Patch paths whose value is a list of edited quality events -> merged into canonical.quality_events.
 _QUALITY_EVENT_PATHS = {"/canonical/quality_events", "/projection/quality_events"}
+# Edited BGM windows -> merged into canonical.bgm_usage_windows.
+_BGM_WINDOW_PATHS = {"/canonical/bgm_usage_windows", "/projection/bgm_usage_windows"}
 
 
 def _schema_mismatch(message: str) -> NodeExecutionError:
@@ -127,6 +129,35 @@ def _validate_quality_events(raw_events: Any, duration: float) -> list[c.Quality
     return events
 
 
+def _validate_bgm_windows(raw_windows: Any, duration: float) -> list[c.BgmUsageWindowV4]:
+    if not isinstance(raw_windows, list):
+        raise _schema_mismatch("bgm_usage_windows 必须是数组。")
+    windows: list[c.BgmUsageWindowV4] = []
+    for index, raw in enumerate(raw_windows):
+        if not isinstance(raw, dict):
+            raise _schema_mismatch(f"bgm_usage_window[{index}] 必须是对象。")
+        item = dict(raw)
+        item.setdefault("segment_id", f"bgm_edit_{index}")
+        if "duration" not in item:
+            try:
+                item["duration"] = round(float(item.get("end", 0)) - float(item.get("start", 0)), 3)
+            except (TypeError, ValueError):
+                item["duration"] = 0.0
+        try:
+            window = c.BgmUsageWindowV4.model_validate(item)
+        except Exception as exc:
+            raise _schema_mismatch(
+                f"bgm_usage_window[{index}] 不符合 BgmUsageWindowV4 schema: {exc}"
+            ) from exc
+        if duration and duration > 0 and (window.start < 0 or window.end > duration + 1e-6):
+            raise NodeExecutionError(
+                c.ErrorCode.render_invalid_timeline,
+                f"bgm_usage_window[{index}] 时间 [{window.start}, {window.end}] 越界 [0, {duration}]。",
+            )
+        windows.append(window)
+    return windows
+
+
 def build_projection(annotation: c.AnnotationV4, asset: c.MediaAssetRecord, **extra: Any) -> dict[str, Any]:
     """Rebuild the UI projection from the canonical AnnotationV4 (canonical-owns-projection).
 
@@ -142,6 +173,7 @@ def build_projection(annotation: c.AnnotationV4, asset: c.MediaAssetRecord, **ex
         "quality_events": [ev.model_dump(mode="json") for ev in annotation.quality_events],
         "quality_report": annotation.quality_report,
         "usage_windows": [w.model_dump(mode="json") for w in annotation.usage_windows],
+        "bgm_usage_windows": [w.model_dump(mode="json") for w in annotation.bgm_usage_windows],
     }
     projection.update(extra)
     return projection
@@ -169,6 +201,7 @@ def apply_patch(
 
     structural_clips: list[c.ClipV4] | None = None
     structural_events: list[c.QualityEventV4] | None = None
+    structural_bgm: list[c.BgmUsageWindowV4] | None = None
     light_projection: dict[str, Any] = dict(projection or {})
     light_labels: Any = canonical.get("labels") if isinstance(canonical, dict) else None
     labels_touched = False
@@ -183,6 +216,8 @@ def apply_patch(
             structural_clips = _validate_clips(value, duration)
         elif path in _QUALITY_EVENT_PATHS:
             structural_events = _validate_quality_events(value, duration)
+        elif path in _BGM_WINDOW_PATHS:
+            structural_bgm = _validate_bgm_windows(value, duration)
         elif path == "/labels":
             light_labels = value
             labels_touched = True
@@ -201,10 +236,13 @@ def apply_patch(
                 value,
             )
 
-    if structural_clips is not None or structural_events is not None:
+    if structural_clips is not None or structural_events is not None or structural_bgm is not None:
         annotation = annotation.model_copy(
             update={
                 "clips": structural_clips if structural_clips is not None else annotation.clips,
+                "bgm_usage_windows": structural_bgm
+                if structural_bgm is not None
+                else annotation.bgm_usage_windows,
                 "quality_events": structural_events
                 if structural_events is not None
                 else annotation.quality_events,
@@ -226,7 +264,16 @@ def apply_patch(
     elif "labels" not in light_projection and isinstance(light_labels, (list, dict)):
         light_projection["labels"] = light_labels
 
-    _BUILT = {"title", "usable", "segments", "quality_events", "quality_report", "usage_windows", "annotation_status"}
+    _BUILT = {
+        "title",
+        "usable",
+        "segments",
+        "quality_events",
+        "quality_report",
+        "usage_windows",
+        "bgm_usage_windows",
+        "annotation_status",
+    }
     new_projection = build_projection(
         annotation,
         asset,
