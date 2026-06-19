@@ -46,6 +46,7 @@ CUTAGENT_DATABASE_URL="$DATABASE_URL" \
 CUTAGENT_RUN_DB_TESTS=1 \
 CUTAGENT_STORAGE_BACKEND=sqlalchemy \
 CUTAGENT_DATABASE_URL="$DATABASE_URL" \
+CUTAGENT_DISABLE_BACKGROUND_DISPATCHER=1 \
 run_pytest tests/integration
 
 # Pre-create the durable + ephemeral MinIO buckets (distinct names). The

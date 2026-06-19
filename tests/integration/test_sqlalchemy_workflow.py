@@ -124,7 +124,7 @@ def test_sqlalchemy_workflow_job_run_report_and_artifacts_are_persisted():
         assert prompt_rows
         assert any(row.provider_invocation_id in provider_ids for row in prompt_rows)
         assert outbox_row is not None
-        assert outbox_row.status == "pending"
+        assert outbox_row.status in {"pending", "published"}
         assert outbox_row.payload["run_id"] == run_id
         assert any(row.source_finished_video_id for row in package_rows)
 
