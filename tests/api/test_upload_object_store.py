@@ -77,6 +77,51 @@ def test_upload_flow_uses_object_store_uri_and_validates_integrity():
     assert completed.json()["media_asset"]["source_artifact_id"] == artifact["artifact_id"]
 
 
+def test_create_media_asset_from_completed_upload_points_to_uploaded_artifact():
+    login_admin()
+    content = _wav_bytes()
+    digest = hashlib.sha256(content).hexdigest()
+    prepared = client.post(
+        "/api/uploads/prepare",
+        json={
+            "kind": "bgm",
+            "case_id": "case_demo",
+            "filename": "asset-create.wav",
+            "content_type": "audio/wav",
+            "size_bytes": len(content),
+            "sha256": digest,
+        },
+    )
+    assert prepared.status_code == 201, prepared.text
+    upload = prepared.json()
+    uploaded = client.put(
+        f"/api/uploads/{upload['id']}/file",
+        files={"file": ("asset-create.wav", content, "audio/wav")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    completed = client.post(
+        "/api/uploads/complete",
+        json={"upload_session_id": upload["id"], "size_bytes": len(content), "sha256": digest},
+    )
+    assert completed.status_code == 200, completed.text
+    artifact_id = completed.json()["artifact"]["artifact_id"]
+
+    created = client.post(
+        "/api/media/assets",
+        json={
+            "upload_session_id": upload["id"],
+            "case_id": "case_demo",
+            "title": "Created from upload",
+            "kind": "bgm",
+            "tags": ["bgm"],
+        },
+    )
+
+    assert created.status_code == 201, created.text
+    assert created.json()["source_artifact_id"] == artifact_id
+    assert created.json()["source_artifact_id"] in repository().artifacts
+
+
 def test_local_media_preview_url_is_browser_playable_content_route():
     login_admin()
     content = _wav_bytes()

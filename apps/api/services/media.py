@@ -134,19 +134,37 @@ def material_usage_ranking(
 def create_media_asset(payload: c.CreateMediaAssetFromUploadRequest, request: Request) -> c.MediaAssetRecord:
     if media_repository(request) is not None:
         return media_repository(request).create_asset_from_upload(payload)
-    upload = repository(request).uploads[payload.upload_session_id]
+    repo = repository(request)
+    upload = repo.uploads[payload.upload_session_id]
     if upload.status != c.UploadStatus.completed:
         raise NodeExecutionError(c.ErrorCode.upload_invalid_state, "Upload must be completed first.")
+    source_artifact = _uploaded_artifact_for_upload(repo, upload)
     asset = c.MediaAssetRecord(
         id=new_id("asset"),
         case_id=payload.case_id,
         title=payload.title,
         kind=payload.kind,
-        source_artifact_id=upload.id,
+        source_artifact_id=source_artifact.id,
         tags=payload.tags,
     )
-    repository(request).media_assets[asset.id] = asset
+    repo.media_assets[asset.id] = asset
     return asset
+
+
+def _uploaded_artifact_for_upload(repo, upload: c.UploadSession) -> c.Artifact:
+    for artifact in repo.artifacts.values():
+        payload = artifact.payload if isinstance(artifact.payload, dict) else {}
+        if artifact.kind != c.ArtifactKind.uploaded_file:
+            continue
+        if payload.get("id") == upload.id or (upload.object_uri and artifact.uri == upload.object_uri):
+            return artifact
+    return repo.create_artifact(
+        kind=c.ArtifactKind.uploaded_file,
+        payload_schema="UploadedFileArtifact.v1",
+        payload=upload.model_dump(mode="json"),
+        uri=upload.object_uri,
+        sha256=upload.sha256,
+    )
 
 
 def media_asset_detail(request: Request, asset_id: str) -> c.MediaAssetDetail:

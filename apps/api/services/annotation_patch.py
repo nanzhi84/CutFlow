@@ -211,6 +211,8 @@ def apply_patch(
         path = operation.get("path")
         if op_name not in {"add", "replace"} or not isinstance(path, str) or "value" not in operation:
             continue
+        if _is_deprecated_bgm_usage_window_path(path):
+            raise _schema_mismatch("bgm_usage_windows 已废弃，请使用 canonical.bgm_segments。")
         value = operation["value"]
         if path in _SEGMENT_PATHS:
             structural_clips = _validate_clips(value, duration)
@@ -285,6 +287,10 @@ def apply_patch(
     if "usable" in light_projection:
         new_projection["usable"] = light_projection["usable"]
     return new_canonical, new_projection
+
+
+def _is_deprecated_bgm_usage_window_path(path: str) -> bool:
+    return "bgm_usage_windows" in [part for part in path.split("/") if part]
 
 
 def _set_nested(target: dict, parts: list[str], value: Any) -> None:

@@ -97,3 +97,30 @@ def test_patch_rejects_bgm_segments_outside_duration():
         )
 
     assert exc.value.error.code == c.ErrorCode.render_invalid_timeline
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/projection/bgm_usage_windows",
+        "/canonical/bgm_usage_windows",
+    ],
+)
+def test_patch_rejects_deprecated_bgm_usage_windows_paths(path: str):
+    canonical = _annotation().model_dump(mode="json")
+
+    with pytest.raises(NodeExecutionError) as exc:
+        apply_patch(
+            canonical=canonical,
+            projection={"title": "Track", "usable": True},
+            asset=_asset(),
+            operations=[
+                {
+                    "op": "replace",
+                    "path": path,
+                    "value": [_segment()],
+                }
+            ],
+        )
+
+    assert exc.value.error.code == c.ErrorCode.artifact_schema_mismatch

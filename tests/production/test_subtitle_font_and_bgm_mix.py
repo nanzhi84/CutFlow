@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import shutil
 import struct
+import wave
 
 import pytest
 
@@ -472,3 +473,140 @@ def test_render_final_media_auto_mix_and_fontsdir_real_ffmpeg(tmp_path):
     from packages.media.video.ffmpeg import probe_video_frame_count
 
     assert probe_video_frame_count(out) == total_frames
+
+
+@pytest.mark.skipif(shutil.which(ffmpeg_bin()) is None, reason="ffmpeg not available")
+def test_render_final_media_real_ffmpeg_trims_bgm_from_selected_source_start(tmp_path):
+    fps = 30
+    duration = 1.0
+    video = tmp_path / "video.mp4"
+    voice = tmp_path / "voice.wav"
+    bgm = tmp_path / "bgm.wav"
+    out = tmp_path / "final.mp4"
+    decoded = tmp_path / "decoded.wav"
+    runner = FfmpegRunner()
+
+    runner.run(
+        [
+            ffmpeg_bin(),
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc2=size=320x320:rate={fps}",
+            "-t",
+            f"{duration:.3f}",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            str(video),
+        ]
+    )
+    runner.run(
+        [
+            ffmpeg_bin(),
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=channel_layout=mono:sample_rate=48000",
+            "-t",
+            f"{duration:.3f}",
+            "-ac",
+            "1",
+            str(voice),
+        ]
+    )
+    runner.run(
+        [
+            ffmpeg_bin(),
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=330:sample_rate=48000:duration=1.000",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=990:sample_rate=48000:duration=1.000",
+            "-filter_complex",
+            "[0:a][1:a]concat=n=2:v=0:a=1[a]",
+            "-map",
+            "[a]",
+            "-ac",
+            "1",
+            str(bgm),
+        ]
+    )
+
+    _ffmpeg.render_final_media(
+        rendered_path=video,
+        audio_path=voice,
+        output_path=out,
+        subtitle_path=None,
+        bgm_path=bgm,
+        bgm_volume=1.0,
+        duration=duration,
+        fps=fps,
+        auto_mix=False,
+        bgm_source_start=1.0,
+        fade_in=0.0,
+        fade_out=0.0,
+    )
+    runner.run(
+        [
+            ffmpeg_bin(),
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(out),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "48000",
+            "-t",
+            "0.800",
+            str(decoded),
+        ]
+    )
+
+    assert _zero_crossing_frequency(decoded, skip_seconds=0.1) > 750.0
+
+
+def _zero_crossing_frequency(path, *, skip_seconds: float = 0.0) -> float:
+    with wave.open(str(path), "rb") as wav:
+        sample_rate = wav.getframerate()
+        channels = wav.getnchannels()
+        width = wav.getsampwidth()
+        raw = wav.readframes(wav.getnframes())
+    assert channels == 1
+    assert width == 2
+    samples = [
+        int.from_bytes(raw[i : i + 2], "little", signed=True)
+        for i in range(0, len(raw), 2)
+    ]
+    start = min(len(samples), int(sample_rate * skip_seconds))
+    samples = [value for value in samples[start:] if abs(value) > 16]
+    crossings = sum(
+        1
+        for prev, cur in zip(samples, samples[1:])
+        if (prev < 0 <= cur) or (prev > 0 >= cur)
+    )
+    if len(samples) < 2:
+        return 0.0
+    return crossings * sample_rate / (2.0 * len(samples))

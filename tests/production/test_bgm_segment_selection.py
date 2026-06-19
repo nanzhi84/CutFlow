@@ -252,6 +252,64 @@ def test_style_planning_carries_selected_bgm_segment_into_style_plan(tmp_path, m
     assert payload["bgm"]["scene_fit"] == ["产品展示"]
 
 
+def test_style_planning_respects_requested_bgm_asset_even_when_not_top_scored(
+    tmp_path, monkeypatch
+):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    ctx = _ctx(
+        adapter,
+        _request(bgm={"enabled": True, "bgm_id": "asset_requested_bgm"}),
+        "StylePlanning",
+    )
+    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
+        ArtifactKind.plan_material_pack,
+        {
+            "bgm_candidates": [
+                {
+                    "asset_id": "asset_high_score_bgm",
+                    "score": 90.0,
+                    "reason": "higher score",
+                    "metadata": {
+                        "clip_id": "high_segment",
+                        "source_start": 0.0,
+                        "source_end": 60.0,
+                        "duration": 60.0,
+                        "mood": "高分但未指定",
+                    },
+                },
+                {
+                    "asset_id": "asset_requested_bgm",
+                    "score": 55.0,
+                    "reason": "requested asset",
+                    "metadata": {
+                        "clip_id": "requested_segment",
+                        "source_start": 75.0,
+                        "source_end": 135.0,
+                        "duration": 60.0,
+                        "mood": "用户指定",
+                        "scene_fit": ["品牌统一"],
+                        "reason": "requested bgm segment",
+                    },
+                },
+            ],
+            "font_candidates": [],
+        },
+    )
+
+    output = nodes.style_planning.run(ctx)
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
+
+    assert payload["bgm_asset_id"] == "asset_requested_bgm"
+    assert payload["bgm"]["asset_id"] == "asset_requested_bgm"
+    assert payload["bgm"]["segment_id"] == "requested_segment"
+    assert payload["bgm"]["source_start"] == 75.0
+    assert payload["bgm"]["source_end"] == 135.0
+    assert payload["bgm"]["mood"] == "用户指定"
+    assert payload["bgm"]["scene_fit"] == ["品牌统一"]
+
+
 def test_style_planning_does_not_select_bgm_when_disabled(tmp_path, monkeypatch):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)

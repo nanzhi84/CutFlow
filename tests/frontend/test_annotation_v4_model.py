@@ -30,18 +30,14 @@ const probe = `
 	    },
 	  ],
 	});
-	const oldFieldSegments = canonicalToBgmSegments({
-	  bgm_usage_windows: [{ segment_id: "old", start: 0, end: 1, role: "hook" }],
-	});
-	const canonical = bgmSegmentsToCanonical(segments);
-	const editedCanonical = bgmSegmentsToCanonical([{ ...segments[0], end: 25.5 }]);
-	
-	console.log(JSON.stringify({
-	  segment: segments[0],
-	  oldFieldCount: oldFieldSegments.length,
-	  canonical: canonical[0],
-	  editedCanonical: editedCanonical[0],
-	}));
+		const canonical = bgmSegmentsToCanonical(segments);
+		const editedCanonical = bgmSegmentsToCanonical([{ ...segments[0], end: 25.5 }]);
+		
+		console.log(JSON.stringify({
+		  segment: segments[0],
+		  canonical: canonical[0],
+		  editedCanonical: editedCanonical[0],
+		}));
 `;
 const result = esbuild.buildSync({
   stdin: {
@@ -72,7 +68,6 @@ def test_bgm_segments_preserve_hidden_fields_when_round_tripped_for_save() -> No
     result = _run_annotation_v4_probe()
 
     assert result["segment"]["segment_id"] == "seg_drop"
-    assert result["oldFieldCount"] == 0
     assert result["canonical"]["segment_id"] == "seg_drop"
     assert result["canonical"]["duration"] == 12
     assert result["editedCanonical"]["duration"] == 13.5
