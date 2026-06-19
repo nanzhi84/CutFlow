@@ -19,7 +19,10 @@ import { formatDuration, shortId } from "../../lib/format";
 import { toDisplayUrl } from "../../lib/url";
 import { readAssetThumbnailUrl, readPreviewUrlMeta } from "../../components/library/libraryModel";
 import {
+  BGM_ROLES,
+  bgmWindowsToCanonical,
   canonicalToEvidenceFrames,
+  canonicalToBgmWindows,
   canonicalToQualityEvents,
   canonicalToSegments,
   parseQualityEvents,
@@ -30,6 +33,7 @@ import {
   type AnnotationQualityEvent,
   type AnnotationSegmentQuality,
   type AnnotationTimelineSegment,
+  type BgmUsageWindow,
 } from "../../utils/annotationV4";
 import { Modal } from "../ui/Modal";
 import { VideoPlayer, type VideoPlayerQualityEvent, type VideoPlayerSegment } from "../ui/VideoPlayer";
@@ -98,6 +102,13 @@ const ROLE_LABELS: Record<string, string> = {
   cover: "覆盖镜头",
   avoid: "避用",
 };
+const BGM_ROLE_LABELS: Record<string, string> = { hook: "开场钩子", climax: "高潮", outro: "收尾", general: "通用铺底" };
+const BGM_ROLE_COLORS: Record<BgmUsageWindow["role"], { bar: string; softBg: string; text: string; border: string }> = {
+  hook: { bar: "#f97316", softBg: "#fff7ed", text: "#c2410c", border: "#fed7aa" },
+  climax: { bar: "#ef4444", softBg: "#fef2f2", text: "#b91c1c", border: "#fecaca" },
+  outro: { bar: "#22c55e", softBg: "#f0fdf4", text: "#15803d", border: "#bbf7d0" },
+  general: { bar: "#3b82f6", softBg: "#eff6ff", text: "#1d4ed8", border: "#bfdbfe" },
+};
 const RISK_TIER_LABELS: Record<string, string> = { hard: "硬风险", soft: "软风险" };
 const EVENT_TYPE_LABELS: Record<string, string> = {
   camera_drop: "收机下坠",
@@ -149,6 +160,7 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
 
   const editor = editorQuery.data ?? null;
   const isPortrait = isPortraitKind(editor?.asset.kind);
+  const isBgm = editor?.asset.kind === "bgm";
 
   useEffect(() => {
     if (!assetId) {
@@ -189,6 +201,8 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
     [canonical],
   );
   const totalDuration = useMemo(() => (canonical ? readDuration(canonical) : 0), [canonical]);
+  const bgmWindows = useMemo(() => canonical ? canonicalToBgmWindows(canonical) : [], [canonical]);
+  const bgmReport = (projection.bgm ?? {}) as Record<string, unknown>;
 
   useEffect(() => {
     if (!editor) return;
@@ -408,7 +422,21 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
             </div>
 
             <div className="max-h-[72vh] overflow-y-auto pr-1">
-              {editing ? (
+              {isBgm ? (
+                editing ? (
+                  <BgmAnnotationForm
+                    assetId={assetId ?? editor.asset.id}
+                    caseId={caseId}
+                    editor={editor}
+                    windows={bgmWindows}
+                    duration={totalDuration}
+                    onCancel={() => setEditing(false)}
+                    onSaved={() => setEditing(false)}
+                  />
+                ) : (
+                  <BgmStructurePanel bgmReport={bgmReport} windows={bgmWindows} totalDuration={totalDuration > 0 ? totalDuration : undefined} />
+                )
+              ) : editing ? (
                 <StructuredAnnotationForm
                   form={form}
                   setForm={setForm}
@@ -585,6 +613,277 @@ function QualityEventRow({ event }: { event: AnnotationQualityEvent }) {
       </div>
       {event.description ? <p className="text-xs leading-5 text-text-secondary">{event.description}</p> : null}
     </div>
+  );
+}
+
+function BgmStructurePanel({
+  bgmReport,
+  windows,
+  totalDuration,
+}: {
+  bgmReport: Record<string, unknown>;
+  windows: BgmUsageWindow[];
+  totalDuration?: number;
+}) {
+  const summaryItems = [
+    ["bpm", "BPM"],
+    ["tempo_bucket", "速度"],
+    ["genre", "风格"],
+    ["loudness_lufs", "响度 LUFS"],
+    ["mood", "情绪"],
+  ]
+    .map(([key, label]) => ({ key, label, value: bgmReport[key] }))
+    .filter((item) => item.value !== undefined && item.value !== null && String(item.value).trim().length > 0);
+  const beats = Array.isArray(bgmReport.beats) ? bgmReport.beats.filter((value): value is number => typeof value === "number" && Number.isFinite(value)) : [];
+  const drops = Array.isArray(bgmReport.drops) ? bgmReport.drops.filter((value): value is number => typeof value === "number" && Number.isFinite(value)) : [];
+  const duration = totalDuration ?? 0;
+  const showTimeline = duration > 0;
+
+  return (
+    <div className="grid gap-4">
+      {summaryItems.length > 0 ? (
+        <section className="grid gap-3">
+          <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+            <Film className="h-4 w-4 text-accent" />
+            <span>BGM 摘要</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {summaryItems.map((item) => (
+              <span key={item.key} className="badge bg-surface-hover text-text-secondary">
+                {item.label}: {String(item.value)}
+              </span>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {showTimeline ? (
+        <section className="grid gap-3">
+          <div className="flex items-center justify-between gap-3 text-sm font-semibold text-text-primary">
+            <span>节拍时间轴</span>
+            <span className="font-mono text-xs font-normal text-text-tertiary">{formatDuration(duration)}</span>
+          </div>
+          <div className="relative h-24 overflow-hidden rounded-2xl border border-border/80 bg-white/70">
+            {beats.map((beat, index) => (
+              <span
+                key={`beat-${beat}-${index}`}
+                className="absolute top-0 h-full w-px bg-text-tertiary/20"
+                style={{ left: `${Math.min(100, Math.max(0, (beat / duration) * 100))}%` }}
+              />
+            ))}
+            {drops.map((drop, index) => (
+              <span
+                key={`drop-${drop}-${index}`}
+                className="absolute top-0 h-full w-0.5 bg-status-error/70"
+                style={{ left: `${Math.min(100, Math.max(0, (drop / duration) * 100))}%` }}
+              >
+                <span className="absolute -left-1 top-2 h-2.5 w-2.5 rounded-full bg-status-error" />
+              </span>
+            ))}
+            {windows.map((item, index) => {
+              const startPct = Math.min(100, Math.max(0, (item.start / duration) * 100));
+              const endPct = Math.min(100, Math.max(startPct, (item.end / duration) * 100));
+              const roleColor = BGM_ROLE_COLORS[item.role];
+              return (
+                <span
+                  key={`bgm-window-${item.start}-${item.end}-${index}`}
+                  className="absolute top-10 h-8 overflow-hidden text-ellipsis whitespace-nowrap rounded-full border px-2 py-1 text-[11px] font-semibold text-white shadow-sm"
+                  style={{
+                    left: `${startPct}%`,
+                    width: `${Math.max(0.5, endPct - startPct)}%`,
+                    backgroundColor: roleColor.bar,
+                    borderColor: roleColor.bar,
+                  }}
+                >
+                  {BGM_ROLE_LABELS[item.role]}
+                </span>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+
+      <section className="grid gap-3">
+        <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+          <Film className="h-4 w-4 text-accent" />
+          <span>BGM 使用窗口</span>
+          <span className="text-xs font-normal text-text-tertiary">共 {windows.length} 段</span>
+        </div>
+        {windows.length === 0 ? (
+          <p className="rounded-2xl border border-border/80 bg-white/65 p-4 text-sm text-text-secondary">暂无 BGM 使用窗口。</p>
+        ) : (
+          <div className="grid gap-3">
+            {windows.map((item, index) => {
+              const roleColor = BGM_ROLE_COLORS[item.role];
+              return (
+                <div key={`bgm-card-${item.start}-${item.end}-${index}`} className="grid gap-3 rounded-2xl border border-border/80 bg-white/70 p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full px-2.5 py-1 text-xs font-semibold" style={{ backgroundColor: roleColor.softBg, color: roleColor.text }}>
+                      {formatWindow(item.start, item.end)}
+                    </span>
+                    <span className="badge bg-surface-hover text-text-secondary">时长 {Math.max(0, item.end - item.start).toFixed(1)}s</span>
+                    <span className="badge" style={{ backgroundColor: roleColor.softBg, color: roleColor.text, borderColor: roleColor.border }}>
+                      {BGM_ROLE_LABELS[item.role]}
+                    </span>
+                    {item.energy !== undefined ? <span className="badge bg-surface-hover text-text-secondary">energy {formatPercent(item.energy)}</span> : null}
+                    {item.drop_anchor_sec !== undefined ? <span className="badge bg-surface-hover text-text-secondary">drop {item.drop_anchor_sec.toFixed(1)}s</span> : null}
+                  </div>
+                  {item.scene_fit && item.scene_fit.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {item.scene_fit.map((tag) => (
+                        <span key={tag} className="badge bg-surface-hover text-text-tertiary">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  {item.reason ? <p className="text-sm leading-6 text-text-secondary">{item.reason}</p> : null}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function BgmAnnotationForm({
+  assetId,
+  caseId,
+  editor,
+  windows,
+  duration,
+  onCancel,
+  onSaved,
+}: {
+  assetId: string;
+  caseId: string | null;
+  editor: AnnotationEditorVm;
+  windows: BgmUsageWindow[];
+  duration: number;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const [bgmForm, setBgmForm] = useState<BgmUsageWindow[]>(windows);
+  const roleOptions = BGM_ROLES.map((role) => [role, BGM_ROLE_LABELS[role] ?? role] as [string, string]);
+
+  useEffect(() => {
+    setBgmForm(windows);
+  }, [windows]);
+
+  const updateWindow = (index: number, patch: Partial<BgmUsageWindow>) =>
+    setBgmForm((current) => current.map((item, i) => (i === index ? { ...item, ...patch } : item)));
+
+  const removeWindow = (index: number) => setBgmForm((current) => current.filter((_, i) => i !== index));
+
+  const addWindow = () => {
+    const end = Math.min(Math.max(duration || 1, 0.5), 1);
+    setBgmForm((current) => [...current, { start: 0, end, role: "general", scene_fit: [] }]);
+  };
+
+  const patchMutation = useMutation({
+    mutationFn: async () =>
+      api.annotations.patch(assetId, {
+        etag: editor.etag,
+        patch: {
+          operations: [
+            { op: "replace", path: "/canonical/bgm_usage_windows", value: bgmWindowsToCanonical(bgmForm) },
+            { op: "replace", path: "/projection/usable", value: true },
+          ],
+        },
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["library", "annotation", assetId] });
+      await queryClient.invalidateQueries({ queryKey: ["library", "media", caseId] });
+      toast.success("标注已保存", "BGM 使用窗口已更新。");
+      onSaved();
+    },
+    onError: (error) => {
+      if (isApiError(error) && (error.status === 409 || error.code === "artifact.schema_mismatch")) {
+        toast.error("标注版本冲突", "服务器标注已更新，请刷新后重新编辑。");
+        return;
+      }
+      toast.error("标注保存失败", error);
+    },
+  });
+
+  return (
+    <form
+      className="grid gap-4"
+      onSubmit={(event) => {
+        event.preventDefault();
+        patchMutation.mutate();
+      }}
+    >
+      <div className="grid gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <h4 className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+            <Film className="h-4 w-4 text-accent" /> BGM 使用窗口
+          </h4>
+          <button className="btn-secondary min-h-9 px-3" type="button" onClick={addWindow}>
+            <Plus className="h-4 w-4" />
+            <span>新增窗口</span>
+          </button>
+        </div>
+        <div className="grid gap-3">
+          {bgmForm.map((item, index) => (
+            <div key={`bgm-edit-${index}`} className="grid gap-3 rounded-2xl border border-border/80 bg-white/65 p-3">
+              <div className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
+                <NumberField label="开始(s)" value={item.start} step={0.1} max={duration || undefined} onChange={(v) => updateWindow(index, { start: v })} />
+                <NumberField label="结束(s)" value={item.end} step={0.1} max={duration || undefined} onChange={(v) => updateWindow(index, { end: v })} />
+                <SelectField
+                  label="角色"
+                  value={item.role}
+                  options={roleOptions}
+                  onChange={(v) => updateWindow(index, { role: v as BgmUsageWindow["role"] })}
+                />
+                <button className="icon-button mt-5 self-start" type="button" onClick={() => removeWindow(index)} aria-label="删除窗口">
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="grid gap-2 sm:grid-cols-3">
+                <label className="grid gap-1.5">
+                  <span className="text-[11px] font-medium text-text-tertiary">drop_anchor_sec(s)</span>
+                  <input
+                    className="input"
+                    type="number"
+                    step={0.1}
+                    min={0}
+                    max={duration || undefined}
+                    value={item.drop_anchor_sec ?? ""}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      const next = Number(value);
+                      updateWindow(index, { drop_anchor_sec: value === "" || !Number.isFinite(next) ? undefined : next });
+                    }}
+                  />
+                </label>
+                <TextField label="情绪" value={item.mood ?? ""} onChange={(v) => updateWindow(index, { mood: v })} />
+                <TextField label="适配场景（逗号分隔）" value={(item.scene_fit ?? []).join(", ")} onChange={(v) => updateWindow(index, { scene_fit: splitTokens(v) })} />
+              </div>
+            </div>
+          ))}
+          {bgmForm.length === 0 ? <p className="text-sm text-text-secondary">暂无 BGM 使用窗口，点击「新增窗口」添加。</p> : null}
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-status-warning/20 bg-status-warning/10 p-3 text-xs leading-5 text-status-warning">
+        保存会携带当前版本标识；若服务端标注已被更新，将提示版本冲突并要求刷新后重试。
+      </div>
+      <div className="flex justify-end gap-3 border-t border-border/70 pt-4">
+        <button className="btn-secondary" type="button" onClick={onCancel} disabled={patchMutation.isPending}>
+          取消编辑
+        </button>
+        <button className="btn-primary" type="submit" disabled={patchMutation.isPending}>
+          {patchMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+          <span>{patchMutation.isPending ? "保存中" : "保存标注"}</span>
+        </button>
+      </div>
+    </form>
   );
 }
 

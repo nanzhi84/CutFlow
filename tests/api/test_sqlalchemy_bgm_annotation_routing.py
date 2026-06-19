@@ -75,7 +75,17 @@ class _FakeMediaRepo:
     def media_source_for_asset(self, asset_id: str):  # pragma: no cover - resolver is stubbed
         return ("s3://bucket/bgm.mp3", None)
 
-    def persist_annotation_v4(self, asset_id, *, canonical, projection, annotation_status, usable, case_id=None):
+    def persist_annotation_v4(
+        self,
+        asset_id,
+        *,
+        canonical,
+        projection,
+        annotation_status,
+        usable,
+        case_id=None,
+        editable_paths=None,
+    ):
         self.persisted.append(
             {
                 "asset_id": asset_id,
@@ -84,6 +94,7 @@ class _FakeMediaRepo:
                 "annotation_status": annotation_status,
                 "usable": usable,
                 "case_id": case_id,
+                "editable_paths": list(editable_paths or ["/labels", "/usable", "/title"]),
             }
         )
         return c.AnnotationEditorVm(
@@ -91,7 +102,7 @@ class _FakeMediaRepo:
             etag="etag_1",
             canonical=canonical,
             projection=projection,
-            editable_paths=["/labels", "/usable", "/title"],
+            editable_paths=list(editable_paths or ["/labels", "/usable", "/title"]),
         )
 
 

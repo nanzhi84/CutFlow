@@ -8351,6 +8351,13 @@
             "type": "array",
             "title": "Clips"
           },
+          "bgm_usage_windows": {
+            "items": {
+              "$ref": "#/components/schemas/BgmUsageWindowV4"
+            },
+            "type": "array",
+            "title": "Bgm Usage Windows"
+          },
           "quality_events": {
             "items": {
               "$ref": "#/components/schemas/QualityEventV4"
@@ -9008,6 +9015,108 @@
         "additionalProperties": false,
         "type": "object",
         "title": "BgmOptions"
+      },
+      "BgmSegmentRole": {
+        "type": "string",
+        "enum": [
+          "hook",
+          "climax",
+          "outro",
+          "general"
+        ],
+        "title": "BgmSegmentRole",
+        "description": "BGM 推荐使用片段的用途。"
+      },
+      "BgmUsageWindowV4": {
+        "properties": {
+          "segment_id": {
+            "type": "string",
+            "title": "Segment Id"
+          },
+          "start": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Start"
+          },
+          "end": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "End"
+          },
+          "duration": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Duration"
+          },
+          "role": {
+            "$ref": "#/components/schemas/BgmSegmentRole",
+            "default": "general"
+          },
+          "drop_anchor_sec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drop Anchor Sec"
+          },
+          "energy": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Energy",
+            "default": 0.0
+          },
+          "mood": {
+            "type": "string",
+            "title": "Mood",
+            "default": ""
+          },
+          "scene_fit": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scene Fit"
+          },
+          "avoid_scene": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Avoid Scene"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "default": 0.8
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": "sensor"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "segment_id",
+          "start",
+          "end",
+          "duration"
+        ],
+        "title": "BgmUsageWindowV4",
+        "description": "BGM 推荐使用片段：整轨里值得用的一小段（非铺满整轨）。\n\n时间由 librosa 确定性产出（精确到秒、snap 到节拍）；语义由 Qwen-Omni 听音频回填。"
       },
       "Body_upload_file_api_uploads__upload_session_id__file_put": {
         "properties": {

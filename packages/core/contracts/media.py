@@ -564,6 +564,52 @@ class ClipV4(ContractModel):
         return self
 
 
+class BgmSegmentRole(str, Enum):
+    """BGM 推荐使用片段的用途。"""
+
+    hook = "hook"
+    climax = "climax"
+    outro = "outro"
+    general = "general"
+
+
+class BgmUsageWindowV4(ContractModel):
+    """BGM 推荐使用片段：整轨里值得用的一小段（非铺满整轨）。
+
+    时间由 librosa 确定性产出（精确到秒、snap 到节拍）；语义由 Qwen-Omni 听音频回填。
+    """
+
+    segment_id: str
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    duration: float = Field(ge=0)
+    role: BgmSegmentRole = BgmSegmentRole.general
+    drop_anchor_sec: float | None = None
+    energy: float = Field(0.0, ge=0, le=1)
+    mood: str = ""
+    scene_fit: list[str] = Field(default_factory=list)
+    avoid_scene: list[str] = Field(default_factory=list)
+    reason: str = ""
+    confidence: float = Field(0.8, ge=0, le=1)
+    source: str = "sensor"
+
+    @model_validator(mode="after")
+    def _validate(self) -> "BgmUsageWindowV4":
+        if self.end <= self.start:
+            raise ValueError(f"end ({self.end}) must be greater than start ({self.start})")
+        derived = round(self.end - self.start, 3)
+        if abs(derived - self.duration) > 0.12:
+            self.duration = derived
+        if self.drop_anchor_sec is not None and not (
+            self.start - 1e-6 <= self.drop_anchor_sec <= self.end + 1e-6
+        ):
+            raise ValueError(
+                f"drop_anchor_sec ({self.drop_anchor_sec}) must fall inside "
+                f"[{self.start}, {self.end}]"
+            )
+        return self
+
+
 class QualityEventV4(ContractModel):
     """V4 quality event (the single authoritative risk source).
 
@@ -646,6 +692,7 @@ class AnnotationV4(ContractModel):
 
     meta: AnnotationMetaV4
     clips: list[ClipV4] = Field(default_factory=list)
+    bgm_usage_windows: list[BgmUsageWindowV4] = Field(default_factory=list)
     quality_events: list[QualityEventV4] = Field(default_factory=list)
     quality_report: dict[str, Any] = Field(default_factory=dict)
     usage_windows: list[UsageWindowV4] = Field(default_factory=list)
@@ -661,6 +708,12 @@ class AnnotationV4(ContractModel):
                 if clip.start < 0 or clip.end > upper:
                     raise ValueError(
                         f"clip {clip.segment_id} time [{clip.start}, {clip.end}] "
+                        f"out of bounds [0, {duration}]"
+                    )
+            for win in self.bgm_usage_windows:
+                if win.start < 0 or win.end > upper:
+                    raise ValueError(
+                        f"bgm_usage_window {win.segment_id} time [{win.start}, {win.end}] "
                         f"out of bounds [0, {duration}]"
                     )
             for ev in self.quality_events:

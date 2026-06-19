@@ -2602,6 +2602,8 @@ export interface components {
             meta: components["schemas"]["AnnotationMetaV4"];
             /** Clips */
             clips?: components["schemas"]["ClipV4"][];
+            /** Bgm Usage Windows */
+            bgm_usage_windows?: components["schemas"]["BgmUsageWindowV4"][];
             /** Quality Events */
             quality_events?: components["schemas"]["QualityEventV4"][];
             /** Quality Report */
@@ -2865,6 +2867,61 @@ export interface components {
              * @default true
              */
             auto_mix: boolean;
+        };
+        /**
+         * BgmSegmentRole
+         * @description BGM 推荐使用片段的用途。
+         * @enum {string}
+         */
+        BgmSegmentRole: "hook" | "climax" | "outro" | "general";
+        /**
+         * BgmUsageWindowV4
+         * @description BGM 推荐使用片段：整轨里值得用的一小段（非铺满整轨）。
+         *
+         *     时间由 librosa 确定性产出（精确到秒、snap 到节拍）；语义由 Qwen-Omni 听音频回填。
+         */
+        BgmUsageWindowV4: {
+            /** Segment Id */
+            segment_id: string;
+            /** Start */
+            start: number;
+            /** End */
+            end: number;
+            /** Duration */
+            duration: number;
+            /** @default general */
+            role: components["schemas"]["BgmSegmentRole"];
+            /** Drop Anchor Sec */
+            drop_anchor_sec?: number | null;
+            /**
+             * Energy
+             * @default 0
+             */
+            energy: number;
+            /**
+             * Mood
+             * @default
+             */
+            mood: string;
+            /** Scene Fit */
+            scene_fit?: string[];
+            /** Avoid Scene */
+            avoid_scene?: string[];
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Confidence
+             * @default 0.8
+             */
+            confidence: number;
+            /**
+             * Source
+             * @default sensor
+             */
+            source: string;
         };
         /** Body_upload_file_api_uploads__upload_session_id__file_put */
         Body_upload_file_api_uploads__upload_session_id__file_put: {

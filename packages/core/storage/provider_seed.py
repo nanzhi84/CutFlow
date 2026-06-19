@@ -78,6 +78,19 @@ def seed_real_provider_configuration(repository) -> None:
             options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.llm.options"),
         ),
         ProviderProfile(
+            id="dashscope.omni.prod",
+            provider_id="dashscope.omni",
+            model_id="qwen3.5-omni-plus",
+            capability="audio.understanding",
+            display_name="DashScope Qwen-Omni Audio Production",
+            environment="prod",
+            enabled=True,
+            secret_ref="dashscope_prod.secret",
+            concurrency_key="dashscope:audio.understanding",
+            timeout_sec=120,
+            options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.audio.options"),
+        ),
+        ProviderProfile(
             id="runninghub.heygem.prod",
             provider_id="runninghub.heygem",
             model_id="heygem-webapp",
@@ -216,6 +229,11 @@ def _seed_price_catalogs(repository) -> None:
         ProviderPriceCatalog(id="price_dashscope_prod", provider_id="dashscope.llm", status="published"),
         ProviderPriceCatalog(id="price_dashscope_asr_prod", provider_id="dashscope.asr", status="published"),
         ProviderPriceCatalog(id="price_dashscope_vlm_prod", provider_id="dashscope.vlm", status="published"),
+        ProviderPriceCatalog(
+            id="price_dashscope_omni_prod",
+            provider_id="dashscope.omni",
+            status="published",
+        ),
         ProviderPriceCatalog(id="price_openai_image_prod", provider_id="openai.image", status="published"),
     ]
     for catalog in catalogs:
@@ -246,6 +264,24 @@ def _seed_price_catalogs(repository) -> None:
         capability_id="llm.chat",
         unit="output_token",
         unit_price=Money(currency="CNY", amount=Decimal("0.000002")),
+    )
+    repository.price_items["price_dashscope_omni_input"] = ProviderPriceItem(
+        id="price_dashscope_omni_input",
+        catalog_id="price_dashscope_omni_prod",
+        provider_id="dashscope.omni",
+        model_id="qwen3.5-omni-plus",
+        capability_id="audio.understanding",
+        unit="input_token",
+        unit_price=Money(currency="CNY", amount=Decimal("0.000002")),
+    )
+    repository.price_items["price_dashscope_omni_output"] = ProviderPriceItem(
+        id="price_dashscope_omni_output",
+        catalog_id="price_dashscope_omni_prod",
+        provider_id="dashscope.omni",
+        model_id="qwen3.5-omni-plus",
+        capability_id="audio.understanding",
+        unit="output_token",
+        unit_price=Money(currency="CNY", amount=Decimal("0.000008")),
     )
     repository.price_items["price_dashscope_asr_media_second"] = ProviderPriceItem(
         id="price_dashscope_asr_media_second",

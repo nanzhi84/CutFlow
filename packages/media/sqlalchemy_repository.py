@@ -505,6 +505,7 @@ class SqlAlchemyMediaRepository:
         annotation_status: str,
         usable: bool,
         case_id: str | None = None,
+        editable_paths: list[str] | None = None,
     ) -> AnnotationEditorVm | None:
         """Write a fresh AnnotationV4 canonical + projection + artifact for one asset.
 
@@ -530,6 +531,7 @@ class SqlAlchemyMediaRepository:
             session.flush()
             projection = dict(projection)
             projection.setdefault("annotation_artifact_id", artifact.id)
+            editor_paths = list(editable_paths or ["/labels", "/usable", "/title"])
             row = self._annotation_row(session, asset_id)
             if row is None:
                 row = AnnotationRow(
@@ -540,13 +542,14 @@ class SqlAlchemyMediaRepository:
                     canonical=canonical,
                     projection_schema="MediaAnnotationProjection.v1",
                     projection=projection,
-                    editable_paths=["/labels", "/usable", "/title"],
+                    editable_paths=editor_paths,
                 )
                 session.add(row)
             else:
                 row.canonical_schema = "AnnotationV4.v1"
                 row.canonical = canonical
                 row.projection = projection
+                row.editable_paths = editor_paths
                 row.etag = new_id("etag")
                 row.updated_at = utcnow()
             asset.annotation_status = annotation_status

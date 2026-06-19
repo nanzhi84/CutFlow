@@ -439,6 +439,31 @@ def compress_video_to_budget(
     )
 
 
+def extract_audio_segment(source: str | Path, start: float, end: float, output: str | Path) -> Path:
+    """Cut [start, end) of ``source`` to an mp3 at ``output`` (audio only)."""
+    out = Path(output)
+    duration = max(0.0, float(end) - float(start))
+    runner = FfmpegRunner()
+    runner.run(
+        [
+            ffmpeg_bin(),
+            *FFMPEG_QUIET_ARGS,
+            "-ss",
+            f"{float(start):.3f}",
+            "-t",
+            f"{duration:.3f}",
+            "-i",
+            str(source),
+            "-vn",
+            "-acodec",
+            "libmp3lame",
+            "-y",
+            str(out),
+        ]
+    )
+    return out
+
+
 def trim_to_valid_segments(
     video_path: str | Path,
     segments: Sequence[object],

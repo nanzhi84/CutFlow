@@ -24,6 +24,8 @@ end to end with a mocked gateway and no network.
 from __future__ import annotations
 
 import logging
+import tempfile
+from pathlib import Path
 
 from fastapi import Request
 
@@ -43,10 +45,11 @@ from packages.media.annotation import (
     V4Config,
     annotate_asset,
     annotate_bgm,
-    resolve_llm_profile,
     resolve_vlm_profile,
 )
-from packages.media.assets import local_object_path
+from packages.media.annotation.bgm import resolve_audio_profile
+from packages.media.assets import local_object_path, store_file
+from packages.media.video.ffmpeg import extract_audio_segment
 
 logger = logging.getLogger("apps.api.services.asset_annotation")
 
@@ -120,12 +123,23 @@ def _run_bgm_annotation(
     real ffmpeg / librosa runs.
     """
     gateway = request.app.state.provider_gateway
-    explicit = repo.provider_profiles.get(payload.provider_profile_id) if payload.provider_profile_id else None
-    candidates = [p for p in repo.provider_profiles.values() if p.capability == "llm.chat"]
-    llm_profile = resolve_llm_profile(gateway, candidate_profiles=candidates, explicit_profile=explicit)
+    explicit = (
+        repo.provider_profiles.get(payload.provider_profile_id)
+        if payload.provider_profile_id
+        else None
+    )
+    candidates = [
+        p for p in repo.provider_profiles.values() if p.capability == "audio.understanding"
+    ]
+    audio_profile = resolve_audio_profile(
+        gateway,
+        candidate_profiles=candidates,
+        explicit_profile=explicit,
+    )
 
     audio_path = _local_audio_path(request, repo, asset)
     duration = _asset_duration(repo, asset)
+    audio_url_for_window = _bgm_audio_urlizer(request, audio_path)
     result = annotate_bgm(
         asset_id=asset.id,
         case_id=asset.case_id or "",
@@ -133,7 +147,8 @@ def _run_bgm_annotation(
         duration=duration,
         asset_title=asset.title,
         gateway=gateway,
-        llm_profile=llm_profile,
+        audio_profile=audio_profile,
+        audio_url_for_window=audio_url_for_window,
         feature_extractor=feature_extractor,
     )
 
@@ -153,22 +168,27 @@ def _persist_bgm(repo, asset: c.MediaAssetRecord, result: BgmAnnotationResult) -
         case_id=asset.case_id,
     )
     is_failed = _bgm_is_failed(result)
-    # A BGM annotation is usable when the real LLM path produced semantics (mood/genre).
-    bgm_report = canonical.get("quality_report", {}).get("bgm", {}) if isinstance(canonical, dict) else {}
-    usable = not is_failed and result.llm_configured and bool(bgm_report.get("mood"))
+    # A BGM annotation is usable when the real audio path produced at least one window.
+    bgm_report = (
+        canonical.get("quality_report", {}).get("bgm", {}) if isinstance(canonical, dict) else {}
+    )
+    usable = not is_failed and result.llm_configured and (
+        bool(annotation.bgm_usage_windows) or bool(bgm_report.get("mood"))
+    )
+    projection = build_projection(
+        annotation,
+        asset,
+        annotation_artifact_id=artifact.id,
+        llm_configured=result.llm_configured,
+    )
+    projection["usable"] = usable
+    projection["bgm"] = bgm_report
     repo.annotations[asset.id] = c.AnnotationEditorVm(
         asset=asset,
         etag=new_id("etag"),
         canonical=canonical,
-        projection={
-            "title": asset.title,
-            "usable": usable,
-            "annotation_artifact_id": artifact.id,
-            "llm_configured": result.llm_configured,
-            "annotation_status": annotation.meta.annotation_status.value,
-            "bgm": bgm_report,
-        },
-        editable_paths=["/labels", "/usable", "/title"],
+        projection=projection,
+        editable_paths=["/labels", "/usable", "/title", "/canonical/bgm_usage_windows"],
     )
     annotation_status = "annotation_failed" if is_failed else "annotated"
     repo.media_assets[asset.id] = asset.model_copy(
@@ -332,15 +352,20 @@ def _run_sqlalchemy_bgm_annotation(
     candidates: list[c.ProviderProfile] = []
     explicit: c.ProviderProfile | None = None
     if provider_repo is not None:
-        candidates = provider_repo.list_profiles(capability="llm.chat", limit=100)
+        candidates = provider_repo.list_profiles(capability="audio.understanding", limit=100)
         if payload.provider_profile_id:
             explicit = next((p for p in candidates if p.id == payload.provider_profile_id), None)
             if explicit is None:
                 explicit = gateway.get_profile(payload.provider_profile_id)
-    llm_profile = resolve_llm_profile(gateway, candidate_profiles=candidates, explicit_profile=explicit)
+    audio_profile = resolve_audio_profile(
+        gateway,
+        candidate_profiles=candidates,
+        explicit_profile=explicit,
+    )
 
     audio_path = _sqlalchemy_local_audio_path(request, media_repo, asset.id)
     duration = media_repo.asset_source_duration(asset.id)
+    audio_url_for_window = _bgm_audio_urlizer(request, audio_path)
     result = annotate_bgm(
         asset_id=asset.id,
         case_id=asset.case_id or "",
@@ -348,16 +373,21 @@ def _run_sqlalchemy_bgm_annotation(
         duration=duration,
         asset_title=asset.title,
         gateway=gateway,
-        llm_profile=llm_profile,
+        audio_profile=audio_profile,
+        audio_url_for_window=audio_url_for_window,
         feature_extractor=feature_extractor,
     )
 
     annotation = result.annotation
     canonical = annotation.model_dump(mode="json")
     is_failed = _bgm_is_failed(result)
-    # A BGM annotation is usable when the real LLM path produced semantics (mood/genre).
-    bgm_report = canonical.get("quality_report", {}).get("bgm", {}) if isinstance(canonical, dict) else {}
-    usable = (not is_failed) and result.llm_configured and bool(bgm_report.get("mood"))
+    # A BGM annotation is usable when the real audio path produced at least one window.
+    bgm_report = (
+        canonical.get("quality_report", {}).get("bgm", {}) if isinstance(canonical, dict) else {}
+    )
+    usable = (not is_failed) and result.llm_configured and (
+        bool(annotation.bgm_usage_windows) or bool(bgm_report.get("mood"))
+    )
     # canonical-owns-projection (Spec §12.1): rebuild the editor projection from the
     # canonical AnnotationV4, then surface the BGM-specific fields the editor reads.
     projection = build_projection(annotation, asset, llm_configured=result.llm_configured)
@@ -372,11 +402,33 @@ def _run_sqlalchemy_bgm_annotation(
         annotation_status=annotation_status,
         usable=usable,
         case_id=asset.case_id,
+        editable_paths=["/labels", "/usable", "/title", "/canonical/bgm_usage_windows"],
     )
     if editor is None:
         return c.AnnotationRunResponse(asset_id=asset.id, run_id=None, status="failed")
     status = "failed" if (result.llm_configured and is_failed) else "completed"
     return c.AnnotationRunResponse(asset_id=asset.id, run_id=None, status=status)
+
+
+def _bgm_audio_urlizer(request: Request, local_audio_path):
+    def audio_url_for_window(start: float, end: float) -> str | None:
+        if local_audio_path is None:
+            return None
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_file:
+                tmp_path = Path(tmp_file.name)
+            extract_audio_segment(local_audio_path, start, end, tmp_path)
+            store = object_store(request)
+            stored = store_file(store, tmp_path, purpose="bgm-clip")
+            return store.signed_url(stored.ref.uri).url
+        except Exception:
+            return None
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+
+    return audio_url_for_window
 
 
 def _sqlalchemy_local_video_path(request: Request, media_repo, asset_id: str):

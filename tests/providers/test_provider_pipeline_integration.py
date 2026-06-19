@@ -301,34 +301,65 @@ def test_annotation_rerun_degrades_without_source_video():
         )
 
 
-class FakeBgmLLMProvider:
-    """Returns canned BGM semantic JSON for the gated llm.chat BGM annotation path."""
+class FakeBgmOmniProvider:
+    """Returns canned per-window semantics for the gated audio.understanding path."""
 
-    provider_id = "fake.bgmllm"
+    provider_id = "fake.bgmomni"
 
     def invoke(self, call: ProviderCall) -> ProviderResult:
         return ProviderResult(
             output={
-                "content": (
-                    '{"mood": "calm", "genre": "ambient", '
-                    '"scene_fit": ["产品介绍", "舒缓口播"], "avoid_scene": ["激烈促销"], '
-                    '"agent_caption": "适合舒缓的产品讲解场景"}'
-                )
+                "content": "{}",
+                "intent": {
+                    "mood": "calm",
+                    "role": "climax",
+                    "scene_fit": ["产品介绍", "舒缓口播"],
+                    "avoid_scene": ["激烈促销"],
+                    "reason": "适合舒缓的产品讲解场景",
+                },
             }
         )
 
 
-def test_bgm_annotation_rerun_uses_audio_path_and_llm_semantics():
-    """Re-running annotation on a BGM asset takes the audio path (objective features +
-    gated llm.chat semantics) rather than the visual VLM path: it persists an
-    AnnotationV4 whose quality_report["bgm"] carries mood/genre/scene_fit, and marks
-    the asset annotated + usable. librosa is optional, so bpm/energy may be absent --
-    the LLM mood/genre is what makes it usable."""
+# Simulate librosa-present objective features (real librosa is an optional dep, absent
+# in CI): one usage window + a beat grid so the audio path has an excerpt to listen to.
+def _fake_bgm_features(_audio_path):
+    return {
+        "librosa_available": True,
+        "bpm": 120.0,
+        "energy": 0.6,
+        "tempo_bucket": "mid",
+        "loudness_lufs": -14.0,
+        "beats": [0.0, 0.5, 10.0, 18.0, 25.0],
+        "drops": [18.0],
+        "candidate_windows": [
+            {"start": 10.0, "end": 25.0, "energy": 0.8, "drop_anchor": 18.0, "role_hint": "climax"},
+        ],
+    }
+
+
+def test_bgm_annotation_rerun_uses_audio_path_and_omni_semantics(monkeypatch):
+    """Re-running annotation on a BGM asset takes the audio path: librosa-timed usage
+    windows (precise seconds + beat grid) enriched by a gated audio.understanding
+    (Qwen-Omni) listen per window -> typed bgm_usage_windows with mood/scene, asset
+    annotated + usable. The visual VLM path is never taken."""
+    monkeypatch.setattr(
+        "packages.media.annotation.bgm.extract_audio_features", _fake_bgm_features
+    )
+    # Force a presigned clip URL without real ffmpeg / object store in the test.
+    monkeypatch.setattr(
+        "apps.api.services.asset_annotation._bgm_audio_urlizer",
+        lambda request, path: (lambda start, end: "https://fake.local/clip.mp3"),
+    )
+    # Pin a known duration so the window stays in-bounds regardless of the demo seed.
+    monkeypatch.setattr(
+        "apps.api.services.asset_annotation._asset_duration", lambda repo, asset: 30.0
+    )
     with TestClient(create_app()) as client:
         _login_admin(client)
         repository = client.app.state.repository
-        client.app.state.provider_gateway.register(FakeBgmLLMProvider())
-        profile = _profile("fake.bgmllm", "llm.chat", "fake-bgmllm")
+        client.app.state.provider_gateway.register(FakeBgmOmniProvider())
+        profile = _profile("fake.bgmomni", "audio.understanding", "qwen3.5-omni-plus")
         repository.provider_profiles[profile.id] = profile
         asset_id = "asset_bgm_demo"
         assert repository.media_assets[asset_id].kind == "bgm"
@@ -340,18 +371,23 @@ def test_bgm_annotation_rerun_uses_audio_path_and_llm_semantics():
 
         assert rerun.status_code == 202, rerun.text
         assert rerun.json()["status"] == "completed"
-        editor = client.get(f"/api/annotations/{asset_id}")
-        assert editor.status_code == 200, editor.text
-        body = editor.json()
+        body = client.get(f"/api/annotations/{asset_id}").json()
         canonical = body["canonical"]
         assert canonical["meta"]["material_type"] == "bgm"
         assert canonical["meta"]["annotation_status"] == "completed"
-        bgm_report = canonical["quality_report"]["bgm"]
-        assert bgm_report["mood"] == "calm"
-        assert bgm_report["genre"] == "ambient"
-        assert "产品介绍" in bgm_report["scene_fit"]
-        # editor projection exposes the BGM semantics + llm gating flag
-        assert body["projection"]["llm_configured"] is True
+        windows = canonical["bgm_usage_windows"]
+        assert len(windows) == 1
+        window = windows[0]
+        assert window["start"] == 10.0 and window["end"] == 25.0
+        assert window["drop_anchor_sec"] == 18.0
+        assert window["role"] == "climax"
+        assert window["mood"] == "calm"
+        assert "产品介绍" in window["scene_fit"]
+        assert window["source"] == "sensor+audio"
+        # beat grid surfaced in quality_report + editor projection
+        assert canonical["quality_report"]["bgm"]["beats"] == [0.0, 0.5, 10.0, 18.0, 25.0]
+        assert body["projection"]["bgm"]["beats"]
+        assert body["projection"]["bgm_usage_windows"]
         assert body["projection"]["usable"] is True
         # asset is annotated + usable so it becomes an eligible BGM candidate
         assert repository.media_assets[asset_id].annotation_status == "annotated"
@@ -361,9 +397,10 @@ def test_bgm_annotation_rerun_uses_audio_path_and_llm_semantics():
         )
 
 
-def test_bgm_annotation_rerun_degrades_without_real_llm():
-    """No real llm.chat profile -> BGM annotation degrades to features-only
-    (llm_unconfigured), never fabricates mood/genre, and marks the asset failed."""
+def test_bgm_annotation_rerun_degrades_without_librosa():
+    """Without librosa (optional dep, absent in CI) there are no usage windows, so the
+    BGM annotation degrades to features-unavailable, marks the asset failed, and never
+    fabricates semantics."""
     with TestClient(create_app()) as client:
         _login_admin(client)
         repository = client.app.state.repository
@@ -372,15 +409,14 @@ def test_bgm_annotation_rerun_degrades_without_real_llm():
         rerun = client.post(f"/api/annotations/{asset_id}/rerun", json={"force": True})
 
         assert rerun.status_code == 202, rerun.text
-        assert rerun.json()["status"] == "completed"
         editor = client.get(f"/api/annotations/{asset_id}")
         canonical = editor.json()["canonical"]
         assert canonical["meta"]["material_type"] == "bgm"
         assert canonical["meta"]["annotation_status"] == "failed"
+        assert canonical["bgm_usage_windows"] == []
         bgm_report = canonical["quality_report"]["bgm"]
-        assert bgm_report["status"] == "llm_unconfigured"
+        assert bgm_report["status"] == "features_unavailable"
         assert bgm_report.get("mood") in (None, "")
-        assert editor.json()["projection"]["llm_configured"] is False
         assert repository.media_assets[asset_id].annotation_status == "annotation_failed"
 
 

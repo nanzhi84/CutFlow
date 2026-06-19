@@ -262,12 +262,14 @@ def rerun_annotation(
         # planning reads it (Spec §12.2). Without a real vlm.annotation profile it
         # degrades to a sensor-only vlm_unconfigured result (never fabricated semantics).
         if payload.provider_profile_id:
-            # BGM/audio assets are annotated through the gated llm.chat path; everything
-            # else through vlm.annotation. Validate the explicit profile's capability
-            # against the asset's annotation path so a correct profile isn't rejected.
+            # BGM/audio assets are annotated through the gated audio.understanding path;
+            # everything else through vlm.annotation. Validate the explicit profile's
+            # capability against the asset's annotation path so a correct profile isn't rejected.
             db_asset = media_repo.asset_record(asset_id)
             expected_capability = (
-                "llm.chat" if (db_asset is not None and db_asset.kind == "bgm") else "vlm.annotation"
+                "audio.understanding"
+                if (db_asset is not None and db_asset.kind == "bgm")
+                else "vlm.annotation"
             )
             provider_repo = provider_repository(request)
             profile = (
@@ -295,11 +297,11 @@ def rerun_annotation(
         raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
     if payload.provider_profile_id:
         profile = repo.provider_profiles.get(payload.provider_profile_id)
-        # BGM/audio assets are annotated through the gated llm.chat path; everything
-        # else through vlm.annotation. Validate the explicit profile's capability
-        # against the asset's annotation path so a correct profile isn't rejected.
+        # BGM/audio assets are annotated through the gated audio.understanding path;
+        # everything else through vlm.annotation. Validate the explicit profile's
+        # capability against the asset's annotation path so a correct profile isn't rejected.
         expected_capability = (
-            "llm.chat" if repo.media_assets[asset_id].kind == "bgm" else "vlm.annotation"
+            "audio.understanding" if repo.media_assets[asset_id].kind == "bgm" else "vlm.annotation"
         )
         if profile is None or profile.capability != expected_capability:
             raise NodeExecutionError(
