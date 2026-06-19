@@ -109,7 +109,7 @@ export function CostUsageTab({
             <h2 className="text-xl font-semibold text-text-primary">价格覆盖</h2>
           </div>
           <p className="mt-3 text-sm leading-6 text-text-secondary">
-            未定价调用来自后端 billing_status 聚合。这里不会按默认单价估算，避免显示假成本。
+            未定价调用单独统计，不按默认单价估算，避免显示假成本。
           </p>
           <p className="mt-4 font-mono text-3xl font-semibold tabular-nums text-text-primary">
             {(usage?.unpriced_invocation_count ?? 0).toLocaleString("zh-CN")}

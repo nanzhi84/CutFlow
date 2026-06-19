@@ -171,13 +171,13 @@ export function CoverPanel({ item, draft, publishPackage, onDraftChange, onCover
               <Trash2 className="h-4 w-4" />
               清除封面
             </button>
-            <button className="btn-secondary" type="button" disabled title="待接入（依赖 M6c/M6d）">
+            <button className="btn-secondary" type="button" disabled title="暂未开放">
               <Sparkles className="h-4 w-4" />
               AI 生成封面
             </button>
           </div>
           <p className="rounded-2xl border border-status-warning/25 bg-status-warning/10 p-3 text-xs leading-5 text-status-warning">
-            AI 封面待接入（依赖 M6c/M6d）；当前仅支持浏览器选帧或上传封面图。
+            当前支持选取视频画面或上传封面图。
           </p>
         </div>
       </div>

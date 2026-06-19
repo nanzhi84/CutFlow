@@ -112,10 +112,7 @@ def poll_login(
                 registry.remove(login_id)
                 return not_found_response("Login session not found")
             registry.update(login_id, status="active")
-        elif result.status == "pending":
-            pass  # still waiting for the operator to scan
-        else:
-            # failed, or a "success" with no storage_state — release the browser, mark failed
+        elif result.status != "pending":
             driver.close(login_id)
             registry.update(login_id, status="failed", detail=result.detail or "login did not complete")
         session = registry.get(login_id) or session

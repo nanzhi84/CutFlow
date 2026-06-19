@@ -136,7 +136,7 @@ export function DesignVoiceModal({ isOpen, onClose }: { isOpen: boolean; onClose
         }}
       >
         <div className="rounded-2xl border border-accent/20 bg-accent/10 p-3 text-sm text-accent">
-          通过文字描述提交音色设计请求；真实音频生成质量依赖后端 provider 能力。
+          通过文字描述提交音色设计请求；音频质量取决于所选供应商能力。
         </div>
         <label>
           <span>音色名称</span>

@@ -141,7 +141,7 @@ export function SourceStep({
         <div className="card grid gap-4">
           <div>
             <h2 className="text-lg font-semibold text-text-primary">外部视频上传</h2>
-            <p className="mt-1 text-sm text-text-secondary">上传会创建真实 UploadSession，并生成发布包加入批次池。</p>
+            <p className="mt-1 text-sm text-text-secondary">上传后会生成发布包并加入批次池。</p>
           </div>
           <DropZone
             accept={VIDEO_ACCEPT}

@@ -34,9 +34,6 @@ export function FontDetailModal({ asset, previewUrl, onClose }: FontDetailModalP
             <AnnotationMetric label="可用性" value={asset.usable ? "可用" : "不可用"} />
             <AnnotationMetric label="更新时间" value={formatRelativeTime(asset.updated_at ?? asset.created_at)} />
           </div>
-          <div className="rounded-2xl border border-status-warning/20 bg-status-warning/10 p-3 text-xs text-status-warning">
-            删除字体待接入（依赖 M6b/M6d 素材管理操作 API）。
-          </div>
         </div>
       ) : null}
     </Modal>

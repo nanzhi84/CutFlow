@@ -70,9 +70,6 @@ export function LibraryAssetUploadModal({ isOpen, onClose, kind, onUploaded }: L
           <span>{kind === "font" ? "字体分类" : "统一风格标签"}</span>
           <input value={tag} onChange={(event) => setTag(event.target.value)} placeholder={kind === "font" ? "例如：标题、字幕、手写" : "例如：轻快、科技、温暖"} />
         </label>
-        <div className="rounded-2xl border border-status-info/20 bg-status-info/10 p-3 text-xs leading-5 text-status-info">
-          上传会按 UploadSession prepare → PUT file → complete 执行；分类/风格会随 complete metadata 提交，后端标签落库增强依赖 M6b/M6d。
-        </div>
         {upload.status !== "idle" ? (
           <div className="rounded-2xl border border-border/80 bg-white/65 p-3">
             <div className="flex items-center justify-between gap-3 text-sm text-text-secondary">

@@ -29,7 +29,7 @@ export function AnalyticsKpiCards({
     {
       label: "成功率",
       value: formatPercent(rate),
-      helper: rate === null ? "暂无成功率样本" : "后端 true_yield_rate",
+      helper: rate === null ? "暂无成功率样本" : "真实完成率",
       icon: Percent,
       className: "bg-status-success/10 text-status-success",
     },

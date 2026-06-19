@@ -38,7 +38,7 @@ export function OverviewSidePanel({
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2 className="text-xl font-semibold text-text-primary">运行态势</h2>
-            <p className="mt-1 text-sm text-text-secondary">任务和成本聚合来自后端 Ops API</p>
+            <p className="mt-1 text-sm text-text-secondary">汇总任务进展、成本和近期风险</p>
           </div>
           <div
             className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs ${

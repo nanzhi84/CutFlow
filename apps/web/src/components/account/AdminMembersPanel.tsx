@@ -95,7 +95,7 @@ export function AdminMembersPanel({ currentUser }: { currentUser: AuthUser | nul
               <UserPlus className="h-5 w-5 text-accent" />
               新增成员
             </h2>
-            <p className="mt-2 text-sm leading-6 text-text-secondary">预创建团队成员账号。未填写密码时后端会生成随机密码。</p>
+            <p className="mt-2 text-sm leading-6 text-text-secondary">预创建团队成员账号。未填写密码时会自动生成随机密码。</p>
           </div>
           <button className="btn-secondary text-sm" type="button" onClick={() => void users.refetch()}>
             <RefreshCw className={`h-4 w-4 ${users.isFetching ? "animate-spin" : ""}`} />

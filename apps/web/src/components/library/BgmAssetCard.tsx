@@ -55,7 +55,7 @@ export function BgmAssetCard({ asset, usage, isPlaying, domId, highlighted, onPl
         <button className="icon-button w-full" type="button" onClick={onAnnotation} title="查看标注">
           <Eye className="h-4 w-4" />
         </button>
-        <button className="icon-button w-full" type="button" disabled title="后端暂无素材删除 API">
+        <button className="icon-button w-full" type="button" disabled title="暂不支持删除素材">
           <Trash2 className="h-4 w-4" />
         </button>
       </div>

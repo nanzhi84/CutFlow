@@ -59,7 +59,7 @@ export function FontAssetCard({ asset, usage, previewUrl, domId, highlighted, on
         <button className="icon-button w-full" type="button" onClick={onDetail} title="字体详情">
           <Info className="h-4 w-4" />
         </button>
-        <button className="icon-button w-full" type="button" disabled title="后端暂无素材删除 API">
+        <button className="icon-button w-full" type="button" disabled title="暂不支持删除素材">
           <Trash2 className="h-4 w-4" />
         </button>
       </div>

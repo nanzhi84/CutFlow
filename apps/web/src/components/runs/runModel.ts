@@ -76,7 +76,7 @@ export function confirmTitle(action: PendingAction | null) {
 
 export function confirmMessage(action: PendingAction | null) {
   if (action?.type === "cancel") return "系统会请求停止当前生成链路，已完成产物会保留在运行记录中。";
-  if (action?.type === "forceCancel") return "系统会强制要求后端工作流停止，适用于普通中断长时间无响应的任务。";
+  if (action?.type === "forceCancel") return "系统会强制要求生成链路停止，适用于普通中断长时间无响应的任务。";
   if (action?.type === "retry") return "系统会复制当前配置并创建新的生成任务，可能产生新的供应商费用。";
   if (action?.type === "resume") return "系统会从失败阶段继续执行，并复用已完成节点的有效产物。";
   if (action?.type === "delete") return "系统只删除任务记录和关联 Job 记录，不删除已经落库的成片文件。";
@@ -84,7 +84,7 @@ export function confirmMessage(action: PendingAction | null) {
 }
 
 export function confirmConsequences(action: PendingAction | null) {
-  if (action?.type === "cancel") return ["不会删除已生成文件", "任务会进入中断中，最终状态由后端工作流确认"];
+  if (action?.type === "cancel") return ["不会删除已生成文件", "任务会进入中断中，最终状态由生成链路确认"];
   if (action?.type === "forceCancel") return ["不会删除已生成文件", "会跳过温和中断等待，可能让当前节点报告为取消或失败"];
   if (action?.type === "retry") return ["会创建新的 Run", "会重新调用必要供应商能力并可能计费"];
   if (action?.type === "resume") return ["会复用可用产物", "只从失败或待恢复阶段继续执行"];

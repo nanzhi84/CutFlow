@@ -127,9 +127,6 @@ export function DraftEditorStep({
               应用默认到选中
             </button>
           </div>
-          <p className="rounded-2xl border border-status-info/25 bg-status-info/10 p-3 text-xs leading-5 text-status-info">
-            平台 chips 用于创建新批次；已创建条目的平台由后端 item 固定，默认设置不会新增平台条目。
-          </p>
         </div>
       </details>
 
@@ -137,7 +134,7 @@ export function DraftEditorStep({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold text-text-primary">逐条草稿编辑</h2>
-            <p className="mt-1 text-sm text-text-secondary">本地 drafts 可回滚；点击保存单条后写入服务端。</p>
+            <p className="mt-1 text-sm text-text-secondary">可逐条调整标题、正文和发布时间。</p>
           </div>
           <button className="btn-primary" type="button" disabled={items.length === 0} onClick={onNext}>
             <Send className="h-4 w-4" />
@@ -181,7 +178,7 @@ export function DraftEditorStep({
                   <RotateCcw className="h-4 w-4" />
                   重置编辑
                 </button>
-                <button className="btn-secondary min-h-9 px-3" type="button" disabled title="待接入（依赖 M6c/M6d）">
+                <button className="btn-secondary min-h-9 px-3" type="button" disabled title="暂未开放">
                   <Wand2 className="h-4 w-4" />
                   重试生成
                 </button>
