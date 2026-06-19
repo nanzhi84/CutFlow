@@ -22,6 +22,7 @@ pytestmark = pytest.mark.skipif(
 
 if RUN_TEMPORAL_TESTS:
     os.environ.setdefault("CUTAGENT_WORKFLOW_RUNTIME", "temporal")
+    os.environ.setdefault("CUTAGENT_TEMPORAL_TASK_QUEUE", f"cutagent-test-{os.getpid()}")
 
 from apps.api.main import app
 from packages.ai.gateway import ProviderGateway, SqlAlchemyProviderRuntimeRepository
