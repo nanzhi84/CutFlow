@@ -824,7 +824,7 @@ class Repository:
     ) -> OutboxEvent:
         from packages.core.observability.outbox import OutboxWriter
 
-        writer = OutboxWriter.in_memory(self)
+        writer = OutboxWriter(self)
         payload_data = payload if isinstance(payload, dict) else {}
         effective_run_id = run_id or (
             aggregate_id if aggregate_type in {"run", "workflow_run"} else None
