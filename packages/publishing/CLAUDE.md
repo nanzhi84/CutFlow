@@ -7,13 +7,13 @@
 - 平台适配：`platform_adapter.py` 的 `PublishPlatformAdapter` 端口 + `SandboxPublishAdapter`，经 `select_adapter()` / `resolve_adapter_id()` 选择实现。
 - 真实平台适配（路线图）：浏览器自动化适配器（抖音/视频号/快手/小红书）将注册进 `platform_adapter.py` 的 `_PUBLISH_ADAPTERS`，替换当前 sandbox no-op。
 - 文案/封面：`copy_node.py`（§28.3 generate-copy：`generate_publish_copy`/`derive_publish_copy` + `LlmChatPort` + 确定性 fallback）、`cover_node.py`（generate-cover / preview-cover-frame：`generate_publish_cover`/`preview_cover_frame` + `AiCoverPort`）。
-- 账号：`account_matching.py` —— 账号组过滤、账号匹配、`normalize_scheduled_at`/`normalize_publish_tags`。
+- 账号：`account_matching.py` —— `normalize_scheduled_at`/`normalize_publish_tags`（发布定时与标签校验）。
 
 ## 关键文件
 - `sqlalchemy_repository.py` / `sqlalchemy_mappers.py` —— 仓储 + Row→contract 映射。
 - `platform_adapter.py` —— adapter 端口与 `SandboxPublishAdapter` 实现、`select_adapter` / `_PUBLISH_ADAPTERS` 注册表。
 - `copy_node.py` / `cover_node.py` —— 文案 / 封面生成（LLM/AI 端口 + fallback）。
-- `account_matching.py` —— 账号匹配与发布参数校验。
+- `account_matching.py` —— 发布定时（Asia/Shanghai）与标签归一化校验。
 
 ## 约定与要求
 - 状态流转一律经 `assert_transition`（`publish_batch`/`publish_item`/`publish_attempt`，来自 `packages.core.contracts.state_machines`）；`dry_run` 走 review_ready / manual_review_ready 分支而非 published。

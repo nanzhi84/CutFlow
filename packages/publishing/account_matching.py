@@ -1,10 +1,7 @@
-"""Account-group filtering + account matching + scheduled-at validation.
+"""Publish scheduled-at validation + tags normalization.
 
-Side-effect-free pure-logic helpers (``_filter_accounts_by_group`` /
-``_group_match_tokens`` / ``_match_account`` / ``_account_group_haystack`` and
-``normalize_scheduled_at`` / ``normalize_publish_tags``). These drive
-multi-account routing (which platform account publishes for which Case/platform)
-and Asia/Shanghai scheduling (§23.7), independent of any live publish automation.
+Side-effect-free pure-logic helpers (``normalize_scheduled_at`` /
+``normalize_publish_tags``) for Asia/Shanghai scheduling (§23.7) and tag cleanup.
 """
 
 from __future__ import annotations
@@ -13,7 +10,7 @@ import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from packages.core.contracts import ErrorCode, PlatformAccount
+from packages.core.contracts import ErrorCode
 from packages.core.workflow import NodeExecutionError
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
@@ -71,83 +68,3 @@ def normalize_publish_tags(tags: list[str]) -> list[str]:
             seen.add(cleaned)
             normalized.append(cleaned)
     return normalized
-
-
-# account-group filtering + account matching (origin pure logic)
-
-
-def _normalize_text(value: str | None) -> str:
-    return re.sub(r"\s+", "", (value or "")).lower()
-
-
-def _normalize_optional_text(value: str | None) -> str | None:
-    normalized = _normalize_text(value)
-    return normalized or None
-
-
-def _account_group_haystack(account: PlatformAccount) -> str:
-    return " ".join(
-        part
-        for part in [account.nickname, account.remark, account.sub_name, account.uid]
-        if part
-    )
-
-
-def group_match_tokens(*, account_group: str | None = None, case_name: str | None = None) -> list[str]:
-    preferred = _normalize_text(account_group)
-    if preferred:
-        return [preferred]
-    tokens: list[str] = []
-    for raw in [case_name]:
-        normalized = _normalize_text(raw)
-        if normalized and normalized not in tokens:
-            tokens.append(normalized)
-    return tokens
-
-
-def filter_accounts_by_group(
-    accounts: list[PlatformAccount],
-    *,
-    account_group: str | None = None,
-    case_name: str | None = None,
-) -> list[PlatformAccount]:
-    tokens = group_match_tokens(account_group=account_group, case_name=case_name)
-    if not tokens:
-        return list(accounts)
-    return [
-        account
-        for account in accounts
-        if any(token in _normalize_text(_account_group_haystack(account)) for token in tokens)
-    ]
-
-
-def match_account(
-    accounts: list[PlatformAccount],
-    *,
-    platform: str,
-    account_group: str | None = None,
-    case_name: str | None = None,
-    account_uid: str | None = None,
-    nickname_contains: str | None = None,
-    sub_name_contains: str | None = None,
-) -> PlatformAccount | None:
-    """Select the publish account for ``platform``, mirroring the origin
-    ``_match_account`` precedence: platform filter -> group filter -> explicit
-    uid/nickname/sub_name match -> first remaining candidate."""
-    candidates = [account for account in accounts if account.platform == platform]
-    if not candidates:
-        return None
-    group_hint = _normalize_optional_text(account_group) or _normalize_optional_text(case_name)
-    grouped = filter_accounts_by_group(candidates, account_group=account_group, case_name=case_name)
-    if group_hint and grouped:
-        candidates = grouped
-    elif group_hint and not grouped:
-        return None
-    for account in candidates:
-        if account_uid and account.uid == account_uid:
-            return account
-        if nickname_contains and nickname_contains in account.nickname:
-            return account
-        if sub_name_contains and sub_name_contains in account.sub_name:
-            return account
-    return candidates[0]
