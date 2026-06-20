@@ -7,7 +7,6 @@ frame images so the sensor tests stay fast and deterministic.
 
 from __future__ import annotations
 
-import struct
 import subprocess
 from pathlib import Path
 
@@ -175,11 +174,6 @@ def make_silent_wav(
         ]
     )
     return out
-
-
-def pcm_s16le_bytes(samples: list[int]) -> bytes:
-    """Pack int16 samples into raw little-endian PCM bytes (for VAD pure-path tests)."""
-    return struct.pack("<" + "h" * len(samples), *samples)
 
 
 def make_face_image(directory: Path, *, name: str = "single_face.png"):

@@ -10,7 +10,7 @@
 - POST 到 `POST /api/cases/{case_id}/metrics/import` 由调用方负责（连接器不投递）。
 
 ## 关键文件
-- `oceanengine/ingest.py` — 主入口：`import_archive_tree` / `import_archived_xlsx`，`IngestResult`/`IngestSummary`，`build_import_rows`（每条 metric 一行）、`infer_source_page`、`default_archive`、`fingerprint_request`。
+- `oceanengine/ingest.py` — 主入口：`import_archive_tree` / `import_archived_xlsx`，`IngestResult`/`IngestSummary`，`build_import_rows`（每条 metric 一行）、`infer_source_page`、`default_archive`。
 - `oceanengine/cli.py` — `python -m apps.connectors.oceanengine.cli {import-archive|import-file}`（prog `oceanengine-connector`），打印 JSON。
 - `oceanengine/normalize.py` — 每页 normalizer + `NORMALIZERS` 注册表。
 - `oceanengine/xlsx.py` — openpyxl 懒加载读首个 sheet（`read_first_sheet`）；缺失抛 `XlsxUnsupportedError`，`openpyxl_available()` 可探测。
@@ -29,4 +29,4 @@
 ## 坑
 - 真实归档 XLSX 尚缺，端到端验收仅靠合成 fixture。
 - 路径须严格 4 段 `raw/<date>/<source_page>/<run_id>/<file>.xlsx`，否则 `infer_source_page` 报错。
-- CLI 仅产出 payload，不写库/不投递；推送与 outbox 去重由调用方处理（`fingerprint_request` 可作 key）。
+- CLI 仅产出 payload，不写库/不投递；推送与 outbox 去重由调用方处理。

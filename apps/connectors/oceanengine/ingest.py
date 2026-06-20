@@ -28,7 +28,6 @@ from pathlib import Path
 from packages.core.contracts import MetricsImportRequest, OceanEngineMetricRow, OceanEngineSourcePage
 
 from apps.connectors.oceanengine.archive import ImportArchive
-from apps.connectors.oceanengine.metrics import canonical_json
 from apps.connectors.oceanengine.normalize import normalize_rows
 from apps.connectors.oceanengine.xlsx import XlsxUnsupportedError, openpyxl_available, read_first_sheet
 
@@ -236,9 +235,3 @@ def default_archive(archive_root: str | Path) -> ImportArchive:
     """Return the canonical dedupe archive living under the archive root."""
 
     return ImportArchive(Path(archive_root).resolve() / "db" / "oceanengine_offline.sqlite3")
-
-
-def fingerprint_request(request: MetricsImportRequest) -> str:
-    """Stable hash of an import request payload (handy for outbox/dedupe keys)."""
-
-    return hashlib.sha256(canonical_json(request.model_dump()).encode("utf-8")).hexdigest()
