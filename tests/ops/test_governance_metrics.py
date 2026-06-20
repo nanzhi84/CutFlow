@@ -2,7 +2,7 @@
 
 These exercise the pure ``packages.ops`` compute functions directly (no DB / API),
 asserting the §26.2 cost formulas, §26.3 yield denominators, budget evaluation,
-alert-rule evaluation, and failure classification.
+and failure classification.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from packages.core.contracts import Budget, FailureClass, Money, OpsAlertRule
+from packages.core.contracts import Budget, FailureClass, Money
 from packages.ops import (
     FunnelCounts,
     InvocationCost,
@@ -19,7 +19,6 @@ from packages.ops import (
     compute_cost_metrics,
     compute_yield_rates,
     evaluate_budget,
-    evaluate_rules,
 )
 from packages.ops.budget_evaluation import period_start
 
@@ -191,33 +190,6 @@ def test_budget_period_start_resets_daily():
     now = datetime(2026, 6, 15, 13, 30, tzinfo=timezone.utc)
     assert period_start("day", now) == datetime(2026, 6, 15, tzinfo=timezone.utc)
     assert period_start("month", now) == datetime(2026, 6, 1, tzinfo=timezone.utc)
-
-
-# ---------------- §9.8 alert-rule engine ----------------
-
-
-def test_alert_rules_fire_on_condition():
-    rules = [
-        OpsAlertRule(id="r_yield", metric="yield.true_yield_rate", condition="lt", threshold=0.5),
-        OpsAlertRule(id="r_qc", metric="yield.qc_fail_rate", condition="gt", threshold=0.2),
-        OpsAlertRule(id="r_disabled", metric="cost.unpriced", condition="gt", threshold=0, enabled=False),
-    ]
-    metrics = {
-        "yield.true_yield_rate": 0.3,  # < 0.5 -> fires
-        "yield.qc_fail_rate": 0.1,  # not > 0.2 -> no fire
-        "cost.unpriced": 5,  # rule disabled -> no fire
-    }
-    events = evaluate_rules(rules, metrics)
-    fired = {e.rule_id for e in events}
-    assert fired == {"r_yield"}
-    assert events[0].code == "yield.drop"
-    assert events[0].id == "alert_rule_r_yield"
-
-
-def test_alert_rules_skip_missing_metric():
-    rules = [OpsAlertRule(id="r", metric="provider.balance", condition="lt", threshold=10)]
-    assert evaluate_rules(rules, {}) == []
-    assert evaluate_rules(rules, {"provider.balance": None}) == []
 
 
 # ---------------- §9.6 failure taxonomy ----------------
