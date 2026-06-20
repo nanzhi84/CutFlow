@@ -83,6 +83,20 @@ class SessionRow(TimestampMixin, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class UserGenerationDefaultsRow(TimestampMixin, Base):
+    __tablename__ = "user_generation_defaults"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_user_generation_defaults_user_id"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    preset_name: Mapped[str] = mapped_column(
+        String, nullable=False, default="default", server_default="default"
+    )
+    settings: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+
+
 class IdempotencyRecordRow(Base):
     __tablename__ = "idempotency_records"
 

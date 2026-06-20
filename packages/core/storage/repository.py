@@ -77,6 +77,7 @@ from packages.core.contracts import (
     SelectionReservationRecord,
     UploadSession,
     UsageMeterRecord,
+    UserGenerationDefaults,
     FailureClass,
     FailureTaxonomyEntry,
     UserRole,
@@ -234,6 +235,8 @@ class Repository:
         self.reward_signals: dict[str, RewardSignal] = {}
         self.rubric_bump_proposals: dict[str, RubricBumpProposal] = {}
         self.idempotency_records: dict[str, dict] = {}
+        # Per-user saved generation defaults (user_id -> UserGenerationDefaults).
+        self.generation_defaults: dict[str, UserGenerationDefaults] = {}
         self.seed()
 
     def seed(self) -> None:

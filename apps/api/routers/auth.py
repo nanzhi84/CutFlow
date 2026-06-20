@@ -46,6 +46,20 @@ def change_password(payload: c.ChangePasswordRequest, request: Request) -> c.OkR
     return service.change_password(payload, request)
 
 
+@router.get("/api/auth/me/generation-defaults", response_model=c.UserGenerationDefaults)
+def get_generation_defaults(request: Request) -> c.UserGenerationDefaults:
+    require_role(request, c.UserRole.viewer)
+    return service.get_my_generation_defaults(request)
+
+
+@router.put("/api/auth/me/generation-defaults", response_model=c.UserGenerationDefaults)
+def put_generation_defaults(
+    payload: c.UserGenerationDefaults, request: Request
+) -> c.UserGenerationDefaults:
+    require_role(request, c.UserRole.viewer)
+    return service.put_my_generation_defaults(request, payload)
+
+
 @router.get("/api/auth/users", response_model=c.PageResponse[c.AuthUser])
 def list_users(request: Request, limit: int = 50) -> c.PageResponse[c.AuthUser]:
     require_role(request, c.UserRole.admin)

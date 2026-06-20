@@ -20,6 +20,7 @@ VIEWER_FORBIDDEN_EXEMPTIONS = {
     ("POST", "/api/auth/logout"): "self-service endpoint",
     ("PATCH", "/api/auth/me"): "self-service endpoint",
     ("POST", "/api/auth/me/change-password"): "self-service endpoint",
+    ("PUT", "/api/auth/me/generation-defaults"): "self-service endpoint",
 }
 INVALID_BODY_EXEMPTIONS = {
     ("PUT", "/api/uploads/{upload_session_id}/file"): "optional multipart upload body reaches domain state",
@@ -141,6 +142,11 @@ def value_for_schema(schema: dict[str, Any], spec: dict[str, Any]) -> Any:
         return value_for_schema(schema["oneOf"][0], spec)
     if "enum" in schema:
         return schema["enum"][0]
+    # Pydantic v2 emits single-value ``Literal[...]`` fields as ``const`` (not
+    # ``enum``); honor it so generated bodies for option blocks with fixed-literal
+    # fields (e.g. OutputOptions.format, StrictnessOptions.*) stay valid.
+    if "const" in schema:
+        return schema["const"]
 
     schema_type = schema.get("type")
     if schema_type == "object" or "properties" in schema:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 from fastapi import Request, Response
+from sqlalchemy import select
 
 from apps.api.common import (
     auth,
@@ -17,6 +18,7 @@ from packages.core.auth import rate_limit
 from packages.core.auth.password_policy import validate_password
 from packages.core.config import build_settings
 from packages.core.registration_codes import hash_registration_code
+from packages.core.storage.database import UserGenerationDefaultsRow
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 
@@ -223,3 +225,57 @@ def patch_registration_code(
             raise NodeExecutionError(c.ErrorCode.auth_registration_closed, "Registration code not found.")
         return code
     return repository(request).patch(repository(request).registration_codes, code_id, payload.model_dump(exclude_none=True))
+
+
+def get_my_generation_defaults(request: Request) -> c.UserGenerationDefaults:
+    """Return the caller's saved generation defaults.
+
+    No saved record yet -> an all-``None`` ``UserGenerationDefaults`` (the caller
+    falls back to the per-block system defaults). Backed by the SQL
+    ``user_generation_defaults`` table when running on the SQLAlchemy backend, and
+    by the in-memory repository otherwise."""
+    user = auth(request).authenticate_token(request.cookies.get(SESSION_COOKIE))
+    session_factory = getattr(request.app.state, "sqlalchemy_session_factory", None)
+    if session_factory is not None:
+        with session_factory() as session:
+            row = session.scalar(
+                select(UserGenerationDefaultsRow).where(
+                    UserGenerationDefaultsRow.user_id == user.id
+                )
+            )
+            if row is None:
+                return c.UserGenerationDefaults()
+            return c.UserGenerationDefaults.model_validate(row.settings)
+    stored = repository(request).generation_defaults.get(user.id)
+    return stored if stored is not None else c.UserGenerationDefaults()
+
+
+def put_my_generation_defaults(
+    request: Request, payload: c.UserGenerationDefaults
+) -> c.UserGenerationDefaults:
+    """Upsert the caller's generation defaults (full replace) and echo the saved value."""
+    user = auth(request).authenticate_token(request.cookies.get(SESSION_COOKIE))
+    settings_payload = payload.model_dump(mode="json")
+    session_factory = getattr(request.app.state, "sqlalchemy_session_factory", None)
+    if session_factory is not None:
+        with session_factory() as session:
+            row = session.scalar(
+                select(UserGenerationDefaultsRow).where(
+                    UserGenerationDefaultsRow.user_id == user.id
+                )
+            )
+            if row is None:
+                row = UserGenerationDefaultsRow(
+                    id=new_id("ugd"),
+                    user_id=user.id,
+                    preset_name="default",
+                    settings=settings_payload,
+                )
+                session.add(row)
+            else:
+                row.settings = settings_payload
+                row.updated_at = c.utcnow()
+            session.commit()
+        return c.UserGenerationDefaults.model_validate(settings_payload)
+    repository(request).generation_defaults[user.id] = payload
+    return payload

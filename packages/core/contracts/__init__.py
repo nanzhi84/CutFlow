@@ -201,6 +201,9 @@ from .jobs import (
     RunReportResponse,
     RunArtifactsResponse,
 )
+from .preferences import (
+    UserGenerationDefaults,
+)
 from .publishing import (
     FinishedVideo,
     FinishedVideoDetail,
@@ -421,6 +424,7 @@ __all__ = [
     "CreateRegistrationCodeRequest",
     "UpdateRegistrationCodeRequest",
     "UpdateMeRequest",
+    "UserGenerationDefaults",
     "PrepareUploadRequest",
     "UploadSession",
     "CompleteUploadRequest",
