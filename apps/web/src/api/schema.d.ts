@@ -2865,6 +2865,12 @@ export interface components {
             /** Request Id */
             request_id: string;
         };
+        /**
+         * BgmEnergyProfile
+         * @description Coarse energy motion inside one BGM clip.
+         * @enum {string}
+         */
+        BgmEnergyProfile: "stable" | "rising" | "falling" | "drop" | "peak";
         /** BgmOptions */
         BgmOptions: {
             /**
@@ -2885,6 +2891,12 @@ export interface components {
              */
             auto_mix: boolean;
         };
+        /**
+         * BgmSectionType
+         * @description Musical section type for one BGM clip.
+         * @enum {string}
+         */
+        BgmSectionType: "intro" | "verse" | "chorus" | "drop" | "bridge" | "outro" | "loop" | "build" | "general";
         /**
          * BgmSegmentRole
          * @description BGM full-track segment role.
@@ -2908,6 +2920,25 @@ export interface components {
             duration: number;
             /** @default general */
             role: components["schemas"]["BgmSegmentRole"];
+            /** @default general */
+            section_type: components["schemas"]["BgmSectionType"];
+            /**
+             * Section Label
+             * @default
+             */
+            section_label: string;
+            /**
+             * Repeat Group
+             * @default
+             */
+            repeat_group: string;
+            /**
+             * Loopable
+             * @default false
+             */
+            loopable: boolean;
+            /** @default stable */
+            energy_profile: components["schemas"]["BgmEnergyProfile"];
             /** Drop Anchor Sec */
             drop_anchor_sec?: number | null;
             /**
@@ -2920,6 +2951,10 @@ export interface components {
              * @default
              */
             mood: string;
+            /** Script Fit */
+            script_fit?: string[];
+            /** Avoid Script */
+            avoid_script?: string[];
             /** Scene Fit */
             scene_fit?: string[];
             /** Avoid Scene */
@@ -8301,10 +8336,6 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
-            /** Input */
-            input?: unknown;
-            /** Context */
-            ctx?: Record<string, never>;
         };
         /** VideoVersion */
         VideoVersion: {

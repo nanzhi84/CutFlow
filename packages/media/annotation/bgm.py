@@ -43,8 +43,10 @@ from packages.core.contracts import (
     AnnotationStatus,
     AnnotationV4,
     AnnotationVersion,
+    BgmEnergyProfile,
     BgmSegmentRole,
     BgmSegmentV4,
+    BgmSectionType,
     ProviderProfile,
 )
 
@@ -212,33 +214,13 @@ def segment_audio_track(
     beats: list[float],
     drops: list[float],
     *,
-    min_len: float = 24.0,
-    target_len: float = 60.0,
-    max_len: float = 90.0,
+    min_len: float = 10.0,
 ) -> list[dict]:
     """Split the full BGM track into contiguous, beat-snapped segments."""
     if duration <= 0:
         return []
-    if duration <= target_len + 10.0:
-        anchor = _first_between(drops, 0.0, duration)
-        return [
-            {
-                "start": 0.0,
-                "end": round(duration, 3),
-                "duration": round(duration, 3),
-                "energy": _mean(energy),
-                "drop_anchor": round(snap_to_beats(anchor, beats), 3) if anchor is not None else None,
-                "role_hint": "hook",
-            }
-        ]
 
-    boundaries = _segment_boundaries(
-        duration,
-        beats,
-        min_len=min_len,
-        target_len=target_len,
-        max_len=max_len,
-    )
+    boundaries = _structural_boundaries(duration, energy, times, beats, drops, min_len=min_len)
     segments: list[dict] = []
     raw_energies: list[float] = []
     for start, end in zip(boundaries, boundaries[1:]):
@@ -261,55 +243,102 @@ def segment_audio_track(
     if not segments:
         return []
 
+    flat_track = len(segments) == 1 and _is_stable_loop(energy)
     high_energy_threshold = _upper_quartile(raw_energies)
     for index, segment in enumerate(segments):
         is_first = index == 0
         is_last = index == len(segments) - 1
-        if is_first:
+        prev_energy = raw_energies[index - 1] if index > 0 else None
+        next_energy = raw_energies[index + 1] if index + 1 < len(raw_energies) else None
+        if flat_track:
             role = "hook"
+            section_type = "loop"
+            energy_profile = "stable"
+        elif is_first:
+            role = "hook"
+            section_type = "intro"
+            energy_profile = _energy_profile(raw_energies[index], None, next_energy)
         elif is_last and float(segment["energy"]) < high_energy_threshold:
             role = "outro"
+            section_type = "outro"
+            energy_profile = _energy_profile(raw_energies[index], prev_energy, None)
         elif segment["drop_anchor"] is not None or float(segment["energy"]) >= high_energy_threshold:
             role = "climax"
+            section_type = "drop" if segment["drop_anchor"] is not None else "chorus"
+            energy_profile = _energy_profile(raw_energies[index], prev_energy, next_energy)
         else:
             role = "general"
+            section_type = "verse"
+            energy_profile = _energy_profile(raw_energies[index], prev_energy, next_energy)
         segment["role_hint"] = role
+        segment["section_type"] = section_type
+        segment["section_label"] = _section_label(index)
+        segment["repeat_group"] = "A" if flat_track else segment["section_label"]
+        segment["loopable"] = bool(flat_track or section_type in {"loop", "verse", "chorus", "drop"})
+        segment["energy_profile"] = energy_profile
     return segments
 
 
-def _segment_boundaries(
+def _structural_boundaries(
     duration: float,
+    energy: list[float],
+    times: list[float],
     beats: list[float],
+    drops: list[float],
     *,
     min_len: float,
-    target_len: float,
-    max_len: float,
 ) -> list[float]:
-    clean_beats = sorted({round(float(b), 3) for b in beats if 0 < float(b) < duration})
     boundaries = [0.0]
-    if len(clean_beats) >= 2:
-        intervals = [
-            clean_beats[i] - clean_beats[i - 1]
-            for i in range(1, len(clean_beats))
-            if clean_beats[i] > clean_beats[i - 1]
-        ]
-        beat_interval = _median(intervals) if intervals else 0.0
-        if beat_interval > 0:
-            beats_per_segment = max(8, round(target_len / beat_interval / 8) * 8)
-            for idx in range(beats_per_segment - 1, len(clean_beats), beats_per_segment):
-                boundary = clean_beats[idx]
-                if min_len <= boundary <= duration - min_len:
-                    boundaries.append(boundary)
-    if len(boundaries) == 1:
-        boundary = target_len
-        while boundary <= duration - min_len:
-            boundaries.append(round(boundary, 3))
-            boundary += target_len
+    for candidate in _energy_change_points(duration, energy, times, min_len=min_len):
+        boundaries.append(snap_to_beats(candidate, beats))
+    for drop in drops:
+        if min_len <= float(drop) <= duration - min_len:
+            boundaries.append(snap_to_beats(float(drop), beats))
     boundaries.append(round(duration, 3))
     boundaries = sorted({round(b, 3) for b in boundaries})
     boundaries = _merge_short_segments(boundaries, min_len=min_len)
-    boundaries = _split_long_segments(boundaries, clean_beats, max_len=max_len, target_len=target_len)
     return sorted({round(max(0.0, min(duration, b)), 3) for b in boundaries})
+
+
+def _energy_change_points(
+    duration: float,
+    energy: list[float],
+    times: list[float],
+    *,
+    min_len: float,
+    window: float = 8.0,
+    threshold: float = 0.18,
+) -> list[float]:
+    n = min(len(energy), len(times))
+    if n < 3:
+        return []
+    candidates: list[tuple[float, float]] = []
+    for idx in range(1, n - 1):
+        ts = float(times[idx])
+        if ts < min_len or ts > duration - min_len:
+            continue
+        before = [
+            float(energy[j])
+            for j in range(n)
+            if ts - window <= float(times[j]) < ts
+        ]
+        after = [
+            float(energy[j])
+            for j in range(n)
+            if ts <= float(times[j]) <= ts + window
+        ]
+        if len(before) < 2 or len(after) < 2:
+            continue
+        delta = abs(_mean(after) - _mean(before))
+        if delta >= threshold:
+            candidates.append((ts, delta))
+    if not candidates:
+        return []
+    selected: list[tuple[float, float]] = []
+    for ts, delta in sorted(candidates, key=lambda item: item[1], reverse=True):
+        if all(abs(ts - existing) >= min_len for existing, _ in selected):
+            selected.append((ts, delta))
+    return [ts for ts, _ in sorted(selected)]
 
 
 def _merge_short_segments(boundaries: list[float], *, min_len: float) -> list[float]:
@@ -328,25 +357,6 @@ def _merge_short_segments(boundaries: list[float], *, min_len: float) -> list[fl
     return boundaries
 
 
-def _split_long_segments(
-    boundaries: list[float],
-    beats: list[float],
-    *,
-    max_len: float,
-    target_len: float,
-) -> list[float]:
-    output: list[float] = [boundaries[0]]
-    for start, end in zip(boundaries, boundaries[1:]):
-        cursor = start + target_len
-        while end - output[-1] > max_len and cursor < end:
-            boundary = snap_to_beats(cursor, beats)
-            if output[-1] < boundary < end:
-                output.append(round(boundary, 3))
-            cursor += target_len
-        output.append(end)
-    return output
-
-
 def _mean(values: list[float]) -> float:
     return round(sum(values) / len(values), 4) if values else 0.0
 
@@ -358,6 +368,30 @@ def _mean_between(energy: list[float], times: list[float], start: float, end: fl
         if start <= times[i] <= end
     ]
     return _mean(vals) if vals else _mean(energy)
+
+
+def _is_stable_loop(energy: list[float], *, tolerance: float = 0.08) -> bool:
+    if not energy:
+        return True
+    return max(energy) - min(energy) <= tolerance
+
+
+def _energy_profile(value: float, previous: float | None, next_value: float | None) -> str:
+    if previous is not None:
+        if value - previous >= 0.18:
+            return "rising"
+        if previous - value >= 0.18:
+            return "falling"
+    if next_value is not None and next_value - value >= 0.18:
+        return "rising"
+    return "stable"
+
+
+def _section_label(index: int) -> str:
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    if index < len(alphabet):
+        return alphabet[index]
+    return f"S{index + 1}"
 
 
 def _median(values: list[float]) -> float:
@@ -384,7 +418,7 @@ def _first_between(values: list[float], start: float, end: float) -> float | Non
             current = float(value)
         except (TypeError, ValueError):
             continue
-        if start <= current <= end:
+        if start <= current < end:
             return current
     return None
 
@@ -557,6 +591,11 @@ def _sensor_segments(raw_segments: list[Any]) -> list[BgmSegmentV4]:
                 end=end,
                 duration=float(raw.get("duration") or round(end - start, 3)),
                 role=_role_from_hint(raw.get("role_hint")),
+                section_type=_section_type_from_hint(raw.get("section_type")),
+                section_label=str(raw.get("section_label") or "").strip(),
+                repeat_group=str(raw.get("repeat_group") or "").strip(),
+                loopable=_bool_from_any(raw.get("loopable")),
+                energy_profile=_energy_profile_from_hint(raw.get("energy_profile")),
                 drop_anchor_sec=raw.get("drop_anchor"),
                 energy=float(raw.get("energy") or 0.0),
                 source="sensor",
@@ -612,15 +651,28 @@ def _listen_to_segment(
     intent = _intent_from_output(result.output)
     if not intent:
         return segment, invocation.id
-    semantics = _normalize_segment_semantics(intent, role_hint=segment.role)
+    semantics = _normalize_segment_semantics(
+        intent,
+        role_hint=segment.role,
+        section_type_hint=segment.section_type,
+        energy_profile_hint=segment.energy_profile,
+        loopable_hint=segment.loopable,
+        confidence_hint=segment.confidence,
+    )
     return (
         segment.model_copy(
             update={
                 "mood": semantics["mood"],
+                "section_type": semantics["section_type"],
+                "energy_profile": semantics["energy_profile"],
+                "script_fit": semantics["script_fit"],
+                "avoid_script": semantics["avoid_script"],
                 "scene_fit": semantics["scene_fit"],
                 "avoid_scene": semantics["avoid_scene"],
+                "loopable": semantics["loopable"],
                 "role": semantics["role"],
                 "reason": semantics["reason"],
+                "confidence": semantics["confidence"],
                 "source": "sensor+audio",
             }
         ),
@@ -641,6 +693,11 @@ def _build_segment_prompt(
             "end": segment.end,
             "duration": segment.duration,
             "energy": segment.energy,
+            "section_type": segment.section_type.value,
+            "section_label": segment.section_label,
+            "repeat_group": segment.repeat_group,
+            "loopable": segment.loopable,
+            "energy_profile": segment.energy_profile.value,
             "has_drop": segment.drop_anchor_sec is not None,
         },
         "track": {
@@ -651,8 +708,14 @@ def _build_segment_prompt(
         "required_schema": {
             "mood": "一个简短情绪词",
             "role": "hook|climax|outro|general",
+            "section_type": "intro|verse|chorus|drop|bridge|outro|loop|build|general",
+            "energy_profile": "stable|rising|falling|drop|peak",
+            "script_fit": ["2-6 个该片段适配的短视频脚本类型"],
+            "avoid_script": ["0-4 个该片段不适配的短视频脚本类型"],
             "scene_fit": ["2-6 个该片段适配的中文短视频场景"],
             "avoid_scene": ["0-4 个应避免的中文场景"],
+            "loopable": "boolean，是否适合用同一段循环铺满短视频",
+            "confidence": "0-1",
             "reason": "一句中文推荐理由",
         },
     }
@@ -675,14 +738,27 @@ def _normalize_segment_semantics(
     raw: dict[str, Any],
     *,
     role_hint: BgmSegmentRole,
+    section_type_hint: BgmSectionType,
+    energy_profile_hint: BgmEnergyProfile,
+    loopable_hint: bool,
+    confidence_hint: float,
 ) -> dict[str, Any]:
     data = raw if isinstance(raw, dict) else {}
     return {
         "mood": str(data.get("mood") or "").strip(),
+        "section_type": _section_type_from_hint(data.get("section_type"), fallback=section_type_hint),
+        "energy_profile": _energy_profile_from_hint(
+            data.get("energy_profile"),
+            fallback=energy_profile_hint,
+        ),
+        "script_fit": _compact_str_list(data.get("script_fit"), 6),
+        "avoid_script": _compact_str_list(data.get("avoid_script"), 4),
         "scene_fit": _compact_str_list(data.get("scene_fit"), 6),
         "avoid_scene": _compact_str_list(data.get("avoid_scene"), 4),
+        "loopable": _bool_from_any(data.get("loopable"), default=loopable_hint),
         "role": _role_from_hint(data.get("role"), fallback=role_hint),
         "reason": str(data.get("reason") or "").strip(),
+        "confidence": _confidence_from_hint(data.get("confidence"), fallback=confidence_hint),
     }
 
 
@@ -695,6 +771,52 @@ def _role_from_hint(
     if text in {role.value for role in BgmSegmentRole}:
         return BgmSegmentRole(text)
     return fallback
+
+
+def _section_type_from_hint(
+    value: Any,
+    *,
+    fallback: BgmSectionType = BgmSectionType.general,
+) -> BgmSectionType:
+    text = str(value or "").strip().lower()
+    if text in {item.value for item in BgmSectionType}:
+        return BgmSectionType(text)
+    return fallback
+
+
+def _energy_profile_from_hint(
+    value: Any,
+    *,
+    fallback: BgmEnergyProfile = BgmEnergyProfile.stable,
+) -> BgmEnergyProfile:
+    text = str(value or "").strip().lower()
+    if text in {item.value for item in BgmEnergyProfile}:
+        return BgmEnergyProfile(text)
+    return fallback
+
+
+def _bool_from_any(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "1", "yes", "y"}:
+            return True
+        if text in {"false", "0", "no", "n"}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
+def _confidence_from_hint(value: Any, *, fallback: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(number):
+        return fallback
+    return max(0.0, min(1.0, number))
 
 
 def _compact_str_list(value: Any, limit: int) -> list[str]:
@@ -785,13 +907,21 @@ def _bgm_quality_report(
             bgm.update(
                 {
                     "mood": semantic_segment.mood,
+                    "section_type": semantic_segment.section_type.value,
+                    "energy_profile": semantic_segment.energy_profile.value,
+                    "script_fit": semantic_segment.script_fit,
+                    "avoid_script": semantic_segment.avoid_script,
+                    "loopable": semantic_segment.loopable,
                     "scene_fit": semantic_segment.scene_fit,
                     "avoid_scene": semantic_segment.avoid_scene,
                     "retrieval_text": " ".join(
                         part
                         for part in (
                             semantic_segment.mood,
+                            semantic_segment.section_type.value,
+                            semantic_segment.energy_profile.value,
                             semantic_segment.reason,
+                            *semantic_segment.script_fit,
                             *semantic_segment.scene_fit,
                         )
                         if part

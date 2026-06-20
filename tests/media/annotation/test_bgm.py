@@ -99,6 +99,11 @@ def _features_with_librosa(_path):
                 "energy": 0.4,
                 "drop_anchor": None,
                 "role_hint": "hook",
+                "section_type": "intro",
+                "section_label": "A",
+                "repeat_group": "A",
+                "loopable": True,
+                "energy_profile": "stable",
             },
             {
                 "start": 60.0,
@@ -107,6 +112,11 @@ def _features_with_librosa(_path):
                 "energy": 0.7,
                 "drop_anchor": 80.0,
                 "role_hint": "climax",
+                "section_type": "drop",
+                "section_label": "B",
+                "repeat_group": "B",
+                "loopable": False,
+                "energy_profile": "rising",
             },
         ],
     }
@@ -121,6 +131,15 @@ _VALID_SEMANTIC_JSON = (
     '{"mood": "upbeat", "role": "climax", '
     '"scene_fit": ["产品开箱", "促销活动"], "avoid_scene": ["悲伤回忆"], '
     '"reason": "适合快节奏的开场和促销画面"}'
+)
+
+
+_STRUCTURAL_SEMANTIC_JSON = (
+    '{"mood": "热血", "role": "climax", "section_type": "chorus", '
+    '"energy_profile": "rising", "script_fit": ["硬广开场", "产品卖点强化"], '
+    '"avoid_script": ["睡眠放松"], "scene_fit": ["快节奏剪辑"], '
+    '"avoid_scene": ["静态讲解"], "loopable": true, '
+    '"reason": "副歌旋律明确，适合作为短视频单段BGM铺满", "confidence": 0.73}'
 )
 
 
@@ -165,6 +184,34 @@ def test_bgm_completed_with_semantics(tmp_path):
     assert len(plugin.calls) == 2
     assert plugin.calls and plugin.calls[0].idempotency_key == "bgm-omni-bgm1-0"
     assert plugin.calls[0].capability_id == "audio.understanding"
+
+
+def test_bgm_semantics_enrich_section_script_fit_and_loopability(tmp_path):
+    repository, gateway = _gateway(tmp_path)
+    profile = _real_audio_profile(repository, gateway)
+    plugin = _FakeOmniPlugin(_STRUCTURAL_SEMANTIC_JSON)
+    gateway.register(plugin)
+
+    result = annotate_bgm(
+        asset_id="bgm_structural",
+        case_id="case1",
+        audio_path="/fake/bgm.mp3",
+        duration=90.0,
+        asset_title="Hero Chorus",
+        gateway=gateway,
+        audio_profile=profile,
+        audio_url_for_window=lambda s, e: f"https://x/{s}-{e}.mp3",
+        feature_extractor=_features_with_librosa,
+    )
+
+    segment = result.annotation.bgm_segments[0]
+    assert segment.section_type.value == "chorus"
+    assert segment.energy_profile.value == "rising"
+    assert segment.script_fit == ["硬广开场", "产品卖点强化"]
+    assert segment.avoid_script == ["睡眠放松"]
+    assert segment.loopable is True
+    assert segment.confidence == 0.73
+    assert "硬广开场" in result.annotation.quality_report["bgm"]["retrieval_text"]
 
 
 def test_bgm_incomplete_audio_output_does_not_fabricate(tmp_path):

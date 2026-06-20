@@ -211,6 +211,66 @@ def test_bgm_segment_candidate_recency_demotes_exact_segment_not_whole_song(tmp_
     assert penalties["bgm_segment_1"] > penalties["bgm_segment_2"]
 
 
+def test_material_pack_limits_bgm_candidates_to_top_k(tmp_path, monkeypatch):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    adapter.repository.media_assets.clear()
+    adapter.repository.annotations.clear()
+    _inject_bgm_asset(
+        adapter.repository,
+        "asset_bgm_long",
+        [
+            _segment(
+                f"bgm_segment_{index}",
+                float(index * 20),
+                float(index * 20 + 20),
+                energy=1.0 - index * 0.02,
+            )
+            for index in range(10)
+        ],
+    )
+
+    output = nodes.material_pack_planning.run(_ctx(adapter, _request(), "MaterialPackPlanning"))
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_material_pack)
+
+    assert len(payload["bgm_candidates"]) == 8
+    assert [c["metadata"]["clip_id"] for c in payload["bgm_candidates"]] == [
+        f"bgm_segment_{index}" for index in range(8)
+    ]
+
+
+def test_material_pack_keeps_requested_bgm_inside_top_k(tmp_path, monkeypatch):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    adapter.repository.media_assets.clear()
+    adapter.repository.annotations.clear()
+    for index in range(8):
+        _inject_bgm_asset(
+            adapter.repository,
+            f"asset_high_{index}",
+            [_segment("segment_high", 0.0, 80.0, energy=0.9 - index * 0.01)],
+        )
+    _inject_bgm_asset(
+        adapter.repository,
+        "asset_requested_bgm",
+        [_segment("requested_segment", 0.0, 80.0, energy=0.1)],
+    )
+
+    output = nodes.material_pack_planning.run(
+        _ctx(
+            adapter,
+            _request(bgm={"enabled": True, "bgm_id": "asset_requested_bgm"}),
+            "MaterialPackPlanning",
+        )
+    )
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_material_pack)
+
+    assert len(payload["bgm_candidates"]) == 8
+    assert any(candidate["asset_id"] == "asset_requested_bgm" for candidate in payload["bgm_candidates"])
+
+
 def test_style_planning_carries_selected_bgm_segment_into_style_plan(tmp_path, monkeypatch):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
@@ -229,8 +289,15 @@ def test_style_planning_carries_selected_bgm_segment_into_style_plan(tmp_path, m
                         "source_start": 58.0,
                         "source_end": 118.0,
                         "duration": 60.0,
+                        "section_type": "chorus",
+                        "section_label": "B",
+                        "repeat_group": "main_hook",
+                        "loopable": True,
+                        "energy_profile": "peak",
                         "mood": "高能推进",
                         "scene_fit": ["产品展示"],
+                        "script_fit": ["产品卖点强化"],
+                        "avoid_script": ["沉浸睡眠"],
                         "reason": "适合高潮段落",
                     },
                 }
@@ -248,8 +315,70 @@ def test_style_planning_carries_selected_bgm_segment_into_style_plan(tmp_path, m
     assert payload["bgm"]["source_start"] == 58.0
     assert payload["bgm"]["source_end"] == 118.0
     assert payload["bgm"]["duration"] == 60.0
+    assert payload["bgm"]["section_type"] == "chorus"
+    assert payload["bgm"]["section_label"] == "B"
+    assert payload["bgm"]["repeat_group"] == "main_hook"
+    assert payload["bgm"]["loopable"] is True
+    assert payload["bgm"]["energy_profile"] == "peak"
     assert payload["bgm"]["mood"] == "高能推进"
     assert payload["bgm"]["scene_fit"] == ["产品展示"]
+    assert payload["bgm"]["script_fit"] == ["产品卖点强化"]
+    assert payload["bgm"]["avoid_script"] == ["沉浸睡眠"]
+
+
+def test_style_planning_chooses_bgm_clip_by_script_fit_over_raw_rank(tmp_path, monkeypatch):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    ctx = _ctx(
+        adapter,
+        _request(script="开场先抛痛点，然后产品卖点强化，最后引导下单。"),
+        "StylePlanning",
+    )
+    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
+        ArtifactKind.plan_material_pack,
+        {
+            "bgm_candidates": [
+                {
+                    "asset_id": "asset_generic_high",
+                    "score": 95.0,
+                    "reason": "higher raw score",
+                    "metadata": {
+                        "clip_id": "generic_clip",
+                        "source_start": 0.0,
+                        "source_end": 80.0,
+                        "duration": 80.0,
+                        "mood": "轻快",
+                        "script_fit": ["旅行Vlog"],
+                    },
+                },
+                {
+                    "asset_id": "asset_script_fit",
+                    "score": 70.0,
+                    "reason": "script matched",
+                    "metadata": {
+                        "clip_id": "selling_clip",
+                        "source_start": 42.0,
+                        "source_end": 126.0,
+                        "duration": 84.0,
+                        "mood": "推进感",
+                        "script_fit": ["产品卖点强化", "硬广转化"],
+                        "scene_fit": ["产品展示"],
+                        "reason": "适合产品卖点强化",
+                    },
+                },
+            ],
+            "font_candidates": [],
+        },
+    )
+
+    output = nodes.style_planning.run(ctx)
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
+
+    assert payload["bgm_asset_id"] == "asset_script_fit"
+    assert payload["bgm"]["segment_id"] == "selling_clip"
+    assert payload["bgm"]["source_start"] == 42.0
+    assert payload["bgm"]["source_end"] == 126.0
 
 
 def test_style_planning_respects_requested_bgm_asset_even_when_not_top_scored(

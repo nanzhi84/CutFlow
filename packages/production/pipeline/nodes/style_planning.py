@@ -29,7 +29,11 @@ def run(ctx: NodeContext) -> NodeOutput:
     degradations: list[DegradationNotice] = []
     warnings: list[WarningCode] = []
     selected_bgm = (
-        _select_bgm_candidate(bgm_candidates, requested_asset_id=state.request.bgm.bgm_id)
+        _select_bgm_candidate(
+            bgm_candidates,
+            requested_asset_id=state.request.bgm.bgm_id,
+            script=state.request.script,
+        )
         if state.request.bgm.enabled
         else None
     )
@@ -67,12 +71,15 @@ def run(ctx: NodeContext) -> NodeOutput:
                 source_start=_float_or_none(bgm_metadata.get("source_start")),
                 source_end=_float_or_none(bgm_metadata.get("source_end")),
                 duration=_float_or_none(bgm_metadata.get("duration")),
+                section_type=str(bgm_metadata.get("section_type") or ""),
+                section_label=str(bgm_metadata.get("section_label") or ""),
+                repeat_group=str(bgm_metadata.get("repeat_group") or ""),
+                loopable=_bool_from_metadata(bgm_metadata.get("loopable")),
+                energy_profile=str(bgm_metadata.get("energy_profile") or ""),
                 mood=str(bgm_metadata.get("mood") or ""),
-                scene_fit=[
-                    str(item)
-                    for item in (bgm_metadata.get("scene_fit") or [])
-                    if isinstance(item, str) and item
-                ],
+                scene_fit=_string_list(bgm_metadata.get("scene_fit")),
+                script_fit=_string_list(bgm_metadata.get("script_fit")),
+                avoid_script=_string_list(bgm_metadata.get("avoid_script")),
                 reason=str(bgm_metadata.get("reason") or selected_bgm.get("reason") or "")
                 if selected_bgm
                 else "",
@@ -94,17 +101,75 @@ def run(ctx: NodeContext) -> NodeOutput:
     )
 
 
-def _select_bgm_candidate(candidates: list[dict], *, requested_asset_id: str | None) -> dict | None:
+def _select_bgm_candidate(
+    candidates: list[dict],
+    *,
+    requested_asset_id: str | None,
+    script: str,
+) -> dict | None:
     if requested_asset_id:
-        return next(
-            (
-                candidate
-                for candidate in candidates
-                if candidate.get("asset_id") == requested_asset_id
-            ),
-            None,
+        candidates = [
+            candidate for candidate in candidates if candidate.get("asset_id") == requested_asset_id
+        ]
+    if not candidates:
+        return None
+    ranked = [
+        (
+            _bgm_script_choice_score(candidate, script=script),
+            -index,
+            candidate,
         )
-    return candidates[0] if candidates else None
+        for index, candidate in enumerate(candidates)
+    ]
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return ranked[0][2]
+
+
+def _bgm_script_choice_score(candidate: dict, *, script: str) -> float:
+    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    base = _float_or_none(candidate.get("score")) or 0.0
+    positive = _match_count(
+        script,
+        [
+            *(_string_list(metadata.get("script_fit"))),
+            *(_string_list(metadata.get("scene_fit"))),
+            str(metadata.get("reason") or ""),
+            str(candidate.get("reason") or ""),
+            str(metadata.get("mood") or ""),
+        ],
+    )
+    negative = _match_count(script, _string_list(metadata.get("avoid_script")))
+    return base + positive * 50.0 - negative * 80.0
+
+
+def _match_count(script: str, labels: list[str]) -> int:
+    haystack = _compact_text(script)
+    if not haystack:
+        return 0
+    count = 0
+    for label in labels:
+        needle = _compact_text(label)
+        if len(needle) >= 2 and needle in haystack:
+            count += 1
+    return count
+
+
+def _compact_text(value: str) -> str:
+    return "".join(ch for ch in str(value or "").lower() if not ch.isspace())
+
+
+def _string_list(value) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _bool_from_metadata(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
 
 
 def _str_or_none(value) -> str | None:

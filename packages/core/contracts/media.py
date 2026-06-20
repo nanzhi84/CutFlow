@@ -573,6 +573,30 @@ class BgmSegmentRole(str, Enum):
     general = "general"
 
 
+class BgmSectionType(str, Enum):
+    """Musical section type for one BGM clip."""
+
+    intro = "intro"
+    verse = "verse"
+    chorus = "chorus"
+    drop = "drop"
+    bridge = "bridge"
+    outro = "outro"
+    loop = "loop"
+    build = "build"
+    general = "general"
+
+
+class BgmEnergyProfile(str, Enum):
+    """Coarse energy motion inside one BGM clip."""
+
+    stable = "stable"
+    rising = "rising"
+    falling = "falling"
+    drop = "drop"
+    peak = "peak"
+
+
 class BgmSegmentV4(ContractModel):
     """BGM full-track segment.
 
@@ -584,9 +608,16 @@ class BgmSegmentV4(ContractModel):
     end: float = Field(ge=0)
     duration: float = Field(ge=0)
     role: BgmSegmentRole = BgmSegmentRole.general
+    section_type: BgmSectionType = BgmSectionType.general
+    section_label: str = ""
+    repeat_group: str = ""
+    loopable: bool = False
+    energy_profile: BgmEnergyProfile = BgmEnergyProfile.stable
     drop_anchor_sec: float | None = None
     energy: float = Field(0.0, ge=0, le=1)
     mood: str = ""
+    script_fit: list[str] = Field(default_factory=list)
+    avoid_script: list[str] = Field(default_factory=list)
     scene_fit: list[str] = Field(default_factory=list)
     avoid_scene: list[str] = Field(default_factory=list)
     reason: str = ""

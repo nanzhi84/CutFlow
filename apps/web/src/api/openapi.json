@@ -9013,6 +9013,18 @@
         "title": "BeginLoginResponse",
         "description": "A started QR-login flow. ``qr_image`` is a login credential (data-url); the API\nmarks the response ``Cache-Control: no-store`` — never persist or log it."
       },
+      "BgmEnergyProfile": {
+        "type": "string",
+        "enum": [
+          "stable",
+          "rising",
+          "falling",
+          "drop",
+          "peak"
+        ],
+        "title": "BgmEnergyProfile",
+        "description": "Coarse energy motion inside one BGM clip."
+      },
       "BgmOptions": {
         "properties": {
           "enabled": {
@@ -9047,6 +9059,22 @@
         "additionalProperties": false,
         "type": "object",
         "title": "BgmOptions"
+      },
+      "BgmSectionType": {
+        "type": "string",
+        "enum": [
+          "intro",
+          "verse",
+          "chorus",
+          "drop",
+          "bridge",
+          "outro",
+          "loop",
+          "build",
+          "general"
+        ],
+        "title": "BgmSectionType",
+        "description": "Musical section type for one BGM clip."
       },
       "BgmSegmentRole": {
         "type": "string",
@@ -9084,6 +9112,29 @@
             "$ref": "#/components/schemas/BgmSegmentRole",
             "default": "general"
           },
+          "section_type": {
+            "$ref": "#/components/schemas/BgmSectionType",
+            "default": "general"
+          },
+          "section_label": {
+            "type": "string",
+            "title": "Section Label",
+            "default": ""
+          },
+          "repeat_group": {
+            "type": "string",
+            "title": "Repeat Group",
+            "default": ""
+          },
+          "loopable": {
+            "type": "boolean",
+            "title": "Loopable",
+            "default": false
+          },
+          "energy_profile": {
+            "$ref": "#/components/schemas/BgmEnergyProfile",
+            "default": "stable"
+          },
           "drop_anchor_sec": {
             "anyOf": [
               {
@@ -9106,6 +9157,20 @@
             "type": "string",
             "title": "Mood",
             "default": ""
+          },
+          "script_fit": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Script Fit"
+          },
+          "avoid_script": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Avoid Script"
           },
           "scene_fit": {
             "items": {
@@ -9156,7 +9221,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "contentMediaType": "application/octet-stream"
+                "format": "binary"
               },
               {
                 "type": "null"
@@ -23067,13 +23132,6 @@
           "type": {
             "type": "string",
             "title": "Error Type"
-          },
-          "input": {
-            "title": "Input"
-          },
-          "ctx": {
-            "type": "object",
-            "title": "Context"
           }
         },
         "type": "object",

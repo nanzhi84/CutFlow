@@ -47,8 +47,15 @@ class BgmPlan(ContractModel):
     source_start: float | None = None
     source_end: float | None = None
     duration: float | None = None
+    section_type: str = ""
+    section_label: str = ""
+    repeat_group: str = ""
+    loopable: bool = False
+    energy_profile: str = ""
     mood: str = ""
     scene_fit: list[str] = Field(default_factory=list)
+    script_fit: list[str] = Field(default_factory=list)
+    avoid_script: list[str] = Field(default_factory=list)
     reason: str = ""
     volume: float = 0.25
     auto_mix: bool = True

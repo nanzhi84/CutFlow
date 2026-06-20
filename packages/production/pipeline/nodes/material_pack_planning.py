@@ -35,6 +35,7 @@ _BGM_BASE_SCORE = 70.0
 _BGM_ENERGY_WEIGHT = 5.0
 _BGM_CONFIDENCE_WEIGHT = 5.0
 _BGM_RECENCY_WEIGHT = 12.0
+_BGM_TOP_K = 8
 
 
 def run(ctx: NodeContext) -> NodeOutput:
@@ -188,7 +189,11 @@ def run(ctx: NodeContext) -> NodeOutput:
         for asset in bgm_assets
         if (annotation := repo.annotation_v4_for_asset(asset.id)) is not None
     }
-    bgm_candidates = _bgm_segment_candidates(bgm_assets, bgm_annotations, bgm_ledger)
+    bgm_candidates = _limit_bgm_candidates(
+        _bgm_segment_candidates(bgm_assets, bgm_annotations, bgm_ledger),
+        limit=_BGM_TOP_K,
+        requested_asset_id=request.bgm.bgm_id,
+    )
     font_candidates = _simple_candidates(font_assets, "font", font_ledger)
 
     # §6.6 reserve: claim a TTL lease over each top candidate per medium so a
@@ -404,9 +409,24 @@ def _bgm_segment_candidates(assets, annotations, ledger_entries) -> list[Materia
                         "source_end": source_end,
                         "duration": duration,
                         "role": role,
+                        "section_type": (
+                            segment.section_type.value
+                            if hasattr(segment.section_type, "value")
+                            else str(segment.section_type)
+                        ),
+                        "section_label": segment.section_label,
+                        "repeat_group": segment.repeat_group,
+                        "loopable": bool(segment.loopable),
+                        "energy_profile": (
+                            segment.energy_profile.value
+                            if hasattr(segment.energy_profile, "value")
+                            else str(segment.energy_profile)
+                        ),
                         "drop_anchor_sec": segment.drop_anchor_sec,
                         "energy": float(segment.energy or 0.0),
                         "mood": segment.mood,
+                        "script_fit": list(segment.script_fit),
+                        "avoid_script": list(segment.avoid_script),
                         "scene_fit": list(segment.scene_fit),
                         "avoid_scene": list(segment.avoid_scene),
                         "reason": segment.reason,
@@ -423,3 +443,23 @@ def _bgm_segment_candidates(assets, annotations, ledger_entries) -> list[Materia
         )
     )
     return candidates
+
+
+def _limit_bgm_candidates(
+    candidates: list[MaterialCandidate],
+    *,
+    limit: int,
+    requested_asset_id: str | None,
+) -> list[MaterialCandidate]:
+    if limit <= 0 or len(candidates) <= limit:
+        return candidates
+    top = list(candidates[:limit])
+    requested = str(requested_asset_id or "").strip()
+    if requested and not any(candidate.asset_id == requested for candidate in top):
+        requested_candidate = next(
+            (candidate for candidate in candidates[limit:] if candidate.asset_id == requested),
+            None,
+        )
+        if requested_candidate is not None:
+            top[-1] = requested_candidate
+    return top

@@ -117,6 +117,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             # fades when enabled (no longer a dead end-to-end flag).
             auto_mix = bool((bgm_plan or {}).get("auto_mix", state.request.bgm.auto_mix))
             bgm_source_start = _float_or_zero((bgm_plan or {}).get("source_start"))
+            bgm_source_end = _float_or_none((bgm_plan or {}).get("source_end"))
             mix_result = render_final_media(
                 rendered_path=ctx.artifact_path(rendered),
                 audio_path=ctx.artifact_path(audio),
@@ -129,6 +130,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                 fonts_dir=resolved_font.fonts_dir if resolved_font else None,
                 auto_mix=auto_mix,
                 bgm_source_start=bgm_source_start,
+                bgm_source_end=bgm_source_end,
             )
             # No silent fallback: when auto-mix wanted LUFS targeting but the
             # loudness probe failed, the mixer quietly used the requested volume.
@@ -190,3 +192,10 @@ def _float_or_zero(value) -> float:
         return max(0.0, float(value or 0.0))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _float_or_none(value) -> float | None:
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return None

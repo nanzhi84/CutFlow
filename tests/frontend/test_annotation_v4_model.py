@@ -24,6 +24,13 @@ const probe = `
       mood: "燃",
       scene_fit: ["转场"],
       avoid_scene: ["静态讲解"],
+      section_type: "chorus",
+      section_label: "B",
+      repeat_group: "chorus_1",
+      loopable: true,
+      energy_profile: "rising",
+      script_fit: ["硬广开场"],
+      avoid_script: ["睡眠放松"],
       reason: "drop clear",
       confidence: 0.91,
       source: "sensor+audio",
@@ -72,5 +79,12 @@ def test_bgm_segments_preserve_hidden_fields_when_round_tripped_for_save() -> No
     assert result["canonical"]["duration"] == 12
     assert result["editedCanonical"]["duration"] == 13.5
     assert result["canonical"]["avoid_scene"] == ["静态讲解"]
+    assert result["canonical"]["section_type"] == "chorus"
+    assert result["canonical"]["section_label"] == "B"
+    assert result["canonical"]["repeat_group"] == "chorus_1"
+    assert result["canonical"]["loopable"] is True
+    assert result["canonical"]["energy_profile"] == "rising"
+    assert result["canonical"]["script_fit"] == ["硬广开场"]
+    assert result["canonical"]["avoid_script"] == ["睡眠放松"]
     assert result["canonical"]["confidence"] == 0.91
     assert result["canonical"]["source"] == "sensor+audio"

@@ -222,7 +222,7 @@ def test_mix_filter_graph_has_ducking_and_fades_only_when_auto():
     assert "anull[bgm]" in plain
 
 
-def test_mix_filter_graph_trims_bgm_from_selected_segment_start():
+def test_mix_filter_graph_loops_only_selected_bgm_segment_window():
     graph = _ffmpeg._build_bgm_audio_filters(
         bgm_volume=0.2,
         duration=5.0,
@@ -230,13 +230,16 @@ def test_mix_filter_graph_trims_bgm_from_selected_segment_start():
         fade_in=0.0,
         fade_out=0.0,
         bgm_source_start=62.5,
+        bgm_source_end=64.5,
     )
 
-    assert "atrim=62.500:67.500" in graph
+    assert "atrim=62.500:64.500" in graph
+    assert "aloop=loop=-1:size=96000" in graph
+    assert "atrim=0:5.000" in graph
     assert "asetpts=PTS-STARTPTS" in graph
 
 
-def test_subtitle_bgm_mix_passes_selected_bgm_segment_start(monkeypatch, tmp_path):
+def test_subtitle_bgm_mix_passes_selected_bgm_segment_window(monkeypatch, tmp_path):
     repository = Repository()
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr(
@@ -367,6 +370,7 @@ def test_subtitle_bgm_mix_passes_selected_bgm_segment_start(monkeypatch, tmp_pat
     nodes.subtitle_and_bgm_mix.run(ctx)
 
     assert captured["bgm_source_start"] == 62.5
+    assert captured["bgm_source_end"] == 122.5
 
 
 # --- gap 2+3: real ffmpeg end-to-end burn --------------------------------------
@@ -586,6 +590,120 @@ def test_render_final_media_real_ffmpeg_trims_bgm_from_selected_source_start(tmp
     )
 
     assert _zero_crossing_frequency(decoded, skip_seconds=0.1) > 750.0
+
+
+@pytest.mark.skipif(shutil.which(ffmpeg_bin()) is None, reason="ffmpeg not available")
+def test_render_final_media_real_ffmpeg_loops_selected_bgm_clip_not_whole_track(tmp_path):
+    fps = 30
+    duration = 0.8
+    video = tmp_path / "video.mp4"
+    voice = tmp_path / "voice.wav"
+    bgm = tmp_path / "bgm.wav"
+    out = tmp_path / "final.mp4"
+    decoded = tmp_path / "decoded.wav"
+    runner = FfmpegRunner()
+
+    runner.run(
+        [
+            ffmpeg_bin(),
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc2=size=320x320:rate={fps}",
+            "-t",
+            f"{duration:.3f}",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            str(video),
+        ]
+    )
+    runner.run(
+        [
+            ffmpeg_bin(),
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=channel_layout=mono:sample_rate=48000",
+            "-t",
+            f"{duration:.3f}",
+            "-ac",
+            "1",
+            str(voice),
+        ]
+    )
+    runner.run(
+        [
+            ffmpeg_bin(),
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=330:sample_rate=48000:duration=0.400",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=990:sample_rate=48000:duration=0.800",
+            "-filter_complex",
+            "[0:a][1:a]concat=n=2:v=0:a=1[a]",
+            "-map",
+            "[a]",
+            "-ac",
+            "1",
+            str(bgm),
+        ]
+    )
+
+    _ffmpeg.render_final_media(
+        rendered_path=video,
+        audio_path=voice,
+        output_path=out,
+        subtitle_path=None,
+        bgm_path=bgm,
+        bgm_volume=1.0,
+        duration=duration,
+        fps=fps,
+        auto_mix=False,
+        bgm_source_start=0.0,
+        bgm_source_end=0.4,
+        fade_in=0.0,
+        fade_out=0.0,
+    )
+    runner.run(
+        [
+            ffmpeg_bin(),
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(out),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "48000",
+            "-t",
+            "0.750",
+            str(decoded),
+        ]
+    )
+
+    assert _zero_crossing_frequency(decoded, skip_seconds=0.5) < 500.0
 
 
 def _zero_crossing_frequency(path, *, skip_seconds: float = 0.0) -> float:

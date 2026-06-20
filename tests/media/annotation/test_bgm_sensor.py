@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from packages.media.annotation import bgm
 
 
@@ -41,6 +43,53 @@ def test_segment_audio_track_covers_full_track_with_contiguous_segments():
     assert any(s["role_hint"] == "climax" for s in segments)
 
 
+def test_segment_audio_track_keeps_repeated_loop_as_single_full_track_segment():
+    duration = 180.0
+    times = [float(i) for i in range(181)]
+    repeating_phrase = [0.32, 0.34, 0.33, 0.35, 0.32, 0.34, 0.33, 0.35]
+    energy = [repeating_phrase[i % len(repeating_phrase)] for i in range(181)]
+    beats = [round(i * 0.5, 3) for i in range(1, 360)]
+
+    segments = bgm.segment_audio_track(duration, energy, times, beats, [])
+
+    assert len(segments) == 1
+    assert segments[0] == {
+        "start": 0.0,
+        "end": 180.0,
+        "duration": 180.0,
+        "energy": pytest.approx(0.335, abs=0.001),
+        "drop_anchor": None,
+        "role_hint": "hook",
+        "section_type": "loop",
+        "section_label": "A",
+        "repeat_group": "A",
+        "loopable": True,
+        "energy_profile": "stable",
+    }
+
+
+def test_segment_audio_track_splits_on_structural_changes_not_fixed_windows():
+    duration = 180.0
+    times = [float(i) for i in range(181)]
+    energy = [0.22] * 43 + [0.68] * 51 + [0.38] * 45 + [0.88] * 42
+    beats = [round(i * 0.5, 3) for i in range(1, 360)]
+    drops = [43.0, 139.0]
+
+    segments = bgm.segment_audio_track(duration, energy, times, beats, drops)
+
+    assert [segment["start"] for segment in segments] == [0.0, 43.0, 94.0, 139.0]
+    assert [segment["end"] for segment in segments] == [43.0, 94.0, 139.0, 180.0]
+    assert [segment["section_label"] for segment in segments] == ["A", "B", "C", "D"]
+    assert [segment["section_type"] for segment in segments] == [
+        "intro",
+        "drop",
+        "verse",
+        "drop",
+    ]
+    assert segments[1]["energy_profile"] == "rising"
+    assert segments[3]["role_hint"] == "climax"
+
+
 def test_segment_audio_track_short_track_is_single_segment():
     segments = bgm.segment_audio_track(
         42.0,
@@ -50,16 +99,12 @@ def test_segment_audio_track_short_track_is_single_segment():
         [],
     )
 
-    assert segments == [
-        {
-            "start": 0.0,
-            "end": 42.0,
-            "duration": 42.0,
-            "energy": 0.5,
-            "drop_anchor": None,
-            "role_hint": "hook",
-        }
-    ]
+    assert segments[0]["start"] == 0.0
+    assert segments[0]["end"] == 42.0
+    assert segments[0]["duration"] == 42.0
+    assert segments[0]["role_hint"] == "hook"
+    assert segments[0]["section_type"] == "loop"
+    assert segments[0]["loopable"] is True
 
 
 def test_segment_audio_track_falls_back_without_beats():
@@ -77,7 +122,8 @@ def test_segment_audio_track_falls_back_without_beats():
 
     assert segments[0]["start"] == 0.0
     assert segments[-1]["end"] == 130.0
-    assert [s["duration"] for s in segments] == [60.0, 70.0]
+    assert [s["duration"] for s in segments] == [65.0, 65.0]
+    assert [s["section_type"] for s in segments] == ["intro", "chorus"]
 
 
 def test_librosa_features_keep_fallback_segments_when_tempo_missing(monkeypatch, tmp_path):

@@ -19,7 +19,9 @@ import { formatDuration, shortId } from "../../lib/format";
 import { toDisplayUrl } from "../../lib/url";
 import { readAssetThumbnailUrl, readPreviewUrlMeta } from "../../components/library/libraryModel";
 import {
+  BGM_ENERGY_PROFILES,
   BGM_ROLES,
+  BGM_SECTION_TYPES,
   bgmSegmentsToCanonical,
   canonicalToEvidenceFrames,
   canonicalToBgmSegments,
@@ -103,6 +105,24 @@ const ROLE_LABELS: Record<string, string> = {
   avoid: "避用",
 };
 const BGM_ROLE_LABELS: Record<string, string> = { hook: "开场钩子", climax: "高潮", outro: "收尾", general: "通用铺底" };
+const BGM_SECTION_LABELS: Record<string, string> = {
+  intro: "前奏",
+  verse: "主歌",
+  chorus: "副歌",
+  drop: "高潮/Drop",
+  bridge: "桥段",
+  outro: "尾奏",
+  loop: "循环段",
+  build: "推进段",
+  general: "通用段",
+};
+const BGM_ENERGY_LABELS: Record<string, string> = {
+  stable: "稳定",
+  rising: "上升",
+  falling: "回落",
+  drop: "落点",
+  peak: "峰值",
+};
 const BGM_ROLE_COLORS: Record<BgmSegment["role"], { bar: string; softBg: string; text: string; border: string }> = {
   hook: { bar: "#f97316", softBg: "#fff7ed", text: "#c2410c", border: "#fed7aa" },
   climax: { bar: "#ef4444", softBg: "#fef2f2", text: "#b91c1c", border: "#fecaca" },
@@ -692,8 +712,11 @@ function BgmStructurePanel({
           <p className="rounded-2xl border border-border/80 bg-white/65 p-4 text-sm text-text-secondary">暂无音乐段落。</p>
         ) : (
           <div className="grid gap-3">
+            <BgmSegmentTimeline segments={segments} totalDuration={totalDuration} />
             {segments.map((item, index) => {
               const roleColor = BGM_ROLE_COLORS[item.role];
+              const sectionLabel = translateToken(item.section_type, BGM_SECTION_LABELS, "通用段");
+              const energyLabel = translateToken(item.energy_profile, BGM_ENERGY_LABELS, "稳定");
               return (
                 <div key={`bgm-segment-card-${item.start}-${item.end}-${index}`} className="grid gap-3 rounded-2xl border border-border/80 bg-white/70 p-4">
                   <div className="flex flex-wrap items-center gap-2">
@@ -704,9 +727,23 @@ function BgmStructurePanel({
                     <span className="badge" style={{ backgroundColor: roleColor.softBg, color: roleColor.text, borderColor: roleColor.border }}>
                       {BGM_ROLE_LABELS[item.role]}
                     </span>
+                    <span className="badge bg-surface-hover text-text-secondary">{sectionLabel}</span>
+                    <span className="badge bg-surface-hover text-text-secondary">能量 {energyLabel}</span>
+                    {item.section_label ? <span className="badge bg-surface-hover text-text-secondary">结构 {item.section_label}</span> : null}
+                    {item.repeat_group ? <span className="badge bg-surface-hover text-text-secondary">重复 {item.repeat_group}</span> : null}
+                    {item.loopable ? <span className="badge bg-status-success/10 text-status-success">可循环</span> : null}
                     {item.energy !== undefined ? <span className="badge bg-surface-hover text-text-secondary">energy {formatPercent(item.energy)}</span> : null}
                     {item.drop_anchor_sec !== undefined ? <span className="badge bg-surface-hover text-text-secondary">drop {item.drop_anchor_sec.toFixed(1)}s</span> : null}
                   </div>
+                  {item.script_fit && item.script_fit.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {item.script_fit.map((tag) => (
+                        <span key={`script-fit-${item.segment_id ?? index}-${tag}`} className="badge bg-accent/10 text-accent">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
                   {item.scene_fit && item.scene_fit.length > 0 ? (
                     <div className="flex flex-wrap gap-1.5">
                       {item.scene_fit.map((tag) => (
@@ -723,6 +760,42 @@ function BgmStructurePanel({
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+function BgmSegmentTimeline({ segments, totalDuration }: { segments: BgmSegment[]; totalDuration?: number }) {
+  const duration = Math.max(totalDuration || 0, ...segments.map((segment) => segment.end), 0);
+  if (duration <= 0) return null;
+  return (
+    <div className="grid gap-1.5">
+      <div className="relative h-12 overflow-hidden rounded-lg border border-border bg-surface-hover">
+        {segments.map((segment, index) => {
+          const roleColor = BGM_ROLE_COLORS[segment.role];
+          const left = Math.max(0, Math.min(100, (segment.start / duration) * 100));
+          const width = Math.max(0.35, Math.min(100 - left, ((segment.end - segment.start) / duration) * 100));
+          return (
+            <div
+              key={`bgm-timeline-${segment.segment_id ?? index}`}
+              className="absolute top-1 h-10 overflow-hidden border-r border-white/80 px-2 py-1 text-[11px] font-semibold leading-4"
+              style={{
+                left: `${left}%`,
+                width: `${width}%`,
+                backgroundColor: roleColor.softBg,
+                color: roleColor.text,
+              }}
+              title={`${formatWindow(segment.start, segment.end)} ${translateToken(segment.section_type, BGM_SECTION_LABELS, "通用段")}`}
+            >
+              <span className="block truncate">{segment.section_label || translateToken(segment.section_type, BGM_SECTION_LABELS, "通用段")}</span>
+              <span className="block truncate font-normal">{formatWindow(segment.start, segment.end)}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex justify-between text-[11px] text-text-tertiary">
+        <span>0:00</span>
+        <span>{formatDuration(duration)}</span>
+      </div>
     </div>
   );
 }
@@ -749,6 +822,8 @@ function BgmAnnotationForm({
   const toast = useToast();
   const queryClient = useQueryClient();
   const roleOptions = BGM_ROLES.map((role) => [role, BGM_ROLE_LABELS[role] ?? role] as [string, string]);
+  const sectionOptions = BGM_SECTION_TYPES.map((type) => [type, BGM_SECTION_LABELS[type] ?? type] as [string, string]);
+  const energyOptions = BGM_ENERGY_PROFILES.map((profile) => [profile, BGM_ENERGY_LABELS[profile] ?? profile] as [string, string]);
 
   const updateSegment = (index: number, patch: Partial<BgmSegment>) =>
     setSegments((current) => current.map((item, i) => (i === index ? { ...item, ...patch } : item)));
@@ -765,6 +840,11 @@ function BgmAnnotationForm({
         end,
         duration: end,
         role: "general",
+        section_type: "general",
+        energy_profile: "stable",
+        loopable: false,
+        script_fit: [],
+        avoid_script: [],
         scene_fit: [],
         source: "manual",
       },
@@ -833,6 +913,22 @@ function BgmAnnotationForm({
               </div>
 
               <div className="grid gap-2 sm:grid-cols-3">
+                <SelectField
+                  label="结构段落"
+                  value={item.section_type ?? "general"}
+                  options={sectionOptions}
+                  onChange={(v) => updateSegment(index, { section_type: v as BgmSegment["section_type"] })}
+                />
+                <SelectField
+                  label="能量走势"
+                  value={item.energy_profile ?? "stable"}
+                  options={energyOptions}
+                  onChange={(v) => updateSegment(index, { energy_profile: v as BgmSegment["energy_profile"] })}
+                />
+                <TextField label="结构标签" value={item.section_label ?? ""} onChange={(v) => updateSegment(index, { section_label: v })} />
+              </div>
+
+              <div className="grid gap-2 sm:grid-cols-3">
                 <label className="grid gap-1.5">
                   <span className="text-[11px] font-medium text-text-tertiary">drop_anchor_sec(s)</span>
                   <input
@@ -851,6 +947,14 @@ function BgmAnnotationForm({
                 </label>
                 <TextField label="情绪" value={item.mood ?? ""} onChange={(v) => updateSegment(index, { mood: v })} />
                 <TextField label="适配场景（逗号分隔）" value={(item.scene_fit ?? []).join(", ")} onChange={(v) => updateSegment(index, { scene_fit: splitTokens(v) })} />
+              </div>
+              <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+                <TextField label="适配脚本（逗号分隔）" value={(item.script_fit ?? []).join(", ")} onChange={(v) => updateSegment(index, { script_fit: splitTokens(v) })} />
+                <TextField label="避用脚本（逗号分隔）" value={(item.avoid_script ?? []).join(", ")} onChange={(v) => updateSegment(index, { avoid_script: splitTokens(v) })} />
+                <label className="mt-5 flex h-10 items-center gap-2 rounded-lg border border-border bg-white px-3 text-xs font-medium text-text-secondary">
+                  <input type="checkbox" checked={Boolean(item.loopable)} onChange={(event) => updateSegment(index, { loopable: event.target.checked })} />
+                  <span>可循环</span>
+                </label>
               </div>
             </div>
           ))}

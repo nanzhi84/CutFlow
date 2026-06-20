@@ -445,8 +445,12 @@ export function readDuration(canonical?: unknown): number {
 }
 
 export type BgmSegmentRole = "hook" | "climax" | "outro" | "general";
+export type BgmSectionType = "intro" | "verse" | "chorus" | "drop" | "bridge" | "outro" | "loop" | "build" | "general";
+export type BgmEnergyProfile = "stable" | "rising" | "falling" | "drop" | "peak";
 
 export const BGM_ROLES: BgmSegmentRole[] = ["hook", "climax", "outro", "general"];
+export const BGM_SECTION_TYPES: BgmSectionType[] = ["intro", "verse", "chorus", "drop", "bridge", "outro", "loop", "build", "general"];
+export const BGM_ENERGY_PROFILES: BgmEnergyProfile[] = ["stable", "rising", "falling", "drop", "peak"];
 
 export interface BgmSegment {
   segment_id?: string;
@@ -454,9 +458,16 @@ export interface BgmSegment {
   end: number;            // seconds
   duration?: number;
   role: BgmSegmentRole;
+  section_type?: BgmSectionType;
+  section_label?: string;
+  repeat_group?: string;
+  loopable?: boolean;
+  energy_profile?: BgmEnergyProfile;
   energy?: number;        // 0-1
   drop_anchor_sec?: number;
   mood?: string;
+  script_fit?: string[];
+  avoid_script?: string[];
   scene_fit?: string[];   // tags
   avoid_scene?: string[];
   reason?: string;
@@ -471,6 +482,20 @@ export function asBgmRole(v: unknown): BgmSegmentRole {
   return "general";
 }
 
+export function asBgmSectionType(v: unknown): BgmSectionType {
+  if (typeof v === "string" && (BGM_SECTION_TYPES as string[]).includes(v)) {
+    return v as BgmSectionType;
+  }
+  return "general";
+}
+
+export function asBgmEnergyProfile(v: unknown): BgmEnergyProfile {
+  if (typeof v === "string" && (BGM_ENERGY_PROFILES as string[]).includes(v)) {
+    return v as BgmEnergyProfile;
+  }
+  return "stable";
+}
+
 export function canonicalToBgmSegments(canonical: Record<string, unknown>): BgmSegment[] {
   const arr = asArray(canonical["bgm_segments"]);
   return arr.map((item) => {
@@ -481,9 +506,16 @@ export function canonicalToBgmSegments(canonical: Record<string, unknown>): BgmS
       end: asNumber(r["end"], 0),
       duration: asOptionalNumber(r["duration"]),
       role: asBgmRole(r["role"]),
+      section_type: asBgmSectionType(r["section_type"]),
+      section_label: cleanString(r["section_label"]) || undefined,
+      repeat_group: cleanString(r["repeat_group"]) || undefined,
+      loopable: typeof r["loopable"] === "boolean" ? r["loopable"] : undefined,
+      energy_profile: asBgmEnergyProfile(r["energy_profile"]),
       energy: asOptionalNumber(r["energy"]),
       drop_anchor_sec: asOptionalNumber(r["drop_anchor_sec"]),
       mood: cleanString(r["mood"]),
+      script_fit: asStringList(r["script_fit"]),
+      avoid_script: asStringList(r["avoid_script"]),
       scene_fit: asStringList(r["scene_fit"]),
       avoid_scene: asStringList(r["avoid_scene"]),
       reason: cleanString(r["reason"]),
@@ -500,9 +532,16 @@ export function bgmSegmentsToCanonical(segments: BgmSegment[]): Record<string, u
     end: segment.end,
     duration: Math.max(0, Number((segment.end - segment.start).toFixed(3))),
     role: segment.role,
+    ...(segment.section_type ? { section_type: segment.section_type } : {}),
+    ...(segment.section_label ? { section_label: segment.section_label } : {}),
+    ...(segment.repeat_group ? { repeat_group: segment.repeat_group } : {}),
+    ...(segment.loopable !== undefined ? { loopable: segment.loopable } : {}),
+    ...(segment.energy_profile ? { energy_profile: segment.energy_profile } : {}),
     ...(segment.energy !== undefined ? { energy: segment.energy } : {}),
     ...(segment.drop_anchor_sec !== undefined ? { drop_anchor_sec: segment.drop_anchor_sec } : {}),
     ...(segment.mood ? { mood: segment.mood } : {}),
+    ...(segment.script_fit && segment.script_fit.length > 0 ? { script_fit: segment.script_fit } : {}),
+    ...(segment.avoid_script && segment.avoid_script.length > 0 ? { avoid_script: segment.avoid_script } : {}),
     ...(segment.scene_fit && segment.scene_fit.length > 0 ? { scene_fit: segment.scene_fit } : {}),
     ...(segment.avoid_scene && segment.avoid_scene.length > 0 ? { avoid_scene: segment.avoid_scene } : {}),
     ...(segment.reason ? { reason: segment.reason } : {}),

@@ -25,6 +25,7 @@ AUTO_MIX_DUCKING_RATIO = 8.0
 # The slider's historical neutral point: a requested volume of 0.3 means "trust the
 # LUFS target as-is"; higher/lower shifts it as a taste preference.
 AUTO_MIX_NEUTRAL_VOLUME = 0.3
+BGM_FILTER_SAMPLE_RATE = 48000
 
 
 def _extract_loudnorm_json(output: str) -> dict | None:
@@ -167,6 +168,7 @@ def _build_bgm_audio_filters(
     fade_in: float,
     fade_out: float,
     bgm_source_start: float = 0.0,
+    bgm_source_end: float | None = None,
 ) -> str:
     """Build the voice+BGM filter graph yielding ``[a]``.
 
@@ -183,10 +185,19 @@ def _build_bgm_audio_filters(
     )
 
     source_start = max(0.0, float(bgm_source_start or 0.0))
-    source_end = source_start + max(0.0, float(duration or 0.0))
+    source_end = _resolve_bgm_source_end(
+        source_start=source_start,
+        source_end=bgm_source_end,
+        render_duration=duration,
+    )
+    source_duration = max(0.001, source_end - source_start)
+    loop_samples = max(1, int(round(source_duration * BGM_FILTER_SAMPLE_RATE)))
     bgm_chain = [
-        "[2:a]aresample=48000",
+        f"[2:a]aresample={BGM_FILTER_SAMPLE_RATE}",
         f"atrim={source_start:.3f}:{source_end:.3f}",
+        "asetpts=PTS-STARTPTS",
+        f"aloop=loop=-1:size={loop_samples}",
+        f"atrim=0:{duration:.3f}",
         "asetpts=PTS-STARTPTS",
         f"volume={bgm_volume:.3f}",
     ]
@@ -211,6 +222,22 @@ def _build_bgm_audio_filters(
     return ";".join(parts)
 
 
+def _resolve_bgm_source_end(
+    *,
+    source_start: float,
+    source_end: float | None,
+    render_duration: float,
+) -> float:
+    fallback_end = source_start + max(0.001, float(render_duration or 0.0))
+    try:
+        candidate = float(source_end) if source_end is not None else fallback_end
+    except (TypeError, ValueError):
+        candidate = fallback_end
+    if candidate <= source_start:
+        return fallback_end
+    return candidate
+
+
 def render_final_media(
     *,
     rendered_path: Path,
@@ -225,6 +252,7 @@ def render_final_media(
     auto_mix: bool = False,
     bgm_margin_db: float | None = None,
     bgm_source_start: float = 0.0,
+    bgm_source_end: float | None = None,
     fade_in: float = 1.0,
     fade_out: float = 1.5,
 ) -> AdaptiveMixResult | None:
@@ -261,6 +289,8 @@ def render_final_media(
             bgm_margin_db=bgm_margin_db,
         )
         mix_result.metadata["bgm_source_start"] = round(max(0.0, float(bgm_source_start or 0.0)), 3)
+        if bgm_source_end is not None:
+            mix_result.metadata["bgm_source_end"] = round(max(0.0, float(bgm_source_end)), 3)
         args.extend(["-stream_loop", "-1", "-i", str(bgm_path)])
 
     video_filters = "[0:v]"
@@ -283,6 +313,7 @@ def render_final_media(
             duration=duration,
             auto_mix=auto_mix,
             bgm_source_start=bgm_source_start,
+            bgm_source_end=bgm_source_end,
             fade_in=max(0.0, float(fade_in)),
             fade_out=max(0.0, float(fade_out)),
         )
