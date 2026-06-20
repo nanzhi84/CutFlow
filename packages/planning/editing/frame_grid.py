@@ -24,11 +24,6 @@ from dataclasses import dataclass
 
 TIMELINE_FPS = 30
 
-# Max allowed deviation (seconds) between a quantized boundary and the grid. The
-# float error of round(t*30)/30 is ~1e-14; 1e-6 leaves ample margin while staying
-# far below half a frame (16.7ms).
-GRID_EPSILON = 1e-6
-
 
 def frame_index(t: float) -> int:
     """Seconds -> frame index: round-half-up (deterministic, monotone).
@@ -40,11 +35,6 @@ def frame_index(t: float) -> int:
     whereas round() -> 12, and that one-frame difference is what causes the seam.
     """
     return max(0, int(math.floor(float(t) * TIMELINE_FPS + 0.5)))
-
-
-def to_frame(t: float) -> int:
-    """Alias of :func:`frame_index` for call sites that read better as ``to_frame``."""
-    return frame_index(t)
 
 
 def to_seconds(frame: int) -> float:
@@ -60,17 +50,6 @@ def quantize_boundary(t: float) -> float:
     the full-precision ``k/30``; :func:`frame_index` still recovers ``k`` losslessly.
     """
     return frame_index(t) / TIMELINE_FPS
-
-
-def frame_count(duration: float) -> int:
-    """Duration (seconds) -> frame count, same round-half-up rule as frame_index."""
-    return max(0, int(math.floor(float(duration) * TIMELINE_FPS + 0.5)))
-
-
-def is_on_grid(t: float, *, epsilon: float = GRID_EPSILON) -> bool:
-    """True if ``t`` already sits on the frame grid (|t*30 - round(t*30)| < eps)."""
-    scaled = float(t) * TIMELINE_FPS
-    return abs(scaled - math.floor(scaled + 0.5)) < epsilon * TIMELINE_FPS
 
 
 @dataclass(frozen=True)

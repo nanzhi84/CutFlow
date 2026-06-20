@@ -15,16 +15,12 @@ boundaries. No IO, no provider calls, no randomness — pure CPU frame/beam math
 """
 
 from packages.planning.editing.frame_grid import (
-    GRID_EPSILON,
     TIMELINE_FPS,
     FrameWindow,
-    frame_count,
     frame_index,
-    is_on_grid,
     quantize_boundary,
     slice_source_window,
     slice_windows,
-    to_frame,
     to_seconds,
 )
 from packages.planning.editing.narration import (
@@ -52,14 +48,10 @@ from packages.planning.editing.plan import (
 __all__ = [
     # frame grid (single source of truth)
     "TIMELINE_FPS",
-    "GRID_EPSILON",
     "FrameWindow",
     "frame_index",
-    "to_frame",
     "to_seconds",
     "quantize_boundary",
-    "frame_count",
-    "is_on_grid",
     "slice_windows",
     "slice_source_window",
     # narration splitter

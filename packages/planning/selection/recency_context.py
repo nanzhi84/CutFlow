@@ -36,7 +36,6 @@ PORTRAIT_SIMILARITY_MATCH_STRENGTH = 0.18
 
 # slot_phase value that marks the first (opening) portrait segment of a run.
 PORTRAIT_OPENING_SLOT_PHASE = "portrait_opening"
-PORTRAIT_MAIN_SLOT_PHASE = "portrait_main"
 
 _DEFAULT_WINDOW = 12
 
