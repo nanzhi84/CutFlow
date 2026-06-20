@@ -86,7 +86,6 @@ __all__ = [
     "digital_human_template",
     "template_for",
     "LocalRuntimeAdapter",
-    "DigitalHumanWorkflow",
     "build_digital_human_workflow",
     "get_object_store",
 ]
@@ -1302,6 +1301,3 @@ def build_digital_human_workflow(
         prompt_registry or PromptRegistry(repository),
         seed_media=seed_media,
     )
-
-
-DigitalHumanWorkflow = LocalRuntimeAdapter

@@ -34,13 +34,3 @@ COVER_FALLBACK_POLICY = DegradationPolicy(
     id="cover.fallback.v1",
     version="v1",
 )
-
-DEGRADATION_POLICIES = (
-    LIPSYNC_FAILOVER_POLICY,
-    ASR_ESTIMATED_FALLBACK_POLICY,
-    COVER_FALLBACK_POLICY,
-)
-DEGRADATION_POLICIES_BY_ID = {
-    policy.id: policy
-    for policy in DEGRADATION_POLICIES
-}
