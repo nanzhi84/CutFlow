@@ -151,7 +151,6 @@ def compute_yield_rates(
         run_prompt_versions=run_prompt_versions,
         published_runs=published_runs,
         disqualified_runs=disqualified_runs,
-        started_runs=started_runs,
     )
 
     return YieldRates(
@@ -202,7 +201,6 @@ def _prompt_version_yield(
     run_prompt_versions: Mapping[str, Iterable[str]] | None,
     published_runs: set[str],
     disqualified_runs: set[str],
-    started_runs: set[str],
 ) -> dict[str, float]:
     if not run_prompt_versions:
         return {}
@@ -210,10 +208,6 @@ def _prompt_version_yield(
     totals: dict[str, int] = {}
     wins: dict[str, int] = {}
     for run_id, versions in run_prompt_versions.items():
-        if run_id not in started_runs and run_id not in published_runs:
-            # Only count runs that actually entered the funnel.
-            if run_id not in run_prompt_versions:
-                continue
         for version_id in set(versions):
             if not version_id:
                 continue
