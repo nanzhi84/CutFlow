@@ -133,6 +133,58 @@ class DigitalHumanVideoRequest(ContractModel):
     strictness: StrictnessOptions = Field(default_factory=StrictnessOptions)
 
 
+class BatchItemOverrides(ContractModel):
+    """Per-item option overrides for batch generation (a subset of
+    ``DigitalHumanVideoRequest``'s option blocks). Any block left ``None`` falls
+    back to the merge chain (my-defaults -> system default)."""
+
+    voice: VoiceOptions | None = None
+    portrait: PortraitOptions | None = None
+    broll: BrollOptions | None = None
+    lipsync: LipSyncOptions | None = None
+    subtitle: SubtitleOptions | None = None
+    bgm: BgmOptions | None = None
+    cover: CoverOptions | None = None
+    output: OutputOptions | None = None
+    strictness: StrictnessOptions | None = None
+    workflow_template_id: str | None = None
+
+
+class BatchItem(ContractModel):
+    """One script in a batch request. ``overrides`` win over the user's saved
+    defaults, which in turn win over the per-block system defaults."""
+
+    script: str
+    title: str | None = None
+    publish_content: str | None = None
+    script_version_id: str | None = None
+    overrides: BatchItemOverrides | None = None
+
+
+class BatchDigitalHumanVideoRequest(ContractModel):
+    schema_version: Literal["batch_digital_human_video_request.v1"] = (
+        "batch_digital_human_video_request.v1"
+    )
+    case_id: str
+    items: list[BatchItem] = Field(min_length=1, max_length=50)
+    # When True (default), the caller's saved generation defaults are merged
+    # underneath each item's overrides; when False, only system defaults apply.
+    use_my_defaults: bool = True
+
+
+class BatchItemResult(ContractModel):
+    index: int
+    job_id: str | None = None
+    run_id: str | None = None
+    status: Literal["created", "failed"]
+    error: str | None = None
+
+
+class BatchGenerationResponse(ContractModel):
+    results: list[BatchItemResult]
+    request_id: str = "req_local"
+
+
 class PublishBatchRequest(ContractModel):
     schema_version: Literal["publish_batch_request.v1"] = "publish_batch_request.v1"
     publish_package_ids: list[str]

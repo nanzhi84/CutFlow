@@ -17,6 +17,7 @@ from apps.api.common import (
     workflow_runtime,
 )
 from apps.api.dependencies import current_user
+from apps.api.services.auth import get_my_generation_defaults
 from packages.core import contracts as c
 from packages.core.observability.events import receive_from_subscriber
 from packages.core.observability import replay_sqlalchemy_outbox
@@ -359,6 +360,125 @@ def create_digital_human_job(
     repository(request).jobs[job.id] = job
     run = _start_submitted_run(request, job_id=job.id, mode="new", from_run_id=None, reason=None)
     return c.CreateJobResponse(job=repository(request).jobs[job.id], initial_run=run, request_id=request_id())
+
+
+# Option blocks that participate in the batch merge chain. Each maps to a field on
+# both ``DigitalHumanVideoRequest`` (system default via default_factory) and the
+# Optional blocks on ``UserGenerationDefaults`` / ``BatchItemOverrides``.
+_OPTION_BLOCKS = (
+    "voice",
+    "portrait",
+    "broll",
+    "lipsync",
+    "subtitle",
+    "bgm",
+    "cover",
+    "output",
+    "strictness",
+)
+
+
+def merge_batch_item_options(
+    overrides: c.BatchItemOverrides | None,
+    my_defaults: c.UserGenerationDefaults | None,
+) -> dict:
+    """Merge a batch item's option blocks following the precedence
+    ``item.overrides > my defaults > system default``.
+
+    Returns a kwargs dict carrying only the blocks that are explicitly set by the
+    item override or the user's saved defaults. Blocks absent from both are left
+    out so ``DigitalHumanVideoRequest``'s default_factory supplies the system
+    default. ``workflow_template_id`` (override-only) is included when present."""
+    merged: dict = {}
+    for block in _OPTION_BLOCKS:
+        override_value = getattr(overrides, block, None) if overrides is not None else None
+        default_value = getattr(my_defaults, block, None) if my_defaults is not None else None
+        chosen = override_value if override_value is not None else default_value
+        if chosen is not None:
+            merged[block] = chosen
+    if overrides is not None and overrides.workflow_template_id is not None:
+        merged["workflow_template_id"] = overrides.workflow_template_id
+    return merged
+
+
+def _batch_item_request(
+    payload: c.BatchDigitalHumanVideoRequest,
+    item: c.BatchItem,
+    my_defaults: c.UserGenerationDefaults | None,
+) -> c.DigitalHumanVideoRequest:
+    """Build the per-item ``DigitalHumanVideoRequest`` with the merged options."""
+    merged = merge_batch_item_options(item.overrides, my_defaults)
+    return c.DigitalHumanVideoRequest(
+        case_id=payload.case_id,
+        script=item.script,
+        title=item.title,
+        publish_content=item.publish_content or "",
+        script_version_id=item.script_version_id,
+        **merged,
+    )
+
+
+def create_digital_human_batch(
+    payload: c.BatchDigitalHumanVideoRequest, request: Request
+) -> c.BatchGenerationResponse:
+    """Create one independent job+run per item, server-side, with per-item fault
+    tolerance and merged defaults (plan Task 5).
+
+    Merge precedence per item: ``item.overrides > my defaults > system default``.
+    Each job is stamped ``created_by = current user``. Items are processed in
+    order; a failing item is reported ``failed`` and does not abort the rest.
+    Item-level idempotency keys ``{user.id}:{batch_key}:{index}`` make a replayed
+    batch (same ``Idempotency-Key``) reuse the already-created jobs."""
+    user = current_user(request)
+    get_case(request, payload.case_id)
+    my_defaults = (
+        get_my_generation_defaults(request) if payload.use_my_defaults else None
+    )
+    batch_key = request.headers.get("Idempotency-Key") or new_id("batch")
+    repo = repository(request)
+    results: list[c.BatchItemResult] = []
+    for index, item in enumerate(payload.items):
+        idem_key = f"batch_item:{user.id}:{batch_key}:{index}"
+        cached = repo.idempotency_records.get(idem_key)
+        if cached is not None:
+            results.append(
+                c.BatchItemResult(
+                    index=index,
+                    job_id=cached.get("job_id"),
+                    run_id=cached.get("run_id"),
+                    status="created",
+                )
+            )
+            continue
+        try:
+            item_request = _batch_item_request(payload, item, my_defaults)
+            _link_adopted_script(request, item_request)
+            job = c.Job(
+                id=new_id("job"),
+                type=c.JobType.digital_human_video,
+                case_id=payload.case_id,
+                created_by=user.id,
+                request_schema=item_request.schema_version,
+                request=item_request,
+            )
+            repo.jobs[job.id] = job
+            try:
+                run = _start_submitted_run(
+                    request, job_id=job.id, mode="new", from_run_id=None, reason=None
+                )
+            except Exception:
+                # Roll back the half-created job so a failed item leaves no orphan.
+                repo.jobs.pop(job.id, None)
+                raise
+            repo.idempotency_records[idem_key] = {"job_id": job.id, "run_id": run.id}
+            results.append(
+                c.BatchItemResult(
+                    index=index, job_id=job.id, run_id=run.id, status="created"
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — per-item fault tolerance
+            results.append(c.BatchItemResult(index=index, status="failed", error=str(exc)))
+    return c.BatchGenerationResponse(results=results, request_id=request_id())
 
 
 def _link_adopted_script(request: Request, payload: c.DigitalHumanVideoRequest) -> None:

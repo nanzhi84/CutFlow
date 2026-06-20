@@ -22,6 +22,17 @@ def create_digital_human_job(
     return service.create_digital_human_job(payload, request)
 
 
+@router.post(
+    "/api/jobs/digital-human-video/batch",
+    response_model=c.BatchGenerationResponse,
+)
+def create_digital_human_batch(
+    payload: c.BatchDigitalHumanVideoRequest, request: Request
+) -> c.BatchGenerationResponse:
+    require_role(request, c.UserRole.operator)
+    return service.create_digital_human_batch(payload, request)
+
+
 @router.get("/api/jobs/{job_id}", response_model=c.JobDetailResponse)
 def job_detail(request: Request, job_id: str) -> c.JobDetailResponse:
 
