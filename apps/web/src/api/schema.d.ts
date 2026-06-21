@@ -488,40 +488,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/tts/estimate-cost": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Estimate Tts Cost */
-        post: operations["estimate_tts_cost_api_tts_estimate_cost_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/video/estimate-cost": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Estimate Lipsync Cost */
-        post: operations["estimate_lipsync_cost_api_video_estimate_cost_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/cases/{case_id}/runs": {
         parameters: {
             query?: never;
@@ -567,23 +533,6 @@ export interface paths {
         put?: never;
         /** Create Digital Human Batch */
         post: operations["create_digital_human_batch_api_jobs_digital_human_video_batch_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/jobs/digital-human-video/estimate-cost": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Estimate Digital Human Video Cost */
-        post: operations["estimate_digital_human_video_cost_api_jobs_digital_human_video_estimate_cost_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2959,8 +2908,9 @@ export interface components {
         };
         /**
          * BeginLoginResponse
-         * @description A started QR-login flow. ``qr_image`` is a login credential (data-url); the API
-         *     marks the response ``Cache-Control: no-store`` — never persist or log it.
+         * @description A started QR-login flow against 小V猫. The QR is **streamed in real time** over
+         *     the WebSocket at ``stream_path`` — 小V猫's platform QR refreshes fast, so the socket
+         *     pushes each fresh frame instead of returning one snapshot. ``Cache-Control: no-store``.
          */
         BeginLoginResponse: {
             /** Login Id */
@@ -2974,8 +2924,8 @@ export interface components {
             platform: "douyin" | "shipinhao" | "kuaishou" | "xiaohongshu";
             /** Status */
             status: string;
-            /** Qr Image */
-            qr_image: string;
+            /** Stream Path */
+            stream_path: string;
             /** Request Id */
             request_id: string;
         };
@@ -3885,24 +3835,6 @@ export interface components {
             /** Request Id */
             request_id: string;
         };
-        /** CostEstimateLine */
-        CostEstimateLine: {
-            /** Label */
-            label: string;
-            /** Capability Id */
-            capability_id: string;
-            /** Quantity */
-            quantity: string;
-            /** Unit */
-            unit: string;
-            unit_price?: components["schemas"]["Money-Output"] | null;
-            estimated_cost: components["schemas"]["Money-Output"];
-            /**
-             * Unpriced
-             * @default false
-             */
-            unpriced: boolean;
-        };
         /**
          * CostMetrics
          * @description §9.4 / §26.2 cost indicators for an ops window.
@@ -4201,6 +4133,8 @@ export interface components {
             account_name: string;
             /** Platform Uid */
             platform_uid?: string | null;
+            /** Xiaovmao Uid */
+            xiaovmao_uid?: string | null;
         };
         /** CreatePublishBatchRequest */
         CreatePublishBatchRequest: {
@@ -4421,18 +4355,6 @@ export interface components {
             prompt: string;
             /** Provider Profile Id */
             provider_profile_id?: string | null;
-        };
-        /** DigitalHumanVideoCostEstimateResponse */
-        DigitalHumanVideoCostEstimateResponse: {
-            /** Tts Characters */
-            tts_characters: number;
-            /** Estimated Video Seconds */
-            estimated_video_seconds: number;
-            tts: components["schemas"]["CostEstimateLine"];
-            video: components["schemas"]["CostEstimateLine"];
-            total: components["schemas"]["CostEstimateLine"];
-            /** Request Id */
-            request_id: string;
         };
         /** DigitalHumanVideoRequest */
         DigitalHumanVideoRequest: {
@@ -4872,28 +4794,6 @@ export interface components {
              */
             timeout_minutes: number;
         };
-        /** LipsyncCostEstimateRequest */
-        LipsyncCostEstimateRequest: {
-            /** Video Duration Sec */
-            video_duration_sec: number;
-            /** Provider Profile Id */
-            provider_profile_id?: string | null;
-        };
-        /** LipsyncCostEstimateResponse */
-        LipsyncCostEstimateResponse: {
-            /** Video Duration Sec */
-            video_duration_sec: number;
-            /** Video Duration Min */
-            video_duration_min: number;
-            estimate: components["schemas"]["CostEstimateLine"];
-            /**
-             * Pricing Source
-             * @enum {string}
-             */
-            pricing_source: "catalog" | "default";
-            /** Request Id */
-            request_id: string;
-        };
         /** LoginRequest */
         LoginRequest: {
             /** Identifier */
@@ -4903,7 +4803,10 @@ export interface components {
             /** Password */
             password: string;
         };
-        /** LoginStatusResponse */
+        /**
+         * LoginStatusResponse
+         * @description Fallback poll of a login flow (the WebSocket stream is the primary channel).
+         */
         LoginStatusResponse: {
             /** Login Id */
             login_id: string;
@@ -4914,10 +4817,10 @@ export interface components {
             /** Detail */
             detail?: string | null;
             /**
-             * Session Status
+             * Login State
              * @enum {string}
              */
-            session_status: "never_logged_in" | "active" | "expired";
+            login_state: "logged_in" | "logged_out" | "unknown";
             /** Request Id */
             request_id: string;
         };
@@ -5879,6 +5782,8 @@ export interface components {
             account_name?: string | null;
             /** Platform Uid */
             platform_uid?: string | null;
+            /** Xiaovmao Uid */
+            xiaovmao_uid?: string | null;
             /** Status */
             status?: ("active" | "archived") | null;
         };
@@ -6912,11 +6817,12 @@ export interface components {
         };
         /**
          * PublishAccount
-         * @description A client's persistent publishing account on one platform.
+         * @description A client's persistent publishing account on one platform — a binding anchor
+         *     that maps to a 小V猫-managed account via ``xiaovmao_uid``.
          *
-         *     The browser session lives in the ``SecretStore`` (never in the DB row nor in
-         *     this contract); ``has_session`` + ``session_status`` are the only session
-         *     surface exposed to the API.
+         *     The platform session lives **inside 小V猫** (never in our DB/SecretStore nor in
+         *     this contract). ``login_state`` is computed live at read time from 小V猫's
+         *     ``CatBridge`` ``isLogin`` and is **not persisted**.
          */
         PublishAccount: {
             /** Id */
@@ -6954,21 +6860,14 @@ export interface components {
             account_name: string;
             /** Platform Uid */
             platform_uid?: string | null;
+            /** Xiaovmao Uid */
+            xiaovmao_uid?: string | null;
             /**
-             * Session Status
-             * @default never_logged_in
+             * Login State
+             * @default unknown
              * @enum {string}
              */
-            session_status: "never_logged_in" | "active" | "expired";
-            /**
-             * Has Session
-             * @default false
-             */
-            has_session: boolean;
-            /** Session Expires At */
-            session_expires_at?: string | null;
-            /** Last Validated At */
-            last_validated_at?: string | null;
+            login_state: "logged_in" | "logged_out" | "unknown";
             /**
              * Status
              * @default active
@@ -8265,30 +8164,6 @@ export interface components {
             /** Request Id */
             request_id: string;
         };
-        /** TtsCostEstimateRequest */
-        TtsCostEstimateRequest: {
-            /** Text */
-            text: string;
-            /** Provider Profile Id */
-            provider_profile_id?: string | null;
-        };
-        /** TtsCostEstimateResponse */
-        TtsCostEstimateResponse: {
-            /** Text Length */
-            text_length: number;
-            /** Estimated Chars */
-            estimated_chars: number;
-            /** Estimated Duration Sec */
-            estimated_duration_sec: number;
-            estimate: components["schemas"]["CostEstimateLine"];
-            /**
-             * Pricing Source
-             * @enum {string}
-             */
-            pricing_source: "catalog" | "default";
-            /** Request Id */
-            request_id: string;
-        };
         /** UpdateMeRequest */
         UpdateMeRequest: {
             /** Display Name */
@@ -8451,14 +8326,12 @@ export interface components {
             /** Account Id */
             account_id: string;
             /**
-             * Session Status
+             * Login State
              * @enum {string}
              */
-            session_status: "never_logged_in" | "active" | "expired";
-            /** Has Session */
-            has_session: boolean;
-            /** Last Validated At */
-            last_validated_at?: string | null;
+            login_state: "logged_in" | "logged_out" | "unknown";
+            /** Last Checked At */
+            last_checked_at?: string | null;
             /** Request Id */
             request_id: string;
         };
@@ -9847,72 +9720,6 @@ export interface operations {
             };
         };
     };
-    estimate_tts_cost_api_tts_estimate_cost_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TtsCostEstimateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TtsCostEstimateResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    estimate_lipsync_cost_api_video_estimate_cost_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["LipsyncCostEstimateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LipsyncCostEstimateResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     case_run_cards_api_cases__case_id__runs_get: {
         parameters: {
             query?: {
@@ -9999,39 +9806,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BatchGenerationResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    estimate_digital_human_video_cost_api_jobs_digital_human_video_estimate_cost_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DigitalHumanVideoRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DigitalHumanVideoCostEstimateResponse"];
                 };
             };
             /** @description Validation Error */

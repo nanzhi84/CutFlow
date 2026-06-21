@@ -1338,82 +1338,6 @@
         }
       }
     },
-    "/api/tts/estimate-cost": {
-      "post": {
-        "summary": "Estimate Tts Cost",
-        "operationId": "estimate_tts_cost_api_tts_estimate_cost_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TtsCostEstimateRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TtsCostEstimateResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/video/estimate-cost": {
-      "post": {
-        "summary": "Estimate Lipsync Cost",
-        "operationId": "estimate_lipsync_cost_api_video_estimate_cost_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LipsyncCostEstimateRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LipsyncCostEstimateResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/cases/{case_id}/runs": {
       "get": {
         "summary": "Case Run Cards",
@@ -1522,44 +1446,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BatchGenerationResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/jobs/digital-human-video/estimate-cost": {
-      "post": {
-        "summary": "Estimate Digital Human Video Cost",
-        "operationId": "estimate_digital_human_video_cost_api_jobs_digital_human_video_estimate_cost_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DigitalHumanVideoRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DigitalHumanVideoCostEstimateResponse"
                 }
               }
             }
@@ -9363,9 +9249,9 @@
             "type": "string",
             "title": "Status"
           },
-          "qr_image": {
+          "stream_path": {
             "type": "string",
-            "title": "Qr Image"
+            "title": "Stream Path"
           },
           "request_id": {
             "type": "string",
@@ -9379,11 +9265,11 @@
           "account_id",
           "platform",
           "status",
-          "qr_image",
+          "stream_path",
           "request_id"
         ],
         "title": "BeginLoginResponse",
-        "description": "A started QR-login flow. ``qr_image`` is a login credential (data-url); the API\nmarks the response ``Cache-Control: no-store`` — never persist or log it."
+        "description": "A started QR-login flow against 小V猫. The QR is **streamed in real time** over\nthe WebSocket at ``stream_path`` — 小V猫's platform QR refreshes fast, so the socket\npushes each fresh frame instead of returning one snapshot. ``Cache-Control: no-store``."
       },
       "BgmEnergyProfile": {
         "type": "string",
@@ -11157,55 +11043,6 @@
         ],
         "title": "CompleteUploadResponse"
       },
-      "CostEstimateLine": {
-        "properties": {
-          "label": {
-            "type": "string",
-            "title": "Label"
-          },
-          "capability_id": {
-            "type": "string",
-            "title": "Capability Id"
-          },
-          "quantity": {
-            "type": "string",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-            "title": "Quantity"
-          },
-          "unit": {
-            "type": "string",
-            "title": "Unit"
-          },
-          "unit_price": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Money-Output"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "estimated_cost": {
-            "$ref": "#/components/schemas/Money-Output"
-          },
-          "unpriced": {
-            "type": "boolean",
-            "title": "Unpriced",
-            "default": false
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "label",
-          "capability_id",
-          "quantity",
-          "unit",
-          "estimated_cost"
-        ],
-        "title": "CostEstimateLine"
-      },
       "CostMetrics": {
         "properties": {
           "window_start": {
@@ -12067,6 +11904,17 @@
               }
             ],
             "title": "Platform Uid"
+          },
+          "xiaovmao_uid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Xiaovmao Uid"
           }
         },
         "additionalProperties": false,
@@ -12736,42 +12584,6 @@
           "prompt"
         ],
         "title": "DesignVoiceRequest"
-      },
-      "DigitalHumanVideoCostEstimateResponse": {
-        "properties": {
-          "tts_characters": {
-            "type": "integer",
-            "title": "Tts Characters"
-          },
-          "estimated_video_seconds": {
-            "type": "integer",
-            "title": "Estimated Video Seconds"
-          },
-          "tts": {
-            "$ref": "#/components/schemas/CostEstimateLine"
-          },
-          "video": {
-            "$ref": "#/components/schemas/CostEstimateLine"
-          },
-          "total": {
-            "$ref": "#/components/schemas/CostEstimateLine"
-          },
-          "request_id": {
-            "type": "string",
-            "title": "Request Id"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "tts_characters",
-          "estimated_video_seconds",
-          "tts",
-          "video",
-          "total",
-          "request_id"
-        ],
-        "title": "DigitalHumanVideoCostEstimateResponse"
       },
       "DigitalHumanVideoRequest": {
         "properties": {
@@ -13937,69 +13749,6 @@
         "type": "object",
         "title": "LipSyncOptions"
       },
-      "LipsyncCostEstimateRequest": {
-        "properties": {
-          "video_duration_sec": {
-            "type": "number",
-            "exclusiveMinimum": 0.0,
-            "title": "Video Duration Sec"
-          },
-          "provider_profile_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Provider Profile Id"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "video_duration_sec"
-        ],
-        "title": "LipsyncCostEstimateRequest"
-      },
-      "LipsyncCostEstimateResponse": {
-        "properties": {
-          "video_duration_sec": {
-            "type": "number",
-            "title": "Video Duration Sec"
-          },
-          "video_duration_min": {
-            "type": "number",
-            "title": "Video Duration Min"
-          },
-          "estimate": {
-            "$ref": "#/components/schemas/CostEstimateLine"
-          },
-          "pricing_source": {
-            "type": "string",
-            "enum": [
-              "catalog",
-              "default"
-            ],
-            "title": "Pricing Source"
-          },
-          "request_id": {
-            "type": "string",
-            "title": "Request Id"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "video_duration_sec",
-          "video_duration_min",
-          "estimate",
-          "pricing_source",
-          "request_id"
-        ],
-        "title": "LipsyncCostEstimateResponse"
-      },
       "LoginRequest": {
         "properties": {
           "identifier": {
@@ -14061,14 +13810,14 @@
             ],
             "title": "Detail"
           },
-          "session_status": {
+          "login_state": {
             "type": "string",
             "enum": [
-              "never_logged_in",
-              "active",
-              "expired"
+              "logged_in",
+              "logged_out",
+              "unknown"
             ],
-            "title": "Session Status"
+            "title": "Login State"
           },
           "request_id": {
             "type": "string",
@@ -14081,10 +13830,11 @@
           "login_id",
           "account_id",
           "status",
-          "session_status",
+          "login_state",
           "request_id"
         ],
-        "title": "LoginStatusResponse"
+        "title": "LoginStatusResponse",
+        "description": "Fallback poll of a login flow (the WebSocket stream is the primary channel)."
       },
       "MaterialUsageRankingItem": {
         "properties": {
@@ -17328,6 +17078,17 @@
             ],
             "title": "Platform Uid"
           },
+          "xiaovmao_uid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Xiaovmao Uid"
+          },
           "status": {
             "anyOf": [
               {
@@ -19893,44 +19654,26 @@
             ],
             "title": "Platform Uid"
           },
-          "session_status": {
+          "xiaovmao_uid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Xiaovmao Uid"
+          },
+          "login_state": {
             "type": "string",
             "enum": [
-              "never_logged_in",
-              "active",
-              "expired"
+              "logged_in",
+              "logged_out",
+              "unknown"
             ],
-            "title": "Session Status",
-            "default": "never_logged_in"
-          },
-          "has_session": {
-            "type": "boolean",
-            "title": "Has Session",
-            "default": false
-          },
-          "session_expires_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Session Expires At"
-          },
-          "last_validated_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Validated At"
+            "title": "Login State",
+            "default": "unknown"
           },
           "status": {
             "type": "string",
@@ -19951,7 +19694,7 @@
           "account_name"
         ],
         "title": "PublishAccount",
-        "description": "A client's persistent publishing account on one platform.\n\nThe browser session lives in the ``SecretStore`` (never in the DB row nor in\nthis contract); ``has_session`` + ``session_status`` are the only session\nsurface exposed to the API."
+        "description": "A client's persistent publishing account on one platform — a binding anchor\nthat maps to a 小V猫-managed account via ``xiaovmao_uid``.\n\nThe platform session lives **inside 小V猫** (never in our DB/SecretStore nor in\nthis contract). ``login_state`` is computed live at read time from 小V猫's\n``CatBridge`` ``isLogin`` and is **not persisted**."
       },
       "PublishAttempt": {
         "properties": {
@@ -23040,74 +22783,6 @@
         ],
         "title": "TrimAnnotationResponse"
       },
-      "TtsCostEstimateRequest": {
-        "properties": {
-          "text": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Text"
-          },
-          "provider_profile_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Provider Profile Id"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "text"
-        ],
-        "title": "TtsCostEstimateRequest"
-      },
-      "TtsCostEstimateResponse": {
-        "properties": {
-          "text_length": {
-            "type": "integer",
-            "title": "Text Length"
-          },
-          "estimated_chars": {
-            "type": "integer",
-            "title": "Estimated Chars"
-          },
-          "estimated_duration_sec": {
-            "type": "number",
-            "title": "Estimated Duration Sec"
-          },
-          "estimate": {
-            "$ref": "#/components/schemas/CostEstimateLine"
-          },
-          "pricing_source": {
-            "type": "string",
-            "enum": [
-              "catalog",
-              "default"
-            ],
-            "title": "Pricing Source"
-          },
-          "request_id": {
-            "type": "string",
-            "title": "Request Id"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "text_length",
-          "estimated_chars",
-          "estimated_duration_sec",
-          "estimate",
-          "pricing_source",
-          "request_id"
-        ],
-        "title": "TtsCostEstimateResponse"
-      },
       "UpdateMeRequest": {
         "properties": {
           "display_name": {
@@ -23551,20 +23226,16 @@
             "type": "string",
             "title": "Account Id"
           },
-          "session_status": {
+          "login_state": {
             "type": "string",
             "enum": [
-              "never_logged_in",
-              "active",
-              "expired"
+              "logged_in",
+              "logged_out",
+              "unknown"
             ],
-            "title": "Session Status"
+            "title": "Login State"
           },
-          "has_session": {
-            "type": "boolean",
-            "title": "Has Session"
-          },
-          "last_validated_at": {
+          "last_checked_at": {
             "anyOf": [
               {
                 "type": "string",
@@ -23574,7 +23245,7 @@
                 "type": "null"
               }
             ],
-            "title": "Last Validated At"
+            "title": "Last Checked At"
           },
           "request_id": {
             "type": "string",
@@ -23585,8 +23256,7 @@
         "type": "object",
         "required": [
           "account_id",
-          "session_status",
-          "has_session",
+          "login_state",
           "request_id"
         ],
         "title": "ValidateSessionResponse"
