@@ -151,6 +151,7 @@ def _record_discard_reward(
 def editor_handoff(
     id: str, payload: c.CreateEditorHandoffRequest, request: Request
 ) -> c.EditorHandoffPackageArtifact:
+    assert_owner_or_404(current_user(request), finished_video_owner(request, id))
     if production_repository(request) is not None:
         return production_repository(request).create_editor_handoff(id, payload)
     finished = _finished_video_or_error(request, id)
@@ -177,6 +178,7 @@ def editor_handoff(
 def jianying_draft(
     id: str, payload: c.CreateJianyingDraftRequest, request: Request
 ) -> c.JianyingDraftPackageArtifact:
+    assert_owner_or_404(current_user(request), finished_video_owner(request, id))
     if production_repository(request) is not None:
         return production_repository(request).create_jianying_draft(id, payload)
     finished = _finished_video_or_error(request, id)

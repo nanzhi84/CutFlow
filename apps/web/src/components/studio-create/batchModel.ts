@@ -3,7 +3,6 @@ import type { components } from "../../api/schema";
 export type BatchDigitalHumanVideoRequest = components["schemas"]["BatchDigitalHumanVideoRequest"];
 export type BatchItem = components["schemas"]["BatchItem"];
 export type BatchItemResult = components["schemas"]["BatchItemResult"];
-export type BatchGenerationResponse = components["schemas"]["BatchGenerationResponse"];
 
 /** A single script row from a batch entry point (pasted list or candidate pool). */
 export type BatchScriptInput = {

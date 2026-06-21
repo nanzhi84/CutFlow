@@ -140,14 +140,11 @@ def _resolve_owner_user_id(run, repository) -> str | None:
     to looking the job up in the repository when the run carries no requester. Returns
     ``None`` only when neither yields an owner so orphaned产出 stay NULL (admin-only视图).
     """
-    requested_by = getattr(run, "requested_by", None)
-    if requested_by:
-        return requested_by
-    job_id = getattr(run, "job_id", None)
-    if job_id is not None:
-        job = repository.jobs.get(job_id)
-        if job is not None:
-            return getattr(job, "created_by", None)
+    if run.requested_by:
+        return run.requested_by
+    job = repository.jobs.get(run.job_id)
+    if job is not None:
+        return job.created_by
     return None
 
 

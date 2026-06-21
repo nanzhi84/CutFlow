@@ -181,6 +181,23 @@ def test_detail_preview_download_cross_user_404() -> None:
         assert client.get(f"/api/finished-videos/{video_a.id}/download").status_code == 404
 
 
+def test_finished_video_export_cross_user_404() -> None:
+    """editor-handoff / jianying-draft are operator-gated, so a non-owner operator
+    must NOT be able to export another user's finished video — owner-gated to 404
+    (no existence leak). (delete is admin-only and thus not creator-isolated.)"""
+    app = create_app()
+    with TestClient(app) as client:
+        _seed_case(app, "case_iso")
+        user_a, _token_a = _make_user(app, role=c.UserRole.operator)
+        _user_b, token_b = _make_user(app, role=c.UserRole.operator)
+        _job_a, _run_a, video_a = _seed_finished_video_for(app, owner=user_a.id, case_id="case_iso")
+
+        # Cross-user export of another operator's video => 404 (owner gate).
+        _cookie(client, token_b)
+        assert client.post(f"/api/finished-videos/{video_a.id}/editor-handoff", json={}).status_code == 404
+        assert client.post(f"/api/finished-videos/{video_a.id}/jianying-draft", json={}).status_code == 404
+
+
 def test_detail_admin_sees_all() -> None:
     app = create_app()
     with TestClient(app) as client:

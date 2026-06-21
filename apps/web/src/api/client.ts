@@ -832,7 +832,3 @@ export type OpsDashboardVm = components["schemas"]["OpsDashboardVm"];
 export type ProviderUsageReport = components["schemas"]["ProviderUsageReport"];
 export type YieldFunnelEvent = components["schemas"]["YieldFunnelEvent"];
 export type YieldFunnelResponse = components["schemas"]["YieldFunnelResponse"];
-export type UserGenerationDefaults = components["schemas"]["UserGenerationDefaults"];
-export type BatchDigitalHumanVideoRequest = components["schemas"]["BatchDigitalHumanVideoRequest"];
-export type BatchGenerationResponse = components["schemas"]["BatchGenerationResponse"];
-export type BatchItemResult = components["schemas"]["BatchItemResult"];

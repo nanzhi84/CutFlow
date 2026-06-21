@@ -25,12 +25,9 @@ def import_batch(payload: c.CreateImportBatchRequest, request: Request) -> c.Imp
             return report
     rows = payload.rows or []
     # Creator-based isolation (spec §3.5): imported resources are owned by the
-    # importing user so they show up in that user's isolated views. Fall back to the
-    # seed admin only when there is no authenticated session (e.g. internal tooling).
-    try:
-        importer_owner_id = current_user(request).id
-    except Exception:  # pragma: no cover - unauthenticated/internal caller
-        importer_owner_id = "usr_admin"
+    # importing user so they show up in that user's isolated views. The sole caller
+    # (routers/imports.py) is operator-gated, so the session is always authenticated.
+    importer_owner_id = current_user(request).id
     results = []
     created = 0
     skipped = 0
