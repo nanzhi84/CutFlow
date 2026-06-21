@@ -549,8 +549,6 @@ class NormalizationResult:
     target_width: int
     target_height: int
     is_hdr: bool
-    crop_applied: bool
-    rotation_corrected: bool
     media_info: MediaInfo
 
 
@@ -622,8 +620,6 @@ def normalize_for_upload(
         target_width=target_w,
         target_height=target_h,
         is_hdr=is_hdr,
-        crop_applied=crop is not None,
-        rotation_corrected=rotation != 0,
         media_info=media_info,
     )
 
