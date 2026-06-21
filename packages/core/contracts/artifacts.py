@@ -77,13 +77,6 @@ class UploadedFileArtifact(ContractModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class ImportMappingArtifact(ContractModel):
-    import_batch_id: str | None = None
-    import_type: str
-    external_to_internal_ids: dict[str, str] = Field(default_factory=dict)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
 class CaseContextArtifact(ContractModel):
     case_id: str
     case_profile: dict[str, Any] = Field(default_factory=dict)
@@ -95,29 +88,6 @@ class CaseContextArtifact(ContractModel):
     generated_at: datetime = Field(default_factory=utcnow)
 
 
-class PerformanceAnalysisArtifact(ContractModel):
-    case_id: str
-    observations: list[dict[str, Any]] = Field(default_factory=list)
-    generated_at: datetime = Field(default_factory=utcnow)
-
-
-class ScriptStrategyArtifact(ContractModel):
-    case_id: str
-    strategy_points: list[str] = Field(default_factory=list)
-    constraints: list[str] = Field(default_factory=list)
-    prompt_guidance: str = ""
-
-
-class ValidatedProductionSpecArtifact(ContractModel):
-    request_id: str
-    case_id: str
-    workflow_template_id: str
-    workflow_template_version: str
-    validation_errors: list[NodeError] = Field(default_factory=list)
-    validation_warnings: list[DegradationNotice] = Field(default_factory=list)
-    normalized_request_artifact_id: str | None = None
-
-
 class CreativeIntentArtifact(ContractModel):
     scene_type: Literal["hard_ad", "ip_persona"] = "hard_ad"
     style_hint: str = ""
@@ -127,13 +97,6 @@ class CreativeIntentArtifact(ContractModel):
     cover_focus: dict[str, Any] = Field(default_factory=dict)
     overlay_events: list[dict[str, Any]] = Field(default_factory=list)
     script_features_hint: dict[str, Any] = Field(default_factory=dict)
-
-
-class RawAlignmentArtifact(ContractModel):
-    provider_invocation_id: str | None = None
-    format: Literal["json", "srt", "textgrid", "provider_raw"]
-    source_artifact_id: str | None = None
-    segments: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AlignmentSegment(ContractModel):
@@ -278,18 +241,3 @@ class PublishPackageArtifact(ContractModel):
     title: str
     description: str
     platform_targets: list[str] = Field(default_factory=list)
-
-
-class ProviderRawRequestArtifact(ContractModel):
-    provider_invocation_id: str
-    redaction_policy_version: str
-    body_artifact_uri: str
-    content_type: str
-
-
-class ProviderRawResponseArtifact(ContractModel):
-    provider_invocation_id: str
-    redaction_policy_version: str
-    body_artifact_uri: str
-    content_type: str
-    status_code: int | None = None
