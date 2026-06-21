@@ -41,7 +41,7 @@ def test_reserve_is_idempotent_for_same_run() -> None:
     assert len(repo.selection_reservations) == 1
 
 
-def test_commit_then_release_keeps_committed_holds() -> None:
+def test_commit_then_release_keeps_committed_audit_without_blocking_new_run() -> None:
     repo = Repository()
     repo.reserve_selections(
         case_id="case_demo",
@@ -56,13 +56,14 @@ def test_commit_then_release_keeps_committed_holds() -> None:
     # Failure/finalize releases only the uncommitted shortlist member.
     released = repo.release_run_reservations(run_id="run_a", only_uncommitted=True)
     assert [r.asset_id for r in released] == ["asset_portrait_alt"]
-    # The committed pick still blocks a sibling run (a hard diversity hold).
+    # A committed pick is an audit record: successful use is represented in the
+    # selection ledger's recency penalty, while the in-progress hard lock is released.
     active = repo.active_selection_reservations(case_id="case_demo", medium="portrait")
-    assert [r.asset_id for r in active] == ["asset_portrait_demo"]
+    assert active == []
     other = repo.reserve_selections(
         case_id="case_demo", run_id="run_b", medium="portrait", asset_ids=["asset_portrait_demo"]
     )
-    assert other == []
+    assert [r.asset_id for r in other] == ["asset_portrait_demo"]
 
 
 def test_commit_returns_none_when_no_live_reservation() -> None:

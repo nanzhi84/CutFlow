@@ -125,6 +125,16 @@ def test_digital_human_template_keeps_existing_sequence_edges_and_outputs():
     assert specs["TimelinePlanning"].reuse_policy == "never"
 
 
+def test_material_pack_planning_retries_retryable_reservation_conflicts():
+    for template in (digital_human_template(), broll_only_template()):
+        specs = {spec.node_id: spec for spec in template.nodes}
+        assert specs["MaterialPackPlanning"].retry_policy.max_attempts == 3
+        assert specs["MaterialPackPlanning"].retry_policy.backoff_seconds == 1
+        for node_id, spec in specs.items():
+            if node_id != "MaterialPackPlanning":
+                assert spec.retry_policy.max_attempts == 1
+
+
 def test_broll_only_template_declares_new_node_outputs_and_provider_side_effects():
     template = broll_only_template()
     output_kinds = _output_kinds_by_node(template)

@@ -191,10 +191,20 @@ def configure_app_state(app: FastAPI, *, session_factory=None) -> None:
     )
     app.state.prompt_registry = PromptRegistry(runtime_repository, prompt_reader=prompt_reader)
     app.state.workflow_runtime_settings = load_workflow_runtime_settings()
+    def _sync_local_workflow_snapshot(job, run, repository):
+        if app.state.sqlalchemy_production_repository is None:
+            return
+        app.state.sqlalchemy_production_repository.sync_workflow_snapshot(
+            job=job,
+            run=run,
+            repository=repository,
+        )
+
     local_runtime = build_digital_human_workflow(
         runtime_repository,
         provider_gateway=app.state.provider_gateway,
         prompt_registry=app.state.prompt_registry,
+        snapshot_sync=_sync_local_workflow_snapshot,
     )
     if app.state.workflow_runtime_settings.runtime == "temporal":
         from packages.core.workflow.temporal_adapter import TemporalRuntimeAdapter

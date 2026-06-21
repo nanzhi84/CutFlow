@@ -211,6 +211,44 @@ def test_bgm_segment_candidate_recency_demotes_exact_segment_not_whole_song(tmp_
     assert penalties["bgm_segment_1"] > penalties["bgm_segment_2"]
 
 
+def test_material_pack_respects_active_bgm_reservations_from_parallel_run(tmp_path, monkeypatch):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    adapter.repository.media_assets.clear()
+    adapter.repository.annotations.clear()
+    _inject_bgm_asset(
+        adapter.repository,
+        "asset_bgm_locked",
+        [_segment("locked_intro", 0.0, 45.0, mood="沉稳")],
+    )
+    _inject_bgm_asset(
+        adapter.repository,
+        "asset_bgm_open",
+        [_segment("open_intro", 0.0, 45.0, mood="明快")],
+    )
+    adapter.repository.reserve_selections(
+        case_id="case_demo",
+        run_id="run_parallel",
+        medium="bgm",
+        asset_ids=["asset_bgm_locked"],
+    )
+
+    output = nodes.material_pack_planning.run(_ctx(adapter, _request(), "MaterialPackPlanning"))
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_material_pack)
+
+    assert {c["asset_id"] for c in payload["bgm_candidates"]} == {"asset_bgm_open"}
+    assert payload["diagnostics"]["bgm_active_reservations"] == 1
+    owned = [
+        reservation
+        for reservation in adapter.repository.selection_reservations.values()
+        if reservation.run_id == "run_bgm"
+    ]
+    assert {(reservation.medium, reservation.asset_id) for reservation in owned} == {
+        ("bgm", "asset_bgm_open")
+    }
+
+
 def test_material_pack_limits_bgm_candidates_to_top_k(tmp_path, monkeypatch):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
@@ -269,6 +307,12 @@ def test_material_pack_keeps_requested_bgm_inside_top_k(tmp_path, monkeypatch):
 
     assert len(payload["bgm_candidates"]) == 8
     assert any(candidate["asset_id"] == "asset_requested_bgm" for candidate in payload["bgm_candidates"])
+    owned = [
+        reservation
+        for reservation in adapter.repository.selection_reservations.values()
+        if reservation.run_id == "run_bgm" and reservation.medium == "bgm"
+    ]
+    assert "asset_requested_bgm" in {reservation.asset_id for reservation in owned}
 
 
 def test_style_planning_carries_selected_bgm_segment_into_style_plan(tmp_path, monkeypatch):

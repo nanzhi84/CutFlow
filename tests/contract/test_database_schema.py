@@ -216,6 +216,22 @@ def test_artifacts_run_id_indexes_exist():
     assert index_columns["idx_artifacts_run_kind"] == ["run_id", "kind"]
 
 
+def test_selection_reservation_active_slot_unique_index_exists():
+    reservations = Base.metadata.tables["selection_reservations"]
+    indexes = {idx.name: idx for idx in reservations.indexes}
+
+    active_unique = indexes["uq_selection_reservations_active_slot"]
+    assert active_unique.unique is True
+    assert [col.name for col in active_unique.columns] == ["case_id", "medium", "asset_id"]
+    where = active_unique.dialect_options["postgresql"]["where"]
+    assert where is not None
+    where_sql = str(
+        where.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+    assert "reserved" in where_sql
+    assert "committed" not in where_sql
+
+
 def test_case_rubric_indexes_and_uniques_exist():
     case_rubrics = Base.metadata.tables["case_rubrics"]
     score_predictions = Base.metadata.tables["score_predictions"]
@@ -339,3 +355,12 @@ def test_alembic_case_rubric_indexes_revision_exists():
         "uq_reward_signals_case_source_evidence",
     ):
         assert name in text
+
+
+def test_alembic_selection_reservation_active_slot_revision_exists():
+    migration = Path("packages/core/storage/alembic/versions/0020_selection_reservation_active_slot.py")
+    assert migration.exists()
+    text = migration.read_text(encoding="utf-8")
+    assert 'revision = "0020_selection_reservation_active_slot"' in text
+    assert 'down_revision = "0019_user_generation_defaults"' in text
+    assert "uq_selection_reservations_active_slot" in text

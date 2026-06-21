@@ -3,7 +3,7 @@ from __future__ import annotations
 import mimetypes
 from pathlib import Path
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -51,6 +51,7 @@ from packages.core.contracts import (
     RunStatus,
     ScriptVersion,
     SelectionLedgerEntry,
+    SelectionReservationRecord,
     FailureTaxonomyEntry,
     UsageMeterRecord,
     VideoVersion,
@@ -85,6 +86,7 @@ from packages.core.storage.database import (
     ScriptVersionRow,
     FailureTaxonomyRow,
     SelectionLedgerRow,
+    SelectionReservationRow,
     UsageMeterRecordRow,
     VoiceProfileRow,
     WorkflowRunRow,
@@ -144,6 +146,7 @@ SUPPORTED_IMPORT_TYPES = {
 
 _FINISHED_VIDEO_NUMBER_RETRY_LIMIT = 3
 _FINISHED_VIDEO_NUMBER_CONSTRAINT = "uq_finished_videos_case_video_number"
+_SELECTION_RESERVATION_ACTIVE_SLOT_CONSTRAINT = "uq_selection_reservations_active_slot"
 
 NODE_LABELS = {
     "ValidateRequest": "校验请求",
@@ -211,6 +214,22 @@ def _selection_ledger_entry_from_row(row: SelectionLedgerRow) -> SelectionLedger
         slot_phase=row.slot_phase,
         diversity_key=row.diversity_key,
         created_at=row.created_at,
+    )
+
+
+def _selection_reservation_from_row(row: SelectionReservationRow) -> SelectionReservationRecord:
+    return SelectionReservationRecord(
+        id=row.id,
+        case_id=row.case_id,
+        run_id=row.run_id,
+        medium=row.medium,
+        asset_id=row.asset_id,
+        diversity_key=row.diversity_key,
+        status=row.status,
+        created_at=row.created_at,
+        expires_at=row.expires_at,
+        committed_at=row.committed_at,
+        released_at=row.released_at,
     )
 
 
@@ -290,6 +309,13 @@ class SqlAlchemyProductionRepository:
                 self._sync_workflow_snapshot_once(job=job, run=run, repository=repository)
                 return
             except IntegrityError as exc:
+                if self._is_selection_reservation_active_slot_conflict(exc):
+                    raise NodeExecutionError(
+                        ErrorCode.validation_conflict,
+                        "Active selection reservation conflict; retry material planning.",
+                        retryable=True,
+                        details={"constraint": _SELECTION_RESERVATION_ACTIVE_SLOT_CONSTRAINT},
+                    ) from exc
                 if attempt == _FINISHED_VIDEO_NUMBER_RETRY_LIMIT - 1 or not self._is_finished_video_number_conflict(exc):
                     raise
 
@@ -384,6 +410,10 @@ class SqlAlchemyProductionRepository:
             for entry in repository.selection_ledger.values():
                 if entry.run_id == run.id:
                     session.merge(self._selection_ledger_row(entry))
+            self._expire_stale_selection_reservations(session)
+            for reservation in repository.selection_reservations.values():
+                if reservation.run_id == run.id:
+                    session.merge(self._selection_reservation_row(reservation))
             session.commit()
 
     @staticmethod
@@ -396,6 +426,33 @@ class SqlAlchemyProductionRepository:
         message = str(original or exc)
         return _FINISHED_VIDEO_NUMBER_CONSTRAINT in message or (
             "finished_videos.case_id" in message and "finished_videos.video_number" in message
+        )
+
+    @staticmethod
+    def _is_selection_reservation_active_slot_conflict(exc: IntegrityError) -> bool:
+        original = getattr(exc, "orig", None)
+        diagnostic = getattr(original, "diag", None)
+        constraint_name = getattr(diagnostic, "constraint_name", None)
+        if constraint_name == _SELECTION_RESERVATION_ACTIVE_SLOT_CONSTRAINT:
+            return True
+        message = str(original or exc)
+        return _SELECTION_RESERVATION_ACTIVE_SLOT_CONSTRAINT in message or (
+            "selection_reservations.case_id" in message
+            and "selection_reservations.medium" in message
+            and "selection_reservations.asset_id" in message
+        )
+
+    @staticmethod
+    def _expire_stale_selection_reservations(session: Session) -> None:
+        execute = getattr(session, "execute", None)
+        if not callable(execute):
+            return
+        now = utcnow()
+        execute(
+            update(SelectionReservationRow)
+            .where(SelectionReservationRow.status == "reserved")
+            .where(SelectionReservationRow.expires_at <= now)
+            .values(status="expired", released_at=now)
         )
 
     def case_run_cards(
@@ -546,6 +603,17 @@ class SqlAlchemyProductionRepository:
                 for ledger_row in session.scalars(ledger_statement):
                     entry = _selection_ledger_entry_from_row(ledger_row)
                     repository.selection_ledger[entry.id] = entry
+                reservation_statement = (
+                    select(SelectionReservationRow)
+                    .where(SelectionReservationRow.case_id == run.case_id)
+                    .where(SelectionReservationRow.status == "reserved")
+                    .where(SelectionReservationRow.expires_at > utcnow())
+                    .order_by(SelectionReservationRow.created_at.desc())
+                    .limit(100)
+                )
+                for reservation_row in session.scalars(reservation_statement):
+                    reservation = _selection_reservation_from_row(reservation_row)
+                    repository.selection_reservations[reservation.id] = reservation
             run_ids = {run_id}
             if run.resume_from_run_id:
                 source_row = session.get(WorkflowRunRow, run.resume_from_run_id)
@@ -1627,6 +1695,23 @@ class SqlAlchemyProductionRepository:
             slot_phase=entry.slot_phase,
             diversity_key=entry.diversity_key,
             created_at=entry.created_at,
+        )
+
+    def _selection_reservation_row(
+        self, reservation: SelectionReservationRecord
+    ) -> SelectionReservationRow:
+        return SelectionReservationRow(
+            id=reservation.id,
+            case_id=reservation.case_id,
+            run_id=reservation.run_id,
+            medium=reservation.medium,
+            asset_id=reservation.asset_id,
+            diversity_key=reservation.diversity_key,
+            status=reservation.status,
+            created_at=reservation.created_at,
+            expires_at=reservation.expires_at,
+            committed_at=reservation.committed_at,
+            released_at=reservation.released_at,
         )
 
     def _provider_invocation_row(self, invocation: ProviderInvocation) -> ProviderInvocationRow:

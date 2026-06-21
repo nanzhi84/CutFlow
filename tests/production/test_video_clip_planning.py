@@ -19,6 +19,9 @@ from packages.core.contracts import (
     ClipUsageV4,
     ClipV4,
     DigitalHumanVideoRequest,
+    Job,
+    JobStatus,
+    JobType,
     MediaAssetRecord,
     MediaInfo,
     NodeRun,
@@ -217,6 +220,123 @@ def test_material_pack_splits_one_video_into_portrait_and_broll(tmp_path, monkey
     # Honest diagnostics for the unified bucket.
     assert payload["diagnostics"]["portrait_from_video"] >= 1
     assert payload["diagnostics"]["video_no_lipsync"] is False
+
+
+def test_material_pack_respects_active_reservations_from_parallel_run(tmp_path, monkeypatch):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    adapter.repository.media_assets.clear()
+    adapter.repository.annotations.clear()
+    _inject_video_asset(
+        adapter.repository,
+        "vid_reserved",
+        [
+            _talk_clip("talk_reserved", 0.0, 12.0),
+            _cover_clip("cover_reserved", 12.0, 18.0, ["打磨", "工艺", "补漆", "效果"]),
+        ],
+    )
+    _inject_video_asset(
+        adapter.repository,
+        "vid_fresh",
+        [
+            _talk_clip("talk_fresh", 0.0, 7.0),
+            _cover_clip("cover_fresh", 7.0, 11.0, ["打磨", "工艺"]),
+        ],
+    )
+    adapter.repository.reserve_selections(
+        case_id="case_demo",
+        run_id="run_parallel",
+        medium="portrait",
+        asset_ids=["vid_reserved"],
+    )
+    adapter.repository.reserve_selections(
+        case_id="case_demo",
+        run_id="run_parallel",
+        medium="broll",
+        asset_ids=["vid_reserved"],
+    )
+
+    output = nodes.material_pack_planning.run(_ctx(adapter, _request(), "MaterialPackPlanning"))
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_material_pack)
+
+    assert {c["asset_id"] for c in payload["portrait_candidates"]} == {"vid_fresh"}
+    assert {c["asset_id"] for c in payload["broll_candidates"]} == {"vid_fresh"}
+    assert payload["diagnostics"]["portrait_active_reservations"] == 1
+    assert payload["diagnostics"]["broll_active_reservations"] == 1
+    owned = [
+        reservation
+        for reservation in adapter.repository.selection_reservations.values()
+        if reservation.run_id == "run_1"
+    ]
+    assert {(reservation.medium, reservation.asset_id) for reservation in owned} == {
+        ("portrait", "vid_fresh"),
+        ("broll", "vid_fresh"),
+    }
+
+
+def test_local_runtime_syncs_after_material_pack_reservations(tmp_path, monkeypatch):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    snapshots: list[tuple[str, list[tuple[str, str, str, str]]]] = []
+    repo = Repository()
+    adapter = LocalRuntimeAdapter(
+        repo,
+        provider_gateway=ProviderGateway(repo, object_store=object_store),
+        prompt_registry=PromptRegistry(repo),
+        snapshot_sync=lambda job, run, repository: snapshots.append(
+            (
+                run.id,
+                [
+                    (reservation.run_id, reservation.medium, reservation.asset_id, reservation.status)
+                    for reservation in repository.selection_reservations.values()
+                ],
+            )
+        ),
+    )
+    adapter.repository.media_assets.clear()
+    adapter.repository.annotations.clear()
+    _inject_video_asset(
+        adapter.repository,
+        "vid_sync",
+        [
+            _talk_clip("talk_sync", 0.0, 7.0),
+            _cover_clip("cover_sync", 7.0, 11.0, ["打磨", "工艺"]),
+        ],
+    )
+    request = _request()
+    job = Job(
+        id="job_sync",
+        type=JobType.digital_human_video,
+        status=JobStatus.running,
+        case_id="case_demo",
+        created_by="usr_admin",
+        request_schema=request.schema_version,
+        request=request,
+    )
+    run = WorkflowRun(
+        id="run_sync",
+        job_id=job.id,
+        case_id="case_demo",
+        workflow_template_id="digital_human_v2",
+        workflow_version="v1",
+        status=RunStatus.running,
+    )
+    adapter.repository.jobs[job.id] = job
+    adapter.repository.runs[run.id] = run
+    adapter.repository.node_runs[run.id] = []
+
+    proceeded = adapter._execute_node("MaterialPackPlanning", run, RunState(request=request, artifacts={}))
+
+    assert proceeded is True
+    assert snapshots
+    assert snapshots[-1] == (
+        "run_sync",
+        [
+            ("run_sync", "portrait", "vid_sync", "reserved"),
+            ("run_sync", "broll", "vid_sync", "reserved"),
+        ],
+    )
 
 
 def test_material_pack_excludes_presenter_clip_from_broll_and_reports_it(tmp_path, monkeypatch):

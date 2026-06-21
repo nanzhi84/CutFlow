@@ -500,7 +500,7 @@ class Repository:
             recorded.append(entry)
         return recorded
 
-    # --- selection reservations (§6.6 reserve -> commit -> release/expire) -----
+    # --- selection reservations (§6.6 reserve -> commit audit -> release/expire) -----
     def active_selection_reservations(
         self,
         *,
@@ -595,11 +595,13 @@ class Repository:
         medium: SelectionMedium,
         asset_id: str,
     ) -> SelectionReservationRecord | None:
-        """Promote this run's live reservation on a slot to ``committed`` (a hard hold).
+        """Promote this run's live reservation on a slot to ``committed``.
 
-        Called from the per-medium production node when the asset actually ships.
-        Returns the committed record, or ``None`` when this run held no live
-        reservation for the slot (e.g. it was reclaimed by TTL before commit).
+        Called from the per-medium production node when the asset actually ships. The
+        committed row is an audit marker; future diversity pressure comes from the
+        selection ledger entry, not from a permanent reservation lock. Returns the
+        committed record, or ``None`` when this run held no live reservation for the
+        slot (e.g. it was reclaimed by TTL before commit).
         """
         now = utcnow()
         for reservation in self.selection_reservations.values():
@@ -624,10 +626,10 @@ class Repository:
     ) -> list[SelectionReservationRecord]:
         """Release a run's reservations (cancel/failure path, §6.6).
 
-        By default only ``reserved`` (uncommitted) leases are freed — a committed
-        pick stays a hard hold for diversity memory even if the run later fails
-        (§6.6: "失败任务默认保留用于多样性记忆"). ``only_uncommitted=False`` also
-        releases committed holds (ops cleanup).
+        By default only ``reserved`` (uncommitted) leases are freed. A committed
+        pick stays as an audit/used marker; future planning sees that through the
+        selection ledger rather than an active lock. ``only_uncommitted=False`` also
+        releases committed audit rows (ops cleanup).
         """
         now = utcnow()
         released: list[SelectionReservationRecord] = []

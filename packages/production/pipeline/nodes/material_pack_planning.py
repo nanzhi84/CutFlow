@@ -65,18 +65,38 @@ def run(ctx: NodeContext) -> NodeOutput:
             or asset.id in request.portrait.template_sequence_ids
         )
 
+    portrait_reserved = _active_reserved_asset_ids(
+        repo, case_id=request.case_id, run_id=ctx.run.id, medium="portrait"
+    )
+    broll_reserved = _active_reserved_asset_ids(
+        repo, case_id=request.case_id, run_id=ctx.run.id, medium="broll"
+    )
+    bgm_reserved = _active_reserved_asset_ids(
+        repo, case_id=request.case_id, run_id=ctx.run.id, medium="bgm"
+    )
+    font_reserved = _active_reserved_asset_ids(
+        repo, case_id=request.case_id, run_id=ctx.run.id, medium="font"
+    )
+
     # Unified visual bucket: legacy ``portrait`` / ``broll`` rows are accepted until
     # the DB kind migration lands, but every visual asset is split per clip into
     # A-roll (lip-sync-usable) vs B-roll (cover/backup) through one ranking path.
     visual_assets = [asset for asset in assets if _eligible_visual(asset)]
-    portrait_visual_assets = [asset for asset in visual_assets if _portrait_template_allowed(asset)]
+    portrait_visual_assets = [
+        asset
+        for asset in visual_assets
+        if _portrait_template_allowed(asset) and asset.id not in portrait_reserved
+    ]
     broll_visual_assets = [
         asset
         for asset in visual_assets
-        if request.broll.case_id is None or asset.case_id == request.broll.case_id
+        if (request.broll.case_id is None or asset.case_id == request.broll.case_id)
+        and asset.id not in broll_reserved
     ]
-    bgm_assets = [asset for asset in assets if _eligible(asset, "bgm")]
-    font_assets = [asset for asset in assets if _eligible(asset, "font")]
+    bgm_assets = [asset for asset in assets if _eligible(asset, "bgm") and asset.id not in bgm_reserved]
+    font_assets = [
+        asset for asset in assets if _eligible(asset, "font") and asset.id not in font_reserved
+    ]
 
     # --- portrait (coverage is enforced later; here: lip-sync + recency) ------
     portrait_ledger = repo.recent_selections(case_id=request.case_id, medium="portrait")
@@ -199,9 +219,9 @@ def run(ctx: NodeContext) -> NodeOutput:
     # §6.6 reserve: claim a TTL lease over each top candidate per medium so a
     # concurrent same-case run does not silently collide on the same asset. The
     # per-medium production node commits the asset it actually ships; cancel/failure
-    # releases the rest. Assets a live run already holds are skipped (recency already
-    # demoted them upstream); the reservation ids surfaced here are the ones THIS run
-    # owns, wiring the previously-stubbed ``reservations`` contract field for real.
+    # releases the rest. Assets a live run already holds were filtered before ranking;
+    # the reservation ids surfaced here are the ones THIS run owns, wiring the
+    # previously-stubbed ``reservations`` contract field for real.
     reservation_ids = _reserve_top_candidates(
         ctx,
         case_id=request.case_id,
@@ -227,6 +247,10 @@ def run(ctx: NodeContext) -> NodeOutput:
             "broll_motion_excluded": broll_motion_excluded,
             "portrait_motion_excluded": portrait_motion_excluded,
             "bgm_missing": request.bgm.enabled and not bgm_candidates,
+            "portrait_active_reservations": len(portrait_reserved),
+            "broll_active_reservations": len(broll_reserved),
+            "bgm_active_reservations": len(bgm_reserved),
+            "font_active_reservations": len(font_reserved),
             # Unified video bucket visibility: how many portrait candidates came from
             # per-clip lip-sync windows, and the honest "operator uploaded visual
             # material but it has no talking-head clip" signal (an A-roll-insufficiency
@@ -248,6 +272,17 @@ def run(ctx: NodeContext) -> NodeOutput:
 # only the single eventual pick) is intentional: the production node may pick any of the
 # top candidates, and uncommitted reservations are released at finalize/failure.
 _RESERVE_TOP_N = 3
+
+
+def _active_reserved_asset_ids(repo, *, case_id: str, run_id: str, medium: str) -> set[str]:
+    return {
+        reservation.asset_id
+        for reservation in repo.active_selection_reservations(
+            case_id=case_id,
+            medium=medium,
+            exclude_run_id=run_id,
+        )
+    }
 
 
 def _broll_motion_excluded_count(annotations, *, asset_kinds: dict[str, str]) -> int:
@@ -326,12 +361,13 @@ def _reserve_top_candidates(
         ("bgm", bgm_candidates),
         ("font", font_candidates),
     ):
-        asset_ids = [c.asset_id for c in candidates[:_RESERVE_TOP_N] if c.asset_id]
+        reserve_candidates = candidates if medium == "bgm" else candidates[:_RESERVE_TOP_N]
+        asset_ids = [c.asset_id for c in reserve_candidates if c.asset_id]
         if not asset_ids:
             continue
         diversity_keys = {
             c.asset_id: (c.metadata or {}).get("diversity_key")
-            for c in candidates[:_RESERVE_TOP_N]
+            for c in reserve_candidates
             if c.asset_id
         }
         owned = ctx.repository.reserve_selections(

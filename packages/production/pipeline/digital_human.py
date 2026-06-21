@@ -16,6 +16,7 @@ resolves through ``LocalRuntimeAdapter._object_store``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import logging
 from pathlib import Path
 
@@ -35,6 +36,7 @@ from packages.core.contracts import (
     RunDebugReportArtifact,
     RunPublicReportArtifact,
     RunStatus,
+    RetryPolicy,
     WarningCode,
     WorkflowRun,
     WorkflowTemplate,
@@ -125,6 +127,11 @@ _TIMELINE_REUSE_BREAK_NODES = {
     "TimelinePlanning",
     "BrollTimelinePlanning",
 }
+_MATERIAL_PACK_RETRY_POLICY = RetryPolicy(
+    max_attempts=3,
+    backoff_seconds=1,
+    retryable_error_codes=[ErrorCode.validation_conflict],
+)
 
 _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
     "ValidateRequest": [ArtifactKind.validated_production_spec],
@@ -163,6 +170,9 @@ def _build_template(template_id: str, version: str, sequence: list[str]) -> Work
             node_id=node_id,
             input_schema=f"{node_id}.input.v1",
             output_artifact_kinds=list(_NODE_OUTPUT_KINDS[node_id]),
+            retry_policy=(
+                _MATERIAL_PACK_RETRY_POLICY if node_id == "MaterialPackPlanning" else RetryPolicy()
+            ),
             side_effects=["provider_call"] if node_id in _PROVIDER_SIDE_EFFECT_NODES else [],
             idempotency_key=(
                 f"{template_id}:{node_id}:{{input_manifest_hash}}"
@@ -219,10 +229,12 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         prompt_registry: PromptRegistry,
         *,
         seed_media: bool = True,
+        snapshot_sync: Callable[[Job, WorkflowRun, Repository], None] | None = None,
     ) -> None:
         self.repository = repository
         self.provider_gateway = provider_gateway
         self.prompt_registry = prompt_registry
+        self._snapshot_sync = snapshot_sync
         # ``seed_media`` generates demo seed media via ffmpeg/object-store on
         # construction. The per-activity Temporal scoping (see
         # ``TemporalActivityContext.build_runtime``) rehydrates real media
@@ -441,6 +453,14 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
     def request_cancel(self, run_id: str, *, force: bool = False, reason: str | None = None) -> WorkflowRun:
         return self.cancel_run(run_id, force=force, reason=reason)
 
+    def _sync_snapshot(self, run_id: str) -> None:
+        snapshot_sync = getattr(self, "_snapshot_sync", None)
+        if snapshot_sync is None:
+            return
+        run = self.repository.runs[run_id]
+        job = self.repository.jobs[run.job_id]
+        snapshot_sync(job, run, self.repository)
+
     def _template_for_run(self, run: WorkflowRun) -> WorkflowTemplate:
         return template_for(run.workflow_template_id)
 
@@ -538,6 +558,14 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                 node_id=failed_node.node_id,
                 status=NodeStatus.failed.value,
                 message=f"Node {failed_node.node_id} failed.",
+            )
+        try:
+            self.repository.release_run_reservations(run_id=run_id, only_uncommitted=True)
+        except Exception:
+            logger.warning(
+                "Failed to release selection reservations for worker-lost run %s.",
+                run_id,
+                exc_info=True,
             )
 
         # admitted has no direct edge to failed; advance through running first.
@@ -755,6 +783,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                     dedupe_key=f"{patched.id}:{funnel_stage}",
                     event_time=patched.finished_at,
                 )
+            self._sync_snapshot(run.id)
             return True
         except NodeExecutionError as exc:
             if node_run.status == NodeStatus.pending:
@@ -776,9 +805,9 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             self.repository.node_runs[run.id][-1] = failed_node
             record_node_run(failed_node)
             # §6.6 release on failure: free this run's UNCOMMITTED reservations so a
-            # sibling run can claim those slots. Committed picks stay held for diversity
-            # memory ("失败任务默认保留用于多样性记忆"). Never let a reservation hiccup
-            # mask the original node failure.
+            # sibling run can claim those slots. Committed picks stay as audit records;
+            # future diversity pressure comes from the selection ledger. Never let a
+            # reservation hiccup mask the original node failure.
             try:
                 self.repository.release_run_reservations(run_id=run.id, only_uncommitted=True)
             except Exception:
@@ -875,7 +904,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             update={"status": RunStatus.cancelled, "finished_at": utcnow(), "updated_at": utcnow()}
         )
         # §6.6 release on cancel: free this run's uncommitted reservations so the slots
-        # are reclaimable immediately (committed picks stay held for diversity memory).
+        # are reclaimable immediately. Committed picks remain as audit records only.
         try:
             self.repository.release_run_reservations(run_id=run_id, only_uncommitted=True)
         except Exception:
@@ -1294,10 +1323,12 @@ def build_digital_human_workflow(
     provider_gateway: ProviderGateway | None = None,
     prompt_registry: PromptRegistry | None = None,
     seed_media: bool = True,
+    snapshot_sync: Callable[[Job, WorkflowRun, Repository], None] | None = None,
 ) -> LocalRuntimeAdapter:
     return LocalRuntimeAdapter(
         repository,
         provider_gateway or ProviderGateway(repository),
         prompt_registry or PromptRegistry(repository),
         seed_media=seed_media,
+        snapshot_sync=snapshot_sync,
     )

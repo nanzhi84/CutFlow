@@ -1085,6 +1085,14 @@ Index(
     SelectionReservationRow.status,
 )
 Index("idx_selection_reservations_ttl", SelectionReservationRow.status, SelectionReservationRow.expires_at)
+Index(
+    "uq_selection_reservations_active_slot",
+    SelectionReservationRow.case_id,
+    SelectionReservationRow.medium,
+    SelectionReservationRow.asset_id,
+    unique=True,
+    postgresql_where=SelectionReservationRow.status == "reserved",
+)
 Index("idx_provider_invocations_case", ProviderInvocationRow.case_id, ProviderInvocationRow.provider_id)
 Index("idx_usage_meter_provider", UsageMeterRecordRow.provider_id, UsageMeterRecordRow.capability_id)
 Index("idx_case_memories_case_status", CaseMemoryRow.case_id, CaseMemoryRow.status)

@@ -95,7 +95,7 @@ def test_mark_cancelled_does_not_emit_run_level_stages():
 
 def test_mark_cancelled_releases_uncommitted_reservations_keeps_committed():
     # §6.6: cancel releases this run's uncommitted reservations so the slots are
-    # reclaimable, but a committed pick stays a hard diversity hold.
+    # reclaimable, but a committed pick stays as an audit/used marker.
     adapter, run, _ = _adapter_with_run(RunStatus.running)
     adapter.repository.reserve_selections(
         case_id="case_demo",

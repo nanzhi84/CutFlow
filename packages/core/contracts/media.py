@@ -155,12 +155,11 @@ class SelectionReservationRecord(ContractModel):
     def is_active(self, *, now: datetime | None = None) -> bool:
         """A reservation that still blocks another run from the same slot.
 
-        ``reserved`` until its TTL elapses, plus ``committed`` (a committed pick
-        is a hard hold). ``released``/``expired`` no longer block.
+        ``reserved`` until its TTL elapses. ``committed`` is an audit/used marker;
+        successful use is represented by the selection ledger's recency penalty,
+        not by a permanent hard lock. ``released``/``expired`` no longer block.
         """
         reference = now or utcnow()
-        if self.status == "committed":
-            return True
         if self.status == "reserved":
             return self.expires_at > reference
         return False

@@ -76,6 +76,22 @@ def test_mark_run_failed_fails_run_node_and_job():
     assert adapter.repository.jobs[job.id].status == JobStatus.failed
 
 
+def test_mark_run_failed_releases_uncommitted_reservations():
+    adapter, run, _, _ = _adapter_with_run(RunStatus.running)
+    adapter.repository.reserve_selections(
+        case_id="case_demo",
+        run_id=run.id,
+        medium="bgm",
+        asset_ids=["asset_bgm_demo"],
+    )
+
+    adapter.mark_run_failed(run.id, reason="worker lost")
+
+    assert adapter.repository.active_selection_reservations(case_id="case_demo", medium="bgm") == []
+    statuses = {reservation.asset_id: reservation.status for reservation in adapter.repository.selection_reservations.values()}
+    assert statuses["asset_bgm_demo"] == "released"
+
+
 def test_mark_run_failed_is_idempotent():
     adapter, run, _, _ = _adapter_with_run(RunStatus.running)
     first = adapter.mark_run_failed(run.id)
