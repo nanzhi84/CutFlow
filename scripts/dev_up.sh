@@ -11,7 +11,8 @@
 #
 # Config (env file): CUTAGENT_ENV_FILE, else <repo>/.env.local (template: .env.example).
 # Overridable: CUTAGENT_API_PORT (8000), CUTAGENT_WEB_PORT (8001), CUTAGENT_VENV.
-# Public dev proxy: CUTAGENT_TUNNEL_ENABLE=auto|1|0, CUTAGENT_TUNNEL_HOST=shuying-tunnel.
+# Public dev exposure is handled by the Mac mini Cloudflare Tunnel launchd
+# service. This script only manages local app processes.
 #
 set -euo pipefail
 
@@ -27,17 +28,10 @@ cd "$ROOT"
 ENV_FILE="${CUTAGENT_ENV_FILE:-$ROOT/.env.local}"
 API_HOST=127.0.0.1
 API_PORT="${CUTAGENT_API_PORT:-8000}"
-# dev.shuying.cyou serves the web UI as static assets from the Singapore ECS.
-# Only /api and /ws are reverse-proxied through the Mac mini API tunnel.
 WEB_PORT="${CUTAGENT_WEB_PORT:-8001}"
 RUN_DIR="$ROOT/.data/dev"
 INFRA_SERVICES=(postgres redis minio temporal temporal-ui)
 DASHSCOPE_NO_PROXY_HOSTS=(dashscope.aliyuncs.com)
-TUNNEL_ENABLE="${CUTAGENT_TUNNEL_ENABLE:-auto}"
-TUNNEL_HOST="${CUTAGENT_TUNNEL_HOST:-shuying-tunnel}"
-TUNNEL_REMOTE_HOST="${CUTAGENT_TUNNEL_REMOTE_HOST:-127.0.0.1}"
-TUNNEL_REMOTE_API_PORT="${CUTAGENT_TUNNEL_REMOTE_API_PORT:-18000}"
-TUNNEL_CONNECT_TIMEOUT="${CUTAGENT_TUNNEL_CONNECT_TIMEOUT:-5}"
 
 # Infra is owned by the main checkout's compose project. Pin its name + file so
 # running from a worktree reuses the existing containers instead of spinning up
@@ -75,36 +69,6 @@ compose() {
 tcp_up()  { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && exec 3>&- 2>/dev/null; }
 http_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$1" 2>/dev/null || echo 000; }
 
-tunnel_enabled() {
-  local mode
-  mode="$(printf '%s' "$TUNNEL_ENABLE" | tr '[:upper:]' '[:lower:]')"
-  case "$mode" in
-    0|false|no|off) return 1 ;;
-    1|true|yes|on) return 0 ;;
-    auto|"")
-      command -v ssh >/dev/null 2>&1 || return 1
-      ssh -o BatchMode=yes -o ConnectTimeout="$TUNNEL_CONNECT_TIMEOUT" "$TUNNEL_HOST" true >/dev/null 2>&1
-      ;;
-    *) die "invalid CUTAGENT_TUNNEL_ENABLE=$TUNNEL_ENABLE (use auto|1|0)" ;;
-  esac
-}
-
-tunnel_remote_health() {
-  ssh -o BatchMode=yes -o ConnectTimeout="$TUNNEL_CONNECT_TIMEOUT" "$TUNNEL_HOST" \
-    "curl -fsS -o /dev/null --max-time 5 http://$TUNNEL_REMOTE_HOST:$TUNNEL_REMOTE_API_PORT/api/health" \
-    >/dev/null 2>&1
-}
-
-tunnel_clear_remote_forward() {
-  # The cutagent-tunnel account is dedicated to this reverse tunnel. When an SSH
-  # remote-forward dies half-open, ECS can keep a stale `sshd: cutagent-tunnel`
-  # listener on :18000 while the Mac has no local pidfile left. Kill only that
-  # non-command sshd session; the current remote command appears as @notty.
-  ssh -o BatchMode=yes -o ConnectTimeout="$TUNNEL_CONNECT_TIMEOUT" "$TUNNEL_HOST" \
-    "ps -u \"\$USER\" -o pid=,args= | awk '\$0 ~ /sshd: / && \$0 !~ /@notty/ {print \$1}' | xargs -r kill" \
-    >/dev/null 2>&1 || true
-}
-
 # Readiness probes (named functions so wait_for can call them in-process — a
 # `bash -c` subshell would not see these shell functions).
 minio_up() { [[ "$(http_code http://127.0.0.1:9000/minio/health/live)" == 200 ]]; }
@@ -136,28 +100,6 @@ start_bg() { # start_bg <name> <cmd...>   (own process group so we can kill the 
     nohup bash -c 'exec "$@"' _ "$@" >"$(logfile "$name")" 2>&1 &
   fi
   echo $! >"$(pidfile "$name")"
-}
-
-ensure_tunnel() {
-  if ! tunnel_enabled; then
-    warn "shuying tunnel unavailable/disabled — skipping public /api tunnel"
-    return 0
-  fi
-  if tunnel_remote_health; then
-    ok "shuying tunnel healthy (:${TUNNEL_REMOTE_API_PORT} → :${API_PORT})"
-    return 0
-  fi
-
-  warn "shuying tunnel unhealthy — restarting remote forward"
-  stop_named tunnel
-  tunnel_clear_remote_forward
-  start_bg tunnel ssh -N -T \
-    -o ExitOnForwardFailure=yes \
-    -o ServerAliveInterval=15 \
-    -o ServerAliveCountMax=4 \
-    -R "$TUNNEL_REMOTE_HOST:$TUNNEL_REMOTE_API_PORT:$API_HOST:$API_PORT" \
-    "$TUNNEL_HOST"
-  wait_for "shuying tunnel :$TUNNEL_REMOTE_API_PORT" tunnel_remote_health
 }
 
 stop_named() { # stop_named <name>  (kills the whole process group)
@@ -234,7 +176,6 @@ cmd_up() {
     start_bg api "$PY" -m uvicorn apps.api.main:app --host "$API_HOST" --port "$API_PORT"
     wait_for "API :$API_PORT" api_up
   fi
-  ensure_tunnel
 
   # 4. worker (no port; track by pid)
   if proc_alive worker; then
@@ -261,12 +202,12 @@ cmd_up() {
   ok "all up"
   printf '   web        http://127.0.0.1:%s\n' "$WEB_PORT"
   printf '   api        http://127.0.0.1:%s   (openapi.json / proxied from web)\n' "$API_PORT"
+  printf '   public     Cloudflare Tunnel is managed outside this script\n'
   printf '   temporal   http://127.0.0.1:8080 (UI)   ·   minio  http://127.0.0.1:9001\n'
   printf '   logs       %s/{api,worker,web}.log\n' "$RUN_DIR"
 }
 
 cmd_down() {
-  stop_named tunnel
   stop_named web
   stop_named worker
   stop_named api
@@ -290,11 +231,7 @@ cmd_status() {
   log "ports:"
   printf '   api  :%s → %s\n' "$API_PORT" "$(http_code "http://$API_HOST:$API_PORT/openapi.json")"
   printf '   web  :%s → %s\n' "$WEB_PORT" "$(tcp_up "$WEB_PORT" && echo up || echo down)"
-  if tunnel_enabled; then
-    printf '   tunnel %s:%s → %s\n' "$TUNNEL_REMOTE_HOST" "$TUNNEL_REMOTE_API_PORT" "$(tunnel_remote_health && echo healthy || echo down)"
-  else
-    printf '   tunnel %s → unavailable/disabled\n' "$TUNNEL_HOST"
-  fi
+  printf '   public Cloudflare Tunnel → managed by launchd/cloudflared outside this script\n'
 }
 
 cmd_logs() {

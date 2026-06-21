@@ -621,7 +621,6 @@ Run:
 ```bash
 git diff --check
 bash -n scripts/dev_up.sh
-bash -n scripts/deploy_web_static.sh
 ```
 
 ## Task 10: Subagent Adversarial Review
@@ -689,9 +688,9 @@ On Mac mini `/Users/wzm/cutagent-genesis`, fast-forward to `origin/main`. Use Cl
 
 Rerun BGM annotation so stored canonical rows are rewritten with `bgm_segments`.
 
-- [ ] **Step 5: Optional web static update**
+- [ ] **Step 5: Verify Cloudflare Tunnel entry**
 
-If frontend changed, build and deploy static assets with `scripts/deploy_web_static.sh`; `/api` remains reverse-proxied to Mac mini. This happens only after local Windows/WSL verification, push, CI green, and Mac fast-forward.
+If frontend changed, do not use the old `shuying` SSH/static deploy path. After Mac fast-forward and `scripts/dev_up.sh restart`, verify `https://dev.shuying.cyou/` and `https://dev.shuying.cyou/api/health` through the Mac mini Cloudflare Tunnel.
 
 ## Self-Review
 
