@@ -5,7 +5,7 @@ export type UserGenerationDefaults = components["schemas"]["UserGenerationDefaul
 export type StudioStep = 0 | 1 | 2 | 3 | 4;
 
 export type LipSyncPreset = "balanced" | "large_motion" | "strict_face" | "audio_priority";
-type ContentMode = "digital_human" | "broll_only";
+type ContentMode = "digital_human" | "broll_only" | "seedance";
 
 export type FormState = {
   title: string;
@@ -15,6 +15,9 @@ export type FormState = {
   // script_version_id instead of only the raw text. Cleared on manual script edits.
   scriptVersionId: string | null;
   contentMode: ContentMode;
+  // Seedance (文生/图生视频) reference-image media-asset ids. Only used when
+  // contentMode === "seedance"; submitted as DigitalHumanVideoRequest.reference_asset_ids.
+  seedanceReferenceAssetIds: string[];
   voiceId: string;
   speed: number;
   emotion: string;
@@ -42,6 +45,7 @@ export const defaultForm: FormState = {
   script: "先指出内容生产低效。再展示 Case Memory 如何复用经验。最后推动发布复盘。",
   scriptVersionId: null,
   contentMode: "digital_human",
+  seedanceReferenceAssetIds: [],
   voiceId: "",
   speed: 1,
   emotion: "neutral",
@@ -89,11 +93,18 @@ export function loadStoredForm(): FormState {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) return defaultForm;
     const parsed = JSON.parse(saved) as Partial<FormState>;
-    const contentMode = parsed.contentMode === "broll_only" ? "broll_only" : defaultForm.contentMode;
+    const contentMode =
+      parsed.contentMode === "broll_only" || parsed.contentMode === "seedance"
+        ? parsed.contentMode
+        : defaultForm.contentMode;
+    const seedanceReferenceAssetIds = Array.isArray(parsed.seedanceReferenceAssetIds)
+      ? parsed.seedanceReferenceAssetIds.filter((id): id is string => typeof id === "string")
+      : defaultForm.seedanceReferenceAssetIds;
     return {
       ...defaultForm,
       ...parsed,
       contentMode,
+      seedanceReferenceAssetIds,
       speed: clampNumber(Number(parsed.speed ?? defaultForm.speed), 0.5, 2, defaultForm.speed),
       maxInserts: clampNumber(Number(parsed.maxInserts ?? defaultForm.maxInserts), 0, 20, defaultForm.maxInserts),
       subtitleSize: clampNumber(Number(parsed.subtitleSize ?? defaultForm.subtitleSize), 12, 96, defaultForm.subtitleSize),
@@ -115,7 +126,11 @@ export function validateStep(step: StudioStep, form: FormState, selectedVoice: s
   if (step === 1 && form.contentMode === "digital_human" && form.portraitMode !== "agent") {
     return "当前版本请使用自动模板，指定模板和序列将在素材库里程碑接入";
   }
-  if (step === 2 && !selectedVoice) return "请选择可用声音";
+  if (step === 1 && form.contentMode === "seedance" && form.seedanceReferenceAssetIds.length === 0) {
+    return "Seedance 模式请至少选择一张参考图";
+  }
+  // Seedance has no TTS step, so a voice is never required for it.
+  if (step === 2 && form.contentMode !== "seedance" && !selectedVoice) return "请选择可用声音";
   if (step === 2 && (form.speed < 0.5 || form.speed > 2)) return "语速需在 0.5 到 2.0 之间";
   if (step === 3 && form.subtitleEnabled && (form.subtitleSize < 12 || form.subtitleSize > 96)) return "字幕字号需在 12 到 96 之间";
   if (step === 3 && form.bgmEnabled && (form.bgmVolume < 0 || form.bgmVolume > 1)) return "BGM 音量需在 0 到 100% 之间";
@@ -132,6 +147,7 @@ export function validateAll(form: FormState, selectedVoice: string) {
 
 export function contentModeLabel(value: FormState["contentMode"]) {
   if (value === "broll_only") return "仅 B_roll 画外音";
+  if (value === "seedance") return "Seedance 文生视频";
   return "数字人口播";
 }
 

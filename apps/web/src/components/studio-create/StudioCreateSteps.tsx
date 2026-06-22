@@ -20,6 +20,7 @@ import {
   type FormState,
   type LipSyncPreset,
 } from "./studioCreateModel";
+import { SeedanceReferencePicker } from "./SeedanceReferencePicker";
 
 type SetField = <Key extends keyof FormState>(key: Key, value: FormState[Key]) => void;
 
@@ -59,21 +60,23 @@ export function ScriptStep({
   );
 }
 
-export function TemplateStep({ form, setField }: { form: FormState; setField: SetField }) {
+export function TemplateStep({ form, setField, caseId }: { form: FormState; setField: SetField; caseId: string }) {
   const contentModeOptions: Array<{ value: FormState["contentMode"]; label: string; detail: string }> = [
     { value: "digital_human", label: "数字人口播", detail: "使用数字人模板、口型同步和 B-roll 插入。" },
     { value: "broll_only", label: "仅 B_roll 画外音", detail: "不出现数字人，用画外音 + 素材画面铺满，保留字幕/BGM。" },
+    { value: "seedance", label: "Seedance 文生视频", detail: "一次性生成 15s / 9:16 / 720p 短片，按提示词 + 参考图出片，无数字人、无口播。" },
   ];
   const options: Array<{ value: FormState["portraitMode"]; label: string; detail: string }> = [
     { value: "agent", label: "自动模板", detail: "由系统按脚本和案例素材选择人像模板。" },
     { value: "specific", label: "指定模板", detail: "素材库接入后可选择固定模板。" },
     { value: "sequence", label: "模板序列", detail: "素材库接入后可编排模板序列。" },
   ];
-  const isBrollOnly = form.contentMode === "broll_only";
+  const isDigitalHuman = form.contentMode === "digital_human";
+  const isSeedance = form.contentMode === "seedance";
   return (
     <div className="grid gap-4">
       <SectionTitle icon={Film} title="模板" description="先选择内容模式；数字人口播沿用自动模板策略，指定模板与序列后续接入素材库。" />
-      <div className="divide-y divide-border/60 border-y border-border/60 md:grid md:grid-cols-2 md:divide-x md:divide-y-0">
+      <div className="divide-y divide-border/60 border-y border-border/60 md:grid md:grid-cols-3 md:divide-x md:divide-y-0">
         {contentModeOptions.map((option) => (
           <button
             type="button"
@@ -88,11 +91,13 @@ export function TemplateStep({ form, setField }: { form: FormState; setField: Se
           </button>
         ))}
       </div>
-      {isBrollOnly ? (
-        <div className="stateBox muted">
-          <span>仅 B_roll 模式会跳过数字人模板和口型同步。</span>
-        </div>
-      ) : (
+      {isSeedance ? (
+        <SeedanceReferencePicker
+          caseId={caseId}
+          selectedIds={form.seedanceReferenceAssetIds}
+          onChange={(ids) => setField("seedanceReferenceAssetIds", ids)}
+        />
+      ) : isDigitalHuman ? (
         <>
           <div className="divide-y divide-border/60 border-y border-border/60 md:grid md:grid-cols-3 md:divide-x md:divide-y-0">
             {options.map((option) => (
@@ -123,6 +128,10 @@ export function TemplateStep({ form, setField }: { form: FormState; setField: Se
             </select>
           </label>
         </>
+      ) : (
+        <div className="stateBox muted">
+          <span>仅 B_roll 模式会跳过数字人模板和口型同步。</span>
+        </div>
       )}
     </div>
   );
@@ -140,6 +149,16 @@ export function ProductionStep({
   voiceOptions: Array<{ id: string; display_name: string }>;
 }) {
   const isBrollOnly = form.contentMode === "broll_only";
+  if (form.contentMode === "seedance") {
+    return (
+      <div className="grid gap-4">
+        <SectionTitle icon={Mic2} title="成片配置" description="Seedance 文生视频按提示词与参考图直接出片。" />
+        <div className="stateBox muted">
+          <span>Seedance 模式无需配音、口型与 B-roll：画面固定 15s / 9:16 / 720p，由模型生成。</span>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="grid gap-4">
       <SectionTitle icon={Mic2} title="成片配置" description="配置声音、口型同步和 B-roll 策略。" />
@@ -279,17 +298,21 @@ export function SubmitStep({ form, selectedVoiceLabel, scriptCount }: { form: Fo
     <div className="grid gap-4">
       <SectionTitle icon={Play} title="提交" description="确认配置后提交生产任务，成功后自动跳转到成片页。" />
       <div className="grid gap-3 md:grid-cols-2">
-        <ReviewItem label="脚本" value={`${scriptCount} 字`} />
+        <ReviewItem label="脚本" value={form.contentMode === "seedance" ? `提示词 ${scriptCount} 字` : `${scriptCount} 字`} />
         <ReviewItem label="内容模式" value={contentModeLabel(form.contentMode)} />
-        <ReviewItem label="声音" value={`${selectedVoiceLabel} · ${form.speed.toFixed(1)}x`} />
+        {form.contentMode === "seedance" ? (
+          <ReviewItem label="画面" value={`Seedance 文生 · 15s 9:16 720p · ${form.seedanceReferenceAssetIds.length} 张参考图`} />
+        ) : (
+          <ReviewItem label="声音" value={`${selectedVoiceLabel} · ${form.speed.toFixed(1)}x`} />
+        )}
         {form.contentMode === "digital_human" ? (
           <>
             <ReviewItem label="模板" value={`${portraitModeLabel(form.portraitMode)} · ${rhythmLabel(form.rhythmPreset)}`} />
             <ReviewItem label="口型" value={form.lipsyncEnabled ? lipsyncPresets[form.lipsyncPreset].label : "关闭"} />
           </>
-        ) : (
+        ) : form.contentMode === "broll_only" ? (
           <ReviewItem label="画面" value="B_roll 铺满全片" />
-        )}
+        ) : null}
         <ReviewItem label="字幕" value={form.subtitleEnabled ? `${subtitleLabel(form.subtitleStyle)} · ${form.subtitleSize}px` : "关闭"} />
         <ReviewItem label="BGM" value={form.bgmEnabled ? `${Math.round(form.bgmVolume * 100)}%` : "关闭"} />
       </div>
@@ -306,15 +329,27 @@ export function ConfigSummary({ form, selectedVoiceLabel, scriptCount }: { form:
       </div>
       <div className="divide-y divide-border/60">
         <SummaryRow icon={Film} label="内容模式" value={contentModeLabel(form.contentMode)} />
-        <SummaryRow icon={Mic2} label="声音" value={`${selectedVoiceLabel} · ${form.speed.toFixed(1)}x`} />
+        {form.contentMode === "seedance" ? (
+          <SummaryRow
+            icon={Sparkles}
+            label="画面"
+            value={`15s 9:16 720p · ${form.seedanceReferenceAssetIds.length} 张参考图`}
+          />
+        ) : (
+          <SummaryRow icon={Mic2} label="声音" value={`${selectedVoiceLabel} · ${form.speed.toFixed(1)}x`} />
+        )}
         {form.contentMode === "digital_human" ? (
           <>
             <SummaryRow icon={Film} label="模板" value={`${portraitModeLabel(form.portraitMode)} · ${rhythmLabel(form.rhythmPreset)}`} />
             <SummaryRow icon={Sparkles} label="口型" value={form.lipsyncEnabled ? lipsyncPresets[form.lipsyncPreset].label : "关闭"} />
           </>
         ) : null}
-        <SummaryRow icon={Captions} label="字幕" value={form.subtitleEnabled ? `${subtitleLabel(form.subtitleStyle)} · ${form.subtitleSize}px` : "关闭"} />
-        <SummaryRow icon={Music} label="BGM" value={form.bgmEnabled ? `${Math.round(form.bgmVolume * 100)}%` : "关闭"} />
+        {form.contentMode === "seedance" ? null : (
+          <>
+            <SummaryRow icon={Captions} label="字幕" value={form.subtitleEnabled ? `${subtitleLabel(form.subtitleStyle)} · ${form.subtitleSize}px` : "关闭"} />
+            <SummaryRow icon={Music} label="BGM" value={form.bgmEnabled ? `${Math.round(form.bgmVolume * 100)}%` : "关闭"} />
+          </>
+        )}
         <div className="flex items-baseline justify-between gap-3 py-3">
           <p className="text-xs text-text-tertiary">脚本字符数</p>
           <p className={`font-mono text-2xl font-bold ${scriptCount === 0 ? "text-status-error" : "text-text-primary"}`}>{scriptCount}</p>

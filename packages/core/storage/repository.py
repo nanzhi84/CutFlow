@@ -346,6 +346,16 @@ class Repository:
             concurrency_key="sandbox:llm.chat",
             options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.llm.options"),
         )
+        self.provider_profiles["sandbox.video.default"] = ProviderProfile(
+            id="sandbox.video.default",
+            provider_id="sandbox",
+            model_id="video.local",
+            capability="video.generate",
+            display_name="Sandbox Seedance Video",
+            environment="local",
+            concurrency_key="sandbox:video.generate",
+            options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.video.options"),
+        )
         seed_real_provider_configuration(self)
         for profile in self.provider_profiles.values():
             cap = ProviderCapability(
@@ -357,7 +367,7 @@ class Repository:
                 input_schema_id=f"{profile.capability}.input",
                 output_schema_id=f"{profile.capability}.output",
                 options_schema_id=profile.options_schema_ref.schema_id,
-                supports_async_job=profile.capability in {"lipsync.video"},
+                supports_async_job=profile.capability in {"lipsync.video", "video.generate"},
                 supports_cancel=profile.capability in {"lipsync.video"},
                 default_timeout_sec=profile.timeout_sec,
             )

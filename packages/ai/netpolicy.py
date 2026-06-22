@@ -46,6 +46,9 @@ DEFAULT_ALLOWED_HOSTS: frozenset[str] = frozenset(
         "openspeech.bytedance.com",
         "open.volcengineapi.com",
         "runninghub.ai",
+        # Volcengine Ark (Seedance video.generate). Apex on purpose: Ark is
+        # multi-region (ark.cn-beijing.volces.com etc.), so allow *.volces.com.
+        "volces.com",
     }
 )
 

@@ -12711,6 +12711,13 @@
             "title": "Workflow Template Id",
             "default": "digital_human_v2"
           },
+          "reference_asset_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reference Asset Ids"
+          },
           "voice": {
             "$ref": "#/components/schemas/VoiceOptions"
           },

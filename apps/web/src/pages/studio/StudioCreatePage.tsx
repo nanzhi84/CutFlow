@@ -138,6 +138,7 @@ export default function StudioCreatePage() {
     scriptVersionId: string | null = null,
   ): VideoJobPayload {
     const isBrollOnly = form.contentMode === "broll_only";
+    const isSeedance = form.contentMode === "seedance";
     return {
       schema_version: "digital_human_video_request.v1",
       case_id: caseId,
@@ -145,7 +146,12 @@ export default function StudioCreatePage() {
       script: script.trim(),
       publish_content: "",
       script_version_id: scriptVersionId,
-      workflow_template_id: isBrollOnly ? "broll_only_v1" : "digital_human_v2",
+      workflow_template_id: isSeedance
+        ? "seedance_t2v_v1"
+        : isBrollOnly
+          ? "broll_only_v1"
+          : "digital_human_v2",
+      reference_asset_ids: isSeedance ? form.seedanceReferenceAssetIds : [],
       voice: {
         voice_id: selectedVoice,
         speed: form.speed,
@@ -158,7 +164,9 @@ export default function StudioCreatePage() {
         template_sequence_ids: [],
       },
       broll: {
-        enabled: isBrollOnly ? true : form.brollEnabled,
+        // Seedance generates the whole frame itself; B_roll-only fills with material;
+        // digital-human uses the user's toggle.
+        enabled: isSeedance ? false : isBrollOnly ? true : form.brollEnabled,
         max_inserts: form.maxInserts,
         min_segment_duration: 3,
         allow_generic_coverage: true,
@@ -177,10 +185,10 @@ export default function StudioCreatePage() {
         mode: form.coverMode,
       },
       lipsync: {
-        // B_roll-only mode never runs LipSync; force the block off so the run-config
-        // snapshot reflects the actual workflow instead of a phantom
+        // B_roll-only and Seedance never run LipSync; force the block off so the
+        // run-config snapshot reflects the actual workflow instead of a phantom
         // "口型同步: 开" the template can't perform.
-        enabled: isBrollOnly ? false : form.lipsyncEnabled,
+        enabled: isBrollOnly || isSeedance ? false : form.lipsyncEnabled,
         provider_profile_id: "runninghub.heygem.prod",
         video_extension: form.lipsyncVideoExtension,
         timeout_minutes: form.lipsyncTimeoutMinutes,
@@ -413,7 +421,7 @@ export default function StudioCreatePage() {
                 }
               />
             ) : step === 1 ? (
-              <TemplateStep form={form} setField={setField} />
+              <TemplateStep form={form} setField={setField} caseId={caseId} />
             ) : step === 2 ? (
               <ProductionStep
                 form={form}

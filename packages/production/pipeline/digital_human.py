@@ -50,7 +50,11 @@ from packages.core.storage import Repository
 from packages.core.storage.object_store import get_object_store
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError, NodeOutput, WorkflowRuntimeAdapter, manifest_hash
-from packages.production.pipeline.node_sequence import BROLL_ONLY_SEQUENCE, NODE_SEQUENCE
+from packages.production.pipeline.node_sequence import (
+    BROLL_ONLY_SEQUENCE,
+    NODE_SEQUENCE,
+    SEEDANCE_T2V_SEQUENCE,
+)
 from packages.media.assets import local_object_path, store_file
 from packages.media.rendering import generate_seed_audio, generate_seed_video
 from packages.media.video.ffmpeg import FfmpegCommandError, probe_media
@@ -82,10 +86,12 @@ from packages.planning.editing import (
 __all__ = [
     "NODE_SEQUENCE",
     "BROLL_ONLY_SEQUENCE",
+    "SEEDANCE_T2V_SEQUENCE",
     "RunState",
     "degradation_notice",
     "broll_only_template",
     "digital_human_template",
+    "seedance_t2v_template",
     "template_for",
     "LocalRuntimeAdapter",
     "build_digital_human_workflow",
@@ -114,12 +120,20 @@ NODE_HANDLERS = {
     "BrollRenderBase": nodes.broll_render_base.run,
     "SubtitleAndBgmMix": nodes.subtitle_and_bgm_mix.run,
     "ExportFinishedVideo": nodes.export_finished_video.run,
+    "SeedanceGenerateVideo": nodes.seedance_generate_video.run,
+    "ExportSeedanceVideo": nodes.export_seedance_video.run,
     "FinalizeRunReport": nodes.finalize_run_report.run,
 }
 
 logger = logging.getLogger(__name__)
 
-_PROVIDER_SIDE_EFFECT_NODES = {"TTS", "ResolveCreativeIntent", "LipSync", "ExportFinishedVideo"}
+_PROVIDER_SIDE_EFFECT_NODES = {
+    "TTS",
+    "ResolveCreativeIntent",
+    "LipSync",
+    "ExportFinishedVideo",
+    "SeedanceGenerateVideo",
+}
 _TIMELINE_REUSE_BREAK_NODES = {
     "PortraitPlanning",
     "BrollPlanning",
@@ -152,6 +166,12 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
     "BrollRenderBase": [ArtifactKind.video_rendered],
     "SubtitleAndBgmMix": [ArtifactKind.video_final, ArtifactKind.subtitle_ass],
     "ExportFinishedVideo": [
+        ArtifactKind.video_finished,
+        ArtifactKind.cover_image,
+        ArtifactKind.publish_package,
+    ],
+    "SeedanceGenerateVideo": [ArtifactKind.video_rendered],
+    "ExportSeedanceVideo": [
         ArtifactKind.video_finished,
         ArtifactKind.cover_image,
         ArtifactKind.publish_package,
@@ -202,9 +222,14 @@ def broll_only_template() -> WorkflowTemplate:
     return _build_template("broll_only_v1", "v1", BROLL_ONLY_SEQUENCE)
 
 
+def seedance_t2v_template() -> WorkflowTemplate:
+    return _build_template("seedance_t2v_v1", "v1", SEEDANCE_T2V_SEQUENCE)
+
+
 _TEMPLATE_BUILDERS = {
     "digital_human_v2": digital_human_template,
     "broll_only_v1": broll_only_template,
+    "seedance_t2v_v1": seedance_t2v_template,
 }
 
 

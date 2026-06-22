@@ -201,6 +201,27 @@ def seed_real_provider_configuration(repository) -> None:
             concurrency_key="aliyun:billing",
             options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.billing.options"),
         ),
+        ProviderProfile(
+            id="volcengine.seedance.prod",
+            provider_id="volcengine.seedance",
+            model_id="doubao-seedance-2-0",
+            capability="video.generate",
+            display_name="Volcengine Ark Seedance Production",
+            environment="prod",
+            secret_ref="volcengine_seedance_prod.secret",
+            concurrency_key="volcengine:video.generate",
+            timeout_sec=600,
+            options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.video.options"),
+            default_options={
+                "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+                "ratio": "9:16",
+                "resolution": "720p",
+                "duration": 15,
+                "param_style": "json_fields",
+                "poll_interval": 8,
+                "poll_max_attempts": 180,
+            },
+        ),
     ]
     for profile in profiles:
         repository.provider_profiles[profile.id] = profile
@@ -295,6 +316,9 @@ def _seed_price_catalogs(repository) -> None:
         ProviderPriceCatalog(id="price_openai_image_prod", provider_id="openai.image", status="published"),
         ProviderPriceCatalog(
             id="price_runninghub_heygem_prod", provider_id="runninghub.heygem", status="published"
+        ),
+        ProviderPriceCatalog(
+            id="price_volcengine_seedance_prod", provider_id="volcengine.seedance", status="published"
         ),
     ]
     for catalog in catalogs:
@@ -416,4 +440,13 @@ def _seed_price_catalogs(repository) -> None:
         capability_id="lipsync.video",
         unit="provider_credit",
         unit_price=Money(currency="CNY", amount=Decimal("0.0000394226")),
+    )
+    repository.price_items["price_volcengine_seedance_media_second"] = ProviderPriceItem(
+        id="price_volcengine_seedance_media_second",
+        catalog_id="price_volcengine_seedance_prod",
+        provider_id="volcengine.seedance",
+        model_id="doubao-seedance-2-0",
+        capability_id="video.generate",
+        unit="media_second",
+        unit_price=Money(currency="CNY", amount=Decimal("1.0")),
     )

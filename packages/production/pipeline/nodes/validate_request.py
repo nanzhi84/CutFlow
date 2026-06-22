@@ -19,9 +19,15 @@ def run(ctx: NodeContext) -> NodeOutput:
         raise NodeExecutionError(ErrorCode.validation_missing_case, "Case does not exist.")
     if not request.script.strip():
         raise NodeExecutionError(ErrorCode.validation_missing_script, "Script is required.")
-    voice_id = request.voice.voice_id or "voice_sandbox"
-    if voice_id not in repository.voices or not repository.voices[voice_id].enabled:
-        raise NodeExecutionError(ErrorCode.validation_missing_voice, "Voice is missing or disabled.")
+    # Voice is only required for templates that actually synthesize speech (TTS).
+    # Seedance (text/image-to-video) has no TTS node, so it must not be gated on a
+    # voice it never uses.
+    if "TTS" in node_ids:
+        voice_id = request.voice.voice_id or "voice_sandbox"
+        if voice_id not in repository.voices or not repository.voices[voice_id].enabled:
+            raise NodeExecutionError(
+                ErrorCode.validation_missing_voice, "Voice is missing or disabled."
+            )
     if request.lipsync.enabled and "LipSync" in node_ids:
         profile = repository.provider_profiles.get(request.lipsync.provider_profile_id)
         if profile is None or profile.capability != "lipsync.video":

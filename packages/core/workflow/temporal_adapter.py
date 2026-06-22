@@ -502,4 +502,9 @@ def _template_from_run(run: WorkflowRun) -> WorkflowTemplate:
 def _node_timeout_seconds(node_id: str) -> int:
     if node_id == "LipSync":
         return 120 * 60
+    # Seedance video generation is an async vendor task (submit + poll for minutes);
+    # give it ample headroom over the 30min default so the activity is not cut by
+    # start_to_close before the provider's own poll budget surfaces a timeout.
+    if node_id == "SeedanceGenerateVideo":
+        return 60 * 60
     return 30 * 60

@@ -140,6 +140,19 @@ class SandboxProvider:
                 output={"video_uri": f"sandbox://video/lipsync/{uuid4().hex}.mp4", "report": "pass"},
                 video_seconds=float(call.input.get("duration_sec", 0) or 0),
             )
+        if call.capability_id == "video.generate":
+            # Seedance text/image-to-video: no real download/store happens in the
+            # sandbox, so there is no video_artifact_id — the node bridges this fake
+            # uri into a uri-only artifact (see seedance_generate_video).
+            return ProviderResult(
+                output={
+                    "video_uri": f"sandbox://video/seedance/{uuid4().hex}.mp4",
+                    "video_artifact_id": None,
+                    "external_job_id": f"sandbox-{uuid4().hex[:8]}",
+                    "report": "pass",
+                },
+                video_seconds=float(call.input.get("duration_sec", 15) or 15),
+            )
         return ProviderResult(output={"ok": True, "capability": call.capability_id})
 
 

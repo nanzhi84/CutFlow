@@ -129,6 +129,10 @@ class DigitalHumanVideoRequest(ContractModel):
     script_version_id: str | None = None
     creative_intent_ref: ArtifactRef | None = None
     workflow_template_id: str = "digital_human_v2"
+    # Seedance (video.generate) reference-image asset ids; ignored by other
+    # templates. Empty = pure text-to-video. The SeedanceGenerateVideo node
+    # resolves each id to its source artifact uri and presigns it for the vendor.
+    reference_asset_ids: list[str] = Field(default_factory=list)
     voice: VoiceOptions = Field(default_factory=VoiceOptions)
     portrait: PortraitOptions = Field(default_factory=PortraitOptions)
     broll: BrollOptions = Field(default_factory=BrollOptions)

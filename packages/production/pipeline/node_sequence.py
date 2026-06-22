@@ -43,12 +43,21 @@ BROLL_ONLY_SEQUENCE = [
     "FinalizeRunReport",
 ]
 
+SEEDANCE_T2V_SEQUENCE = [
+    "ValidateRequest",
+    "LoadCaseContext",
+    "SeedanceGenerateVideo",
+    "ExportSeedanceVideo",
+    "FinalizeRunReport",
+]
+
 # Expected total node count per workflow template id. Used to render run progress
 # as completed / total across the *whole* pipeline (node runs are created lazily,
 # so the count of existing node runs is not the denominator).
 WORKFLOW_TEMPLATE_NODE_COUNTS = {
     "digital_human_v2": len(NODE_SEQUENCE),
     "broll_only_v1": len(BROLL_ONLY_SEQUENCE),
+    "seedance_t2v_v1": len(SEEDANCE_T2V_SEQUENCE),
 }
 
 
