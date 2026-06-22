@@ -40,7 +40,7 @@ function roleLabel(role?: string) {
 function Breadcrumbs() {
   const location = useLocation();
   const params = useParams();
-  const parts = ["树影"];
+  const parts = ["树影cutagent"];
   if (location.pathname === "/") {
     parts.push("概览");
   } else if (location.pathname.startsWith("/studio")) {
