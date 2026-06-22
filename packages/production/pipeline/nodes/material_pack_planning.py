@@ -28,6 +28,7 @@ from packages.planning.material import (
 from packages.planning.material.broll_pack import _MIN_CLEAN_SPAN_SEC
 from packages.planning.selection.recency import recency_penalty_for
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline.nodes._broll_policy import broll_generic_coverage_enabled
 
 _BROLL_RECENT_SELECTION_LIMIT = 80
 _PORTRAIT_MIN_CLEAN_SPAN_SEC = 0.08
@@ -179,7 +180,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         asset_kinds=broll_asset_kinds,
         segments=segments,
         ledger_entries=broll_ledger,
-        include_generic_coverage=request.workflow_template_id == "broll_only_v1",
+        include_generic_coverage=broll_generic_coverage_enabled(request),
     ):
         broll_candidates.append(
             MaterialCandidate(

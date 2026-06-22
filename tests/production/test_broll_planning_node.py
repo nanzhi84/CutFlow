@@ -3,14 +3,22 @@ from __future__ import annotations
 import pytest
 
 from packages.core.contracts import (
+    AnnotationMetaV4,
+    AnnotationV4,
     Artifact,
     ArtifactKind,
+    ClipRetrievalV4,
+    ClipSemanticsV4,
+    ClipUsageV4,
+    ClipV4,
     DigitalHumanVideoRequest,
     NodeRun,
     NodeStatus,
     RunStatus,
+    UsageRole,
     WorkflowRun,
 )
+from packages.core.contracts.media import AnnotationEditorVm, MediaAssetRecord
 from packages.core.storage.repository import Repository
 from packages.planning.material.broll_plan import BrollInsertion
 from packages.production.pipeline import nodes
@@ -113,3 +121,96 @@ def test_broll_planning_outputs_clip_id_on_segments_and_overlays(
 
     assert payload["segments"][0]["clip_id"] == "cover_a"
     assert payload["overlays"][0]["clip_id"] == "cover_a"
+
+
+def _state_with_clean_unrelated_clip(*, allow_generic_coverage: bool):
+    """A digital_human_v2 run whose only b-roll asset is a person-free clean clip
+    that shares NO keyword with the narration — usable only via generic coverage."""
+    asset = MediaAssetRecord(id="asset_clean", case_id="case_demo", title="clean", kind="video")
+    annotation = AnnotationV4(
+        meta=AnnotationMetaV4(
+            asset_id="asset_clean", case_id="case_demo", material_type="video", duration=12.0
+        ),
+        clips=[
+            ClipV4(
+                segment_id="cover_scene",
+                start=0.0,
+                end=4.0,
+                duration=4.0,
+                semantics=ClipSemanticsV4(scene_type="场景", subject_type="interior_room"),
+                usage=ClipUsageV4(role=UsageRole.cover, recommended_for_lip_sync=False),
+                retrieval=ClipRetrievalV4(
+                    summary="窗外 绿植", keywords=["窗外", "绿植"], retrieval_sentence="窗外 绿植"
+                ),
+                confidence=0.9,
+            )
+        ],
+        quality_report={"usable_ratio": 0.9},
+    )
+    repository = Repository()
+    repository.annotations["asset_clean"] = AnnotationEditorVm(
+        asset=asset, etag="etag1", canonical=annotation, projection={}
+    )
+    adapter = object.__new__(LocalRuntimeAdapter)
+    adapter.repository = repository
+    state = RunState(
+        request=DigitalHumanVideoRequest(
+            case_id="case_demo",
+            script="今天聊聊我们的服务理念。",
+            voice={"voice_id": "voice_sandbox"},
+            broll={
+                "enabled": True,
+                "max_inserts": 2,
+                "allow_generic_coverage": allow_generic_coverage,
+            },
+        ),
+        artifacts={
+            ArtifactKind.plan_material_pack: _artifact(
+                ArtifactKind.plan_material_pack,
+                {"broll_candidates": [{"asset_id": "asset_clean"}]},
+            ),
+            ArtifactKind.narration_units: _artifact(
+                ArtifactKind.narration_units,
+                {
+                    "units": [
+                        {
+                            "unit_id": "u1",
+                            "text": "今天聊聊我们的服务理念。",
+                            "start": 0.0,
+                            "end": 4.0,
+                            "confidence": 0.9,
+                        }
+                    ]
+                },
+            ),
+        },
+    )
+    return adapter, state
+
+
+def _broll_payload(output):
+    return next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_broll)
+
+
+def test_generic_coverage_fills_broll_on_default_template_when_enabled():
+    # End-to-end through BOTH gates (material-pack ranking already done upstream +
+    # BrollPlanning's re-rank): a clean clip with zero keyword overlap must surface
+    # as a real b-roll overlay when allow_generic_coverage is on (the default).
+    adapter, state = _state_with_clean_unrelated_clip(allow_generic_coverage=True)
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+    output = nodes.broll_planning.run(ctx)
+    payload = _broll_payload(output)
+    assert payload["segments"], "clean no-keyword clip should fill b-roll via generic coverage"
+    assert payload["segments"][0]["asset_id"] == "asset_clean"
+    assert output.status != NodeStatus.degraded
+
+
+def test_generic_coverage_off_reverts_to_soft_degrade():
+    # With the knob off, the same unrelated clean clip is honestly dropped (the
+    # node soft-degrades) — proving the behaviour is opt-out, not hardcoded.
+    adapter, state = _state_with_clean_unrelated_clip(allow_generic_coverage=False)
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+    output = nodes.broll_planning.run(ctx)
+    payload = _broll_payload(output)
+    assert payload["segments"] == []
+    assert output.status == NodeStatus.degraded

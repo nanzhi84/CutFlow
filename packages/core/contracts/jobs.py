@@ -57,6 +57,13 @@ class BrollOptions(ContractModel):
     case_id: str | None = None
     max_inserts: int = Field(4, ge=0, le=20)
     min_segment_duration: float = Field(3.0, ge=0.5)
+    # When true, person-free clean-cover clips that share NO keyword with the
+    # narration may still be used as generic b-roll fillers (the keyword
+    # relevance floor is bypassed for them — never the person/lip-sync gates).
+    # Default-on so the standard digital_human_v2 flow stops soft-degrading to
+    # empty b-roll merely because no clip literally matches the script; set
+    # false to require keyword relevance. ``broll_only_v1`` forces this on.
+    allow_generic_coverage: bool = True
 
 
 class LipSyncOptions(ContractModel):

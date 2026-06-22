@@ -20,6 +20,7 @@ from packages.planning.material import (
 )
 from packages.core.workflow import NodeOutput
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline.nodes._broll_policy import broll_generic_coverage_enabled
 
 _BROLL_RECENT_SELECTION_LIMIT = 80
 from packages.production.pipeline._run_state import degradation_notice
@@ -85,6 +86,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         annotations=annotations,
         segments=segments,
         ledger_entries=ledger_entries,
+        include_generic_coverage=broll_generic_coverage_enabled(state.request),
     )
     insertions = plan_insertions(
         candidates=candidates,

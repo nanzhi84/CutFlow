@@ -3097,6 +3097,11 @@ export interface components {
              * @default 3
              */
             min_segment_duration: number;
+            /**
+             * Allow Generic Coverage
+             * @default true
+             */
+            allow_generic_coverage: boolean;
         };
         /** Budget */
         "Budget-Input": {

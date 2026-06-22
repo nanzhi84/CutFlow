@@ -269,6 +269,72 @@ def _fresh_source_start(
     return min(end - max(0.0, taken), start + offset)
 
 
+def _even_indices(total: int, count: int) -> list[int]:
+    """``count`` evenly-spaced, *centered* indices into a ``total``-length sequence.
+
+    Centered (``(2i+1)*total // (2*count)``) so the first pick can land at index 0
+    and the spread covers the whole range — used to sprinkle a few generic fillers
+    across the eligible narration windows without always skipping the opener.
+    """
+    if total <= 0 or count <= 0:
+        return []
+    return [((2 * i + 1) * total) // (2 * count) for i in range(count)]
+
+
+def _build_insertion(
+    candidate: BrollCandidate,
+    *,
+    host_unit: NarrationUnit,
+    start: float,
+    available: float,
+    timeline_end: float,
+    freshness_seed: str | None,
+    index: int,
+) -> BrollInsertion | None:
+    """Build one insert inside ``host_unit`` at/after ``start``.
+
+    Length is clamped to ``[_MIN_INSERT_SECONDS, available]`` (the caller
+    guarantees ``available >= _MIN_INSERT_SECONDS``) so the insert never spills
+    past its window; freshness jitter + source trim stay deterministic per run id.
+    Returns ``None`` if the placement would round past the timeline end.
+    """
+    clip_span = max(0.0, candidate.source_end - candidate.source_start)
+    desired = clip_span if clip_span > 0 else _MAX_INSERT_SECONDS
+    length = max(_MIN_INSERT_SECONDS, min(desired, _MAX_INSERT_SECONDS, available))
+    start = _fresh_timeline_start(
+        start,
+        length=length,
+        host_end=min(host_unit.end, timeline_end),
+        freshness_seed=freshness_seed,
+        parts=(candidate.asset_id, candidate.clip_id, index),
+    )
+    end = round(start + length, 3)
+    if end > timeline_end:
+        return None
+    source_start = _fresh_source_start(
+        candidate, taken=length, freshness_seed=freshness_seed, parts=("insert", index)
+    )
+    source_end = round(source_start + length, 3)
+    beat = candidate.best_segment
+    return BrollInsertion(
+        asset_id=candidate.asset_id,
+        clip_id=candidate.clip_id,
+        timeline_start=round(start, 3),
+        timeline_end=end,
+        source_start=round(source_start, 3),
+        source_end=source_end,
+        confidence=round(min(1.0, candidate.score / 100.0), 3),
+        matched_keywords=candidate.matched_keywords,
+        scene_name=candidate.scene_name,
+        reason=(
+            f"matched narration beat '{beat.text[:24]}'"
+            if beat is not None
+            else "anchored to narration window"
+        ),
+        diversity_key=candidate.diversity_key,
+    )
+
+
 def _unit_for_time(units: Sequence[NarrationUnit], t: float) -> NarrationUnit | None:
     for unit in units:
         if unit.start <= t < unit.end:
@@ -283,12 +349,17 @@ def plan_insertions(
     max_inserts: int,
     freshness_seed: str | None = None,
 ) -> list[BrollInsertion]:
-    """Plan up to ``max_inserts`` b-roll inserts anchored in narration windows.
+    """Plan up to ``max_inserts`` b-roll inserts across the narration windows.
 
-    Each insert is placed at the start of its matched narration beat (clamped so
-    its window stays inside the beat and after any earlier insert). Returns an
-    empty list when there are no candidates, no narration, or no room (honest:
-    the caller soft-degrades rather than fabricating placements).
+    Two passes so a real keyword match is never starved by a generic filler:
+      1. keyword-matched candidates (``best_segment`` set) anchor inside the beat
+         they matched, in score/freshness order, dropping any whose beat is too
+         short rather than spilling past it;
+      2. leftover slots are filled with anchorless generic clips, one per still-
+         empty narration window, sprinkled evenly across the timeline.
+    Inserts never overlap (at most one per window) and never spill past their
+    window. Returns an empty list when there are no candidates, no narration, or
+    no room (honest: the caller soft-degrades rather than fabricating placements).
     """
     unit_list = [u for u in units if u.end > u.start]
     if not unit_list or max_inserts <= 0:
@@ -296,79 +367,85 @@ def plan_insertions(
 
     timeline_end = max(u.end for u in unit_list)
     insertions: list[BrollInsertion] = []
-    cursor = 0.0
     used_clips: set[tuple[str, str]] = set()
+    occupied_units: set[str] = set()
+    ordered = _fresh_candidate_order(candidates, freshness_seed=freshness_seed)
 
-    for candidate in _fresh_candidate_order(candidates, freshness_seed=freshness_seed):
+    # Phase 1 — keyword-matched candidates claim the beat they matched. Processed
+    # before (and never displaced by) generic fillers; the cursor keeps Phase-1
+    # inserts non-overlapping and after each prior match.
+    deferred: list[BrollCandidate] = []
+    cursor = 0.0
+    for candidate in ordered:
         if len(insertions) >= max_inserts:
             break
         key = (candidate.asset_id, candidate.clip_id)
         if key in used_clips:
             continue
-
-        beat = candidate.best_segment
-        anchor = beat.start if beat is not None else cursor
+        if candidate.best_segment is None:
+            deferred.append(candidate)
+            continue
+        anchor = candidate.best_segment.start
         host_unit = _unit_for_time(unit_list, anchor)
         if host_unit is None:
             continue
-
-        # Place inside the host narration window, after any prior insert.
         start = max(anchor, cursor, host_unit.start)
         if start >= host_unit.end or start >= timeline_end:
             continue
-
-        clip_span = max(0.0, candidate.source_end - candidate.source_start)
         available = min(host_unit.end, timeline_end) - start
-        # The matched beat must be long enough to hold a full minimum-length insert.
-        # Otherwise skip this candidate rather than letting max(_MIN_INSERT_SECONDS, ...)
-        # below push the insert past the beat into the next narration window (real
-        # per-clause TTS beats are frequently sub-1.5s). The caller soft-degrades.
         if available < _MIN_INSERT_SECONDS:
             continue
-        desired = clip_span if clip_span > 0 else _MAX_INSERT_SECONDS
-        # available >= _MIN_INSERT_SECONDS, so length stays in [_MIN, available] and
-        # end never spills past the host beat.
-        length = max(_MIN_INSERT_SECONDS, min(desired, _MAX_INSERT_SECONDS, available))
-        start = _fresh_timeline_start(
-            start,
-            length=length,
-            host_end=min(host_unit.end, timeline_end),
-            freshness_seed=freshness_seed,
-            parts=(candidate.asset_id, candidate.clip_id, len(insertions)),
-        )
-        end = round(start + length, 3)
-        if end > timeline_end:
-            continue
-
-        source_start = _fresh_source_start(
+        insert = _build_insertion(
             candidate,
-            taken=length,
+            host_unit=host_unit,
+            start=start,
+            available=available,
+            timeline_end=timeline_end,
             freshness_seed=freshness_seed,
-            parts=("insert", len(insertions)),
+            index=len(insertions),
         )
-        source_end = round(source_start + length, 3)
-        insertions.append(
-            BrollInsertion(
-                asset_id=candidate.asset_id,
-                clip_id=candidate.clip_id,
-                timeline_start=round(start, 3),
-                timeline_end=end,
-                source_start=round(source_start, 3),
-                source_end=source_end,
-                confidence=round(min(1.0, candidate.score / 100.0), 3),
-                matched_keywords=candidate.matched_keywords,
-                scene_name=candidate.scene_name,
-                reason=(
-                    f"matched narration beat '{beat.text[:24]}'"
-                    if beat is not None
-                    else "anchored to narration window"
-                ),
-                diversity_key=candidate.diversity_key,
-            )
-        )
+        if insert is None:
+            continue
+        insertions.append(insert)
         used_clips.add(key)
-        cursor = end
+        occupied_units.add(host_unit.unit_id)
+        cursor = insert.timeline_end
 
+    # Phase 2 — sprinkle leftover slots with generic fillers, one per still-empty
+    # window, evenly spaced. Empty windows are reachable regardless of the Phase-1
+    # cursor, so a late keyword match never suppresses earlier fillers.
+    remaining = max_inserts - len(insertions)
+    if remaining > 0 and deferred:
+        eligible = [
+            u
+            for u in unit_list
+            if u.unit_id not in occupied_units
+            and min(u.end, timeline_end) - u.start >= _MIN_INSERT_SECONDS
+        ]
+        gi = 0
+        for idx in _even_indices(len(eligible), min(remaining, len(eligible))):
+            unit = eligible[idx]
+            while gi < len(deferred) and (deferred[gi].asset_id, deferred[gi].clip_id) in used_clips:
+                gi += 1
+            if gi >= len(deferred):
+                break
+            candidate = deferred[gi]
+            gi += 1
+            insert = _build_insertion(
+                candidate,
+                host_unit=unit,
+                start=unit.start,
+                available=min(unit.end, timeline_end) - unit.start,
+                timeline_end=timeline_end,
+                freshness_seed=freshness_seed,
+                index=len(insertions),
+            )
+            if insert is None:
+                continue
+            insertions.append(insert)
+            used_clips.add((candidate.asset_id, candidate.clip_id))
+
+    insertions.sort(key=lambda ins: ins.timeline_start)
     return insertions
 
 

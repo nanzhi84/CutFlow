@@ -161,6 +161,7 @@ export default function StudioCreatePage() {
         enabled: isBrollOnly ? true : form.brollEnabled,
         max_inserts: form.maxInserts,
         min_segment_duration: 3,
+        allow_generic_coverage: true,
       },
       subtitle: {
         enabled: form.subtitleEnabled,

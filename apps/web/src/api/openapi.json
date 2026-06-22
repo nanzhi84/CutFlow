@@ -9598,6 +9598,11 @@
             "minimum": 0.5,
             "title": "Min Segment Duration",
             "default": 3.0
+          },
+          "allow_generic_coverage": {
+            "type": "boolean",
+            "title": "Allow Generic Coverage",
+            "default": true
           }
         },
         "additionalProperties": false,

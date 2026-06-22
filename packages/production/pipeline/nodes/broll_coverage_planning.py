@@ -12,6 +12,7 @@ from packages.planning.material import (
     rank_broll_candidates,
 )
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline.nodes._broll_policy import broll_generic_coverage_enabled
 
 _BROLL_RECENT_SELECTION_LIMIT = 80
 
@@ -59,7 +60,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         annotations=annotations,
         segments=segments,
         ledger_entries=ledger_entries,
-        include_generic_coverage=state.request.workflow_template_id == "broll_only_v1",
+        include_generic_coverage=broll_generic_coverage_enabled(state.request),
     )
     plan = plan_coverage(
         candidates=candidates,

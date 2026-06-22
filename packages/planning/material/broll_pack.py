@@ -204,7 +204,12 @@ def rank_broll_candidates(
                                 clip=clip,
                                 clip_id=candidate_clip_id,
                                 scene=scene,
-                                best_segment=best_segment,
+                                # A clip with no real overlap only "matched" via the
+                                # duration-fit tie-breaker, which points every such clip
+                                # at the same first beat. Drop that pseudo-anchor so the
+                                # planner can spread generic fillers across the timeline;
+                                # keep a real (if weak, sub-floor) overlap anchor.
+                                best_segment=best_segment if match.has_overlap else None,
                                 ledger_entries=ledger_entries,
                                 recency_cfg=recency_cfg,
                             )
