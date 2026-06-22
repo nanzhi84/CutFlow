@@ -63,7 +63,7 @@ export default function RegisterPage() {
             </div>
             <div>
               <p className="text-xs text-text-tertiary">Public Access</p>
-              <h1 className="font-display mt-1 text-4xl leading-none text-text-primary">树影 · Cutagent</h1>
+              <h1 className="font-display mt-1 text-4xl leading-none text-text-primary">树影cutagent</h1>
             </div>
           </div>
 
@@ -91,8 +91,8 @@ export default function RegisterPage() {
               <Sparkles className="h-5 w-5" />
             </div>
             <div>
-              <p className="text-xs text-text-tertiary">Cutagent</p>
-              <h1 className="font-display text-2xl leading-none text-text-primary">树影</h1>
+              <p className="text-xs text-text-tertiary">树影cutagent</p>
+              <h1 className="font-display text-2xl leading-none text-text-primary">注册</h1>
             </div>
           </div>
 

@@ -44,7 +44,7 @@ export default function LoginPage() {
           <KeyRound size={22} />
         </div>
         <div>
-          <h1>登录 Cutagent</h1>
+          <h1>登录 树影cutagent</h1>
           <p>进入 Case-first 前端工作台</p>
         </div>
         <label>
