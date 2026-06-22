@@ -43,6 +43,8 @@ DEFAULT_ALLOWED_HOSTS: frozenset[str] = frozenset(
         "api.moonshot.cn",
         "dashscope.aliyuncs.com",
         "api.minimaxi.com",
+        "openspeech.bytedance.com",
+        "open.volcengineapi.com",
         "runninghub.ai",
     }
 )

@@ -185,6 +185,23 @@ class VolcSpeechOpenAPI:
                 return _map_state(item.get("State"))
         return None
 
+    def list_free_slots(self, appid: str) -> list[str]:
+        """Return SpeakerIDs of empty clone slots a platform clone can claim.
+
+        Empty slots are the purchased-but-unused quota: ``State=Unknown`` with no
+        ``Alias``. Successful/failed/named voices are excluded.
+        """
+        slots: list[str] = []
+        for item in self._train_statuses(appid):
+            if item.get("Alias"):
+                continue
+            if _map_state(item.get("State")) in ("ready", "failed"):
+                continue
+            speaker_id = str(item.get("SpeakerID") or "").strip()
+            if speaker_id:
+                slots.append(speaker_id)
+        return slots
+
     def ensure_api_key(self, appid: str, name: str) -> str:
         """Return a usable data-plane x-api-key, creating one if none exists (path B)."""
         existing = self._list_active_keys(appid)

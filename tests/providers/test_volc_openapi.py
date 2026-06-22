@@ -76,6 +76,12 @@ def test_get_train_status_maps_per_speaker() -> None:
     assert api.get_train_status("9635790622", "S_MISSING") is None
 
 
+def test_list_free_slots_returns_only_empty_slots() -> None:
+    api = VolcSpeechOpenAPI(_client(_train_handler), "ak", "sk")
+    # S_SLOT (Unknown, no Alias) is claimable; Success/Failed/named are excluded
+    assert api.list_free_slots("9635790622") == ["S_SLOT"]
+
+
 def test_ensure_api_key_returns_existing_active() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params["Action"] == "ListAPIKeys"

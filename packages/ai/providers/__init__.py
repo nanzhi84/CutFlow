@@ -12,6 +12,7 @@ from .dashscope import (
 )
 from .minimax import MiniMaxTTSProvider
 from .openai_image import OpenAIImageProvider
+from .volcengine_tts import VolcengineTTSProvider
 from .runninghub import RunningHubHeyGemProvider
 from .videoretalk import DashScopeVideoReTalkProvider
 
@@ -23,6 +24,7 @@ def register_real_provider_plugins(gateway: ProviderGateway) -> None:
         gateway.http_client = client
     for plugin in (
         MiniMaxTTSProvider(client),
+        VolcengineTTSProvider(client),
         DashScopeASRProvider(client),
         DashScopeVLMProvider(client),
         DashScopeLLMProvider(client),

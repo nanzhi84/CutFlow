@@ -42,6 +42,26 @@ def seed_real_provider_configuration(repository) -> None:
             default_options={"group_id": "", "format": "mp3", "sample_rate": 32000},
         ),
         ProviderProfile(
+            id="volcengine.tts.prod",
+            provider_id="volcengine.tts",
+            model_id="seed-icl-2.0",
+            capability="tts.speech",
+            display_name="火山豆包语音 Production",
+            environment="prod",
+            secret_ref="volcengine_tts_prod.secret",
+            concurrency_key="volcengine:tts.speech",
+            timeout_sec=120,
+            options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.tts.options"),
+            # appid is the per-account public id (operator fills it in, e.g. 9635790622);
+            # secret is the account AccessKeyId:SecretAccessKey, armed out of band.
+            default_options={
+                "appid": "",
+                "cluster": "volcano_icl",
+                "format": "mp3",
+                "api_key_name": "cutagent-tts",
+            },
+        ),
+        ProviderProfile(
             id="dashscope.asr.prod",
             provider_id="dashscope.asr",
             model_id="paraformer-v2",
@@ -226,6 +246,7 @@ def _seed_prompt(
 def _seed_price_catalogs(repository) -> None:
     catalogs = [
         ProviderPriceCatalog(id="price_minimax_prod", provider_id="minimax.tts", status="published"),
+        ProviderPriceCatalog(id="price_volcengine_prod", provider_id="volcengine.tts", status="published"),
         ProviderPriceCatalog(id="price_dashscope_prod", provider_id="dashscope.llm", status="published"),
         ProviderPriceCatalog(id="price_dashscope_asr_prod", provider_id="dashscope.asr", status="published"),
         ProviderPriceCatalog(id="price_dashscope_vlm_prod", provider_id="dashscope.vlm", status="published"),
@@ -246,6 +267,16 @@ def _seed_price_catalogs(repository) -> None:
         capability_id="tts.speech",
         unit="input_token",
         unit_price=Money(currency="CNY", amount=Decimal("0.00015")),
+    )
+    # 火山豆包语音大模型约 6.5 元/万字符 = 0.00065 元/字符（input_token=len(text)）。
+    repository.price_items["price_volcengine_tts_chars"] = ProviderPriceItem(
+        id="price_volcengine_tts_chars",
+        catalog_id="price_volcengine_prod",
+        provider_id="volcengine.tts",
+        model_id="seed-icl-2.0",
+        capability_id="tts.speech",
+        unit="input_token",
+        unit_price=Money(currency="CNY", amount=Decimal("0.00065")),
     )
     repository.price_items["price_dashscope_llm_input"] = ProviderPriceItem(
         id="price_dashscope_llm_input",
