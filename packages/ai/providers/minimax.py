@@ -42,8 +42,6 @@ class MiniMaxTTSProvider:
             return self._speech(call, context)
         if operation == "clone":
             return self._clone(call, context)
-        if operation == "design":
-            return self._design(call, context)
         if operation == "voice_list":
             return self._voice_list(call, context)
         raise ProviderRuntimeError(
@@ -234,48 +232,6 @@ class MiniMaxTTSProvider:
         output.update(self._preview_voice(call, context, output["voice_id"]))
         return ProviderResult(output=output, raw_usage={"provider_response": _usage_safe(result)})
 
-    def _design(self, call: ProviderCall, context: ProviderInvocationContext) -> ProviderResult:
-        api_key = require_secret(context)
-        group_id = self._group_id(call, context)
-        display_name = str(call.input.get("display_name") or call.input.get("preferred_name") or "designed voice")
-        voice_id = str(call.input.get("voice_id") or _generate_voice_id(display_name, prefix="design"))
-        prompt = str(call.input.get("prompt") or call.input.get("voice_prompt") or "")
-        if not prompt.strip():
-            raise ProviderRuntimeError(ErrorCode.provider_unsupported_option, "Voice design prompt is required.")
-        preview_text = str(call.input.get("preview_text") or option(context, "preview_text", "这是试听文本。"))
-        base_url = str(option(context, "base_url", "https://api.minimaxi.com/v1")).rstrip("/")
-        endpoint = str(option(context, "design_endpoint", "/voice_design")).lstrip("/")
-        payload = {
-            "model": str(option(context, "design_model", context.profile.model_id)),
-            "voice_id": voice_id,
-            "voice_prompt": prompt,
-            "preview_text": preview_text,
-            "preferred_name": display_name,
-            "language": str(call.input.get("language") or option(context, "language", "zh")),
-        }
-        response = request(
-            self.client,
-            "POST",
-            f"{base_url}/{endpoint}?GroupId={group_id}",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json_body=payload,
-            timeout=float(context.profile.timeout_sec),
-        )
-        result = response_json(response)
-        self._raise_for_base_resp(result)
-        self._raise_for_code(result)
-        data = _first_mapping(result, "data", "output", "result")
-        designed_voice_id = str(data.get("voice_id") or result.get("voice_id") or voice_id)
-        output = {
-            "voice_id": designed_voice_id,
-            "status": "success",
-            "provider_response": _usage_safe(result),
-        }
-        output.update(self._store_inline_preview(call, context, data))
-        if "preview_audio_artifact_id" not in output:
-            output.update(self._preview_voice(call, context, designed_voice_id))
-        return ProviderResult(output=output, raw_usage={"provider_response": _usage_safe(result)})
-
     def _group_id(self, call: ProviderCall, context: ProviderInvocationContext) -> str:
         group_id = str(call.input.get("group_id") or option(context, "group_id") or "").strip()
         if not group_id:
@@ -350,28 +306,6 @@ class MiniMaxTTSProvider:
             "preview_duration_sec": preview_result.output.get("duration_sec"),
         }
 
-    def _store_inline_preview(
-        self,
-        call: ProviderCall,
-        context: ProviderInvocationContext,
-        data: dict[str, Any],
-    ) -> dict[str, Any]:
-        audio_hex = data.get("preview_audio") or data.get("audio")
-        if not isinstance(audio_hex, str) or not audio_hex:
-            return {}
-        try:
-            audio_bytes = bytes.fromhex(audio_hex)
-        except ValueError as exc:
-            raise ProviderRuntimeError(ErrorCode.provider_remote_failed, "MiniMax preview audio is invalid.") from exc
-        artifact = context.store_media_bytes(
-            content=audio_bytes,
-            filename=f"{call.idempotency_key or 'minimax-preview'}.mp3",
-            purpose="voice-preview",
-            kind=ArtifactKind.audio_tts,
-            call=call,
-        )
-        return {"preview_audio_artifact_id": artifact.id, "preview_audio_uri": artifact.uri}
-
     @staticmethod
     def _raise_for_base_resp(result: dict[str, Any]) -> None:
         base_resp = result.get("base_resp")
@@ -389,26 +323,10 @@ class MiniMaxTTSProvider:
             error = ErrorCode.provider_remote_failed
         raise ProviderRuntimeError(error, message)
 
-    @staticmethod
-    def _raise_for_code(result: dict[str, Any]) -> None:
-        code = result.get("code")
-        if code in {None, 0, 200, "0", "200"}:
-            return
-        message = str(result.get("message") or result.get("msg") or "MiniMax provider failed.")
-        raise ProviderRuntimeError(ErrorCode.provider_remote_failed, message)
-
 
 def _usage_safe(result: dict[str, Any]) -> dict[str, Any]:
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     return {key: value for key, value in data.items() if key != "audio"}
-
-
-def _first_mapping(result: dict[str, Any], *keys: str) -> dict[str, Any]:
-    for key in keys:
-        value = result.get(key)
-        if isinstance(value, dict):
-            return value
-    return {}
 
 
 def _generate_voice_id(name: str, *, prefix: str = "voice") -> str:

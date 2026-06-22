@@ -543,59 +543,6 @@ def test_minimax_voice_clone_uploads_reference_and_generates_preview(tmp_path, m
     assert requests == ["/v1/files/upload", "/v1/voice_clone", "/v1/t2a_v2"]
 
 
-def test_minimax_voice_design_stores_inline_preview_audio(tmp_path, media_fixture_factory):
-    preview_audio = media_fixture_factory.audio(duration_sec=1.0, filename="design-preview.wav").read_bytes()
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v1/voice_design"
-        assert request.url.params["GroupId"] == "group-1"
-        body = __import__("json").loads(request.content)
-        assert body["voice_prompt"] == "calm product narrator"
-        assert body["preview_text"] == "试听文本"
-        return httpx.Response(
-            200,
-            json={
-                "base_resp": {"status_code": 0},
-                "data": {
-                    "voice_id": "voice_design_1",
-                    "preview_audio": preview_audio.hex(),
-                },
-            },
-        )
-
-    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
-    secret_ref = gateway.secret_store.put("minimax-key")  # type: ignore[union-attr]
-    profile = _profile(
-        repository,
-        provider_id="minimax.tts",
-        capability="tts.speech",
-        model_id="speech-02-hd",
-        secret_ref=secret_ref,
-        default_options={"group_id": "group-1"},
-    )
-
-    invocation, result = gateway.invoke(
-        ProviderCall(
-            provider_profile_id=profile.id,
-            capability_id="tts.speech",
-            input={
-                "operation": "design",
-                "display_name": "Provider Design",
-                "prompt": "calm product narrator",
-                "preview_text": "试听文本",
-            },
-        )
-    )
-
-    assert invocation.status == ProviderStatus.succeeded
-    assert result is not None
-    assert result.output["voice_id"] == "voice_design_1"
-    artifact = repository.artifacts[result.output["preview_audio_artifact_id"]]
-    assert artifact.sha256
-    assert artifact.media_info
-    assert artifact.media_info.media_type == "audio"
-
-
 def test_dashscope_asr_uses_async_transcription_task_and_downloads_alignment(tmp_path):
     requests: list[str] = []
     poll_count = 0

@@ -40,7 +40,6 @@ EXPECTED_PATHS = {
     "/api/annotations/{asset_id}/rerun",
     "/api/voices",
     "/api/voices/clone",
-    "/api/voices/design",
     "/api/voices/{voice_id}/preview",
     "/api/voices/{voice_id}",
     "/api/prompts",

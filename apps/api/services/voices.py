@@ -188,41 +188,6 @@ def clone_voice(payload: c.CloneVoiceRequest, request: Request) -> c.VoiceProfil
     return voice
 
 
-def design_voice(payload: c.DesignVoiceRequest, request: Request) -> c.VoiceProfile:
-    media_repo = media_repository(request)
-    if media_repo is not None:
-        provider_voice = _provider_voice_build(
-            payload.provider_profile_id,
-            request,
-            operation="design",
-            display_name=payload.display_name,
-            source="designed",
-            input_payload={"prompt": payload.prompt},
-        )
-        if provider_voice is not None:
-            return persist_provider_voice(media_repo, provider_voice)
-        resolved = _voice_tts_profile_id(payload.provider_profile_id)
-        return media_repo.design_voice(payload.model_copy(update={"provider_profile_id": resolved}))
-    provider_voice = _provider_voice_build(
-        payload.provider_profile_id,
-        request,
-        operation="design",
-        display_name=payload.display_name,
-        source="designed",
-        input_payload={"prompt": payload.prompt},
-    )
-    if provider_voice is not None:
-        return provider_voice
-    voice = c.VoiceProfile(
-        id=new_id("voice"),
-        display_name=payload.display_name,
-        source="designed",
-        provider_profile_id=_voice_tts_profile_id(payload.provider_profile_id),
-    )
-    repository(request).voices[voice.id] = voice
-    return voice
-
-
 def _provider_voice_build(
     provider_profile_id: str | None,
     request: Request,

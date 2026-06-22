@@ -31,12 +31,6 @@ def clone_voice(payload: c.CloneVoiceRequest, request: Request) -> c.VoiceProfil
     return service.clone_voice(payload, request)
 
 
-@router.post("/api/voices/design", response_model=c.VoiceProfile, status_code=202)
-def design_voice(payload: c.DesignVoiceRequest, request: Request) -> c.VoiceProfile:
-    require_role(request, c.UserRole.operator)
-    return service.design_voice(payload, request)
-
-
 @router.post("/api/voices/{voice_id}/preview", response_model=c.VoicePreviewResponse)
 def voice_preview(voice_id: str, payload: c.VoicePreviewRequest, request: Request) -> c.VoicePreviewResponse:
     require_role(request, c.UserRole.operator)

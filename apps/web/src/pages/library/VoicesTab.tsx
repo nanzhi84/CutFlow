@@ -1,4 +1,4 @@
-import { Mic2, RefreshCw, Upload, Wand2 } from "lucide-react";
+import { Mic2, RefreshCw, Upload } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type VoiceProfile } from "../../api/client";
@@ -8,7 +8,7 @@ import { useToast } from "../../components/ui/Toast";
 import { VoiceCard } from "../../components/library/VoiceCard";
 import { VoiceGeneratorPanel } from "../../components/library/VoiceGeneratorPanel";
 import { VoiceGridSkeleton } from "../../components/library/VoiceGridSkeleton";
-import { CloneVoiceModal, DesignVoiceModal, EditVoiceModal } from "../../components/library/VoiceModals";
+import { CloneVoiceModal, EditVoiceModal } from "../../components/library/VoiceModals";
 import { type VoiceSourceFilter } from "../../components/library/libraryModel";
 import { InfiniteScrollSentinel } from "../../components/ui/InfiniteScrollSentinel";
 import { EmptyState, ErrorState } from "../../components/ui/State";
@@ -20,7 +20,6 @@ export function VoicesTab() {
   const [sourceFilter, setSourceFilter] = useState<VoiceSourceFilter>("all");
   const [limit, setLimit] = useState(50);
   const [cloneOpen, setCloneOpen] = useState(false);
-  const [designOpen, setDesignOpen] = useState(false);
   const [editVoice, setEditVoice] = useState<VoiceProfile | null>(null);
   const [deleteVoice, setDeleteVoice] = useState<VoiceProfile | null>(null);
   const [previewText, setPreviewText] = useState("这是树影音色库的试听文本。");
@@ -110,7 +109,7 @@ export function VoicesTab() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-xl font-semibold text-text-primary">音色库</h2>
-              <p className="mt-1 text-sm text-text-secondary">搜索、试听、克隆和设计 TTS 音色。</p>
+              <p className="mt-1 text-sm text-text-secondary">搜索、试听、克隆 TTS 音色。</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button
@@ -123,13 +122,9 @@ export function VoicesTab() {
                 <RefreshCw className={`h-4 w-4 ${syncMutation.isPending ? "animate-spin" : ""}`} />
                 <span>{syncMutation.isPending ? "同步中…" : "同步音色"}</span>
               </button>
-              <button className="btn-secondary" type="button" onClick={() => setCloneOpen(true)}>
+              <button className="btn-primary" type="button" onClick={() => setCloneOpen(true)}>
                 <Upload className="h-4 w-4" />
                 <span>克隆音色</span>
-              </button>
-              <button className="btn-primary" type="button" onClick={() => setDesignOpen(true)}>
-                <Wand2 className="h-4 w-4" />
-                <span>设计音色</span>
               </button>
             </div>
           </div>
@@ -185,7 +180,6 @@ export function VoicesTab() {
       </div>
 
       <CloneVoiceModal isOpen={cloneOpen} onClose={() => setCloneOpen(false)} />
-      <DesignVoiceModal isOpen={designOpen} onClose={() => setDesignOpen(false)} />
       {editVoice ? (
         <EditVoiceModal
           voice={editVoice}

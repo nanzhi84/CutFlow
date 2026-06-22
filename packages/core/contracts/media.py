@@ -378,12 +378,6 @@ class CloneVoiceRequest(ContractModel):
     provider_profile_id: str | None = None
 
 
-class DesignVoiceRequest(ContractModel):
-    display_name: str
-    prompt: str
-    provider_profile_id: str | None = None
-
-
 class VoicePreviewRequest(ContractModel):
     text: str
     provider_profile_id: str | None = None

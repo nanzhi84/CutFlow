@@ -378,12 +378,6 @@ export const api = {
         body: payload,
         idempotencyKey: createIdempotencyKey("voice_clone"),
       }),
-    design: (payload: JsonRequest<operations["design_voice_api_voices_design_post"]>) =>
-      fetchJson<JsonResponse<operations["design_voice_api_voices_design_post"]>>("/api/voices/design", {
-        method: "POST",
-        body: payload,
-        idempotencyKey: createIdempotencyKey("voice_design"),
-      }),
     preview: (voiceId: string, payload: JsonRequest<operations["voice_preview_api_voices__voice_id__preview_post"]>) =>
       fetchJson<JsonResponse<operations["voice_preview_api_voices__voice_id__preview_post"]>>(
         `/api/voices/${enc(voiceId)}/preview`,

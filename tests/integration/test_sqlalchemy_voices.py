@@ -78,22 +78,13 @@ def test_sqlalchemy_voice_profile_flow_persists_profiles_and_preview_artifact():
         cloned_voice = cloned.json()
         assert cloned_voice["source"] == "cloned"
 
-        designed = client.post(
-            "/api/voices/design",
-            json={"display_name": "Designed DB Voice", "prompt": "warm, crisp narration"},
-        )
-        assert designed.status_code == 202, designed.text
-        designed_voice = designed.json()
-        assert designed_voice["source"] == "designed"
-
         listed = client.get("/api/voices")
         assert listed.status_code == 200, listed.text
         listed_ids = {item["id"] for item in listed.json()["items"]}
         assert cloned_voice["id"] in listed_ids
-        assert designed_voice["id"] in listed_ids
 
         preview = client.post(
-            f"/api/voices/{designed_voice['id']}/preview",
+            f"/api/voices/{cloned_voice['id']}/preview",
             json={"text": "Hello from the database voice preview."},
         )
         assert preview.status_code == 200, preview.text

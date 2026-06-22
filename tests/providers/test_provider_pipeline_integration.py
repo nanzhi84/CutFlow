@@ -467,34 +467,6 @@ def test_voice_preview_uses_tts_provider_artifact(media_fixture_factory):
         assert repository.voices["voice_sandbox"].preview_artifact_id == provider.artifact_id
 
 
-def test_voice_design_uses_provider_voice_id_and_preview(media_fixture_factory):
-    with TestClient(create_app()) as client:
-        _login_admin(client)
-        repository = client.app.state.repository
-        provider = FakeVoiceBuildProvider(
-            repository,
-            client.app.state.object_store,
-            media_fixture_factory.audio(duration_sec=1.0, filename="voice-design-preview.wav"),
-        )
-        client.app.state.provider_gateway.register(provider)
-        profile = _profile("fake.voice", "tts.speech", "fake-voice")
-        repository.provider_profiles[profile.id] = profile
-
-        response = client.post(
-            "/api/voices/design",
-            json={
-                "display_name": "Provider Design",
-                "prompt": "calm",
-                "provider_profile_id": profile.id,
-            },
-        )
-
-        assert response.status_code == 202, response.text
-        assert response.json()["id"] == "voice_provider_design"
-        assert response.json()["preview_artifact_id"]
-        assert provider.operations == ["design"]
-
-
 def test_voice_clone_uses_provider_voice_id_and_preview(media_fixture_factory):
     with TestClient(create_app()) as client:
         _login_admin(client)

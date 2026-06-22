@@ -4,9 +4,8 @@ import { useUpload } from "../hooks/useUpload";
 async function assertR3ApiSurface(file: File) {
   const voices = await api.voices.list({ source: "cloned", enabled: true, limit: 12 });
   const cloned = await api.voices.clone({ display_name: "样例音色", reference_upload_session_id: "upload_123" });
-  const designed = await api.voices.design({ display_name: "沉稳旁白", prompt: "成熟稳重的中文男声" });
   const preview = await api.voices.preview(cloned.id, { text: "这是音色试听文本。" });
-  const patched = await api.voices.patch(designed.id, { enabled: false });
+  const patched = await api.voices.patch(cloned.id, { enabled: false });
   const deleted = await api.voices.delete(patched.id);
 
   const prepared = await api.uploads.prepare({

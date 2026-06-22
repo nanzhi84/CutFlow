@@ -10,7 +10,6 @@ from packages.core.contracts import (
     ArtifactKind,
     CloneVoiceRequest,
     CreateMediaAssetFromUploadRequest,
-    DesignVoiceRequest,
     ErrorCode,
     MediaInfo,
     MediaAssetCard,
@@ -609,20 +608,6 @@ class SqlAlchemyMediaRepository(BaseRepository):
                 display_name=payload.display_name,
                 source="cloned",
                 vendor=_vendor_from_profile_id(payload.provider_profile_id),
-                provider_profile_id=payload.provider_profile_id or "sandbox.tts.default",
-                enabled=True,
-            )
-            session.add(row)
-            session.commit()
-            session.refresh(row)
-            return voice_row_to_contract(row)
-
-    def design_voice(self, payload: DesignVoiceRequest) -> VoiceProfile:
-        with self.session_factory() as session:
-            row = VoiceProfileRow(
-                id=new_id("voice"),
-                display_name=payload.display_name,
-                source="designed",
                 provider_profile_id=payload.provider_profile_id or "sandbox.tts.default",
                 enabled=True,
             )

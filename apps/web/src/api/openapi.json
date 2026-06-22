@@ -2728,44 +2728,6 @@
         }
       }
     },
-    "/api/voices/design": {
-      "post": {
-        "summary": "Design Voice",
-        "operationId": "design_voice_api_voices_design_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DesignVoiceRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VoiceProfile"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/voices/{voice_id}/preview": {
       "post": {
         "summary": "Voice Preview",
@@ -12635,36 +12597,6 @@
         "additionalProperties": false,
         "type": "object",
         "title": "DeletePublishResourceRequest"
-      },
-      "DesignVoiceRequest": {
-        "properties": {
-          "display_name": {
-            "type": "string",
-            "title": "Display Name"
-          },
-          "prompt": {
-            "type": "string",
-            "title": "Prompt"
-          },
-          "provider_profile_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Provider Profile Id"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "display_name",
-          "prompt"
-        ],
-        "title": "DesignVoiceRequest"
       },
       "DigitalHumanVideoRequest": {
         "properties": {
