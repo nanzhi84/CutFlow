@@ -968,6 +968,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/voices/{voice_id}/refresh-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Refresh Voice Status */
+        post: operations["refresh_voice_status_api_voices__voice_id__refresh_status_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/voices/{voice_id}": {
         parameters: {
             query?: never;
@@ -10677,6 +10694,7 @@ export interface operations {
             query?: {
                 limit?: number;
                 source?: string | null;
+                vendor?: string | null;
                 enabled?: boolean | null;
             };
             header?: never;
@@ -10793,6 +10811,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VoicePreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    refresh_voice_status_api_voices__voice_id__refresh_status_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                voice_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VoiceProfile"];
                 };
             };
             /** @description Validation Error */

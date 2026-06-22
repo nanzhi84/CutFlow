@@ -65,6 +65,8 @@ class VolcengineTTSProvider:
             return self._clone(call, context)
         if operation == "voice_list":
             return self._voice_list(call, context)
+        if operation == "train_status":
+            return self._train_status(call, context)
         # design intentionally unsupported: Volcengine has no text-design API and
         # the feature is removed product-wide.
         raise ProviderRuntimeError(
@@ -184,6 +186,13 @@ class VolcengineTTSProvider:
         appid = self._appid(context)
         voices = self._openapi(context).list_voices(appid)
         return ProviderResult(output={"voices": voices})
+
+    def _train_status(self, call: ProviderCall, context: ProviderInvocationContext) -> ProviderResult:
+        """Poll one platform-initiated clone's status (ready/training/failed)."""
+        appid = self._appid(context)
+        speaker_id = str(call.input.get("voice_id") or "")
+        status = self._openapi(context).get_train_status(appid, speaker_id)
+        return ProviderResult(output={"voice_id": speaker_id, "status": status or "training"})
 
     def _clone(self, call: ProviderCall, context: ProviderInvocationContext) -> ProviderResult:
         appid = self._appid(context)

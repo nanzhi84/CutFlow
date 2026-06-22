@@ -103,16 +103,12 @@ def test_sqlalchemy_voice_profile_flow_persists_profiles_and_preview_artifact():
         assert any(item["id"] == cloned_voice["id"] for item in filtered.json()["items"])
         assert all(item["source"] == "cloned" and item["enabled"] is False for item in filtered.json()["items"])
 
-        deleted = client.delete(f"/api/voices/{designed_voice['id']}")
+        deleted = client.delete(f"/api/voices/{cloned_voice['id']}")
         assert deleted.status_code == 200, deleted.text
 
     with session_factory() as session:
         cloned_row = session.get(VoiceProfileRow, cloned_voice["id"])
-        designed_row = session.get(VoiceProfileRow, designed_voice["id"])
         artifact_row = session.get(ArtifactRow, preview_body["audio_artifact"]["artifact_id"])
-        assert cloned_row is not None
-        assert cloned_row.display_name == "Disabled DB Voice"
-        assert cloned_row.enabled is False
-        assert designed_row is None
+        assert cloned_row is None
         assert artifact_row is not None
         assert artifact_row.payload["text"] == "Hello from the database voice preview."

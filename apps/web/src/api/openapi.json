@@ -2612,6 +2612,22 @@
             }
           },
           {
+            "name": "vendor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vendor"
+            }
+          },
+          {
             "name": "enabled",
             "in": "query",
             "required": false,
@@ -2760,6 +2776,45 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/VoicePreviewResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/voices/{voice_id}/refresh-status": {
+      "post": {
+        "summary": "Refresh Voice Status",
+        "operationId": "refresh_voice_status_api_voices__voice_id__refresh_status_post",
+        "parameters": [
+          {
+            "name": "voice_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Voice Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceProfile"
                 }
               }
             }

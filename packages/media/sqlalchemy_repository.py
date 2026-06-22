@@ -586,6 +586,7 @@ class SqlAlchemyMediaRepository(BaseRepository):
         self,
         *,
         source: str | None = None,
+        vendor: str | None = None,
         enabled: bool | None = None,
         limit: int = 50,
     ) -> list[VoiceProfile]:
@@ -593,6 +594,8 @@ class SqlAlchemyMediaRepository(BaseRepository):
             statement = select(VoiceProfileRow)
             if source:
                 statement = statement.where(VoiceProfileRow.source == source)
+            if vendor:
+                statement = statement.where(VoiceProfileRow.vendor == vendor)
             if enabled is not None:
                 statement = statement.where(VoiceProfileRow.enabled == enabled)
             statement = statement.order_by(VoiceProfileRow.updated_at.desc()).limit(limit)

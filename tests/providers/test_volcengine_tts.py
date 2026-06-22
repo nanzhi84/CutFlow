@@ -204,6 +204,23 @@ def test_clone_claims_free_slot_and_returns_training(tmp_path) -> None:
     assert "ListMegaTTSTrainStatus" in seen
 
 
+def test_train_status_polls_speaker_state(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["Action"] == "ListMegaTTSTrainStatus"
+        return httpx.Response(
+            200,
+            json={"Result": {"Statuses": [{"SpeakerID": "S_X", "Alias": "x", "State": "Success"}]}},
+        )
+
+    provider = VolcengineTTSProvider(_client(handler))
+    ctx = _context(tmp_path)
+    result = provider.invoke_with_context(
+        _call(tmp_path, ctx, operation="train_status", voice_id="S_X"), ctx
+    )
+    assert result.output["voice_id"] == "S_X"
+    assert result.output["status"] == "ready"
+
+
 def test_design_is_unsupported(tmp_path) -> None:
     provider = VolcengineTTSProvider(_client(lambda r: httpx.Response(200, json={})))
     ctx = _context(tmp_path)

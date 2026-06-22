@@ -31,31 +31,49 @@ def _voice_tts_profile_id(provider_profile_id: str | None) -> str:
         return "sandbox.tts.default"
     raise NodeExecutionError(
         c.ErrorCode.provider_unsupported_option,
-        "未指定真实 TTS 供应商配置。请先在「设置」中配置并启用真实 TTS 供应商，再克隆 / 设计音色。",
+        "未指定真实 TTS 供应商配置。请先在「设置」中配置并启用真实 TTS 供应商，再克隆音色。",
     )
+
+
+def _vendor_from_provider_id(provider_id: str | None) -> str:
+    """Derive a vendor tag from a profile/provider id (e.g. 'volcengine.tts.prod'
+    -> 'volcengine'). Sandbox maps to '' so it groups under '未指定厂商'."""
+    if not provider_id:
+        return ""
+    head = provider_id.split(".", 1)[0]
+    return "" if head == "sandbox" else head
+
 
 def list_voices(
     request: Request,
     limit: int = 50,
     source: str | None = None,
+    vendor: str | None = None,
     enabled: bool | None = None,
 ) -> c.PageResponse[c.VoiceProfile]:
     if media_repository(request) is not None:
-        values = media_repository(request).list_voices(source=source, enabled=enabled, limit=limit)
+        values = media_repository(request).list_voices(
+            source=source, vendor=vendor, enabled=enabled, limit=limit
+        )
         return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
     values = list(repository(request).voices.values())
     if source:
         values = [voice for voice in values if voice.source == source]
+    if vendor:
+        values = [voice for voice in values if voice.vendor == vendor]
     if enabled is not None:
         values = [voice for voice in values if voice.enabled == enabled]
     return page(values, limit)
 
 
-def _select_tts_profile_for_sync(provider_profile_id: str | None, request: Request) -> c.ProviderProfile:
-    """Resolve the real TTS profile whose account voices we sync.
+def _resolve_sync_profiles(
+    provider_profile_id: str | None, request: Request
+) -> list[c.ProviderProfile]:
+    """Resolve the TTS profiles to sync.
 
-    Honors an explicit profile id; otherwise picks the first enabled, non-sandbox
-    ``tts.speech`` profile that has a registered plugin and an active secret.
+    An explicit profile id syncs just that vendor; otherwise ALL enabled,
+    non-sandbox ``tts.speech`` profiles with a registered plugin and an active
+    secret are synced, so a one-click sync pulls every vendor's cloned voices.
     """
     gateway = request.app.state.provider_gateway
     if provider_profile_id:
@@ -65,7 +83,7 @@ def _select_tts_profile_for_sync(provider_profile_id: str | None, request: Reque
                 c.ErrorCode.provider_unsupported_option,
                 "所选 TTS 供应商配置不可用（未启用或缺少有效密钥）。",
             )
-        return profile
+        return [profile]
     provider_repo = provider_repository(request)
     if provider_repo is not None:
         candidates = provider_repo.list_profiles(capability="tts.speech", limit=200)
@@ -75,6 +93,7 @@ def _select_tts_profile_for_sync(provider_profile_id: str | None, request: Reque
             for profile in repository(request).provider_profiles.values()
             if profile.capability == "tts.speech"
         ]
+    resolved: list[c.ProviderProfile] = []
     for profile in candidates:
         if not profile.enabled or profile.provider_id == "sandbox":
             continue
@@ -82,65 +101,74 @@ def _select_tts_profile_for_sync(provider_profile_id: str | None, request: Reque
             continue
         if profile.secret_ref and not gateway._secret_is_active(profile.secret_ref):
             continue
-        return profile
-    raise NodeExecutionError(
-        c.ErrorCode.provider_unsupported_option,
-        "未配置真实 TTS 供应商，无法同步音色。请先在「设置」中配置并启用真实 TTS 供应商及密钥。",
-    )
+        resolved.append(profile)
+    if not resolved:
+        raise NodeExecutionError(
+            c.ErrorCode.provider_unsupported_option,
+            "未配置真实 TTS 供应商，无法同步音色。请先在「设置」中配置并启用真实 TTS 供应商及密钥。",
+        )
+    return resolved
 
 
 def sync_voices(payload: c.SyncVoicesRequest, request: Request) -> c.SyncVoicesResponse:
-    profile = _select_tts_profile_for_sync(payload.provider_profile_id, request)
-    invocation, result = request.app.state.provider_gateway.invoke(
-        ProviderCall(
-            provider_profile_id=profile.id,
-            capability_id="tts.speech",
-            input={"operation": "voice_list"},
-        )
-    )
-    if result is None or invocation.error:
-        raise NodeExecutionError(
-            invocation.error.code if invocation.error else c.ErrorCode.provider_remote_failed,
-            invocation.error.message if invocation.error else "音色同步失败：供应商未返回音色列表。",
-        )
-    remote = result.output.get("voices")
-    remote = remote if isinstance(remote, list) else []
-
+    profiles = _resolve_sync_profiles(payload.provider_profile_id, request)
     media_repo = media_repository(request)
     imported = 0
     updated = 0
     saved: list[c.VoiceProfile] = []
-    for item in remote:
-        if not isinstance(item, dict):
-            continue
-        voice_id = str(item.get("voice_id") or "").strip()
-        if not voice_id:
-            continue
-        source = "cloned" if str(item.get("source")) == "cloned" else "designed"
-        display_name = str(item.get("display_name") or "").strip() or voice_id
-        if media_repo is not None:
-            voice, created = media_repo.upsert_voice(
-                voice_id=voice_id,
-                display_name=display_name,
-                source=source,
+    for profile in profiles:
+        invocation, result = request.app.state.provider_gateway.invoke(
+            ProviderCall(
                 provider_profile_id=profile.id,
+                capability_id="tts.speech",
+                input={"operation": "voice_list"},
             )
-        else:
-            repo = repository(request)
-            existing = repo.voices.get(voice_id)
-            created = existing is None
-            voice = c.VoiceProfile(
-                id=voice_id,
-                display_name=display_name,
-                source=source,
-                provider_profile_id=profile.id,
-            )
-            repo.voices[voice_id] = voice
-        saved.append(voice)
-        if created:
-            imported += 1
-        else:
-            updated += 1
+        )
+        if result is None or invocation.error:
+            # A vendor that does not support voice_list (or transiently fails) is
+            # skipped so one bad vendor never blocks syncing the others.
+            continue
+        remote = result.output.get("voices")
+        remote = remote if isinstance(remote, list) else []
+        vendor = _vendor_from_provider_id(profile.id)
+        for item in remote:
+            if not isinstance(item, dict):
+                continue
+            voice_id = str(item.get("voice_id") or "").strip()
+            if not voice_id:
+                continue
+            source = str(item.get("source") or "cloned")
+            if source not in ("cloned", "designed", "builtin"):
+                source = "cloned"
+            status = str(item.get("status") or "ready")
+            display_name = str(item.get("display_name") or "").strip() or voice_id
+            if media_repo is not None:
+                voice, created = media_repo.upsert_voice(
+                    voice_id=voice_id,
+                    display_name=display_name,
+                    source=source,
+                    provider_profile_id=profile.id,
+                    vendor=vendor,
+                    status=status,
+                )
+            else:
+                repo = repository(request)
+                existing = repo.voices.get(voice_id)
+                created = existing is None
+                voice = c.VoiceProfile(
+                    id=voice_id,
+                    display_name=display_name,
+                    source=source,
+                    vendor=vendor,
+                    provider_profile_id=profile.id,
+                    status=status,
+                )
+                repo.voices[voice_id] = voice
+            saved.append(voice)
+            if created:
+                imported += 1
+            else:
+                updated += 1
     return c.SyncVoicesResponse(
         imported=imported,
         updated=updated,
@@ -222,12 +250,16 @@ def _provider_voice_build(
         )
     voice_id = str(result.output.get("voice_id") or new_id("voice"))
     preview_artifact_id = result.output.get("preview_audio_artifact_id")
+    raw_status = str(result.output.get("status") or "")
+    status = "training" if raw_status == "training" else ("failed" if raw_status == "failed" else "ready")
     voice = c.VoiceProfile(
         id=voice_id,
         display_name=display_name,
         source=source,
+        vendor=_vendor_from_provider_id(profile.id),
         provider_profile_id=profile.id,
         preview_artifact_id=preview_artifact_id if isinstance(preview_artifact_id, str) else None,
+        status=status,
     )
     repo.voices[voice.id] = voice
     return voice
@@ -363,6 +395,52 @@ def _tts_provider_profile(provider_profile_id: str | None, request: Request, *, 
     if profile.secret_ref and not gateway._secret_is_active(profile.secret_ref):
         return None
     return profile
+
+
+def refresh_voice_status(voice_id: str, request: Request) -> c.VoiceProfile:
+    """Poll a training (Volcengine clone) voice's status and persist any change.
+
+    Only ``training`` voices need refreshing; others return as-is. Queries the
+    provider's ``train_status`` operation; on Success the voice flips to ready, on
+    failure to failed. Provider/transient errors leave it ``training`` to retry.
+    """
+    media_repo = media_repository(request)
+    if media_repo is not None:
+        voice = load_voice(media_repo, voice_id)
+    else:
+        voice = repository(request).voices.get(voice_id)
+    if voice is None:
+        raise NodeExecutionError(c.ErrorCode.validation_missing_voice, "Voice not found.")
+    if voice.status != "training":
+        return voice
+    profile = _tts_provider_profile(voice.provider_profile_id, request, missing_ok=True)
+    if profile is None:
+        return voice
+    invocation, result = request.app.state.provider_gateway.invoke(
+        ProviderCall(
+            provider_profile_id=profile.id,
+            capability_id="tts.speech",
+            input={"operation": "train_status", "voice_id": voice.id},
+        )
+    )
+    if result is None or invocation.error:
+        return voice
+    new_status = str(result.output.get("status") or "training")
+    if new_status == voice.status:
+        return voice
+    if media_repo is not None:
+        updated, _ = media_repo.upsert_voice(
+            voice_id=voice.id,
+            display_name=voice.display_name,
+            source=voice.source,
+            provider_profile_id=voice.provider_profile_id or "",
+            vendor=voice.vendor,
+            status=new_status,
+        )
+        return updated
+    updated_voice = voice.model_copy(update={"status": new_status, "updated_at": c.utcnow()})
+    repository(request).voices[voice.id] = updated_voice
+    return updated_voice
 
 
 def patch_voice(voice_id: str, payload: c.PatchVoiceRequest, request: Request) -> c.VoiceProfile:
