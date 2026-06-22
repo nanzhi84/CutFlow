@@ -23653,6 +23653,11 @@
             ],
             "title": "Source"
           },
+          "vendor": {
+            "type": "string",
+            "title": "Vendor",
+            "default": ""
+          },
           "provider_profile_id": {
             "anyOf": [
               {
@@ -23679,6 +23684,16 @@
             "type": "boolean",
             "title": "Enabled",
             "default": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "training",
+              "failed"
+            ],
+            "title": "Status",
+            "default": "ready"
           }
         },
         "additionalProperties": false,

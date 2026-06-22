@@ -359,12 +359,17 @@ class AnnotationEditorVm(ContractModel):
         return value
 
 
+VoiceStatus = Literal["ready", "training", "failed"]
+
+
 class VoiceProfile(EntityMeta):
     display_name: str
     source: Literal["builtin", "cloned", "designed"]
+    vendor: str = ""
     provider_profile_id: str | None = None
     preview_artifact_id: str | None = None
     enabled: bool = True
+    status: VoiceStatus = "ready"
 
 
 class CloneVoiceRequest(ContractModel):

@@ -312,7 +312,9 @@ class Repository:
             id="voice_sandbox",
             display_name="Sandbox Mandarin Voice",
             source="builtin",
+            vendor="sandbox",
             provider_profile_id="sandbox.tts.default",
+            status="ready",
         )
         self.provider_profiles["sandbox.tts.default"] = ProviderProfile(
             id="sandbox.tts.default",

@@ -344,6 +344,8 @@ class VoiceProfileRow(TimestampMixin, Base):
     provider_profile_id: Mapped[str | None] = mapped_column(String)
     preview_artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id"))
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    vendor: Mapped[str] = mapped_column(String, nullable=False, server_default="", default="")
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default="ready", default="ready")
 
 
 class ProviderProfileRow(TimestampMixin, Base):

@@ -8504,6 +8504,11 @@ export interface components {
              * @enum {string}
              */
             source: "builtin" | "cloned" | "designed";
+            /**
+             * Vendor
+             * @default
+             */
+            vendor: string;
             /** Provider Profile Id */
             provider_profile_id?: string | null;
             /** Preview Artifact Id */
@@ -8513,6 +8518,12 @@ export interface components {
              * @default true
              */
             enabled: boolean;
+            /**
+             * Status
+             * @default ready
+             * @enum {string}
+             */
+            status: "ready" | "training" | "failed";
         };
         /**
          * WarningCode

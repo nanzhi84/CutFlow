@@ -102,14 +102,28 @@ def annotation_row_to_editor(
     )
 
 
+def _vendor_from_profile_id(provider_profile_id: str | None) -> str:
+    """Derive a vendor tag from a provider_profile_id like 'minimax.tts.prod' -> 'minimax'.
+
+    Sandbox profiles map to '' so the UI groups them under '未指定厂商' instead of
+    surfacing a fake vendor.
+    """
+    if not provider_profile_id:
+        return ""
+    head = provider_profile_id.split(".", 1)[0]
+    return "" if head == "sandbox" else head
+
+
 def voice_row_to_contract(row: VoiceProfileRow) -> VoiceProfile:
     return VoiceProfile(
         id=row.id,
         display_name=row.display_name,
         source=row.source,
+        vendor=row.vendor or "",
         provider_profile_id=row.provider_profile_id,
         preview_artifact_id=row.preview_artifact_id,
         enabled=row.enabled,
+        status=row.status or "ready",
         schema_version=row.schema_version,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -594,6 +608,7 @@ class SqlAlchemyMediaRepository(BaseRepository):
                 id=new_id("voice"),
                 display_name=payload.display_name,
                 source="cloned",
+                vendor=_vendor_from_profile_id(payload.provider_profile_id),
                 provider_profile_id=payload.provider_profile_id or "sandbox.tts.default",
                 enabled=True,
             )
@@ -623,12 +638,16 @@ class SqlAlchemyMediaRepository(BaseRepository):
         display_name: str,
         source: str,
         provider_profile_id: str,
+        vendor: str | None = None,
+        status: str = "ready",
     ) -> tuple[VoiceProfile, bool]:
         """Insert a provider-side voice keyed by its external voice_id.
 
-        Returns (voice, created). On an existing row only the display name is
-        refreshed (when the provider now reports one) so a re-sync stays idempotent.
+        Returns (voice, created). On an existing row the display name, vendor and
+        status are refreshed (when the provider now reports them) so a re-sync
+        stays idempotent. ``vendor`` defaults to deriving from the profile id.
         """
+        resolved_vendor = vendor if vendor is not None else _vendor_from_profile_id(provider_profile_id)
         with self.session_factory() as session:
             row = session.get(VoiceProfileRow, voice_id)
             created = row is None
@@ -637,13 +656,25 @@ class SqlAlchemyMediaRepository(BaseRepository):
                     id=voice_id,
                     display_name=display_name,
                     source=source,
+                    vendor=resolved_vendor,
                     provider_profile_id=provider_profile_id,
                     enabled=True,
+                    status=status,
                 )
                 session.add(row)
-            elif display_name and display_name != row.display_name:
-                row.display_name = display_name
-                row.updated_at = utcnow()
+            else:
+                changed = False
+                if display_name and display_name != row.display_name:
+                    row.display_name = display_name
+                    changed = True
+                if resolved_vendor and resolved_vendor != row.vendor:
+                    row.vendor = resolved_vendor
+                    changed = True
+                if status and status != row.status:
+                    row.status = status
+                    changed = True
+                if changed:
+                    row.updated_at = utcnow()
             session.commit()
             session.refresh(row)
             return voice_row_to_contract(row), created
