@@ -19310,7 +19310,8 @@
               "input_token",
               "output_token",
               "media_second",
-              "call"
+              "call",
+              "provider_credit"
             ],
             "title": "Unit"
           },
@@ -19407,7 +19408,8 @@
               "input_token",
               "output_token",
               "media_second",
-              "call"
+              "call",
+              "provider_credit"
             ],
             "title": "Unit"
           },

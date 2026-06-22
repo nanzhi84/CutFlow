@@ -167,6 +167,40 @@ def seed_real_provider_configuration(repository) -> None:
                 "n": 1,
             },
         ),
+        # Balance-only profile: NOT an invocation path (no gateway plugin / capability
+        # is dispatched to ``volcengine.billing``). It exists so the balance poller has
+        # an account to query. The secret is the Volcengine billing AK/SK pair
+        # ("<access_key_id>:<access_key_secret>"); like every other seed it carries a
+        # ``secret_ref`` but the value is armed out of band. The 火山 account balance is
+        # account-level — one balance covers TTS / 方舟 Seedance / etc.
+        ProviderProfile(
+            id="volcengine.billing.prod",
+            provider_id="volcengine.billing",
+            model_id="account",
+            capability="balance.monitor",
+            display_name="火山引擎账户余额（TTS / 方舟 共享账户）",
+            environment="prod",
+            secret_ref="volcengine_billing_prod.secret",
+            concurrency_key="volcengine:billing",
+            options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.billing.options"),
+        ),
+        # Aliyun account-level balance (BSS QueryAccountBalance). The DashScope models
+        # + OSS all bill to ONE Aliyun account; this profile surfaces that single
+        # account balance. Its secret is the Aliyun AK/SK pair ("ak:sk", the SAME
+        # credential as OSS) — NOT the DashScope sk- Bearer key. Balance-only, no
+        # gateway plugin. The per-capability dashscope.* model profiles keep their
+        # Bearer secret and degrade to ``unsupported`` for balance (not AK/SK).
+        ProviderProfile(
+            id="aliyun.billing.prod",
+            provider_id="aliyun.billing",
+            model_id="account",
+            capability="balance.monitor",
+            display_name="阿里云账户余额（DashScope / OSS 共享账户）",
+            environment="prod",
+            secret_ref="aliyun_billing_prod.secret",
+            concurrency_key="aliyun:billing",
+            options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.billing.options"),
+        ),
     ]
     for profile in profiles:
         repository.provider_profiles[profile.id] = profile
@@ -251,11 +285,17 @@ def _seed_price_catalogs(repository) -> None:
         ProviderPriceCatalog(id="price_dashscope_asr_prod", provider_id="dashscope.asr", status="published"),
         ProviderPriceCatalog(id="price_dashscope_vlm_prod", provider_id="dashscope.vlm", status="published"),
         ProviderPriceCatalog(
+            id="price_dashscope_videoretalk_prod", provider_id="dashscope.videoretalk", status="published"
+        ),
+        ProviderPriceCatalog(
             id="price_dashscope_omni_prod",
             provider_id="dashscope.omni",
             status="published",
         ),
         ProviderPriceCatalog(id="price_openai_image_prod", provider_id="openai.image", status="published"),
+        ProviderPriceCatalog(
+            id="price_runninghub_heygem_prod", provider_id="runninghub.heygem", status="published"
+        ),
     ]
     for catalog in catalogs:
         repository.price_catalogs[catalog.id] = catalog
@@ -349,4 +389,31 @@ def _seed_price_catalogs(repository) -> None:
         capability_id="image.generate",
         unit="call",
         unit_price=Money(currency="CNY", amount=Decimal("0.4")),
+    )
+    # DashScope VideoReTalk (lipsync 备路) reports ``video_seconds`` (duration_sec).
+    # Priced per media-second so the backup lipsync path is no longer ``unpriced``.
+    # ⚠️ The rate below is a PLACEHOLDER estimate — set the real 百炼 VideoReTalk
+    # unit price via the price catalog / operator (billing_status stays "estimated").
+    repository.price_items["price_dashscope_videoretalk_second"] = ProviderPriceItem(
+        id="price_dashscope_videoretalk_second",
+        catalog_id="price_dashscope_videoretalk_prod",
+        provider_id="dashscope.videoretalk",
+        model_id="videoretalk",
+        capability_id="lipsync.video",
+        unit="media_second",
+        unit_price=Money(currency="CNY", amount=Decimal("0.1")),
+    )
+    # RunningHub HeyGem (lipsync 主路) bills in coins (``consumeCoins``), reported by
+    # the adapter as ``provider_credits``. Without this priced via ``provider_credit``,
+    # the gateway records 0 cost for the most expensive node. The per-coin CNY rate
+    # was derived from the live account (remainMoney/remainCoins ≈ ¥2.6/65952 ≈
+    # ¥0.0000394/coin); it is an estimate — operators can re-tune via the price catalog.
+    repository.price_items["price_runninghub_heygem_credit"] = ProviderPriceItem(
+        id="price_runninghub_heygem_credit",
+        catalog_id="price_runninghub_heygem_prod",
+        provider_id="runninghub.heygem",
+        model_id="heygem-webapp",
+        capability_id="lipsync.video",
+        unit="provider_credit",
+        unit_price=Money(currency="CNY", amount=Decimal("0.0000394226")),
     )

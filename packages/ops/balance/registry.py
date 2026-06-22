@@ -24,6 +24,7 @@ from .providers.heygem import HeyGemPoller
 from .providers.kimi import KimiPoller
 from .providers.minimax import MiniMaxPoller
 from .providers.openai_relay import OpenAIRelayPoller
+from .providers.volcengine import VolcenginePoller
 
 
 def build_pollers() -> list[BalancePoller]:
@@ -35,6 +36,7 @@ def build_pollers() -> list[BalancePoller]:
         HeyGemPoller(),
         MiniMaxPoller(),
         AliyunBssPoller(),
+        VolcenginePoller(),
     ]
 
 

@@ -1,36 +1,96 @@
-"""Aliyun BSS balance poller (DashScope / Qwen account-level balance).
+"""Aliyun BSS account-level balance poller (DashScope / Qwen / OSS share it).
 
-This is the one provider that does NOT use httpx: Aliyun account balance is read
-via the ``alibabacloud_bss_open_api`` SDK, which is NOT installed in the shared
-venv. The import is therefore OPTIONAL — when the SDK is absent the poller
-degrades to ``unsupported`` (never a crash). The adapter SHAPE is implemented so
-that, once the SDK is added, the call wires up unchanged.
+The DashScope models, OSS, and every other Aliyun product bill to ONE Aliyun
+account, whose balance is read account-level via the BSS ``QueryAccountBalance``
+RPC. The signature (Aliyun RPC v1, HMAC-SHA1 over the sorted+percent-encoded
+query) is hand-rolled over the stdlib — NO SDK dependency (consistent with the
+volcengine poller).
 
-Note: Aliyun balance is account-level (a single total), not per-product, and the
-secret here is an access-key id/secret PAIR rather than a single token. We accept
-the secret as ``"<access_key_id>:<access_key_secret>"`` and degrade to
-``unconfigured`` upstream when absent.
+The secret is an Aliyun access-key id/secret PAIR
+("<access_key_id>:<access_key_secret>") — the SAME credential used for OSS, NOT
+the DashScope model Bearer (``sk-``) key. A profile whose secret is not an AK/SK
+pair (e.g. a DashScope model key) degrades to ``unsupported`` (no HTTP), so the
+per-capability DashScope model profiles don't show error noise — point a dedicated
+billing profile (``aliyun.billing``) at the AK/SK to surface the account balance.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import logging
+import urllib.parse
+import uuid
+from datetime import datetime, timezone
+
 from packages.core.contracts import ProviderBalanceItem
 
 from ..base import BasePoller, money
 
 logger = logging.getLogger(__name__)
 
-_DASHBOARD_HINT = "RAM 用户需授予 AliyunBSSReadOnlyAccess；账户级总余额（非按产品拆分）"
+_HOST = "business.aliyuncs.com"
+_ACTION = "QueryAccountBalance"
+_VERSION = "2017-12-14"
+_DASHBOARD_HINT = "账户级总余额（OSS / DashScope 等共享，需主账号 AK/SK）"
+
+# BSS error codes meaning "key / permission / signature problem" (-> unauthorized)
+# rather than a transient fault (-> error).
+_AUTH_ERROR_CODES = frozenset(
+    {
+        "NoPermission",
+        "Forbidden",
+        "Unauthorized",
+        "InvalidAccessKeyId.NotFound",
+        "InvalidAccessKeyId.Inactive",
+        "SignatureDoesNotMatch",
+        "IncompleteSignature",
+        "InvalidSecurityToken.Expired",
+    }
+)
 
 
 def _split_credentials(secret: str) -> tuple[str, str] | None:
     if ":" not in secret:
         return None
-    access_key_id, _, access_key_secret = secret.partition(":")
-    if not access_key_id or not access_key_secret:
+    access_key_id, _, secret_access_key = secret.partition(":")
+    if not access_key_id or not secret_access_key:
         return None
-    return access_key_id, access_key_secret
+    return access_key_id, secret_access_key
+
+
+def _pe(value: object) -> str:
+    """Aliyun RFC3986 percent-encoding (space->%20, *->%2A, ~ kept)."""
+    return urllib.parse.quote(str(value), safe="~").replace("+", "%20").replace("*", "%2A")
+
+
+def _signed_query(access_key_id: str, secret_access_key: str) -> str:
+    params = {
+        "Action": _ACTION,
+        "Version": _VERSION,
+        "Format": "JSON",
+        "AccessKeyId": access_key_id,
+        "SignatureMethod": "HMAC-SHA1",
+        "SignatureVersion": "1.0",
+        "SignatureNonce": uuid.uuid4().hex,
+        "Timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    canonical = "&".join(f"{_pe(k)}={_pe(v)}" for k, v in sorted(params.items()))
+    string_to_sign = "GET&" + _pe("/") + "&" + _pe(canonical)
+    signature = base64.b64encode(
+        hmac.new(
+            (secret_access_key + "&").encode("utf-8"),
+            string_to_sign.encode("utf-8"),
+            hashlib.sha1,
+        ).digest()
+    ).decode("ascii")
+    return f"{canonical}&Signature={_pe(signature)}"
+
+
+def _clean_amount(value: object) -> str:
+    # BSS returns thousands-separated strings like "1,234.56".
+    return str(value).replace(",", "") if value is not None else "0"
 
 
 class AliyunBssPoller(BasePoller):
@@ -38,41 +98,42 @@ class AliyunBssPoller(BasePoller):
     prefixes = ("aliyun", "dashscope", "qwen", "bailian")
 
     def query(self, profile, *, secret, client, checked_at) -> ProviderBalanceItem:
-        try:
-            from alibabacloud_bss_open_api.client import Client as BssClient  # type: ignore
-            from alibabacloud_tea_openapi import models as open_api_models  # type: ignore
-        except ImportError:
+        creds = _split_credentials(secret or "")
+        if creds is None:
             return self._unsupported(
                 profile,
                 checked_at,
-                "未安装 alibabacloud_bss_open_api 依赖（可选功能，需手动启用）",
+                "账户余额需阿里云主账号 AK/SK 对（此 profile 的 secret 不是 AK/SK，如 DashScope sk- 模型 key）",
             )
-
-        creds = _split_credentials(secret or "")
-        if creds is None:
-            return self._error(
-                profile,
-                checked_at,
-                "secret 需为 'access_key_id:access_key_secret' 形式",
-            )
-        access_key_id, access_key_secret = creds
+        access_key_id, secret_access_key = creds
+        url = f"https://{_HOST}/?{_signed_query(access_key_id, secret_access_key)}"
         try:
-            config = open_api_models.Config(
-                access_key_id=access_key_id,
-                access_key_secret=access_key_secret,
-            )
-            config.endpoint = "business.aliyuncs.com"
-            response = BssClient(config).query_account_balance()
-            data = response.body.data
-            return self._ok(
-                profile,
-                checked_at,
-                balance=money(data.available_cash_amount, getattr(data, "currency", "CNY")),
-                detail=_DASHBOARD_HINT,
-            )
+            response = client.get(url)
         except Exception as exc:
-            text = str(exc)
-            low = text.lower()
-            if any(t in text for t in ("NoPermission", "Forbidden")) or "not authorized" in low:
-                return self._unauthorized(profile, checked_at, _DASHBOARD_HINT)
-            return self._error(profile, checked_at, f"BSS 查询失败: {text}", secret)
+            return self._error(profile, checked_at, f"BSS 请求失败: {exc}", secret)
+
+        if response.status_code in {401, 403}:
+            return self._unauthorized(profile, checked_at, _DASHBOARD_HINT)
+        try:
+            data = response.json()
+        except Exception:
+            return self._error(profile, checked_at, f"BSS 响应非 JSON (HTTP {response.status_code})", secret)
+        if not isinstance(data, dict):
+            return self._error(profile, checked_at, "BSS 响应结构异常", secret)
+
+        payload = data.get("Data")
+        if not isinstance(payload, dict):
+            # Error envelope {"Code","Message","Success":false}. NEVER echo Message:
+            # Aliyun signature errors embed the StringToSign (incl. AccessKeyId). Code
+            # is a safe enum.
+            code = str(data.get("Code") or "unknown")
+            if code in _AUTH_ERROR_CODES:
+                return self._unauthorized(profile, checked_at, f"BSS 鉴权失败 (Code={code})；{_DASHBOARD_HINT}")
+            return self._error(profile, checked_at, f"BSS QueryAccountBalance 失败: Code={code}", secret)
+
+        return self._ok(
+            profile,
+            checked_at,
+            balance=money(_clean_amount(payload.get("AvailableAmount")), payload.get("Currency") or "CNY"),
+            detail=_DASHBOARD_HINT,
+        )

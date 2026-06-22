@@ -263,26 +263,182 @@ def test_openai_relay_html_body_is_error():
     assert item.status == "error"
 
 
-# --- aliyun bss (optional SDK absent) ------------------------------------
+# --- aliyun bss (stdlib RPC v1 sign, account-level QueryAccountBalance) ----
 
-def test_aliyun_without_sdk_is_unsupported():
+def test_aliyun_bss_parses_account_balance():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "business.aliyuncs.com"
+        assert request.url.params["Action"] == "QueryAccountBalance"
+        assert "Signature" in request.url.params
+        # secret never leaks into the signed query
+        assert "aksecret" not in str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "Code": "200",
+                "Success": True,
+                "Data": {"AvailableAmount": "1,234.56", "Currency": "CNY", "AvailableCashAmount": "1,234.56"},
+            },
+        )
+
     item = query_balance(
-        profile("aliyun", secret_ref="provider.secret"),
+        profile("aliyun"),
         secret_store=SecretStoreStub({"provider.secret": "akid:aksecret"}),
-        client=client_for(lambda _: httpx.Response(200, json={})),
+        client=client_for(handler),
     )
-    # The alibabacloud_bss_open_api SDK is NOT installed in the shared venv.
-    assert item.status == "unsupported"
-    assert "alibabacloud" in (item.detail or "")
+    assert item.status == "ok"
+    assert item.balance is not None
+    assert item.balance.amount == Decimal("1234.56")  # comma stripped
+    assert item.balance.currency == "CNY"
 
 
-def test_dashscope_dispatches_to_aliyun_poller_unsupported_without_sdk():
+def test_dashscope_bearer_key_secret_is_unsupported_without_http():
+    # DashScope model profiles carry a sk- Bearer key (no ':'), not an AK/SK pair:
+    # they degrade quietly to unsupported instead of erroring against BSS.
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={})
+
     item = query_balance(
         profile("dashscope"),
-        secret_store=SecretStoreStub({"provider.secret": "akid:aksecret"}),
-        client=client_for(lambda _: httpx.Response(200, json={})),
+        secret_store=SecretStoreStub({"provider.secret": "sk-dashscope-model-key"}),
+        client=client_for(handler),
     )
     assert item.status == "unsupported"
+    assert called is False
+
+
+def test_aliyun_bss_auth_error_drops_message():
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"Code": "InvalidAccessKeyId.NotFound", "Message": "StringToSign akid leaked", "Success": False},
+        )
+
+    item = query_balance(
+        profile("aliyun"),
+        secret_store=SecretStoreStub({"provider.secret": "akid:aksecret"}),
+        client=client_for(handler),
+    )
+    assert item.status == "unauthorized"
+    assert "akid" not in (item.detail or "")  # vendor Message dropped
+    assert "InvalidAccessKeyId.NotFound" in (item.detail or "")
+
+
+# --- volcengine (火山引擎 billing QueryBalanceAcct, hand-rolled V4 sign) ---
+
+def test_volcengine_parses_available_balance():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "open.volcengineapi.com"
+        assert request.url.params["Action"] == "QueryBalanceAcct"
+        assert request.url.params["Version"] == "2022-01-01"
+        # V4 signature presence + no secret leakage in the signed request
+        assert request.headers["Authorization"].startswith("HMAC-SHA256 Credential=AKLT")
+        assert "x-content-sha256" in request.headers
+        assert "sk-secret" not in request.headers["Authorization"]
+        return httpx.Response(
+            200,
+            json={
+                "ResponseMetadata": {"RequestId": "r1"},
+                "Result": {"AvailableBalance": "123.45", "CashBalance": "120.00", "AccountID": 2108685169},
+            },
+        )
+
+    item = query_balance(
+        profile("volcengine.billing"),
+        secret_store=SecretStoreStub({"provider.secret": "AKLTexample:sk-secret"}),
+        client=client_for(handler),
+    )
+    assert item.status == "ok"
+    assert item.balance is not None
+    assert item.balance.amount == Decimal("123.45")
+    assert item.balance.currency == "CNY"
+    assert "AccountID=2108685169" in (item.detail or "")
+
+
+def test_volcengine_dispatches_for_volc_and_ark_prefixes():
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"Result": {"AvailableBalance": "1", "AccountID": 1}})
+
+    for provider_id in ("volc.tts", "ark.seedance"):
+        item = query_balance(
+            profile(provider_id),
+            secret_store=SecretStoreStub({"provider.secret": "ak:sk"}),
+            client=client_for(handler),
+        )
+        assert item.status == "ok", provider_id
+
+
+def test_volcengine_bad_secret_shape_is_error_without_http():
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={})
+
+    item = query_balance(
+        profile("volcengine.billing"),
+        secret_store=SecretStoreStub({"provider.secret": "no-colon-key"}),
+        client=client_for(handler),
+    )
+    assert item.status == "error"
+    assert "access_key_id:access_key_secret" in (item.detail or "")
+    assert called is False
+
+
+def test_volcengine_metadata_auth_error_is_unauthorized_without_leaking_message():
+    # SignatureDoesNotMatch messages can echo Credential=<AK>/... — the vendor
+    # Message must NEVER reach the client-facing detail; only the Code survives.
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "ResponseMetadata": {
+                    "Error": {"Code": "SignatureDoesNotMatch", "Message": "Credential=AKLTleakme/... mismatch"}
+                }
+            },
+        )
+
+    item = query_balance(
+        profile("volcengine.billing"),
+        secret_store=SecretStoreStub({"provider.secret": "AKLTleakme:sk"}),
+        client=client_for(handler),
+    )
+    assert item.status == "unauthorized"
+    assert "AKLTleakme" not in (item.detail or "")
+    assert "Credential=" not in (item.detail or "")
+    assert "SignatureDoesNotMatch" in (item.detail or "")  # Code is safe + useful
+
+
+def test_volcengine_403_is_unauthorized():
+    item = query_balance(
+        profile("volcengine.billing"),
+        secret_store=SecretStoreStub({"provider.secret": "ak:sk"}),
+        client=client_for(lambda _: httpx.Response(403)),
+    )
+    assert item.status == "unauthorized"
+
+
+def test_volcengine_non_auth_error_drops_vendor_message():
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"ResponseMetadata": {"Error": {"Code": "InternalError", "Message": "boom akid:sksecret"}}},
+        )
+
+    item = query_balance(
+        profile("volcengine.billing"),
+        secret_store=SecretStoreStub({"provider.secret": "akid:sksecret"}),
+        client=client_for(handler),
+    )
+    assert item.status == "error"
+    assert "sksecret" not in (item.detail or "")
+    assert "boom" not in (item.detail or "")  # vendor Message dropped entirely
+    assert "InternalError" in (item.detail or "")
 
 
 # --- aggregation ----------------------------------------------------------
@@ -317,7 +473,7 @@ def test_refresh_balances_aggregates_each_provider_with_no_secrets():
 
 def test_build_pollers_returns_one_per_family():
     keys = {p.key for p in build_pollers()}
-    assert keys == {"deepseek", "kimi", "openai", "heygem", "minimax", "aliyun"}
+    assert keys == {"deepseek", "kimi", "openai", "heygem", "minimax", "aliyun", "volcengine"}
 
 
 # --- periodic service gating ---------------------------------------------

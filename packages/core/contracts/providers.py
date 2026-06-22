@@ -147,7 +147,7 @@ class ProviderPriceItem(EntityMeta):
     provider_id: str
     model_id: str
     capability_id: str
-    unit: Literal["input_token", "output_token", "media_second", "call"]
+    unit: Literal["input_token", "output_token", "media_second", "call", "provider_credit"]
     unit_price: Money
     active_from: datetime = Field(default_factory=utcnow)
     active_to: datetime | None = None

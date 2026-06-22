@@ -6689,7 +6689,7 @@ export interface components {
              * Unit
              * @enum {string}
              */
-            unit: "input_token" | "output_token" | "media_second" | "call";
+            unit: "input_token" | "output_token" | "media_second" | "call" | "provider_credit";
             unit_price: components["schemas"]["Money-Input"];
             /**
              * Active From
@@ -6737,7 +6737,7 @@ export interface components {
              * Unit
              * @enum {string}
              */
-            unit: "input_token" | "output_token" | "media_second" | "call";
+            unit: "input_token" | "output_token" | "media_second" | "call" | "provider_credit";
             unit_price: components["schemas"]["Money-Output"];
             /**
              * Active From

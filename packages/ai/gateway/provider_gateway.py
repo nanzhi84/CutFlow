@@ -434,6 +434,11 @@ class ProviderGateway:
                 amount += item.unit_price.amount * Decimal(str(result.audio_seconds + result.video_seconds))
             elif item.unit == "call":
                 amount += item.unit_price.amount
+            elif item.unit == "provider_credit" and result.provider_credits is not None:
+                # Providers that bill in their own credits/coins (e.g. RunningHub
+                # HeyGem ``consumeCoins``) report the consumed amount as
+                # ``provider_credits``; unit_price is the CNY value per credit.
+                amount += item.unit_price.amount * result.provider_credits
         if amount:
             return Money(amount=amount, currency=items[0].unit_price.currency)
         return result.estimated_cost
