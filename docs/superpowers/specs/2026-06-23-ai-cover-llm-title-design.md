@@ -74,6 +74,11 @@ build_copy_llm_chat(*, gateway, repository, prompt_registry=None,
 
 每条成片新增：1 次 `image.generate`（gpt-image，已确认）+ 1 次 `llm.chat`（文本，便宜）。发布中心手动生成文案各 1 次 `llm.chat`。
 
+## 评审结论与已知取舍（三视角子代理审查后）
+
+- **降级信号（有意识接受）**：mode 默认 ai 后，节点无法区分"操作者显式要 AI"与"默认 ai"。无 image provider 时一律帧基线、不发降级。代价：在"显式要 AI 但部署未配 image provider"的边界场景下丢失了原有的 `cover_frame_fallback` 信号。接受理由：①目标部署已 arm `openai.image.prod`，该边界不触发；②加 per-run warning 会把"避免每条未配 run 噪音降级"的收益重新抵消；③帧本就是无 AI 能力时唯一可产出的封面（基线非退化）。后续如需，可加 info 级（非 graded）信号区分。
+- **发布文案"生成两次"（纠正措辞 + 后续优化）**：§C 的"一次性生成"指**成片侧**只生成一次（服务成片标题 + AI 封面）；**发布 item** 是独立消费方，`PublishDefaults` 只承载 title/description，故提交批次时 finished-video item 仍会再生成一次 item 级 publish_content/cover_title。封面**图**不受影响（标题已在生产时烘焙进像素）。把成片侧 copy 持久化到 package 以省掉发布时这次文本 LLM 调用，列为后续优化（见 `publishing.py` 提交路径注释）。
+
 ## 非目标（YAGNI）
 
 - 不新增节点、不动 16 节点序列（仅在既有 ExportFinishedVideo 内扩展）。

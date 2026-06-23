@@ -383,6 +383,13 @@ def submit_publish_batch(
         # real publish copy (title / publish_content / cover_title / cover_subtitle)
         # for the item when not already operator-edited. Uses the armed llm.chat
         # provider when available, else the deterministic derivation — never a no-op.
+        # NOTE: ExportFinishedVideo already generated copy for the finished-video
+        # title + AI cover headline, but the package only carries title/description
+        # (PublishDefaults), so finished-video items still (re)generate the item-level
+        # publish_content/cover_title here. The cover IMAGE is unaffected (its headline
+        # is baked in at production). Persisting the full export-time copy onto the
+        # package to skip this regeneration is a tracked follow-up (avoids one extra
+        # text llm.chat call per published item).
         copy_updates: dict = {}
         if not item.publish_content or not item.cover_title:
             copy, _source, _inv = nodes.run_copy_node(
