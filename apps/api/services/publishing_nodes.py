@@ -17,6 +17,7 @@ from packages.publishing import (
     generate_publish_cover,
     preview_cover_frame,
 )
+from packages.publishing.copy_llm import build_copy_llm_chat
 from packages.publishing.cover_node import CoverArtifact
 
 
@@ -59,13 +60,21 @@ def resolve_copy_context(repo, package: c.PublishPackage | None, item) -> Publis
     )
 
 
-def run_copy_node(repo, package, item, *, title_limit: int | None = None):
+def run_copy_node(
+    repo,
+    package,
+    item,
+    *,
+    title_limit: int | None = None,
+    gateway=None,
+    prompt_registry=None,
+):
     """Run the Publishing Copy Node for an item.
 
-    No real ``llm.chat`` provider is wired into the API request path, so this uses
+    Uses a real ``llm.chat`` provider when one is armed (``gateway`` +
+    ``prompt_registry`` supplied by the API request path); otherwise falls back to
     the deterministic derivation (origin parity, honest non-fabricated copy). The
-    LLM path + §2.3 schema hard-fail live in ``packages.publishing.copy_node`` and
-    are used by the worker/production node + unit-tested directly.
+    §2.3 schema hard-fail lives in ``packages.publishing.copy_node``.
     """
     context = resolve_copy_context(repo, package, item)
     if title_limit is not None:
@@ -75,7 +84,15 @@ def run_copy_node(repo, package, item, *, title_limit: int | None = None):
             description=context.description,
             title_limit=title_limit,
         )
-    copy, source, invocation_id = generate_publish_copy(context, llm_chat=None)
+    llm_chat = None
+    if gateway is not None:
+        llm_chat = build_copy_llm_chat(
+            gateway=gateway,
+            repository=repo,
+            prompt_registry=prompt_registry,
+            case_id=getattr(package, "case_id", None),
+        )
+    copy, source, invocation_id = generate_publish_copy(context, llm_chat=llm_chat)
     return copy, source, invocation_id
 
 
