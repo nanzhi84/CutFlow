@@ -17,10 +17,15 @@ gateway is fully in-memory.
 from __future__ import annotations
 
 from packages.ai.gateway import ProviderResult
-from packages.ai.gateway.provider_gateway import ProviderCall, ProviderGateway
+from packages.ai.gateway.provider_gateway import (
+    ProviderCall,
+    ProviderGateway,
+    ProviderRuntimeError,
+)
 from packages.core.contracts import (
     ArtifactKind,
     DigitalHumanVideoRequest,
+    ErrorCode,
     MediaInfo,
     NodeRun,
     NodeStatus,
@@ -194,8 +199,10 @@ def test_ai_cover_generates_artifact_when_profile_and_secret_active(
     assert output.status == NodeStatus.succeeded
     assert not output.degradations
     assert output.provider_invocation_ids
-    # The AI prompt carried the real title (cover prompt build is wired in).
-    assert provider.prompts and "封面测试" in provider.prompts[0]
+    # The AI prompt carries the generated cover title (cover prompt build is wired in).
+    # No LLM is armed here, so the copy -- and thus the cover headline -- is derived
+    # deterministically from the script ("第一句。第二句。" -> cover_title "第一句").
+    assert provider.prompts and "第一句" in provider.prompts[0]
     finished = next(v for v in adapter.repository.finished_videos.values() if v.run_id == "run_cover")
     assert finished.cover_artifact is not None
     assert finished.cover_artifact.artifact_id == cover.id
@@ -307,15 +314,17 @@ def test_ai_cover_without_reference_asset_sends_no_template(
     assert "from scratch" in provider.inputs[0]["prompt"]
 
 
-def test_ai_cover_requested_but_unconfigured_falls_back_to_frame_cover(
+def test_ai_cover_unconfigured_uses_frame_without_degradation(
     tmp_path, media_fixture_factory, monkeypatch
 ):
     adapter, gateway, secret_store, object_store = _adapter(tmp_path)
     monkeypatch.setattr(
         "packages.production.pipeline.digital_human.get_object_store", lambda: object_store
     )
-    # No image provider registered, no profile, no secret -> the PAID path is
-    # unreachable. Register a provider that would explode if ever called.
+    # No real image.generate profile is configured -> the deployment has no AI cover
+    # capability. With AI as the default mode the frame cover is the honest BASELINE,
+    # not a degradation: emitting cover_frame_fallback on every unconfigured run would
+    # be noise, so no degradation is recorded. Register a provider that must not fire.
     called = {"hit": False}
 
     class _ExplodingImageProvider:
@@ -339,12 +348,123 @@ def test_ai_cover_requested_but_unconfigured_falls_back_to_frame_cover(
     assert cover.uri and cover.uri.startswith("local://")
     assert cover.media_info is not None and cover.media_info.media_type == "image"
     assert object_store.exists(parse_object_uri(cover.uri)) is True
-    # No paid call happened; degraded with the honest frame-fallback notice.
+    # No paid call happened and frame is the baseline -> succeeded, no degradation.
     assert called["hit"] is False
     assert not output.provider_invocation_ids
+    assert output.status == NodeStatus.succeeded
+    assert not output.degradations
+
+
+def test_ai_cover_profile_present_but_generation_fails_degrades_to_frame(
+    tmp_path, media_fixture_factory, monkeypatch
+):
+    adapter, gateway, secret_store, object_store = _adapter(tmp_path)
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store", lambda: object_store
+    )
+    # A real image profile + active secret -> AI cover capability IS available. When
+    # the paid call fails for THIS run, falling back to frame IS a real, actionable
+    # degradation and must be reported.
+    secret_ref = secret_store.put("openai-image-key")
+    _seed_image_profile(adapter.repository, secret_ref)
+
+    class _FailingImageProvider:
+        provider_id = "openai.image"
+
+        def invoke_with_context(self, call, context):
+            raise ProviderRuntimeError(ErrorCode.provider_remote_failed, "image upstream 500")
+
+    gateway.register(_FailingImageProvider())
+
+    state = _seed_final_state(adapter.repository, object_store, media_fixture_factory, cover_mode="ai")
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+
+    from packages.production.pipeline import nodes
+
+    output = nodes.export_finished_video.run(ctx)
+
+    cover = next(a for a in output.artifacts if a.kind == ArtifactKind.cover_image)
+    assert cover.media_info is not None and cover.media_info.media_type == "image"
     assert output.status == NodeStatus.degraded
     assert [d.code for d in output.degradations] == [WarningCode.cover_frame_fallback]
     assert output.degradations[0].policy_id == COVER_FALLBACK_POLICY.id
+
+
+def _arm_copy_llm(gateway, secret_store, output):
+    """Arm the seeded dashscope.llm.prod profile with a fake provider returning a
+    publishing-copy JSON, so ExportFinishedVideo generates copy via the LLM path."""
+    secret_store.put("dashscope-key", secret_ref="dashscope_prod.secret")
+
+    class _FakeLlmProvider:
+        provider_id = "dashscope.llm"
+
+        def invoke(self, call):
+            return ProviderResult(output=output)
+
+    gateway.register(_FakeLlmProvider())
+
+
+def test_finished_title_uses_llm_publish_copy_headline(
+    tmp_path, media_fixture_factory, monkeypatch
+):
+    adapter, gateway, secret_store, object_store = _adapter(tmp_path)
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store", lambda: object_store
+    )
+    _arm_copy_llm(
+        gateway,
+        secret_store,
+        {
+            "title": "轮毂刮花别急着换新",
+            "publish_content": "局部修复几百块就能搞定，省下两千多。",
+            "cover_title": "轮毂修复省两千",
+            "cover_subtitle": "几百块搞定",
+        },
+    )
+    # Frame cover (no image profile) keeps this focused on the title path.
+    state = _seed_final_state(adapter.repository, object_store, media_fixture_factory, cover_mode="frame")
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+
+    from packages.production.pipeline import nodes
+
+    output = nodes.export_finished_video.run(ctx)
+
+    finished = next(v for v in adapter.repository.finished_videos.values() if v.run_id == "run_cover")
+    # The generated headline replaces the request's persona-label title ("封面测试").
+    assert finished.title == "轮毂刮花别急着换新"
+    assert output.status == NodeStatus.succeeded
+
+
+def test_ai_cover_prompt_uses_llm_cover_title(tmp_path, media_fixture_factory, monkeypatch):
+    adapter, gateway, secret_store, object_store = _adapter(tmp_path)
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store", lambda: object_store
+    )
+    _arm_copy_llm(
+        gateway,
+        secret_store,
+        {
+            "title": "轮毂刮花别急着换新",
+            "publish_content": "局部修复几百块就能搞定。",
+            "cover_title": "轮毂修复省两千",
+            "cover_subtitle": "几百块搞定",
+        },
+    )
+    secret_ref = secret_store.put("openai-image-key")
+    _seed_image_profile(adapter.repository, secret_ref)
+    provider = _MockImageProvider()
+    gateway.register(provider)
+
+    state = _seed_final_state(adapter.repository, object_store, media_fixture_factory, cover_mode="ai")
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+
+    from packages.production.pipeline import nodes
+
+    output = nodes.export_finished_video.run(ctx)
+
+    assert output.status == NodeStatus.succeeded
+    # The AI cover prompt carries the LLM-generated cover_title, not the raw request title.
+    assert provider.prompts and "轮毂修复省两千" in provider.prompts[0]
 
 
 def test_frame_cover_default_mode_has_no_degradation(
@@ -397,6 +517,19 @@ def test_seeded_image_profile_is_gated_without_an_active_secret(tmp_path):
     # Activating the seeded profile's secret is the decisive switch that arms it.
     secret_store.put("openai-image-key", secret_ref="openai_image_prod.secret")
     assert adapter.provider_profiles.image_cover_profile_id(request) == "openai.image.prod"
+
+
+def test_cover_mode_defaults_to_ai():
+    # The production request defaults to the AI cover; the frame cover is only the
+    # honest fallback when AI is unavailable. A request that does not specify a
+    # cover must therefore opt into the AI path.
+    request = DigitalHumanVideoRequest(
+        case_id="case_demo",
+        publish_content="案例",
+        script="句。",
+        voice={"voice_id": "voice_sandbox"},
+    )
+    assert request.cover.mode == "ai"
 
 
 def test_export_finished_video_declared_as_provider_side_effect_node():

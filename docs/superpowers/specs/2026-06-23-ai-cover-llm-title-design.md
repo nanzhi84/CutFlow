@@ -29,7 +29,11 @@
 
 - `jobs.py:94` `CoverOptions.mode` 默认 `"frame"` → `"ai"`。
 - 重生成 `apps/web/src/api/openapi.json` + `schema.d.ts`（CI 校验漂移）。
-- `export_finished_video.py::_build_cover` 降级语义**不变**：有真图像 profile + 活密钥 → 出 AI 封面（succeeded，无降级）；AI 不可用/调用失败 → 回退帧 + 显式 `cover_frame_fallback`（degraded）。现有 `tests/production/test_ai_cover_path.py` 两个专项用例都显式设 mode，故契约保持。
+- `export_finished_video.py::_build_cover` 降级语义**收窄**（默认 ai 的必要配套）：
+  - 解析到真 image profile（能力可用）但 AI 调用失败 → 回退帧 + 显式 `cover_frame_fallback`（degraded）——这是有信号、可行动的降级。
+  - **完全没配 image provider**（部署无 AI 封面能力）→ 帧封面是诚实**基线**，不发降级。否则默认 ai 会让每条 CI/sandbox/未配密钥的 run 都凭空多一条 `cover_frame_fallback`，污染降级列表（run 仍 succeeded，但噪音 + 打挂断言精确降级列表的用例）。
+  - 这不是"静默降级"：无能力时帧本就是唯一可产出的封面（基线），不是从可用更优路径的退化。
+  - 影响 `tests/production/test_ai_cover_path.py`：原 `test_ai_cover_requested_but_unconfigured_falls_back_to_frame_cover`（无 profile）改为断言"帧 + 无降级 + succeeded"；新增"profile 在但调用失败 → 帧 + cover_frame_fallback"。
 
 ### B. 共享 LLM 文案接线 `packages/publishing/copy_llm.py`（新增）
 

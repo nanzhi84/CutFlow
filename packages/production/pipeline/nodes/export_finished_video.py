@@ -31,6 +31,13 @@ from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.media.assets import store_file
 from packages.media.cover import CoverPromptInputs, build_cover_prompt
 from packages.media.video.ffmpeg import FfmpegCommandError, extract_thumbnails
+from packages.publishing.copy_llm import build_copy_llm_chat
+from packages.publishing.copy_node import (
+    PublishCopy,
+    PublishCopyContext,
+    derive_publish_copy,
+    generate_publish_copy,
+)
 from packages.core.observability import record_funnel_event
 from packages.production.finished_video_numbering import next_finished_video_number
 from packages.production.pipeline._node_context import NodeContext
@@ -63,14 +70,15 @@ def run(ctx: NodeContext) -> NodeOutput:
         sha256=final.sha256,
         media_info=final.media_info,
     )
-    cover_artifact, cover_degradations, cover_invocation_ids = _build_cover(ctx, final)
+    copy, _copy_source, copy_invocation_id = _resolve_publish_copy(ctx, script)
+    cover_artifact, cover_degradations, cover_invocation_ids = _build_cover(ctx, final, copy)
     lipsync_provider_id, lipsync_fallback_used, lipsync_fallback_reason = _resolve_lipsync_attribution(ctx)
     finished = FinishedVideo(
         id=new_id("fv"),
         case_id=state.request.case_id,
         run_id=run.id,
         owner_user_id=_resolve_owner_user_id(run, repository),
-        title=state.request.title or script.title,
+        title=copy.title or state.request.title or script.title or "未命名成片",
         video_number=_next_video_number(repository, state.request.case_id),
         video_artifact=repository.artifact_ref(video_artifact.id),
         cover_artifact=repository.artifact_ref(cover_artifact.id),
@@ -97,7 +105,7 @@ def run(ctx: NodeContext) -> NodeOutput:
     package = repository.create_publish_package_from_finished_video(
         finished,
         title=finished.title,
-        description=state.request.publish_content,
+        description=copy.publish_content or state.request.publish_content,
     )
     repository.create_event(
         "workflow.finished_video.created",
@@ -129,7 +137,8 @@ def run(ctx: NodeContext) -> NodeOutput:
         status=NodeStatus.degraded if cover_degradations else NodeStatus.succeeded,
         artifacts=[video_artifact, cover_artifact, package_artifact],
         degradations=cover_degradations,
-        provider_invocation_ids=cover_invocation_ids,
+        provider_invocation_ids=cover_invocation_ids
+        + ([copy_invocation_id] if copy_invocation_id else []),
     )
 
 
@@ -213,31 +222,67 @@ def _resolve_lipsync_attribution(ctx: NodeContext) -> tuple[str | None, bool, st
 
 
 def _build_cover(
-    ctx: NodeContext, final: Artifact
+    ctx: NodeContext, final: Artifact, copy: PublishCopy
 ) -> tuple[Artifact, list[DegradationNotice], list[str]]:
-    """Resolve the cover artifact, gating the PAID AI cover behind a real
-    ``image.generate`` profile + active secret. Falls back to the frame-based
-    cover (current behavior) whenever AI is unavailable or fails."""
+    """Resolve the cover artifact. AI cover (PAID, gated behind a real
+    ``image.generate`` profile + active secret) is the default; the frame-based
+    cover is the fallback.
+
+    A ``cover_frame_fallback`` degradation is recorded ONLY when the AI cover
+    capability WAS available (a real profile resolved) but the paid call failed for
+    this run -- an actionable degradation worth surfacing. When no image profile is
+    configured at all, the frame cover is the honest BASELINE (there is no AI cover
+    capability to degrade from), so no degradation is emitted; otherwise default-AI
+    would flag every unconfigured run (CI / sandbox / un-armed prod) as degraded."""
     request = ctx.state.request
     wants_ai = request.cover.mode == "ai"
     profile_id = ctx.image_cover_profile_id(request) if wants_ai else None
     if profile_id is not None:
-        ai_cover, invocation_id = _generate_ai_cover(ctx, profile_id)
+        ai_cover, invocation_id = _generate_ai_cover(ctx, profile_id, copy)
         if ai_cover is not None:
             return ai_cover, [], [invocation_id] if invocation_id else []
-    cover_artifact = _frame_cover(ctx, final)
-    degradations: list[DegradationNotice] = []
-    if wants_ai:
-        # AI cover requested but unavailable/failed -> honest frame fallback.
-        degradations.append(
-            DegradationNotice(
-                code=WarningCode.cover_frame_fallback,
-                message="AI cover unavailable; used frame-based cover.",
-                node_id=ctx.node_run.node_id,
-                policy_id=COVER_FALLBACK_POLICY.id,
-            )
+        return (
+            _frame_cover(ctx, final),
+            [
+                DegradationNotice(
+                    code=WarningCode.cover_frame_fallback,
+                    message="AI cover generation failed; used frame-based cover.",
+                    node_id=ctx.node_run.node_id,
+                    policy_id=COVER_FALLBACK_POLICY.id,
+                )
+            ],
+            [],
         )
-    return cover_artifact, degradations, []
+    return _frame_cover(ctx, final), [], []
+
+
+def _resolve_publish_copy(
+    ctx: NodeContext, script: ScriptVersion
+) -> tuple[PublishCopy, str, str | None]:
+    """Generate the publish copy (title + publish_content + cover title/subtitle) for
+    this finished video. Uses a real ``llm.chat`` provider when armed, else the
+    deterministic derivation. A provider/schema failure is NON-fatal: the finished
+    video is already produced, so we fall back to the deterministic copy rather than
+    failing the export over a title."""
+    request = ctx.state.request
+    context = PublishCopyContext(
+        script=script.script or "",
+        case_name=request.case_id,
+        description=request.publish_content,
+    )
+    registry = getattr(ctx.adapter, "prompt_registry", None) or PromptRegistry(ctx.repository)
+    llm_chat = build_copy_llm_chat(
+        gateway=ctx.provider_gateway,
+        repository=ctx.repository,
+        prompt_registry=registry,
+        case_id=ctx.run.case_id,
+        run_id=ctx.run.id,
+        node_run_id=ctx.node_run.id,
+    )
+    try:
+        return generate_publish_copy(context, llm_chat=llm_chat)
+    except NodeExecutionError:
+        return derive_publish_copy(context), "deterministic", None
 
 
 def _frame_cover(ctx: NodeContext, final: Artifact) -> Artifact:
@@ -286,7 +331,9 @@ def _resolve_cover_prompt_version_id(ctx: NodeContext) -> str | None:
     return None
 
 
-def _generate_ai_cover(ctx: NodeContext, profile_id: str) -> tuple[Artifact | None, str | None]:
+def _generate_ai_cover(
+    ctx: NodeContext, profile_id: str, copy: PublishCopy
+) -> tuple[Artifact | None, str | None]:
     """Generate the AI cover via the gateway. Returns ``(None, None)`` on any
     provider failure so the caller can fall back to the frame cover.
 
@@ -303,8 +350,9 @@ def _generate_ai_cover(ctx: NodeContext, profile_id: str) -> tuple[Artifact | No
     version = ctx.repository.prompt_versions.get(version_id) if version_id is not None else None
     prompt = build_cover_prompt(
         CoverPromptInputs(
-            title=state.request.title or "",
-            description=state.request.publish_content,
+            title=copy.cover_title or copy.title or state.request.title or "",
+            subtitle=copy.cover_subtitle or None,
+            description=copy.publish_content or state.request.publish_content,
             case_name=state.request.case_id,
             has_template=template is not None,
         ),
