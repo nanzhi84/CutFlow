@@ -211,7 +211,7 @@ def test_publish_attempts_can_be_listed_by_batch():
 
 
 # The exact §9.5 funnel taxonomy (spec 树影 v3 §9.5 成品率漏斗). Tests assert the
-# funnel emits these spec strings — NOT the legacy workflow_*/publish_attempt_*.
+# funnel emits these spec strings, not retired workflow_*/publish_attempt_* names.
 SPEC_9_5_FUNNEL_STAGES = {
     "submitted",
     "admitted",
@@ -291,7 +291,7 @@ def test_yield_funnel_records_full_lifecycle_stages():
         # Publish stages.
         assert "publish_started" in event_types
         assert "published" in event_types
-        # Every emitted stage is a §9.5 spec string (no legacy workflow_* leaks).
+        # Every emitted stage is a §9.5 spec string.
         assert event_types <= SPEC_9_5_FUNNEL_STAGES
         assert "workflow_succeeded" not in event_types
         assert "publish_attempt_submitted" not in event_types

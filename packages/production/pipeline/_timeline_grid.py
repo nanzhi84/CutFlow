@@ -177,7 +177,7 @@ def validate_timeline(
     fps: int,
     total_frames: int,
 ) -> TimelineValidationReport:
-    """Validate overlap, negative duration, and bounds checks per the legacy node."""
+    """Validate overlap, negative duration, and bounds checks."""
     negative_duration = any(
         _timeline_end(segment, fps) <= _timeline_start(segment, fps) for segment in raw_segments
     )

@@ -65,9 +65,7 @@ def _s3_env(monkeypatch, tmp_path) -> dict[str, FakeS3Client]:
     monkeypatch.setenv("CUTAGENT_OBJECTSTORE_ENDPOINT", "https://oss.example")
     monkeypatch.setenv("CUTAGENT_OBJECTSTORE_BUCKET", "cutagent-prod")
     monkeypatch.setenv("CUTAGENT_OBJECTSTORE_MATERIALS_BUCKET", "cutagent-materials")
-    monkeypatch.setenv(
-        "CUTAGENT_OBJECTSTORE_READ_BUCKETS", "cutagent-materials, videoretalk-test-bucket"
-    )
+    monkeypatch.setenv("CUTAGENT_OBJECTSTORE_READ_BUCKETS", "cutagent-materials")
     monkeypatch.setenv("CUTAGENT_OBJECTSTORE_ACCESS_KEY", "durable-key")
     monkeypatch.setenv("CUTAGENT_OBJECTSTORE_SECRET_KEY", "durable-secret")
     monkeypatch.setenv("CUTAGENT_OBJECTSTORE_REGION", "oss-cn-shanghai")
@@ -113,29 +111,6 @@ def test_purpose_routes_materials_outputs_ephemeral(monkeypatch, tmp_path):
     durable_client = clients["durable-key"]
     assert ("cutagent-materials", material_ref.key) in durable_client.objects
     assert ("cutagent-prod", output_ref.key) in durable_client.objects
-
-
-def test_durable_reads_legacy_bucket_but_refuses_to_write_it(monkeypatch, tmp_path):
-    clients = _s3_env(monkeypatch, tmp_path)
-    store = object_store_from_env(client_factory=clients.pop("_factory"))
-    durable_client = clients["durable-key"]
-
-    # An object that only lives in the read-only legacy bucket.
-    durable_client.objects[("videoretalk-test-bucket", "legacy/clip.mp4")] = b"legacy"
-    legacy_ref = ObjectRef(
-        bucket="videoretalk-test-bucket",
-        key="legacy/clip.mp4",
-        uri="s3://videoretalk-test-bucket/legacy/clip.mp4",
-    )
-    assert store.get_bytes(legacy_ref) == b"legacy"
-    assert store.signed_url(legacy_ref.uri).url.startswith("https://oss.example/videoretalk-test-bucket/")
-
-    with pytest.raises(ValueError, match="not writable"):
-        store.put_bytes(legacy_ref, b"nope")
-
-    unknown_ref = ObjectRef(bucket="some-other-bucket", key="k", uri="s3://some-other-bucket/k")
-    with pytest.raises(ValueError, match="not readable"):
-        store.get_bytes(unknown_ref)
 
 
 def test_s3_store_read_write_guard_split():

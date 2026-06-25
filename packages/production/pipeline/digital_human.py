@@ -7,8 +7,6 @@ selection, the object store). The per-node business logic lives in
 ``packages.production.pipeline.nodes`` — one ``run(ctx)`` handler per entry in
 ``NODE_SEQUENCE`` — so capability work edits disjoint files.
 
-``RunState`` / ``degradation_notice`` are re-exported here for backwards
-compatibility with callers (and tests) that import them from this module.
 ``get_object_store`` is likewise imported into this namespace so it stays
 monkeypatchable; node handlers reach it via ``NodeContext.object_store()`` which
 resolves through ``LocalRuntimeAdapter._object_store``.
@@ -69,7 +67,7 @@ from packages.core.contracts.state_machines import assert_transition
 from packages.production.pipeline import nodes
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._provider_profiles import ProviderProfileResolver
-from packages.production.pipeline._run_state import RunState, degradation_notice
+from packages.production.pipeline._run_state import RunState as _RunState
 from packages.production.pipeline.ephemeral_gc import (
     failed_ephemeral_retention_policy,
     gc_ephemeral_artifacts,
@@ -87,8 +85,6 @@ __all__ = [
     "NODE_SEQUENCE",
     "BROLL_ONLY_SEQUENCE",
     "SEEDANCE_T2V_SEQUENCE",
-    "RunState",
-    "degradation_notice",
     "broll_only_template",
     "digital_human_template",
     "seedance_t2v_template",
@@ -394,7 +390,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         run = self.repository.runs[run_id]
         job = self.repository.jobs[run.job_id]
         request = self._request(job)
-        state = RunState(request=request)
+        state = _RunState(request=request)
         start_index = 0
         if job.status != JobStatus.running:
             assert_transition("job", job.status, JobStatus.running)
@@ -476,7 +472,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
     ) -> dict:
         run = self.repository.runs[run_id]
         request = self._request(self.repository.jobs[run.job_id])
-        state = RunState(request=request)
+        state = _RunState(request=request)
         self._reuse_prefix(run, state, source_run_id, reuse_plan)
         return {
             "run_id": run_id,
@@ -636,8 +632,8 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
 
     def _state_from_persisted_artifacts(
         self, run_id: str, request: DigitalHumanVideoRequest
-    ) -> RunState:
-        state = RunState(request=request)
+    ) -> _RunState:
+        state = _RunState(request=request)
         for artifact in self.repository.artifacts.values():
             if artifact.run_id == run_id:
                 state.artifacts[artifact.kind] = artifact
@@ -652,7 +648,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             state.degradations.extend(node_run.degradations)
         return state
 
-    def _terminal_state_from_repository(self, run_id: str) -> RunState | None:
+    def _terminal_state_from_repository(self, run_id: str) -> _RunState | None:
         run = self.repository.runs.get(run_id)
         if run is None:
             return None
@@ -668,7 +664,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
     def _terminal_ephemeral_gc(
         self,
         run_id: str,
-        state: RunState,
+        state: _RunState,
         *,
         terminal_status: RunStatus,
     ) -> None:
@@ -713,7 +709,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             logger.warning("Failed to run terminal ephemeral GC for run %s.", run_id, exc_info=True)
 
     # --------------------------------------------------------------- engine loop
-    def _execute_node(self, node_id: str, run: WorkflowRun, state: RunState) -> bool:
+    def _execute_node(self, node_id: str, run: WorkflowRun, state: _RunState) -> bool:
         job = self.repository.jobs[run.job_id]
         request = state.request
         node_run = NodeRun(
@@ -995,7 +991,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
     def _reuse_prefix(
         self,
         run: WorkflowRun,
-        state: RunState,
+        state: _RunState,
         from_run_id: str,
         reuse_plan: ReusePlan | None,
     ) -> int:
@@ -1040,7 +1036,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             self.repository.node_runs[run.id].append(copied)
         return reuse_plan.reused_count
 
-    def _may_skip_without_running(self, node_id: str, state: RunState) -> bool:
+    def _may_skip_without_running(self, node_id: str, state: _RunState) -> bool:
         return (
             node_id == "ResolveCreativeIntent"
             and state.request.creative_intent_ref is not None
@@ -1061,7 +1057,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
 
     # ------------------------------------------------------------ node dispatch
     def _run_node(
-        self, node_id: str, run: WorkflowRun, node_run: NodeRun, state: RunState
+        self, node_id: str, run: WorkflowRun, node_run: NodeRun, state: _RunState
     ) -> NodeOutput:
         ctx = NodeContext(adapter=self, run=run, node_run=node_run, state=state)
         return NODE_HANDLERS[node_id](ctx)
@@ -1170,17 +1166,17 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
     # These two thin wrappers additionally preserve the historical
     # ``adapter._<node>(run, node_run, state)`` call surface used by unit tests
     # that build adapters via ``object.__new__`` and invoke a single node.
-    def _narration_alignment(self, run: WorkflowRun, node_run: NodeRun, state: RunState) -> NodeOutput:
+    def _narration_alignment(self, run: WorkflowRun, node_run: NodeRun, state: _RunState) -> NodeOutput:
         return nodes.narration_alignment.run(NodeContext(adapter=self, run=run, node_run=node_run, state=state))
 
-    def _finalize_run_report(self, run: WorkflowRun, node_run: NodeRun, state: RunState) -> NodeOutput:
+    def _finalize_run_report(self, run: WorkflowRun, node_run: NodeRun, state: _RunState) -> NodeOutput:
         return nodes.finalize_run_report.run(NodeContext(adapter=self, run=run, node_run=node_run, state=state))
 
     # ----------------------------------------------------------- run reporting
     def _write_report(
         self,
         run: WorkflowRun,
-        state: RunState,
+        state: _RunState,
         *,
         failed: bool,
         node_run: NodeRun | None = None,

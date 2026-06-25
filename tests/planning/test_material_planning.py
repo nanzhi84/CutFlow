@@ -413,25 +413,3 @@ def test_avoid_role_clip_is_never_offered():
     }
     candidates = rank_broll_candidates(annotations=annotations, segments=segments)
     assert candidates == []
-
-
-def test_legacy_broll_main_role_clip_is_still_offered():
-    units = _units()
-    segments = _narration_segments(units)
-    annotations = {
-        "asset_a": _annotation(
-            "asset_a",
-            [
-                _clip(
-                    "a1",
-                    0.0,
-                    4.0,
-                    ["补漆", "效果"],
-                    role=UsageRole.main,
-                    lip_sync=True,
-                )
-            ],
-        )
-    }
-    candidates = rank_broll_candidates(annotations=annotations, segments=segments)
-    assert [c.clip_id for c in candidates] == ["a1"]

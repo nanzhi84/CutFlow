@@ -12,9 +12,9 @@ type StatItem = {
 
 const STAT_ITEMS: StatItem[] = [
   { key: "total", label: "总任务", helper: "真实运行记录", className: "text-accent bg-accent/10", icon: Video },
-  { key: "processing", label: "处理中", helper: "含入队/运行/中断中", className: "text-status-warning bg-status-warning/10", icon: Activity },
-  { key: "completed", label: "已完成", helper: "workflow_succeeded", className: "text-status-success bg-status-success/10", icon: CheckCircle2 },
-  { key: "failed", label: "失败", helper: "失败或已取消", className: "text-status-error bg-status-error/10", icon: AlertCircle },
+  { key: "processing", label: "处理中", helper: "提交/入队/运行/节点中", className: "text-status-warning bg-status-warning/10", icon: Activity },
+  { key: "completed", label: "已完成", helper: "成片或发布完成", className: "text-status-success bg-status-success/10", icon: CheckCircle2 },
+  { key: "failed", label: "失败", helper: "节点/QC/发布失败", className: "text-status-error bg-status-error/10", icon: AlertCircle },
 ];
 
 export function OverviewStatCards({ stats, isLoading }: { stats: OverviewStats; isLoading: boolean }) {

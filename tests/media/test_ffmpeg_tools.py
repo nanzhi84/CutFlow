@@ -17,7 +17,12 @@ from packages.media.video.ffmpeg import (
     stabilize_video,
     trim_to_valid_segments,
 )
-from tests.fixtures.media import generate_test_audio, generate_test_video
+from tests.fixtures.media import (
+    generate_test_audio,
+    generate_test_video,
+    require_ffmpeg_filters,
+    require_strict_bt709_tags,
+)
 
 
 def test_probe_media_reads_real_video_stream_info(tmp_path):
@@ -64,6 +69,7 @@ def test_extract_thumbnails_writes_first_and_midpoint_pngs(tmp_path):
 
 
 def test_stabilize_video_writes_valid_video_with_matching_duration(tmp_path):
+    require_ffmpeg_filters("vidstabdetect", "vidstabtransform")
     video = generate_test_video(tmp_path, duration_sec=1.2, width=160, height=120, fps=15)
 
     stabilized = stabilize_video(video)
@@ -180,6 +186,7 @@ def test_extract_frame_at_time_rejects_non_video(tmp_path):
 
 
 def test_normalize_for_upload_produces_h264_aac_mp4(tmp_path):
+    require_strict_bt709_tags()
     video = generate_test_video(tmp_path, duration_sec=1, width=160, height=120, fps=15)
     output = tmp_path / "normalized.mp4"
 

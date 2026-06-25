@@ -9,7 +9,12 @@ from packages.media.video.ffmpeg import (
     probe_media,
     stabilize_video,
 )
-from tests.fixtures.media import generate_test_hdr_video, generate_test_video
+from tests.fixtures.media import (
+    generate_test_hdr_video,
+    generate_test_video,
+    require_ffmpeg_filters,
+    require_strict_bt709_tags,
+)
 
 
 def _make_hdr(tmp_path):
@@ -25,6 +30,8 @@ def _make_hdr(tmp_path):
 
 
 def test_normalize_for_upload_tonemaps_hdr_to_bt709_1080p(tmp_path):
+    require_ffmpeg_filters("zscale")
+    require_strict_bt709_tags()
     video = _make_hdr(tmp_path)
 
     result = normalize_for_upload(video, tmp_path / "hdr_normalized.mp4")
@@ -45,6 +52,7 @@ def test_normalize_for_upload_tonemaps_hdr_to_bt709_1080p(tmp_path):
 
 
 def test_normalize_for_upload_normalizes_sdr_to_strict_profile(tmp_path):
+    require_strict_bt709_tags()
     # An odd-resolution SDR source must be scaled/padded to 1080p bt709 h264.
     video = generate_test_video(tmp_path, duration_sec=1, width=300, height=540, fps=15)
 
@@ -69,6 +77,7 @@ def test_normalize_for_upload_rejects_non_video(tmp_path):
 
 
 def test_extract_thumbnails_tonemaps_hdr_source(tmp_path):
+    require_ffmpeg_filters("zscale")
     video = _make_hdr(tmp_path)
 
     thumbs = extract_thumbnails(video, tmp_path / "hdr_thumbs", labels=("first", "mid"))
@@ -81,6 +90,8 @@ def test_extract_thumbnails_tonemaps_hdr_source(tmp_path):
 
 
 def test_stabilize_video_tonemaps_hdr_source_to_bt709(tmp_path):
+    require_ffmpeg_filters("zscale", "vidstabdetect", "vidstabtransform")
+    require_strict_bt709_tags()
     video = _make_hdr(tmp_path)
 
     stabilized = stabilize_video(video, tmp_path / "hdr_stabilized.mp4")

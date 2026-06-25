@@ -148,7 +148,7 @@ export type PreviewUrlMeta = {
    * Whether the resolved URL is browser-playable. Tri-state:
    *   true  => backend asserts playable;
    *   false => backend asserts not playable (degrade to placeholder/download);
-   *   undefined => backend didn't say (older payload) — fall back to URL heuristic.
+   *   undefined => backend did not include the field — fall back to URL heuristic.
    */
   playable?: boolean;
 };
@@ -156,7 +156,7 @@ export type PreviewUrlMeta = {
 /**
  * Read content_type / playable from a preview-url (SignedUrlResponse) payload.
  * `playable` is a non-optional boolean in the schema, but we narrow defensively so
- * older payloads (without the field) collapse to `undefined` → URL heuristic.
+ * missing values collapse to `undefined` -> URL heuristic.
  */
 export function readPreviewUrlMeta(response: SignedUrlResponse): PreviewUrlMeta {
   const contentType = typeof response.content_type === "string" ? response.content_type : undefined;

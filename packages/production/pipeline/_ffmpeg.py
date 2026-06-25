@@ -15,7 +15,7 @@ from packages.media.video.ffmpeg import FfmpegRunner, ffmpeg_bin
 
 logger = logging.getLogger("packages.production.pipeline._ffmpeg")
 
-# Adaptive-mix tuning (ported from the OLD bgm_service auto_mix contract). These
+# Adaptive-mix tuning for the BGM auto_mix contract. These
 # keep BGM perceptually under the voice via LUFS targeting + sidechain ducking.
 AUTO_MIX_BGM_MARGIN_DB = 12.0  # keep BGM this many LUFS below the voice
 AUTO_MIX_MIN_BGM_VOLUME = 0.02
@@ -260,7 +260,7 @@ def render_final_media(
 
     When ``bgm_path`` is given and ``auto_mix`` is true, the BGM volume is resolved
     against the voice loudness (LUFS targeting) and the graph ducks the BGM under
-    the voice via ``sidechaincompress`` with fade in/out -- the OLD adaptive-mix
+    the voice via ``sidechaincompress`` with fade in/out -- the adaptive-mix
     contract. Returns the resolved :class:`AdaptiveMixResult` when BGM was mixed
     (so the caller can record the decision), else ``None``.
 
@@ -296,7 +296,7 @@ def render_final_media(
     video_filters = "[0:v]"
     if subtitle_path is not None:
         escaped_subtitle = _escape_subtitle_filter_value(str(subtitle_path))
-        subtitles_filter = f"subtitles='{escaped_subtitle}'"
+        subtitles_filter = f"subtitles=filename='{escaped_subtitle}'"
         if fonts_dir is not None:
             escaped_fonts_dir = _escape_subtitle_filter_value(str(fonts_dir))
             subtitles_filter += f":fontsdir='{escaped_fonts_dir}'"

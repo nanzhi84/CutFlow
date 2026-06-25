@@ -31,7 +31,8 @@ from packages.core.storage.secret_store import LocalSecretStore
 from packages.core.workflow import NodeExecutionError
 from packages.media.assets import store_file
 from packages.production.pipeline._node_context import NodeContext
-from packages.production.pipeline.digital_human import LocalRuntimeAdapter, RunState
+from packages.production.pipeline._run_state import RunState
+from packages.production.pipeline.digital_human import LocalRuntimeAdapter
 
 
 def _real_lipsync_profile(provider_id: str, profile_id: str, secret_ref: str) -> ProviderProfile:

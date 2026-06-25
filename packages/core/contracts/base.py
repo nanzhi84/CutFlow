@@ -83,6 +83,7 @@ class WarningCode(str, Enum):
     lipsync_fallback_used = "lipsync.fallback_used"
     bgm_loudness_probe_failed = "bgm.loudness_probe_failed"
     font_resolution_failed = "font.resolution_failed"
+    subtitle_burn_skipped = "subtitle.burn_skipped"
 
 
 class DegradationCode(str, Enum):
@@ -93,6 +94,7 @@ class DegradationCode(str, Enum):
     lipsync_fallback_used = "lipsync.fallback_used"
     bgm_loudness_probe_failed = "bgm.loudness_probe_failed"
     font_resolution_failed = "font.resolution_failed"
+    subtitle_burn_skipped = "subtitle.burn_skipped"
 
 
 class JobStatus(str, Enum):
@@ -334,4 +336,3 @@ class ResumePolicy(ContractModel):
     mode: Literal["never", "reuse_if_hash_match", "always_rerun"] = "reuse_if_hash_match"
     reusable_artifact_kinds: list[ArtifactKind] = Field(default_factory=list)
     side_effect_replay: Literal["forbidden", "idempotent_only"] = "idempotent_only"
-

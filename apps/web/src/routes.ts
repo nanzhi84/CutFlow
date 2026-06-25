@@ -10,8 +10,6 @@ export const routePatterns = {
   caseRuns: "/studio/:caseId/runs",
   caseFinishedVideos: "/studio/:caseId/finished-videos",
   casePublish: "/studio/:caseId/publish",
-  publishCenter: "/publish-center",
-  publishCenterBatch: "/publish-center/:batchId",
   settings: "/settings",
   library: "/library/*",
   analytics: "/analytics/*",

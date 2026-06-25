@@ -82,8 +82,8 @@ def test_clip_shows_person_helper():
     assert clip_shows_person(_clip("mouth", 0.0, 5.0, mouth_moving=True))
     assert clip_shows_person(_clip("g", 0.0, 5.0, gaze_to_camera=True))
     # the recommended_for_lip_sync *usage* flag alone is NOT a person signal here
-    # (lip-sync-usable clips are routed to A-roll upstream; the flag is noisy on
-    # legacy b-roll) — a scene clip stays b-roll even if that flag is set.
+    # (lip-sync-usable clips are routed to A-roll upstream) — a scene clip stays
+    # b-roll even if that flag is set.
     assert not clip_shows_person(
         _clip("lip", 0.0, 5.0, subject_type="furniture_showroom", lip_sync=True)
     )

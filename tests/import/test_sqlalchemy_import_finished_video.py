@@ -67,7 +67,7 @@ def _finished_row(external_id: str, *, video_number: str | None = None, case_id:
         "external_id": external_id,
         "case_id": case_id,
         "title": f"Imported {external_id}",
-        "uri": f"s3://cutagent-durable/legacy/{external_id}.mp4",
+        "uri": f"s3://cutagent-durable/imports/{external_id}.mp4",
         "duration_sec": 8.0,
     }
     if video_number is not None:

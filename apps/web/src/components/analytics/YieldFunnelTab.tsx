@@ -5,13 +5,21 @@ import { buildFunnelSteps, successRate, summarizeWorkflowStats } from "./analyti
 
 function eventLabel(type: string) {
   const labels: Record<string, string> = {
-    workflow_created: "工作流已创建",
-    workflow_admitted: "工作流已入队",
-    workflow_running: "工作流运行中",
-    workflow_cancelling: "工作流中断中",
-    workflow_succeeded: "工作流已完成",
-    workflow_failed: "工作流失败",
-    workflow_cancelled: "工作流已取消",
+    submitted: "任务已提交",
+    admitted: "任务已入队",
+    started: "任务运行中",
+    node_started: "节点开始",
+    node_succeeded: "节点完成",
+    node_failed: "节点失败",
+    finished_video_created: "成片产出",
+    qc_started: "质检开始",
+    qc_passed: "质检通过",
+    qc_failed: "质检失败",
+    manual_approved: "人工通过",
+    manual_rejected: "人工拒绝",
+    publish_started: "发布开始",
+    published: "发布完成",
+    publish_failed: "发布失败",
   };
   if (labels[type]) return labels[type];
   if (type.includes("finished_video")) return "成片产出";

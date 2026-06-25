@@ -10,7 +10,12 @@ from apps.api.main import repository
 from packages.core.storage.object_store import parse_object_uri
 from packages.media.assets import local_object_path
 from packages.media.video.ffmpeg import FfmpegCommandError, probe_media
-from tests.fixtures.media import generate_test_hdr_video, generate_test_video
+from tests.fixtures.media import (
+    generate_test_hdr_video,
+    generate_test_video,
+    require_ffmpeg_filters,
+    require_strict_bt709_tags,
+)
 
 
 client = TestClient(app)
@@ -92,6 +97,7 @@ def test_upload_rejects_oversize_body_with_413(upload_settings_override):
 
 
 def test_complete_upload_normalizes_portrait_when_enabled(upload_settings_override, tmp_path):
+    require_strict_bt709_tags()
     login_admin()
     upload_settings_override(normalize_video=True)
     # Odd-resolution SDR portrait that must be normalized to 1080x1920 bt709.
@@ -149,6 +155,8 @@ def test_complete_upload_skips_normalization_when_disabled(tmp_path):
 
 
 def test_complete_upload_normalizes_hdr_portrait_to_bt709_when_enabled(upload_settings_override, tmp_path):
+    require_ffmpeg_filters("zscale")
+    require_strict_bt709_tags()
     login_admin()
     upload_settings_override(normalize_video=True)
     try:

@@ -18,7 +18,8 @@ from packages.core.contracts import (
 from packages.core.storage.repository import Repository
 from packages.core.workflow import NodeExecutionError
 from packages.production.pipeline import digital_human
-from packages.production.pipeline.digital_human import LocalRuntimeAdapter, RunState
+from packages.production.pipeline._run_state import RunState
+from packages.production.pipeline.digital_human import LocalRuntimeAdapter
 
 
 class RecordingDeleteStore:

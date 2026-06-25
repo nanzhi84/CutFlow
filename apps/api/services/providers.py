@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 import httpx
 from fastapi import Request
@@ -232,7 +233,7 @@ def provider_usage(
         invocations = [item for item in invocations if item.provider_id == provider_id]
     if case_id:
         invocations = [item for item in invocations if item.case_id == case_id]
-    amount = sum((item.estimated_cost.amount for item in invocations if item.estimated_cost), c.Decimal("0"))
+    amount = sum((item.estimated_cost.amount for item in invocations if item.estimated_cost), Decimal("0"))
     return c.ProviderUsageReport(
         invocations=len(invocations),
         estimated_cost=c.Money(amount=amount, currency="CNY"),

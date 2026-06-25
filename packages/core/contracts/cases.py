@@ -105,7 +105,7 @@ class PerformanceObservation(EntityMeta):
     platform: str | None = None
     account_id: str | None = None
     window: MetricWindow | None = None
-    # Generic single-metric shape (kept for backward compatibility / manual rows).
+    # Generic single-metric shape used by manual and connector imports.
     metric_name: str
     metric_value: float
     # §8.3 canonical metrics (optional; populated by structured imports).
@@ -172,7 +172,7 @@ class CreativeFeatureVector(EntityMeta):
     bgm_id: str | None = None
     cover_style: str | None = None
     material_ids: list[str] = Field(default_factory=list)
-    # Legacy convenience counters retained for existing callers/UI.
+    # Convenience counters used by feature extraction and rubric scoring.
     broll_count: int = 0
     title_tokens: int = 0
 

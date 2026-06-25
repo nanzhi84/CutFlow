@@ -204,14 +204,14 @@ def cost_rollups(
         return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
     repo = repository(request)
     # §26.1: GROUP BY the requested dimension and emit one CostRollup per group_key.
-    groups: dict[str, tuple[c.Decimal, int]] = {}
+    groups: dict[str, tuple[Decimal, int]] = {}
     for inv in repo.provider_invocations.values():
         key = _cost_group_key(repo, inv, group_by)
-        amount, count = groups.get(key, (c.Decimal("0"), 0))
-        amount += inv.estimated_cost.amount if inv.estimated_cost else c.Decimal("0")
+        amount, count = groups.get(key, (Decimal("0"), 0))
+        amount += inv.estimated_cost.amount if inv.estimated_cost else Decimal("0")
         groups[key] = (amount, count + 1)
     if not groups:
-        groups["all" if group_by is None else "unknown"] = (c.Decimal("0"), 0)
+        groups["all" if group_by is None else "unknown"] = (Decimal("0"), 0)
     for group_key, (amount, count) in groups.items():
         rollup_id = "cost_current_all" if group_by is None else f"cost_{group_by}_{group_key}"
         repo.cost_rollups[rollup_id] = c.CostRollup(
@@ -261,7 +261,7 @@ def _provider_usage_metrics_from_invocations(
             {
                 "calls": 0,
                 "success_count": 0,
-                "amount": c.Decimal("0"),
+                "amount": Decimal("0"),
                 "currency": invocation.estimated_cost.currency if invocation.estimated_cost else "CNY",
             },
         )

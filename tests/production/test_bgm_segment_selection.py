@@ -370,7 +370,7 @@ def test_style_planning_carries_selected_bgm_segment_into_style_plan(tmp_path, m
     assert payload["bgm"]["avoid_script"] == ["沉浸睡眠"]
 
 
-def test_style_planning_rejects_legacy_whole_track_bgm_candidate(tmp_path, monkeypatch):
+def test_style_planning_requires_segmented_bgm_candidate(tmp_path, monkeypatch):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
     adapter = _adapter(object_store)
@@ -380,7 +380,7 @@ def test_style_planning_rejects_legacy_whole_track_bgm_candidate(tmp_path, monke
         {
             "bgm_candidates": [
                 {
-                    "asset_id": "asset_legacy_bgm",
+                    "asset_id": "asset_unsegmented_bgm",
                     "score": 70.0,
                     "reason": "available bgm",
                     "metadata": {

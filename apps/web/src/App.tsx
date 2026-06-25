@@ -38,8 +38,6 @@ export default function App() {
             <Route path={routePatterns.caseRuns} element={<NavigateToCaseOutputs />} />
             <Route path={routePatterns.caseFinishedVideos} element={<NavigateToCaseOutputs />} />
             <Route path={routePatterns.casePublish} element={<PublishCenterPage />} />
-            <Route path={routePatterns.publishCenter} element={<Navigate to={routes.studio()} replace />} />
-            <Route path={routePatterns.publishCenterBatch} element={<Navigate to={routes.studio()} replace />} />
             <Route path={routePatterns.settings} element={<SettingsPage />} />
             <Route path={routePatterns.library} element={<LibraryLayout />} />
             <Route path={routePatterns.analytics} element={<AnalyticsPage />} />

@@ -4,7 +4,7 @@
 // see packages/core/contracts/media.py + apps/api/services/asset_annotation.py): a seven-layer
 // view with `meta / clips / usage_windows / quality_events / quality_report / evidence_frames`,
 // where each `clip` is nested (semantics / visual / usage / retrieval sub-objects). The editor UI
-// historically prefers a *flat* row model (`AnnotationTimelineSegment`) so rich display components
+// uses a *flat* row model (`AnnotationTimelineSegment`) so rich display components
 // read top-level fields directly. This module converts both sides losslessly:
 //   - clipsToSegments:   nested canonical clip -> flat editor row (read path)
 //   - segmentsToClips:   flat editor row -> nested canonical clip (write path)
@@ -14,8 +14,7 @@
 // defensive (the schema type is `{ [key: string]: JsonValue }` with `JsonValue = unknown`).
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Types — flat editor row + quality event (mirrors the old repo's
-// AnnotationTimelineSegment / AnnotationQualityEvent, adapted to genesis fields).
+// Types — flat editor row + quality event.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** V4 UsageRole legal values (backend ClipUsageV4.role / UsageWindowV4.role enum; illegal => 422). */
@@ -86,8 +85,7 @@ export interface AnnotationQualityEvent {
 /**
  * Evidence frame marker: a timestamp (seconds) optionally paired with a sampled
  * thumbnail URL. `time` comes from canonical.evidence_frames (flat number[]); the
- * optional `image_url` is matched from the newer canonical.evidence_frame_images
- * (added by the backend Regen — read defensively, may be absent for older payloads).
+ * optional `image_url` is matched from canonical.evidence_frame_images.
  */
 export interface AnnotationEvidenceFrame {
   time: number;

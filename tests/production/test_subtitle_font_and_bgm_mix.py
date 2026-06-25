@@ -45,6 +45,7 @@ from packages.production.pipeline._subtitles import write_ass_subtitles
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
 from packages.media.assets import store_file
 from packages.media.video.ffmpeg import FfmpegRunner, ffmpeg_bin, probe_media, probe_stream_types
+from tests.fixtures.media import require_ffmpeg_filters
 
 
 # --- synthetic font (minimal sfnt with a name table) ----------------------------
@@ -377,6 +378,7 @@ def test_subtitle_bgm_mix_passes_selected_bgm_segment_window(monkeypatch, tmp_pa
 @pytest.mark.skipif(shutil.which(ffmpeg_bin()) is None, reason="ffmpeg not available")
 def test_render_final_media_auto_mix_and_fontsdir_real_ffmpeg(tmp_path):
     """A real burn with a selected font (fontsdir) + auto-mixed BGM produces a valid AV file."""
+    require_ffmpeg_filters("subtitles")
     fps = 30
     duration = 2.0
     total_frames = int(round(duration * fps))

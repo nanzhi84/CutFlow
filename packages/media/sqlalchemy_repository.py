@@ -154,7 +154,7 @@ class SqlAlchemyMediaRepository(BaseRepository):
 
     def _signed_thumbnail_url(self, thumbnail_uri: str | None) -> str | None:
         # Sign the stored thumbnail object into a fetchable URL for the card.
-        # No object store (unit tests / legacy wiring) or no stored uri => None.
+        # No object store (unit tests) or no stored uri => None.
         if not thumbnail_uri or self.object_store is None:
             return None
         try:

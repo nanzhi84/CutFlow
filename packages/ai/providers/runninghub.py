@@ -397,7 +397,7 @@ def _runninghub_submit_error(payload: dict[str, Any]) -> ProviderRuntimeError:
     ``rh_retryable`` (consumed by :meth:`_runninghub_submit_retryable`) so the
     submit loop rides out a brief spike before the pipeline falls back; auth,
     balance and unrecognised rejections are terminal and surfaced verbatim
-    instead of the misleading "missing task ID". Falls back to the legacy
+    instead of the misleading "missing task ID". Falls back to the generic
     message only when there is no envelope to report (e.g. a malformed body)."""
     code = payload.get("code")
     code_str = "" if code is None else str(code).strip()
@@ -405,7 +405,7 @@ def _runninghub_submit_error(payload: dict[str, Any]) -> ProviderRuntimeError:
     detail = " ".join(part for part in (f"code={code_str}" if code_str else "", msg) if part).strip()
 
     # No envelope to report, or a success code that simply lacks a task id:
-    # the legacy message is the accurate description in both cases.
+    # the generic message is the accurate description in both cases.
     if (not code_str and not msg) or code_str in RUNNINGHUB_OK_CODES:
         return _mark(ProviderRuntimeError(
             ErrorCode.provider_remote_failed, "RunningHub submit response missing task ID."

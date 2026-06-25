@@ -21,7 +21,7 @@ from packages.core.contracts import (
 from packages.core.storage.repository import new_id
 from packages.media.assets import local_object_path
 from packages.media.video.ffmpeg import probe_media
-from tests.fixtures.media import generate_test_video
+from tests.fixtures.media import generate_test_video, require_ffmpeg_filters
 
 
 client = TestClient(app)
@@ -447,6 +447,7 @@ def test_unified_video_kind_upload_creates_video_media_asset(tmp_path):
 
 
 def test_video_upload_can_stabilize_before_creating_media_asset(tmp_path):
+    require_ffmpeg_filters("vidstabdetect", "vidstabtransform")
     login_admin()
     video = generate_test_video(tmp_path, duration_sec=1.2, width=160, height=120, fps=15)
     content = video.read_bytes()
@@ -489,6 +490,7 @@ def test_video_upload_can_stabilize_before_creating_media_asset(tmp_path):
 
 
 def test_batch_stabilize_updates_media_assets_and_reports_results(tmp_path):
+    require_ffmpeg_filters("vidstabdetect", "vidstabtransform")
     login_admin()
     video = generate_test_video(tmp_path, duration_sec=1.2, width=160, height=120, fps=15)
     content = video.read_bytes()

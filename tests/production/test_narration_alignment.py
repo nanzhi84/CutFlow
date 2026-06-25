@@ -27,7 +27,8 @@ from packages.core.contracts import (
 from packages.core.storage.repository import Repository
 from packages.core.workflow import NodeExecutionError
 from packages.production.pipeline.degradation_policies import ASR_ESTIMATED_FALLBACK_POLICY
-from packages.production.pipeline.digital_human import LocalRuntimeAdapter, RunState
+from packages.production.pipeline._run_state import RunState
+from packages.production.pipeline.digital_human import LocalRuntimeAdapter
 
 
 class FailingAsrGateway:

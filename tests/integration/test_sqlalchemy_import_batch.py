@@ -71,6 +71,7 @@ def test_sqlalchemy_import_batch_remaining_types_are_persisted_and_listed():
                 "case_id": "case_demo",
                 "title": f"Imported Media {suffix}",
                 "kind": "broll",
+                "uri": f"s3://cutagent-durable/imports/{suffix}/broll.mp4",
                 "tags": ["imported", "sqlalchemy"],
             },
         )

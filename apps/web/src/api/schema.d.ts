@@ -4373,7 +4373,7 @@ export interface components {
          * DegradationCode
          * @enum {string}
          */
-        DegradationCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed";
+        DegradationCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped";
         /** DegradationNotice */
         DegradationNotice: {
             code: components["schemas"]["WarningCode"];
@@ -7156,8 +7156,6 @@ export interface components {
              * @default
              */
             description: string;
-            /** Hashtags */
-            hashtags?: string[];
             /**
              * Mode
              * @default immediate
@@ -8539,7 +8537,7 @@ export interface components {
          * WarningCode
          * @enum {string}
          */
-        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced" | "budget.exceeded" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed";
+        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced" | "budget.exceeded" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped";
         /** WorkflowRun */
         WorkflowRun: {
             /** Id */

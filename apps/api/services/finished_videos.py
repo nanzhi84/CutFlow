@@ -78,7 +78,7 @@ def _extract_feature_vector(repo, video: c.VideoVersion) -> c.CreativeFeatureVec
 
 def case_finished_videos(request: Request, case_id: str, limit: int = 50) -> c.PageResponse[c.FinishedVideo]:
     # Creator-based isolation (spec §3): operator/viewer only see their own finished
-    # videos; admin (owner_filter is None) sees all (including unowned legacy rows).
+    # videos; admin (owner_filter is None) sees all rows.
     owner_filter = visible_owner_filter(current_user(request))
     if production_repository(request) is not None:
         values = production_repository(request).list_finished_videos(

@@ -15,8 +15,8 @@ class FinishedVideo(EntityMeta):
     case_id: str
     run_id: str | None = None
     # Creator-based isolation (spec §3): denormalized owner = run/job.created_by at
-    # export time (import path sets the importing user). Nullable: orphaned/legacy rows
-    # stay NULL →普通用户不可见、admin 可见.
+    # export time (import path sets the importing user). Nullable rows stay NULL:
+    # 普通用户不可见、admin 可见.
     owner_user_id: str | None = None
     title: str
     video_number: str | None = None
@@ -45,11 +45,9 @@ class FinishedVideoDetail(ContractModel):
 class PublishDefaults(ContractModel):
     title: str
     description: str = ""
-    hashtags: list[str] = Field(default_factory=list)
     # §23.7 PublishDefaults parity: per-batch publish payload knobs the platform
-    # adapter consumes. ``tags`` supersedes the legacy ``hashtags`` vestige (kept
-    # for backwards-compatibility of stored rows). ``account_group`` drives
-    # multi-account routing (which platform account publishes for this Case).
+    # adapter consumes. ``account_group`` drives multi-account routing (which
+    # platform account publishes for this Case).
     mode: Literal["immediate", "scheduled"] = "immediate"
     scheduled_at: datetime | None = None
     tags: list[str] = Field(default_factory=list)

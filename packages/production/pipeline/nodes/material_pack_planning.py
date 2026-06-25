@@ -13,7 +13,6 @@ from __future__ import annotations
 from packages.core.contracts import ArtifactKind
 from packages.core.contracts.artifacts import MaterialCandidate, MaterialPackArtifact
 from packages.core.workflow import NodeOutput
-from packages.media.annotation._material import is_video
 from packages.planning.material import (
     avoid_intervals,
     clip_is_lip_sync_usable,
@@ -91,9 +90,8 @@ def run(ctx: NodeContext) -> NodeOutput:
         repo, case_id=request.case_id, run_id=ctx.run.id, medium="font"
     )
 
-    # Unified visual bucket: legacy ``portrait`` / ``broll`` rows are accepted until
-    # the DB kind migration lands, but every visual asset is split per clip into
-    # A-roll (lip-sync-usable) vs B-roll (cover/backup) through one ranking path.
+    # Unified visual planning: every visual asset is split per clip into A-roll
+    # (lip-sync-usable) vs B-roll (cover/backup) through one ranking path.
     visual_assets = [asset for asset in assets if _eligible_visual(asset)]
     portrait_visual_assets = [
         asset
@@ -169,7 +167,6 @@ def run(ctx: NodeContext) -> NodeOutput:
         for asset in broll_visual_assets
         if (annotation := repo.annotation_v4_for_asset(asset.id)) is not None
     }
-    broll_asset_kinds = {asset.id: "video" for asset in broll_visual_assets}
     # Person-centric clips (presenter / talking-head / 出镜人物) that are not
     # lip-sync usable are kept OUT of the b-roll pool — they belong to neither A-roll
     # nor clean cover. Count them so a sparse/empty b-roll plan reads as "person
@@ -184,12 +181,10 @@ def run(ctx: NodeContext) -> NodeOutput:
     )
     broll_motion_excluded = _broll_motion_excluded_count(
         broll_annotations,
-        asset_kinds=broll_asset_kinds,
     )
     broll_candidates: list[MaterialCandidate] = []
     for candidate in rank_broll_candidates(
         annotations=broll_annotations,
-        asset_kinds=broll_asset_kinds,
         segments=segments,
         ledger_entries=broll_ledger,
         include_generic_coverage=broll_generic_coverage_enabled(request),
@@ -298,18 +293,16 @@ def _active_reserved_asset_ids(repo, *, case_id: str, run_id: str, medium: str) 
     }
 
 
-def _broll_motion_excluded_count(annotations, *, asset_kinds: dict[str, str]) -> int:
+def _broll_motion_excluded_count(annotations) -> int:
     excluded = 0
     for asset_id, annotation in annotations.items():
         bad_spans = avoid_intervals(annotation)
         if not bad_spans:
             continue
-        material_type = asset_kinds.get(asset_id) or annotation.meta.material_type
-        from_unified_video = is_video(material_type)
         for clip in annotation.clips:
             if clip.usage.role.value == "avoid":
                 continue
-            if from_unified_video and clip_is_lip_sync_usable(clip):
+            if clip_is_lip_sync_usable(clip):
                 continue
             if clip_shows_person(clip):
                 continue

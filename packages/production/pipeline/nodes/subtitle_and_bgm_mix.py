@@ -119,20 +119,36 @@ def run(ctx: NodeContext) -> NodeOutput:
             auto_mix = bool((bgm_plan or {}).get("auto_mix", state.request.bgm.auto_mix))
             bgm_source_start = _float_or_zero((bgm_plan or {}).get("source_start"))
             bgm_source_end = _float_or_none((bgm_plan or {}).get("source_end"))
-            mix_result = render_final_media(
-                rendered_path=ctx.artifact_path(rendered),
-                audio_path=ctx.artifact_path(audio),
-                output_path=output_path,
-                subtitle_path=subtitle_path,
-                bgm_path=bgm_path,
-                bgm_volume=float((bgm_plan or {}).get("volume", state.request.bgm.volume)),
-                duration=duration,
-                fps=fps,
-                fonts_dir=resolved_font.fonts_dir if resolved_font else None,
-                auto_mix=auto_mix,
-                bgm_source_start=bgm_source_start,
-                bgm_source_end=bgm_source_end,
-            )
+            render_kwargs = {
+                "rendered_path": ctx.artifact_path(rendered),
+                "audio_path": ctx.artifact_path(audio),
+                "output_path": output_path,
+                "subtitle_path": subtitle_path,
+                "bgm_path": bgm_path,
+                "bgm_volume": float((bgm_plan or {}).get("volume", state.request.bgm.volume)),
+                "duration": duration,
+                "fps": fps,
+                "fonts_dir": resolved_font.fonts_dir if resolved_font else None,
+                "auto_mix": auto_mix,
+                "bgm_source_start": bgm_source_start,
+                "bgm_source_end": bgm_source_end,
+            }
+            try:
+                mix_result = render_final_media(**render_kwargs)
+            except FfmpegCommandError as exc:
+                if subtitle_path is None or not _subtitle_filter_unavailable(exc):
+                    raise
+                degradations.append(
+                    degradation_notice(
+                        WarningCode.subtitle_burn_skipped,
+                        "当前 ffmpeg 缺少 subtitles/libass filter，已保留字幕文件但未烧录进视频。",
+                        node_id=ctx.node_run.node_id,
+                    )
+                )
+                warnings.append(WarningCode.subtitle_burn_skipped)
+                render_kwargs["subtitle_path"] = None
+                render_kwargs["fonts_dir"] = None
+                mix_result = render_final_media(**render_kwargs)
             # No silent fallback: when auto-mix wanted LUFS targeting but the
             # loudness probe failed, the mixer quietly used the requested volume.
             # Surface that so the user knows the auto-balance was not applied.
@@ -200,3 +216,11 @@ def _float_or_none(value) -> float | None:
         return max(0.0, float(value))
     except (TypeError, ValueError):
         return None
+
+
+def _subtitle_filter_unavailable(exc: FfmpegCommandError) -> bool:
+    stderr = exc.stderr or ""
+    command = " ".join(str(part) for part in exc.command)
+    return "subtitles" in command and (
+        "No such filter: 'subtitles'" in stderr or "Filter not found" in stderr
+    )

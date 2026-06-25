@@ -34,7 +34,7 @@ def test_media_import_with_uri_creates_uploaded_file_source_artifact():
             "case_id": "case_demo",
             "title": "Imported URI media",
             "kind": "broll",
-            "uri": "s3://cutagent-durable/legacy/case_demo/broll.mp4",
+            "uri": "s3://cutagent-durable/imports/case_demo/broll.mp4",
             "mime": "video/mp4",
             "sha256": "abc123",
             "duration_sec": 12.5,
@@ -71,7 +71,7 @@ def test_media_import_with_uri_is_idempotent_by_sha256_or_uri():
             "case_id": "case_demo",
             "title": "Imported URI media",
             "kind": "broll",
-            "uri": "s3://cutagent-durable/legacy/case_demo/reused.mp4",
+            "uri": "s3://cutagent-durable/imports/case_demo/reused.mp4",
             "mime": "video/mp4",
             "sha256": "dedupe-sha",
         }
@@ -104,22 +104,6 @@ def test_media_import_with_uri_is_idempotent_by_sha256_or_uri():
         assert len(matching_artifacts) == 1
 
 
-def test_media_import_without_uri_keeps_legacy_asset_only_behavior():
-    with TestClient(create_app()) as active_client:
-        login_admin(active_client)
-        repo = active_client.app.state.repository
-        artifact_count = len(repo.artifacts)
-
-        media_id = import_one(
-            active_client,
-            "media",
-            {"external_id": "media_no_uri", "case_id": "case_demo", "title": "Imported media", "kind": "broll"},
-        )
-
-        assert repo.media_assets[media_id].source_artifact_id is None
-        assert len(repo.artifacts) == artifact_count
-
-
 def test_fresh_import_accepts_all_spec_types():
     login = client.post(
         "/api/auth/login",
@@ -138,9 +122,12 @@ def test_fresh_import_accepts_all_spec_types():
         "provider_price",
     ]
     for import_type in import_types:
+        row = {"external_id": f"ext_{import_type}"}
+        if import_type == "media":
+            row["uri"] = "s3://cutagent-durable/import-smoke/media.mp4"
         response = client.post(
             "/api/import/batches",
-            json={"import_type": import_type, "rows": [{"external_id": f"ext_{import_type}"}]},
+            json={"import_type": import_type, "rows": [row]},
         )
         assert response.status_code == 202, response.text
         report = response.json()
@@ -170,7 +157,13 @@ def test_spec_20_2_13_imported_case_script_and_media_are_frontend_visible():
         media_id = import_one(
             active_client,
             "media",
-            {"external_id": "media_ext", "case_id": case_id, "title": "Imported media", "kind": "broll"},
+            {
+                "external_id": "media_ext",
+                "case_id": case_id,
+                "title": "Imported media",
+                "kind": "broll",
+                "uri": "s3://cutagent-durable/import-visible/media.mp4",
+            },
         )
 
         case_detail = active_client.get(f"/api/cases/{case_id}")
@@ -189,7 +182,13 @@ def test_spec_20_2_14_imported_media_can_rerun_annotation_open_editor_and_save_p
         media_id = import_one(
             active_client,
             "media",
-            {"external_id": "media_annotate", "case_id": "case_demo", "title": "Patch me", "kind": "broll"},
+            {
+                "external_id": "media_annotate",
+                "case_id": "case_demo",
+                "title": "Patch me",
+                "kind": "broll",
+                "uri": "s3://cutagent-durable/import-annotation/media.mp4",
+            },
         )
         rerun = active_client.post(f"/api/annotations/{media_id}/rerun", json={"force": True})
         assert rerun.status_code == 202, rerun.text

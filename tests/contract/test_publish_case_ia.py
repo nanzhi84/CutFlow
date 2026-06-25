@@ -19,13 +19,6 @@ def test_global_publish_center_navigation_is_removed() -> None:
     assert "routes.publishCenter()" not in overview_panel
 
 
-def test_legacy_publish_center_routes_redirect_to_case_selection() -> None:
-    app = _read("apps/web/src/App.tsx")
-
-    assert '<Route path={routePatterns.publishCenter} element={<Navigate to={routes.studio()} replace />} />' in app
-    assert '<Route path={routePatterns.publishCenterBatch} element={<Navigate to={routes.studio()} replace />} />' in app
-
-
 def test_case_publish_page_queries_batches_for_selected_case() -> None:
     publish_page = _read("apps/web/src/pages/publish/PublishCenterPage.tsx")
 

@@ -257,7 +257,7 @@ def _planner_narration_units(
     if parsed and has_boundary_signal:
         return parsed
 
-    # Older artifacts only carried text/start/end; rebuild boundary fields on resume.
+    # Artifacts without boundary fields are rebuilt on resume.
     spoken = [
         SpokenSegment(start=unit.start, end=unit.end, text=unit.text)
         for unit in parsed
@@ -279,7 +279,7 @@ def _portrait_window_candidates(ctx: NodeContext, items: list[dict], ledger) -> 
 
     MaterialPackPlanning now emits portrait candidates only from annotated lip-sync
     clips, so a candidate without ``clip_id`` / ``source_start`` / ``source_end`` is
-    invalid and is skipped instead of becoming a legacy whole-asset window.
+    invalid and is skipped.
 
     ``template_id`` stays the asset id so the planned segment maps back to the source
     artifact for the render node; ``window_id`` is per-clip so several clips of one

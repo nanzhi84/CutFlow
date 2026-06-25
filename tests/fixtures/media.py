@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import json
+import re
+import subprocess
+import tempfile
+from functools import lru_cache
 from pathlib import Path
 
-from packages.media.video.ffmpeg import FfmpegRunner, ffmpeg_bin
+import pytest
+
+from packages.media.video.ffmpeg import FfmpegRunner, ffmpeg_bin, ffprobe_bin
 
 
 class MediaFixtureFactory:
@@ -160,3 +167,85 @@ def generate_test_audio(
         ]
     )
     return path
+
+
+@lru_cache
+def ffmpeg_has_filter(name: str) -> bool:
+    result = subprocess.run(
+        [ffmpeg_bin(), "-hide_banner", "-filters"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    filters = f"{result.stdout}\n{result.stderr}"
+    return re.search(rf"^\s*[.A-Z|]+\s+{re.escape(name)}\s", filters, re.MULTILINE) is not None
+
+
+def require_ffmpeg_filters(*names: str) -> None:
+    missing = [name for name in names if not ffmpeg_has_filter(name)]
+    if missing:
+        pytest.skip(f"ffmpeg missing required filter(s): {', '.join(missing)}")
+
+
+@lru_cache
+def ffmpeg_writes_strict_bt709_tags() -> bool:
+    with tempfile.TemporaryDirectory(prefix="cutagent-ffmpeg-cap-") as directory:
+        output = Path(directory) / "bt709.mp4"
+        try:
+            FfmpegRunner().run(
+                [
+                    ffmpeg_bin(),
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=64x64:rate=5",
+                    "-t",
+                    "0.200",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-color_range",
+                    "tv",
+                    "-colorspace",
+                    "bt709",
+                    "-color_primaries",
+                    "bt709",
+                    "-color_trc",
+                    "bt709",
+                    "-movflags",
+                    "+faststart+write_colr",
+                    str(output),
+                ]
+            )
+            probe = FfmpegRunner().run(
+                [
+                    ffprobe_bin(),
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=color_space,color_transfer,color_primaries",
+                    "-of",
+                    "json",
+                    str(output),
+                ]
+            )
+            stream = (json.loads(probe.stdout).get("streams") or [{}])[0]
+        except Exception:
+            return False
+    return (
+        str(stream.get("color_space", "")).lower() == "bt709"
+        and str(stream.get("color_transfer", "")).lower() == "bt709"
+        and str(stream.get("color_primaries", "")).lower() == "bt709"
+    )
+
+
+def require_strict_bt709_tags() -> None:
+    if not ffmpeg_writes_strict_bt709_tags():
+        pytest.skip("ffmpeg does not preserve strict bt709 color tags")

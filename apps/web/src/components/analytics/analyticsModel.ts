@@ -44,23 +44,35 @@ function eventIdentity(event: YieldFunnelEvent) {
   return event.run_id || event.job_id || event.dedupe_key || event.id;
 }
 
-function normalizeWorkflowStatus(eventType: string) {
-  return eventType.startsWith("workflow_") ? eventType.slice("workflow_".length) : eventType;
-}
+const RUN_PROGRESS_EVENTS = new Set([
+  "submitted",
+  "admitted",
+  "started",
+  "node_started",
+  "node_succeeded",
+  "node_failed",
+  "finished_video_created",
+  "qc_failed",
+  "manual_rejected",
+  "publish_failed",
+  "published",
+]);
 
-function bucketWorkflowStatus(status: string): keyof OverviewStats | "other" {
-  if (status === "succeeded" || status === "completed") return "completed";
-  if (status === "failed" || status === "cancelled") return "failed";
-  if (status === "created" || status === "admitted" || status === "running" || status === "cancelling") {
+function bucketRunEvent(eventType: string): keyof OverviewStats | "other" {
+  if (eventType === "published" || eventType === "finished_video_created") return "completed";
+  if (eventType === "node_failed" || eventType === "qc_failed" || eventType === "manual_rejected" || eventType === "publish_failed") {
+    return "failed";
+  }
+  if (eventType === "submitted" || eventType === "admitted" || eventType === "started" || eventType === "node_started" || eventType === "node_succeeded") {
     return "processing";
   }
   return "other";
 }
 
-function latestWorkflowEvents(events: YieldFunnelEvent[]) {
+function latestRunEvents(events: YieldFunnelEvent[]) {
   const latestByRun = new Map<string, YieldFunnelEvent>();
   events
-    .filter((event) => event.event_type.startsWith("workflow_"))
+    .filter((event) => RUN_PROGRESS_EVENTS.has(event.event_type))
     .forEach((event) => {
       const key = eventIdentity(event);
       const current = latestByRun.get(key);
@@ -73,8 +85,8 @@ function latestWorkflowEvents(events: YieldFunnelEvent[]) {
 
 export function summarizeWorkflowStats(events: YieldFunnelEvent[]): OverviewStats {
   const stats: OverviewStats = { total: 0, processing: 0, completed: 0, failed: 0 };
-  latestWorkflowEvents(events).forEach((event) => {
-    const bucket = bucketWorkflowStatus(normalizeWorkflowStatus(event.event_type));
+  latestRunEvents(events).forEach((event) => {
+    const bucket = bucketRunEvent(event.event_type);
     if (bucket === "other") return;
     stats.total += 1;
     stats[bucket] += 1;
@@ -90,13 +102,11 @@ export function successRate(funnel?: YieldFunnelResponse, stats?: OverviewStats)
 
 export function buildFunnelSteps(funnel?: YieldFunnelResponse) {
   const events = funnel?.events ?? [];
-  const workflowTotal = latestWorkflowEvents(events).length;
-  const workflowSucceeded = events.filter((event) => event.event_type === "workflow_succeeded").length;
+  const workflowTotal = latestRunEvents(events).length;
   const finishedVideos = events.filter((event) => event.finished_video_id || event.event_type.includes("finished_video")).length;
   const publishAttempts = events.filter((event) => event.publish_attempt_id || event.event_type.includes("publish")).length;
   return [
     { key: "workflow", label: "工作流运行", value: workflowTotal },
-    { key: "succeeded", label: "成功完成", value: workflowSucceeded },
     { key: "finished", label: "成片产出", value: finishedVideos },
     { key: "published", label: "发布触达", value: publishAttempts },
   ];

@@ -14,7 +14,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from packages.core.contracts import AnnotationV4, SelectionLedgerEntry
-from packages.media.annotation._material import is_video
 from packages.planning.material._avoid import avoid_intervals, subtract_bad_spans
 from packages.planning.material.keywords import ScriptSegment
 from packages.planning.material.matching import BrollScene, best_match
@@ -71,8 +70,8 @@ def clip_shows_person(clip) -> bool:
     that are NOT lip-sync usable (multi-face, presenter wide shots) and would
     otherwise leak into b-roll. It looks only at clip *content* — subject type,
     an explicit face flag, multiple faces (>=2), or talking-head visual cues — and
-    deliberately ignores the ``recommended_for_lip_sync`` usage flag (a noisy
-    legacy-b-roll signal handled by the A-roll split). A single *incidental*
+    deliberately ignores the ``recommended_for_lip_sync`` usage flag (handled by
+    the A-roll split). A single *incidental*
     background face (``face_count_max == 1`` with no person subject) is NOT a
     person clip, so legitimate scene/product cover that merely catches one face in
     frame still qualifies as b-roll.
@@ -157,7 +156,6 @@ def _diversity_key(clip) -> str:
 def rank_broll_candidates(
     *,
     annotations: dict[str, AnnotationV4],
-    asset_kinds: dict[str, str] | None = None,
     segments: Sequence[ScriptSegment],
     ledger_entries: Sequence[SelectionLedgerEntry] = (),
     recency_cfg: RecencyConfig | None = None,
@@ -174,14 +172,11 @@ def rank_broll_candidates(
     seg_list = list(segments)
     candidates: list[BrollCandidate] = []
     for asset_id, annotation in annotations.items():
-        material_type = (asset_kinds or {}).get(asset_id) or annotation.meta.material_type
-        from_unified_video = is_video(material_type)
         bad_spans = avoid_intervals(annotation)
         for clip in annotation.clips:
-            # Unified-video B-roll must be person-free cover footage.
             if clip.usage.role.value == "avoid":
                 continue
-            if from_unified_video and clip_is_lip_sync_usable(clip):
+            if clip_is_lip_sync_usable(clip):
                 continue
             if clip_shows_person(clip):
                 continue

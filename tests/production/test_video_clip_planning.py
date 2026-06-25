@@ -367,41 +367,6 @@ def test_material_pack_excludes_presenter_clip_from_broll_and_reports_it(tmp_pat
     assert payload["diagnostics"]["broll_person_excluded"] == 1
 
 
-def test_material_pack_legacy_portrait_kind_uses_clip_level_unified_path(tmp_path, monkeypatch):
-    object_store = LocalObjectStore(tmp_path / "objects")
-    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    adapter = _adapter(object_store)
-    adapter.repository.media_assets.clear()
-    adapter.repository.annotations.clear()
-    _inject_video_asset(
-        adapter.repository,
-        "legacy_portrait",
-        [
-            _talk_clip("talk", 1.25, 7.5),  # A-roll
-            _cover_clip("cover", 7.5, 12.0, ["打磨", "工艺"]),  # B-roll, same asset
-        ],
-        kind="portrait",
-        annotation_material_type="portrait",
-    )
-
-    output = nodes.material_pack_planning.run(_ctx(adapter, _request(), "MaterialPackPlanning"))
-    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_material_pack)
-
-    portrait = payload["portrait_candidates"]
-    assert len(portrait) == 1
-    talk = portrait[0]
-    assert talk["asset_id"] == "legacy_portrait"
-    assert talk["metadata"]["clip_id"] == "talk"
-    assert talk["metadata"]["source_start"] == 1.25
-    assert talk["metadata"]["source_end"] == 7.5
-
-    broll_clip_ids = {(c["metadata"] or {}).get("clip_id") for c in payload["broll_candidates"]}
-    assert "cover" in broll_clip_ids
-    assert "talk" not in broll_clip_ids
-    assert payload["diagnostics"]["portrait_from_video"] == 1
-    assert payload["diagnostics"]["video_no_lipsync"] is False
-
-
 def test_material_pack_video_without_talking_head_flags_no_lipsync(tmp_path, monkeypatch):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)

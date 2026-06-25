@@ -47,6 +47,20 @@ def import_batch(payload: c.CreateImportBatchRequest, request: Request) -> c.Imp
             )
             continue
         internal_id = new_id(payload.import_type)
+        if payload.import_type == "media" and not _optional_str(row.get("uri")):
+            failed += 1
+            results.append(
+                c.ImportRowResult(
+                    row_index=index,
+                    status="failed",
+                    external_id=str(row.get("external_id")) if row.get("external_id") else None,
+                    error=c.NodeError(
+                        code=c.ErrorCode.validation_invalid_options,
+                        message="Media import row requires uri.",
+                    ),
+                )
+            )
+            continue
         if not payload.dry_run:
             if payload.import_type == "case":
                 case = c.CaseDetail(
@@ -70,43 +84,39 @@ def import_batch(payload: c.CreateImportBatchRequest, request: Request) -> c.Imp
                 kind = str(row.get("kind", "other"))
                 uri = _optional_str(row.get("uri"))
                 sha256 = _optional_str(row.get("sha256"))
-                if uri:
-                    existing_asset = _find_existing_imported_media_asset(
-                        request,
-                        case_id=case_id,
-                        kind=kind,
-                        sha256=sha256,
-                        uri=uri,
-                    )
-                    if existing_asset is not None:
-                        skipped += 1
-                        results.append(
-                            c.ImportRowResult(
-                                row_index=index,
-                                status="skipped",
-                                external_id=str(row.get("external_id")) if row.get("external_id") else None,
-                                internal_id=existing_asset.id,
-                            )
+                existing_asset = _find_existing_imported_media_asset(
+                    request,
+                    case_id=case_id,
+                    kind=kind,
+                    sha256=sha256,
+                    uri=uri,
+                )
+                if existing_asset is not None:
+                    skipped += 1
+                    results.append(
+                        c.ImportRowResult(
+                            row_index=index,
+                            status="skipped",
+                            external_id=str(row.get("external_id")) if row.get("external_id") else None,
+                            internal_id=existing_asset.id,
                         )
-                        continue
-                    artifact = _create_imported_media_source_artifact(
-                        request,
-                        row=row,
-                        case_id=case_id,
-                        title=title,
-                        kind=kind,
-                        uri=uri,
-                        sha256=sha256,
                     )
-                    source_artifact_id = artifact.id
-                else:
-                    source_artifact_id = None
+                    continue
+                artifact = _create_imported_media_source_artifact(
+                    request,
+                    row=row,
+                    case_id=case_id,
+                    title=title,
+                    kind=kind,
+                    uri=uri,
+                    sha256=sha256,
+                )
                 asset = c.MediaAssetRecord(
                     id=internal_id,
                     case_id=case_id,
                     title=title,
                     kind=kind,
-                    source_artifact_id=source_artifact_id,
+                    source_artifact_id=artifact.id,
                     annotation_status="pending",
                     thumbnail_url=_optional_str(row.get("thumbnail_uri"))
                     or _optional_str(row.get("thumbnail")),

@@ -9,13 +9,21 @@ const COLORS = {
 };
 
 const EVENT_LABELS: Record<string, string> = {
-  workflow_created: "已创建",
-  workflow_admitted: "已入队",
-  workflow_running: "运行中",
-  workflow_cancelling: "中断中",
-  workflow_succeeded: "已完成",
-  workflow_failed: "失败",
-  workflow_cancelled: "已取消",
+  submitted: "已提交",
+  admitted: "已入队",
+  started: "运行中",
+  node_started: "节点开始",
+  node_succeeded: "节点完成",
+  node_failed: "节点失败",
+  finished_video_created: "成片产出",
+  qc_started: "质检开始",
+  qc_passed: "质检通过",
+  qc_failed: "质检失败",
+  manual_approved: "人工通过",
+  manual_rejected: "人工拒绝",
+  publish_started: "发布开始",
+  published: "发布完成",
+  publish_failed: "发布失败",
 };
 
 function eventLabel(type: string) {

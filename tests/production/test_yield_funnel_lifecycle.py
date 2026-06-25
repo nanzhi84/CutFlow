@@ -26,7 +26,8 @@ from packages.core.contracts import (
 from packages.core.observability import FUNNEL_TAXONOMY
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.core.storage.repository import Repository
-from packages.production.pipeline.digital_human import LocalRuntimeAdapter, RunState
+from packages.production.pipeline._run_state import RunState
+from packages.production.pipeline.digital_human import LocalRuntimeAdapter
 
 
 def _adapter_with_run(status: RunStatus) -> tuple[LocalRuntimeAdapter, "object", "object"]:
@@ -76,7 +77,7 @@ def _request() -> DigitalHumanVideoRequest:
 def test_complete_run_does_not_emit_run_level_succeeded():
     adapter, run, _ = _adapter_with_run(RunStatus.running)
     adapter._complete_run(run.id)
-    # Run-level "succeeded" / legacy "workflow_succeeded" are NOT §9.5 stages.
+    # Run-level "succeeded" / "workflow_succeeded" are NOT §9.5 stages.
     types = _event_types(adapter.repository)
     assert "workflow_succeeded" not in types
     assert "succeeded" not in types

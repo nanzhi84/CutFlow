@@ -118,6 +118,7 @@ def test_warning_code_is_single_spec_enum_and_degradation_notice_shape():
         "lipsync.fallback_used",
         "bgm.loudness_probe_failed",
         "font.resolution_failed",
+        "subtitle.burn_skipped",
     }
     assert DegradationCode.font_default_used.value == "font.default_used"
 
@@ -139,5 +140,3 @@ def test_request_options_use_spec_field_names_without_escape_hatches():
 
     assert request.subtitle.style_preset == "douyin"
     assert request.bgm.bgm_id is None
-    with pytest.raises(ValidationError):
-        LipSyncOptions(options={"legacy": True})

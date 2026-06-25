@@ -5,8 +5,8 @@ _assemble) that had drifted apart (some keyed on the ``talk`` substring, one on 
 ``talking``/``talking_head`` set). A ``material_type`` string (the asset ``kind``)
 maps to exactly one of three classes:
 
-- ``portrait`` — dedicated talking-head footage (legacy upload kind).
-- ``broll``    — dedicated cutaway / scenery footage (legacy upload kind).
+- ``portrait`` — dedicated talking-head footage.
+- ``broll``    — dedicated cutaway / scenery footage.
 - ``video``    — the unified bucket: mixed footage whose clips are classified
                  per-clip (lip-sync portrait vs cover b-roll) by the annotator,
                  so the operator never pre-classifies A-roll vs B-roll at upload.
@@ -28,7 +28,7 @@ MaterialClass = Literal["portrait", "broll", "video"]
 
 # Unified video bucket markers (asset kind ``video`` + a few human synonyms).
 _VIDEO_TOKENS = ("video", "视频", "mixed", "混合")
-# Dedicated talking-head markers (legacy portrait kind).
+# Dedicated talking-head markers.
 _PORTRAIT_TOKENS = ("portrait", "口播", "talk")
 
 

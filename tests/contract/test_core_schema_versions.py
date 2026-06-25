@@ -43,20 +43,6 @@ def test_job_request_uses_schema_version_discriminator_and_spec_field_names():
     assert job.latest_finished_video_id is None
 
 
-def test_job_rejects_legacy_field_names():
-    with pytest.raises(ValidationError):
-        Job(
-            id="job_legacy",
-            type=JobType.digital_human_video,
-            case_id="case_demo",
-            status=JobStatus.draft,
-            created_by_user_id="usr_admin",
-            request_schema="digital_human_video_request.v1",
-            request=DigitalHumanVideoRequest(case_id="case_demo", script="hello"),
-            current_run_id=None,
-        )
-
-
 def test_workflow_run_uses_requested_by_retry_of_and_experiment_assignment():
     run = WorkflowRun(
         id="run_1",

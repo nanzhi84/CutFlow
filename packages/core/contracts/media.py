@@ -351,7 +351,7 @@ class AnnotationEditorVm(ContractModel):
     )
     def _serialize_canonical(self, value: Any) -> Any:
         # Serialize both union arms to a plain JSON dict. This keeps the wire shape
-        # identical to the legacy bare-dict contract and avoids the smart-union
+        # stable for minimal editor payloads and avoids the smart-union
         # serializer probing the dict arm for an AnnotationV4 instance (which emits
         # spurious PydanticSerializationUnexpectedValue warnings).
         #

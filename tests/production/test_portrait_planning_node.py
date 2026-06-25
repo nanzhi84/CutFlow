@@ -244,7 +244,7 @@ def test_unreadable_tts_audio_does_not_silently_disable_pause_detection(monkeypa
     assert exc.value.error.code == ErrorCode.artifact_missing
 
 
-def test_legacy_asr_narration_units_are_rehydrated_with_pause_boundaries():
+def test_asr_narration_units_are_rehydrated_with_pause_boundaries():
     from packages.production.pipeline.nodes import portrait_planning as pp
 
     units = pp._planner_narration_units(

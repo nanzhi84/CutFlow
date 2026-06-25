@@ -27,12 +27,6 @@ class PromptGroupSeed:
     content: str
 
 
-LEGACY_PROMPT_VARIABLE_HINTS: dict[str, tuple[str, ...]] = {
-    "prompt_creative_intent": ("script",),
-    "prompt_case_agent_script": ("brief", "memories"),
-    "prompt_vlm_annotation": ("asset_id", "asset_kind"),
-}
-
 # Default node bindings for seeded prompt-group templates that have a runtime
 # consumer in THIS codebase. Spec §10.1: production prompts must resolve through
 # the registry (via a binding), not be looked up/hardcoded in node code. Only seed
@@ -111,6 +105,4 @@ def _load_prompt_group_seeds() -> tuple[PromptGroupSeed, ...]:
 
 @lru_cache(maxsize=1)
 def _prompt_variable_hints_by_id() -> dict[str, tuple[str, ...]]:
-    hints = {seed.template_id: seed.variable_hints for seed in prompt_group_seeds()}
-    hints.update(LEGACY_PROMPT_VARIABLE_HINTS)
-    return hints
+    return {seed.template_id: seed.variable_hints for seed in prompt_group_seeds()}

@@ -184,7 +184,6 @@ class SqlAlchemyPublishingRepository(BaseRepository):
             session.flush()
             for package_id in payload.publish_package_ids:
                 defaults = PublishDefaults.model_validate(packages[package_id].platform_defaults)
-                default_tags = defaults.tags or defaults.hashtags
                 for platform in payload.platform_targets:
                     session.add(
                         PublishBatchItemRow(
@@ -196,7 +195,7 @@ class SqlAlchemyPublishingRepository(BaseRepository):
                             description=defaults.description,
                             selected=True,
                             status="uploaded",
-                            tags=list(default_tags),
+                            tags=list(defaults.tags),
                             location=defaults.location,
                             account_group=defaults.account_group,
                             scheduled_at=defaults.scheduled_at,

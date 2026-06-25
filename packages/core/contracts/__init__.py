@@ -8,10 +8,6 @@ keeps working unchanged. ``__all__`` is the authoritative public surface.
 
 from __future__ import annotations
 
-# Re-exported for backward compatibility: a few call sites reach Decimal via
-# ``packages.core.contracts.Decimal`` (e.g. apps/api/services/ops.py, providers.py).
-from decimal import Decimal
-
 from .base import (
     T,
     utcnow,

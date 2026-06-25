@@ -14,7 +14,7 @@
 - `contracts/state_machines.py` — 各域 `*_TRANSITIONS` 表 + `assert_transition(kind, from, to)`。
 - `config/settings.py` — `build_settings()`/`Settings`（按域分组，frozen）、`sandbox_fallback_allowed()`；`CUTAGENT_*` env 在调用时读取，无模块级单例。
 - `storage/database.py` / `repository.py` / `bootstrap.py` — ORM 后端 / 内存后端 / 按 `storage.backend`(memory|sqlalchemy|postgres) 选型。
-- `storage/alembic/versions/` — 0001..0021（单一 head `0021_voice_vendor_status`），仓库内**唯一**的 Alembic 迁移目录。
+- `storage/alembic/versions/` — 0001..0022（单一 head `0022_drop_publish_hashtags`），仓库内**唯一**的 Alembic 迁移目录。
 - `storage/seed.py` / `seed_media.py` / `provider_seed.py` — 用户/注册码、媒体、provider 配置 seed。
 - `storage/secret_store.py` — `SecretStore` 协议 + `LocalSecretStore`；自 `0017` 起做 **Fernet 信封加密**（`envelope_prefix = "fernet:v1:"`，key 来源 `CUTAGENT_SECRET_ENCRYPTION_KEY`，缺省落盘 `.db_encryption_key`），密钥不入 env/Settings。
 - `storage/` 其余基建：对象存储 `object_store.py` / `tiered_object_store.py`；SQLAlchemy 后端实现 `sqlalchemy_secrets.py` / `sqlalchemy_uploads.py` / `sqlalchemy_idempotency.py`；`selection_ledger.py`（选材账本，确定性近期降权）、`row_mapper.py`（ORM 行 ↔ 契约映射）。
@@ -28,7 +28,7 @@
 - `ContractModel` 设 `extra="forbid"`，未声明字段会报错；新契约务必继承它并在 `__init__.py` 同步导出。
 - 状态变更一律走 `assert_transition()`，禁止绕过状态机直接改 status。
 - 密钥只存 `SecretStore`/`ProviderProfile`，**永不**进 env 或 `Settings`（settings 仅放 infra/policy）。
-- 所有 Alembic revision 只能放在 `storage/alembic/versions/`，保持单一 head（当前 `0021`）；链中存在过 merge revision（`0014` 合并两支）。
+- 所有 Alembic revision 只能放在 `storage/alembic/versions/`，保持单一 head（当前 `0022`）；链中存在过 merge revision（`0014` 合并两支）。
 - 配置经 `build_settings()` 取快照（frozen、调用时读 env），勿引入缓存单例。
 
 ## 测试

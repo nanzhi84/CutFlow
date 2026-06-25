@@ -1328,6 +1328,16 @@ class SqlAlchemyProductionRepository(BaseRepository):
                 internal_id = new_id(payload.import_type)
                 row_status = "created"
                 result_internal_id = internal_id
+                if payload.import_type == "media" and not _optional_str(row.get("uri")):
+                    failed += 1
+                    results.append(
+                        self._failed_row(
+                            index,
+                            "Media import row requires uri.",
+                            external_id=str(row.get("external_id")) if row.get("external_id") else None,
+                        )
+                    )
+                    continue
                 if not payload.dry_run:
                     try:
                         row_status, result_internal_id = self._create_import_row(
@@ -1426,35 +1436,32 @@ class SqlAlchemyProductionRepository(BaseRepository):
             kind = str(row.get("kind", "other"))
             uri = _optional_str(row.get("uri"))
             sha256 = _optional_str(row.get("sha256"))
-            source_artifact_id = _optional_str(row.get("source_artifact_id"))
-            if uri and source_artifact_id is None:
-                existing_asset = self._find_existing_imported_media_asset(
-                    session,
-                    case_id=case_id,
-                    kind=kind,
-                    sha256=sha256,
-                    uri=uri,
-                )
-                if existing_asset is not None:
-                    return "skipped", existing_asset.id
-                artifact = self._create_imported_media_source_artifact(
-                    row=row,
-                    case_id=case_id,
-                    title=title,
-                    kind=kind,
-                    uri=uri,
-                    sha256=sha256,
-                )
-                session.add(artifact)
-                session.flush()
-                source_artifact_id = artifact.id
+            existing_asset = self._find_existing_imported_media_asset(
+                session,
+                case_id=case_id,
+                kind=kind,
+                sha256=sha256,
+                uri=uri,
+            )
+            if existing_asset is not None:
+                return "skipped", existing_asset.id
+            artifact = self._create_imported_media_source_artifact(
+                row=row,
+                case_id=case_id,
+                title=title,
+                kind=kind,
+                uri=uri,
+                sha256=sha256,
+            )
+            session.add(artifact)
+            session.flush()
             session.add(
                 MediaAssetRow(
                     id=internal_id,
                     case_id=case_id,
                     title=title,
                     kind=kind,
-                    source_artifact_id=source_artifact_id,
+                    source_artifact_id=artifact.id,
                     tags=[str(item) for item in tags] if isinstance(tags, list) else [],
                     annotation_status=str(row.get("annotation_status", "pending")),
                     usable=bool(row.get("usable", True)),

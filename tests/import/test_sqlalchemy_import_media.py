@@ -50,7 +50,7 @@ def test_sqlalchemy_media_import_with_uri_creates_uploaded_file_source_artifact(
         "case_id": "case_demo",
         "title": "Imported URI media",
         "kind": "broll",
-        "uri": "s3://cutagent-durable/legacy/case_demo/broll.mp4",
+        "uri": "s3://cutagent-durable/imports/case_demo/broll.mp4",
         "mime": "video/mp4",
         "sha256": "abc123",
         "duration_sec": 12.5,
@@ -96,7 +96,7 @@ def test_sqlalchemy_media_import_with_uri_is_idempotent_by_sha256():
         "case_id": "case_demo",
         "title": "Imported URI media",
         "kind": "broll",
-        "uri": "s3://cutagent-durable/legacy/case_demo/reused.mp4",
+        "uri": "s3://cutagent-durable/imports/case_demo/reused.mp4",
         "mime": "video/mp4",
         "sha256": "dedupe-sha",
     }
@@ -147,7 +147,7 @@ def test_sqlalchemy_media_import_with_uri_is_idempotent_by_uri_when_sha256_missi
         "case_id": "case_demo",
         "title": "Imported URI media without sha",
         "kind": "broll",
-        "uri": "s3://cutagent-durable/legacy/case_demo/no-sha.mp4",
+        "uri": "s3://cutagent-durable/imports/case_demo/no-sha.mp4",
         "mime": "video/mp4",
     }
 
@@ -186,31 +186,3 @@ def test_sqlalchemy_media_import_with_uri_is_idempotent_by_uri_when_sha256_missi
         )
     assert len(assets) == 1
     assert len(artifacts) == 1
-
-
-def test_sqlalchemy_media_import_without_uri_keeps_legacy_asset_only_behavior():
-    repository, session_factory = _repository_with_sqlite()
-
-    report = repository.create_import_batch(
-        CreateImportBatchRequest(
-            import_type="media",
-            rows=[
-                {
-                    "external_id": "media_no_uri",
-                    "case_id": "case_demo",
-                    "title": "Imported media",
-                    "kind": "broll",
-                }
-            ],
-        ),
-        request_id="req_sql_import_media_no_uri",
-    )
-
-    assert report is not None
-    assert report.created_count == 1
-    assert report.skipped_count == 0
-    with session_factory() as session:
-        asset = session.get(MediaAssetRow, report.results[0].internal_id)
-        assert asset is not None
-        assert asset.source_artifact_id is None
-        assert list(session.scalars(select(ArtifactRow))) == []

@@ -12601,7 +12601,8 @@
           "cover.frame_fallback",
           "lipsync.fallback_used",
           "bgm.loudness_probe_failed",
-          "font.resolution_failed"
+          "font.resolution_failed",
+          "subtitle.burn_skipped"
         ],
         "title": "DegradationCode"
       },
@@ -20352,13 +20353,6 @@
             "title": "Description",
             "default": ""
           },
-          "hashtags": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Hashtags"
-          },
           "mode": {
             "type": "string",
             "enum": [
@@ -23754,7 +23748,8 @@
           "budget.exceeded",
           "lipsync.fallback_used",
           "bgm.loudness_probe_failed",
-          "font.resolution_failed"
+          "font.resolution_failed",
+          "subtitle.burn_skipped"
         ],
         "title": "WarningCode"
       },
