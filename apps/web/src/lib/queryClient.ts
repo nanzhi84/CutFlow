@@ -1,6 +1,6 @@
 import { MutationCache, QueryCache, QueryClient } from "@tanstack/react-query";
 import { isApiError } from "../api/client";
-import { notifyError } from "../components/Toast";
+import { notifyError } from "../components/ui/Toast";
 
 function shouldToast(error: unknown) {
   return isApiError(error) && error.status !== 401;

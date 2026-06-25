@@ -3,7 +3,7 @@ import { Copy, Loader2, RefreshCw, Save, Ticket } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, type RegistrationCodePreview, type AuthUser } from "../../api/client";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
-import { useToast } from "../Toast";
+import { useToast } from "../ui/Toast";
 import { codeStatusLabel, codeStatusOptions, displayTime, fromDateTimeLocal, roleOptions, toDateTimeLocal } from "./accountModel";
 
 type CodeDraft = {

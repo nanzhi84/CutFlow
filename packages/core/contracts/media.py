@@ -112,6 +112,7 @@ class MediaAssetRecord(EntityMeta):
 
 
 SelectionMedium = Literal["portrait", "broll", "bgm", "font"]
+CASE_MATERIAL_ASSET_KINDS = frozenset({"portrait", "broll", "video", "bgm", "font"})
 
 
 class SelectionLedgerEntry(ContractModel):

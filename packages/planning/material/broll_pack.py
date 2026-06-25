@@ -18,6 +18,7 @@ from packages.planning.material._avoid import avoid_intervals, subtract_bad_span
 from packages.planning.material.keywords import ScriptSegment
 from packages.planning.material.matching import BrollScene, best_match
 from packages.planning.material.portrait_pack import clip_is_lip_sync_usable
+from packages.planning.material.subject_terms import PERSON_SUBJECT_TERMS
 from packages.planning.selection.recency import RecencyConfig, recency_penalty_for
 
 # Score weights (ported from the origin base_score formula, normalized to the
@@ -34,31 +35,6 @@ _RECENCY_WEIGHT = 12.0
 # alone never makes an unrelated clip relevant.
 _MIN_SIMILARITY = 0.05
 _MIN_CLEAN_SPAN_SEC = 1.0
-
-# Subject-type surface forms that mark a clip as person-centric (a presenter /
-# talking-head / 出镜人物). Substring match against ``ClipSemanticsV4.subject_type``.
-_PERSON_SUBJECT_TERMS = (
-    "presenter",
-    "salesperson",
-    "spokes",
-    "host",
-    "anchor",
-    "streamer",
-    "influencer",
-    "person",
-    "people",
-    "human",
-    "speaker",
-    "主播",
-    "真人",
-    "导购",
-    "模特",
-    "口播",
-    "出镜",
-    "人物",
-    "讲解",
-)
-
 
 def clip_shows_person(clip) -> bool:
     """Whether a clip features a real person as its subject — a presenter /
@@ -78,7 +54,7 @@ def clip_shows_person(clip) -> bool:
     """
     sem = clip.semantics
     subject = (sem.subject_type or "").lower()
-    if any(term in subject for term in _PERSON_SUBJECT_TERMS):
+    if any(term in subject for term in PERSON_SUBJECT_TERMS):
         return True
     if sem.contains_face is True:
         return True

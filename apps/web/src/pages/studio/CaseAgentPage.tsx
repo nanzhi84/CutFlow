@@ -3,10 +3,10 @@ import { CheckCircle2, Loader2, XCircle } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { api } from "../../api/client";
 import { caseRubricApi, type ScorePrediction } from "../../api/r6";
-import { EmptyState, ErrorState, LoadingState } from "../../components/State";
+import { EmptyState, ErrorState, LoadingState } from "../../components/ui/State";
 import { StudioTabs } from "../../components/StudioTabs";
 import { TimeText } from "../../components/TimeText";
-import { useToast } from "../../components/Toast";
+import { useToast } from "../../components/ui/Toast";
 
 export type AdoptedAgentScriptState = {
   adoptedAgentScript?: {

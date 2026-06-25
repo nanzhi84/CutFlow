@@ -33,7 +33,7 @@
 
 ## 施工纪律（验收官口径）
 
-- 每个 milestone 一个 worktree 分支（`.claude/worktrees/<slug>`，`feat/<slug>`），Codex 执行，Claude 验收后合 main。
+- 每个 milestone 一个 worktree 分支（Codex 任务用 `.codex/worktrees/<id>/<repo>`；Claude 验收/协作任务用 `.claude/worktrees/<slug>`；分支如 `feat/<slug>`），Codex 执行，Claude 验收后合 main。
 - 验收 = 测试绿 + 对照简报逐条核销 + 抽查代码语义（不信"端点存在"，只信"语义为真"）。
 - 禁止：为让测试绿而放宽契约；新增 module 级单例；在 API handler 里做重活；裸 dict 当业务契约。
 - 任何 spec 冲突或不明确之处，记入 `docs/spec-questions.md`，由架构师裁决后写回 spec 或本文件，不口头协商。

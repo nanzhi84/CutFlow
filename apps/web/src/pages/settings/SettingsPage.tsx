@@ -3,9 +3,9 @@ import { CheckCircle2, FlaskConical, KeyRound, Plus, RotateCw, ShieldAlert, Togg
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, createIdempotencyKey, type ProviderProfile, type SecretPreview } from "../../api/client";
-import { EmptyState, ErrorState, LoadingState } from "../../components/State";
-import { Modal } from "../../components/Modal";
-import { StatusPill } from "../../components/Status";
+import { EmptyState, ErrorState, LoadingState } from "../../components/ui/State";
+import { Modal } from "../../components/ui/Modal";
+import { StatusPill } from "../../components/ui/StatusPill";
 import { useAuth } from "../auth/AuthContext";
 import { labelForStatus } from "../../lib/status";
 
@@ -672,7 +672,7 @@ export default function SettingsPage() {
       ) : null}
 
       {secretOp ? (
-        <Modal title={secretOp.mode === "rotate" ? "轮换密钥" : "禁用密钥"} onClose={() => setSecretOp(null)}>
+        <Modal isOpen title={secretOp.mode === "rotate" ? "轮换密钥" : "禁用密钥"} onClose={() => setSecretOp(null)}>
           <form
             className="formGrid"
             onSubmit={(event) => {

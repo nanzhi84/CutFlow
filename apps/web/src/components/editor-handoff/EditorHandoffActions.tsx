@@ -3,7 +3,7 @@ import { Download, Loader2, Scissors } from "lucide-react";
 import { useEffect, useState } from "react";
 import { editorHandoffApi, type JianyingDraftResult } from "../../api/r6";
 import { toDisplayUrl } from "../../lib/url";
-import { useToast } from "../Toast";
+import { useToast } from "../ui/Toast";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 
 type Props = {

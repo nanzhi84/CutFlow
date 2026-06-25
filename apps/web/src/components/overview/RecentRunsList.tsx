@@ -1,7 +1,7 @@
 import { ArrowRight, PlayCircle } from "lucide-react";
 import { Link } from "react-router-dom";
 import type { RunCard } from "../../api/client";
-import { StatusPill } from "../Status";
+import { StatusPill } from "../ui/StatusPill";
 import { TimeText } from "../TimeText";
 import { Skeleton } from "../ui/Skeleton";
 import { EmptyState } from "../ui/State";

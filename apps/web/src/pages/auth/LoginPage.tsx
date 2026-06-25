@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { KeyRound, Loader2 } from "lucide-react";
-import { ErrorState } from "../../components/State";
+import { ErrorState } from "../../components/ui/State";
 import { useAuth } from "./AuthContext";
 import { routes } from "../../routes";
 

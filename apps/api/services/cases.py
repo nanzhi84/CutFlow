@@ -11,6 +11,7 @@ from apps.api.common import (
     request_id,
 )
 from packages.core import contracts as c
+from packages.core.contracts import CASE_MATERIAL_ASSET_KINDS as MATERIAL_ASSET_KINDS
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 
@@ -20,10 +21,6 @@ ACTIVE_RUN_STATUSES = {
     c.RunStatus.running,
     c.RunStatus.cancelling,
 }
-# Media-asset kinds that count toward a case's reusable material library (mirrors
-# MATERIAL_ASSET_KINDS in the SQLAlchemy repository).
-MATERIAL_ASSET_KINDS = {"portrait", "broll", "video", "bgm", "font"}
-
 def list_cases(
     request: Request,
     limit: int = 50,

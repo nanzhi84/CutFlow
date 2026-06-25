@@ -1,8 +1,8 @@
 import { Loader2, Plus } from "lucide-react";
 import { useState } from "react";
 import type { CreateCaseRequest, PatchCaseRequest } from "../../api/client";
-import { Modal } from "../Modal";
-import { ErrorState } from "../State";
+import { Modal } from "../ui/Modal";
+import { ErrorState } from "../ui/State";
 
 // List profile fields are edited as one-per-line text. Newlines and commas both split.
 export function parseList(value: string): string[] {
@@ -88,7 +88,7 @@ export function CaseModal({
   }
 
   return (
-    <Modal title="新建案例" onClose={onClose} size="md">
+    <Modal isOpen title="新建案例" onClose={onClose} size="md">
       <form className="formGrid" onSubmit={handleSubmit}>
         <p className="text-sm text-text-secondary">
           先填一个名称建草稿，创建后进入「案例画像」补全行业、卖点与人设等信息。

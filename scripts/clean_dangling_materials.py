@@ -96,12 +96,14 @@ def main() -> int:
             log(f"  DANGLING {kind:14} {str(title)[:32]:32} -> {ref.split('//',1)[-1][:56]}")
     log(f"checked {checked} OSS-backed assets; dangling={len(dangling)}")
     if not dangling:
-        log("nothing to clean."); return 0
+        log("nothing to clean.")
+        return 0
 
     frac = len(dangling) / max(checked, 1)
     if args.apply and frac > MAX_DANGLING_FRACTION:
         log(f"ABORT: {frac:.0%} of assets flagged dangling (> {MAX_DANGLING_FRACTION:.0%}) — "
-            f"refusing to mass-delete; check OSS credentials/region/endpoint."); return 1
+            f"refusing to mass-delete; check OSS credentials/region/endpoint.")
+        return 1
 
     if args.apply:
         cur.execute("DELETE FROM annotations WHERE asset_id = ANY(%s)", (dangling,))

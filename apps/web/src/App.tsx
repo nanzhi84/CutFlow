@@ -2,7 +2,7 @@ import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes, useParams } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { RequireAuth } from "./components/RequireAuth";
-import { LoadingState } from "./components/State";
+import { LoadingState } from "./components/ui/State";
 import LoginPage from "./pages/auth/LoginPage";
 import { routePatterns, routes } from "./routes";
 
