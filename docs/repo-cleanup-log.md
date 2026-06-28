@@ -335,7 +335,36 @@ Evidence:
 - Settings/env comparison found `.env.example` gaps, and a broader `settings.py` scan surfaced undocumented live groups.
 - `tests/contract/test_settings_config.py` claimed to clear every Settings env var but omitted multiple groups before this pass.
 - Full high-confidence vulture scan now exits cleanly with no dead Python symbol output.
-- `npx knip --reporter compact` still reports `package.json: python`; this is intentionally retained because `apps/web/CLAUDE.md` documents `npm run export:openapi` as the frontend contract-regeneration entrypoint.
+- `npx knip --reporter compact` still reported `package.json: python` at this point; a later blind-spot pass proved the documented `npm run export:openapi` entrypoint was broken on this host and fixed it in Batch 10.
+
+### Batch 10: Frontend OpenAPI export entrypoint hardening
+
+Files changed:
+
+- `AGENTS.md`
+- `CLAUDE.md`
+- `README.md`
+- `apps/api/CLAUDE.md`
+- `apps/web/CLAUDE.md`
+- `apps/web/package.json`
+- `scripts/export_openapi.py`
+- `docs/repo-cleanup-log.md`
+- `docs/repo-cleanup-inventory.md`
+- `docs/repo-cleanup-pr.md`
+
+Changes:
+
+- Replaced the frontend `export:openapi` package script's bare `python` invocation with `uv run --extra dev python`, matching the repo's validation path.
+- Made `scripts/export_openapi.py` clear local proxy env before importing the app so OpenAPI schema generation is not affected by host SOCKS proxy settings.
+- Added a narrow Knip config for the frontend workspace to ignore the repository-level `uv` binary rather than treating it as an npm dependency.
+- Updated live entrypoint docs to use the working OpenAPI export command and fixed README prose that referred to `ci_gate.sh` without the `scripts/` prefix.
+
+Evidence:
+
+- `npm run export:openapi` failed before this batch with `sh: python: command not found`.
+- After switching to `uv`, the same script still failed when local proxy env made `httpx` initialize SOCKS support during app import.
+- Clearing proxy env inside `scripts/export_openapi.py` made `npm run export:openapi` pass in the same shell without manual `env -u ...` wrapping.
+- Full and production Knip scans are clean after adding the narrow `uv` binary ignore.
 
 ## Validation Log
 
@@ -432,6 +461,19 @@ After Batch 9:
 | Python import graph scan | pass | No new zero-inbound source modules; only external/manual scripts remain as expected. |
 | `npx --yes jscpd apps packages scripts --min-lines 20 --min-tokens 120 ...` | pass | Runtime source scan analyzed `372` files and still reported zero clones. |
 
+After Batch 10:
+
+| Command | Result | Notes |
+| --- | --- | --- |
+| `npm run export:openapi` from `apps/web` | pass | Frontend package script now exports OpenAPI through `uv run --extra dev python` and succeeds despite inherited local proxy env. |
+| `npm run export:openapi && git diff --exit-code -- src/api/openapi.json` from `apps/web` | pass | Export script produced no OpenAPI drift. |
+| `cd apps/web && npx --yes knip --reporter compact` | pass | Full frontend Knip scan is clean after replacing the broken `python` script entry and narrowly ignoring repo-level `uv`. |
+| `cd apps/web && npx --yes knip --production --reporter compact` | pass | Production frontend Knip scan remains clean. |
+| `.env.example` reverse reference scan | pass | No sample `CUTAGENT_*` variables exist only in `.env.example`. |
+| `uvx --from deptry deptry ...` | reviewed findings | No accepted dependency removal: findings were package/module-name mapping noise, dev tools, FastAPI runtime multipart dependency, transitive `botocore`, and optional `fontTools` fallback. |
+| `uvx --from vulture vulture apps packages scripts tests --min-confidence 80 ...` | pass | Lower-confidence dead-symbol scan returned no output. |
+| tracked build-artifact scan | pass | No tracked build/cache artifacts found. |
+
 Final validation:
 
 | Command | Result | Notes |
@@ -441,10 +483,13 @@ Final validation:
 | `env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy uv run --extra dev python -m pytest -q` | pass | Full default suite passed. |
 | `env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy uv run --extra dev python -m pytest -q` | pass | Re-run after Batch 8 and the frontend probe correction; full default suite passed again. |
 | `env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy uv run --extra dev python scripts/export_openapi.py` | pass | OpenAPI export succeeded after clearing local proxy env. |
+| `npm run export:openapi` from `apps/web` | pass | Re-run after Batch 10; package script succeeds without manual proxy env clearing. |
 | `npm run generate:api` | pass | Generated TypeScript schema. |
 | `git diff --exit-code apps/web/src/api/openapi.json apps/web/src/api/schema.d.ts` | pass | No generated API drift. |
 | `npm run build` | pass | Frontend production build passed. |
+| `cd apps/web && npx --yes knip --reporter compact` | pass | Full frontend Knip scan clean after Batch 10. |
 | `cd apps/web && npx --yes knip --production --reporter compact && npx tsc -p tsconfig.json --noEmit --noUnusedLocals --noUnusedParameters && npm run build` | pass | Re-run after Batch 8; no production-unused frontend exports remain. |
+| `env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy uv run --extra dev python -m pytest -q` | pass | Re-run after Batch 10; full default suite passed. |
 | `scripts/ci_gate.sh` with `PYTHON_BIN=.venv/bin/python` | environment failure | macOS environment lacks GNU `timeout`/`gtimeout`; script failed before tests at line 26. Equivalent subcommands below were run manually. |
 | `CUTAGENT_RUN_DB_TESTS=1 CUTAGENT_STORAGE_BACKEND=sqlalchemy CUTAGENT_DATABASE_URL=postgresql+psycopg://cutagent:cutagent@localhost:55432/cutagent .venv/bin/python scripts/bootstrap_database.py` | pass | Existing local dev DB migrated to 0022 but inserted 0 seed rows; not used for final integration verdict because it was not a clean CI DB. |
 | Same integration command against existing local dev DB | environment failure | Failed on admin login because the existing local DB had non-CI auth state; classified as dirty local data, not a code regression. |
@@ -467,6 +512,9 @@ Final validation:
 - Command error during Batch 9 lint validation: an attempted `ruff check .env.example ...` treated `.env.example` as Python; corrected by linting Python files and shell-sourcing `.env.example`.
 - Environment failure during Batch 9 touched-test validation: inherited local SOCKS proxy env caused an `httpx`/`socksio` import error; rerun with proxy vars unset passed.
 - Command error during final Batch 9 rescan: bare `python` is not present in this shell and an initial `jscpd --pattern` invocation matched zero files. Re-ran via `uv run --extra dev python` and with explicit `jscpd apps packages scripts` path arguments; both corrected commands passed.
+- Introduced discovery during Batch 10: the previously retained `npm run export:openapi` entrypoint was actually broken on this host due missing bare `python`, then due inherited SOCKS proxy env. Fixed by using `uv run --extra dev python` and clearing proxy env inside the export script.
+- Command error during Batch 10 stale-reference search: a shell command included unescaped backticks, so zsh attempted command substitution and scanned noisy output. Re-run with single-quoted patterns was used for the actual `ci_gate.sh` check.
+- Reviewed deptry findings during Batch 10: no dependency was removed because reported issues were package/module aliasing (`argon2`, `cv2`), expected runtime/tool dependencies (`python-multipart`, `pytest`, `ruff`), transitive `botocore`, or explicitly optional `fontTools`.
 - Environment failure during final OpenAPI validation: first export inherited local SOCKS proxy env and failed in `httpx`; rerun with proxy vars unset passed.
 - Environment failure during full `scripts/ci_gate.sh`: local macOS lacks `timeout`; manual equivalent subcommands were run and recorded above.
 - Environment failure during DB integration on the existing dev DB: local auth seed state was dirty (`admin@local.cutagent` login 401); clean temporary DB integration passed.
@@ -481,18 +529,20 @@ Final validation:
 - Round 3: completed after Batch 8. Old frontend wrapper/typecheck/private-mapper references had no matches, `knip --production` was clean, tracked build-artifact scan had no matches, and low-threshold runtime `jscpd` found zero clones after excluding docs/tests/generated/migrations/README.
 - Round 4: repeated the same post-Batch-8 discovery set. It again found no old references, no frontend production-unused exports, no tracked build artifacts, and zero low-threshold runtime source clones.
 - Round 5: completed after Batch 9. Full high-confidence vulture scan found no dead Python symbols/variables, Settings/env coverage scan found no `.env.example` gaps, Python import graph found no new source-module islands, tracked build-artifact scan had no matches, and low-threshold runtime `jscpd` still found zero clones.
+- Round 6: completed after Batch 10. Full/prod frontend Knip scans were clean, vulture at confidence 80 returned no output, `.env.example` reverse scan found no orphan sample variables, tracked build-artifact scan had no matches, and low-threshold runtime `jscpd` reported zero clones across `373` files.
+- Round 7: repeated the post-Batch-10 set. It again found clean full/prod Knip, no vulture output, no orphan sample env vars, no tracked build/cache artifacts, and zero runtime clones.
 
 ## Adversarial Self Review
 
 - Rechecked all deleted frontend wrapper imports; only canonical same-directory `components/ui/ConfirmDialog.tsx -> ./Modal` remains.
 - Rechecked generated API files after export/generate; no drift.
 - Rechecked that no tracked build/cache artifacts are present.
-- Kept `apps/web/package.json`'s `export:openapi` script despite `knip` reporting the `python` binary as unlisted, because it is the documented frontend contract-regeneration entrypoint.
+- Rechecked `apps/web/package.json`'s `export:openapi` script after proving the old bare-`python` command unsafe; the package script now runs successfully and Knip is clean.
 - Kept migrations, generated clients, Temporal registration, provider registries, seed scripts, fixtures, manual DB/OSS scripts, and external deployment hooks untouched unless there was direct evidence.
 
 ## Final Rescan
 
-- Final rescan completed after full validation, after Batch 8, and again after Batch 9. Two consecutive post-Batch-8 discovery rounds plus the Batch 9 blind-spot scan found no new high-confidence runtime cleanup candidates.
+- Final rescan completed after full validation, after Batch 8, after Batch 9, and through two consecutive post-Batch-10 discovery rounds with no new high-confidence cleanup candidates.
 
 ## Remaining Risks
 

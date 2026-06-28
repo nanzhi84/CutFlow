@@ -75,7 +75,10 @@ No accepted candidates yet.
 - `README.md`: `scripts/dev_up.sh up` example claimed web default `5176`; actual script default is `8001`.
 - `README.md`: storage backend list omitted `postgres`, which `packages/core/storage/bootstrap.py` accepts as a SQLAlchemy backend alias.
 - `README.md`: DB/Temporal test env examples repeated the full manual setup block; test section now references the manual SQLAlchemy/Temporal/MinIO env and only adds the opt-in test switches.
+- `README.md`: contract regeneration used a bare `python scripts/export_openapi.py` command that fails on this host; updated the live command to `uv run --extra dev python scripts/export_openapi.py`.
+- `README.md`: prose referred to `ci_gate.sh` without the `scripts/` prefix even though the root file does not exist.
 - `apps/web/CLAUDE.md`: referenced stale `src/contracts/*.typecheck.ts` frontend probe files after those probes were removed.
+- `AGENTS.md`, `CLAUDE.md`, `apps/api/CLAUDE.md`, `apps/web/CLAUDE.md`: live contract-regeneration guidance now points at the working `uv run --extra dev python scripts/export_openapi.py` path.
 - `docs/ROADMAP.md`: current milestone discipline assigned Codex worktrees to `.claude/worktrees`; current Codex desktop worktrees use `.codex/worktrees/<id>/<repo>`.
 - `.env.example`: preamble said every variable maps to `Settings`; render/ephemeral debug switches are valid but read directly by their runtime consumers.
 - `.env.example`: missed live `Settings` env groups including DB pool, auth limiter/cookie policy, provider host policy, publishing CDP endpoint, upload, balance, learning, and motion guard. Completed sample coverage and added a contract guard.
@@ -84,6 +87,8 @@ No accepted candidates yet.
 
 - `scripts/dev_up.sh`: main-checkout inference only recognized `.claude/worktrees`; current Codex desktop worktrees live under `.codex/worktrees/<id>/<repo>`. Replaced with Git common-dir resolution plus the legacy fallback.
 - `tests/contract/test_settings_config.py`: `_INFRA_ENV_VARS` was stale versus actual `Settings` env reads, allowing external shell env to leak into default assertions. Expanded it and added `.env.example` coverage check.
+- `apps/web/package.json`: `export:openapi` used bare `python`, which failed on this host and also surfaced as a Knip unlisted-binary issue. Replaced it with `uv run --extra dev python` and added a narrow `ignoreBinaries` entry for the repo-level `uv` tool.
+- `scripts/export_openapi.py`: OpenAPI export inherited local proxy env and could fail during app import when `httpx` attempted SOCKS support. The export script now clears proxy env before importing the app.
 
 ## Unused Scripts
 
@@ -109,3 +114,4 @@ No accepted candidates yet.
 - Duplicate VolcEngine auth error code tuples in AI provider and ops balance provider; left untouched because they sit on separate provider-facing error classification surfaces.
 - Duplicate publishing copy field tuple in deterministic and LLM copy paths; left untouched because it is schema/validation alignment, not dead duplication.
 - Funnel taxonomy tuple duplicated in tests as a spec guard; intentionally not consolidated into production code.
+- Deptry-reported `fontTools` is intentionally optional in `packages/production/pipeline/_fonts.py`; current environment lacks it and the built-in font-name parser fallback covers the normal path.

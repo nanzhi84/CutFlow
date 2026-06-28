@@ -19,7 +19,7 @@ python -m uvicorn apps.api.main:app --reload --port 8000
 python -m apps.worker                # 独立进程
 (cd apps/web && npm run dev)
 python -m pytest -q                  # 单测；完整门禁 scripts/ci_gate.sh
-python scripts/export_openapi.py && (cd apps/web && npm run generate:api)   # 改契约后重生成
+uv run --extra dev python scripts/export_openapi.py && (cd apps/web && npm run generate:api)   # 改契约后重生成
 ```
 
 ## 全局约定（必须遵守）

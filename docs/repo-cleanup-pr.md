@@ -6,7 +6,7 @@ Maintenance: deep repository hygiene cleanup
 
 ## Executive Summary
 
-This PR performs a behavior-preserving deep hygiene pass across the repo. It fixes stale docs/config references, resolves baseline lint failures, deletes obsolete frontend wrappers and contract probe files, removes production-unused frontend exports, consolidates duplicate runtime helpers, completes Settings/env sample coverage, cleans static-dead test parameters, and records the audit/validation trail.
+This PR performs a behavior-preserving deep hygiene pass across the repo. It fixes stale docs/config references, resolves baseline lint failures, deletes obsolete frontend wrappers and contract probe files, removes production-unused frontend exports, consolidates duplicate runtime helpers, completes Settings/env sample coverage, cleans static-dead test parameters, hardens the frontend OpenAPI export entrypoint, and records the audit/validation trail.
 
 The aggressive second pass intentionally added a few small canonical helpers, but removed substantially more repeated implementation: tracked changes after that pass were roughly `+166/-1215`, with four new helper files totaling 333 lines.
 
@@ -39,10 +39,13 @@ The aggressive second pass intentionally added a few small canonical helpers, bu
 
 - `.env.example`
 - `AGENTS.md`
+- `CLAUDE.md`
 - `README.md`
+- `apps/api/CLAUDE.md`
 - `apps/api/services/cases.py`
 - `apps/api/services/imports.py`
 - `apps/web/CLAUDE.md`
+- `apps/web/package.json`
 - `apps/web/src/App.tsx`
 - `apps/web/src/api/client.ts`
 - `apps/web/src/api/r6.ts`
@@ -98,6 +101,7 @@ The aggressive second pass intentionally added a few small canonical helpers, bu
 - `pyproject.toml`
 - `scripts/clean_dangling_materials.py`
 - `scripts/dev_up.sh`
+- `scripts/export_openapi.py`
 - `scripts/sync_materials.py`
 - `tests/api/test_cases_profile.py`
 - `tests/api/test_annotation_patch.py`
@@ -140,6 +144,8 @@ None.
 - Completed `.env.example` coverage for every env var read by `Settings` and added a contract guard to keep it covered.
 - Updated roadmap worktree guidance for Codex vs Claude worktree locations.
 - Removed README test-env duplication by referring to the manual setup block.
+- Updated live contract-regeneration docs to use `uv run --extra dev python scripts/export_openapi.py`.
+- Fixed README prose to reference `scripts/ci_gate.sh` instead of a nonexistent root `ci_gate.sh`.
 - Removed stale `apps/web/CLAUDE.md` references to deleted typecheck probes.
 
 ## Validation Commands Run
@@ -149,11 +155,15 @@ None.
 - `env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy uv run --extra dev python -m pytest -q`
 - `env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy uv run --extra dev python scripts/export_openapi.py`
 - `(cd apps/web && npm run generate:api)`
+- `(cd apps/web && npm run export:openapi)`
 - `git diff --exit-code -- apps/web/src/api/openapi.json apps/web/src/api/schema.d.ts`
+- `(cd apps/web && npx --yes knip --reporter compact)`
 - `(cd apps/web && npx --yes knip --production --reporter compact && npx tsc -p tsconfig.json --noEmit --noUnusedLocals --noUnusedParameters && npm run build)`
 - `uvx --from vulture vulture apps packages scripts tests --min-confidence 90 --exclude 'apps/web/node_modules,apps/web/dist,.venv'`
 - `bash -c 'set -euo pipefail; set -a; source .env.example; set +a; test "$CUTAGENT_STORAGE_BACKEND" = sqlalchemy; test "$CUTAGENT_PUBLISH_ADAPTER" = xiaovmao.cdp'`
 - Settings/env comparison script confirming no `Settings` env vars are missing from `.env.example`.
+- `.env.example` reverse reference scan confirming no sample `CUTAGENT_*` variables exist only in the sample file.
+- Deptry scan reviewed for dependency issues; no dependency removal accepted because findings were aliases, runtime/tool deps, transitive deps, or optional fallbacks.
 - Targeted Python suites for imports, mappers, BGM/loudness, timeline/export nodes, digital-human runtime, workflow reuse, and frontend probes.
 - DB integration tests on clean temporary database `cutagent_ci_cleanup_8e2d`.
 - Temporal tests against the same clean DB plus shared MinIO durable/ephemeral buckets.
@@ -164,6 +174,7 @@ None.
 - Default pytest suite.
 - Python lint.
 - Frontend `knip --production`.
+- Frontend full `knip`.
 - Frontend TypeScript unused-symbol gate.
 - Frontend production build.
 - OpenAPI and generated TypeScript schema drift checks.
@@ -175,6 +186,7 @@ None.
 ## Known Preexisting Failures
 
 - Baseline `ruff check .` failed before cleanup edits on E402/E702 findings; this PR fixes those failures.
+- `npm run export:openapi` failed before the final blind-spot pass because the script used bare `python`, and then because local SOCKS proxy env polluted app import; this PR fixes both issues.
 - Direct `scripts/ci_gate.sh` is blocked on this macOS host because GNU `timeout`/`gtimeout` is unavailable; equivalent subcommands were run manually.
 - Integration against the existing local dev DB failed because local auth seed state is dirty; the same suite passed on a fresh temporary DB.
 
@@ -182,7 +194,7 @@ None.
 
 - Migrations, generated clients, Temporal registration, provider registries, seed scripts, fixtures, manual DB/OSS scripts, and deployment hooks were treated as high-risk and left untouched unless direct evidence supported a safe change.
 - The removed frontend typecheck probes had no package/CI/import references and were covered by `tsc`, frontend build, `knip`, and full pytest.
-- The `export:openapi` package script is retained despite `knip` reporting `python` as an unlisted binary, because it is the documented frontend contract-regeneration entrypoint.
+- The `export:openapi` package script is retained and fixed; Knip's `uv` binary is ignored narrowly because it is a repository-level Python tool, not an npm dependency.
 - Mapper/helper consolidations were validated with targeted mapper/import/media/workflow tests plus full pytest.
 - A first full pytest caught an unsafe `defaultForm` export deletion; the test now uses the public `loadStoredForm()` entry and the full suite passes.
 

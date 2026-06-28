@@ -156,7 +156,7 @@ python -m apps.worker
 **改了 API 契约后**重新生成类型（CI 会校验漂移）：
 
 ```bash
-python scripts/export_openapi.py                 # 写 apps/web/src/api/openapi.json
+uv run --extra dev python scripts/export_openapi.py  # 写 apps/web/src/api/openapi.json
 ( cd apps/web && npm run generate:api )           # 生成 src/api/schema.d.ts
 ```
 
@@ -207,7 +207,7 @@ python -m pytest -q tests/temporal
 scripts/ci_gate.sh
 ```
 
-`ci_gate.sh` 会跑单测、校验 `openapi.json`、`npm ci` + 生成类型并检查 `schema.d.ts` 漂移、构建前端、初始化 DB、跑集成与 Temporal 测试。
+`scripts/ci_gate.sh` 会跑单测、校验 `openapi.json`、`npm ci` + 生成类型并检查 `schema.d.ts` 漂移、构建前端、初始化 DB、跑集成与 Temporal 测试。
 
 ---
 
