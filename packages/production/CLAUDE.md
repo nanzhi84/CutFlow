@@ -22,8 +22,8 @@
 
 ## 约定与要求
 - 节点是纯 `run(ctx)`：输入读 `ctx.state`，输出经 `ctx.artifact(...)` 落库，跨节点服务只走 `NodeContext`，不直接传 adapter。
-- 降级必须显式上报为 `DegradationNotice`（spec §9，禁止静默降级）；节点 succeeded + 有 degradation 自动标 `degraded`。
-- 确定性选材，不得随机；失败/取消时只释放 uncommitted 预留（committed picks 保留作多样性记忆，§6.6）。
+- 降级必须显式上报为 `DegradationNotice`，禁止静默降级；节点 succeeded + 有 degradation 自动标 `degraded`。
+- 确定性选材，不得随机；失败/取消时只释放 uncommitted 预留，committed picks 保留作多样性记忆。
 - 真实 vs sandbox 由 provider profile 选取判定；无真实供应商时是否回退 sandbox 受 `sandbox_fallback_allowed()`（即 `CUTAGENT_ALLOW_SANDBOX_FALLBACK`，默认 OFF=显式报错）控制。
 - 有 provider 副作用的节点（TTS/ResolveCreativeIntent/LipSync/ExportFinishedVideo/SeedanceGenerateVideo）必须带 `idempotency_key`，否则 reuse 拒绝复用。
 - 增删节点须同步三处（`digital_human_template()` 已数据驱动、只调 `_build_template`，无需手改）：①对应模板的 `*_SEQUENCE`（`node_sequence.py`）②`NODE_HANDLERS` ③`_NODE_OUTPUT_KINDS`（声明每节点 `output_artifact_kinds`）。节点有 provider 副作用还需加入 `_PROVIDER_SIDE_EFFECT_NODES`，会破坏时间线复用还需加入 `_TIMELINE_REUSE_BREAK_NODES`。

@@ -102,3 +102,14 @@ Artifacts 通过 URI 引用，可能跨进程或跨主机流转。
 - 不要把带日期的调研 dump 加回 `docs/`。
 - milestone 完成后，把长期结论折叠进 `milestones.md`、`technical-choices.md` 或 `design-decisions.md`。
 - PR-specific evidence 放在 PR body 或外部 review notes，不放进永久文档。
+
+## 踩坑后形成的决策
+
+这些不是事故复盘全文，而是从已发现问题里提炼出来、未来改代码必须继续遵守的规则。
+
+- API 契约漂移曾经很容易被手写前端类型掩盖；所以 FastAPI OpenAPI 是唯一事实源，生成物必须一起提交。
+- 只重启 API 不会更新 Temporal worker；改 production node、provider profile 解析或 workflow 代码后必须重启 worker。
+- Temporal 多 worker 下，本地 ephemeral 目录会导致跨 activity 找不到 artifact；共享 MinIO/S3 是运行时正确性，不是部署优化项。
+- Sandbox fallback 曾经会把真实 provider 配置缺失伪装成成功；生产默认必须显式失败，只有 demo/test 才打开 fallback。
+- 素材不足时用固定占位或随机挑选会污染成片质量和学习闭环；正确行为是确定性排序、近期降权、覆盖不足则显式降级。
+- 发布漏斗事件如果在 submit 事务前后处理不清，会让 SQL 后端成品率结构性失真；发布状态机和漏斗记录必须保持可审计。

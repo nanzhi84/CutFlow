@@ -16,7 +16,7 @@
 - `material/__init__` / `selection/__init__` / `editing/__init__` — 各子域公开 API（从这里 import）。
 
 ## 约定与要求
-- 选片必须确定性 + 台账支撑，禁止任何随机（见 spec §2.4 deterministic selection）；排序用稳定 key（如 `(-score, asset_id, clip_id)`）。
+- 选片必须确定性 + 台账支撑，禁止任何随机；排序用稳定 key（如 `(-score, asset_id, clip_id)`）。
 - 多样性/近期性是软惩罚（demote），绝不是硬过滤。
 - 素材/标注不足时返回空结果由上游软降级，绝不伪造选片或机械占位（不要回到 `index*3` / `score=1` 老种子）。
 - 全部为纯函数：台账/停顿等都作为入参传入（most-recent-first），本层不查 DB、不跑 ffmpeg、不做音频检测。

@@ -568,7 +568,7 @@ def normalize_for_upload(
     - h264 / yuv420p / BT.709 output,
     and then runs a post-encode validate gate that *raises* (not warns) on any
     profile violation, so a malformed / mis-rotated source can never enter the
-    pipeline silently mis-rendered (Spec §2.3 no-silent-degrade).
+    pipeline silently mis-rendered.
     """
     source = Path(video_path)
     info = probe_media(source)
@@ -585,7 +585,7 @@ def normalize_for_upload(
             f"Upload normalization source has invalid dimensions: {width}x{height}",
             error_code=ErrorCode.upload_unsupported_type,
         )
-    crop = _detect_embedded_portrait_crop(source, raw_streams, width, height, info.duration_sec)
+    crop = _detect_embedded_portrait_crop(source, width, height, info.duration_sec)
     effective_w = int(crop["width"]) if crop else width
     effective_h = int(crop["height"]) if crop else height
     target_w, target_h = _target_resolution(effective_w, effective_h)
@@ -781,7 +781,6 @@ def _run_cropdetect(source: Path, sample_time: float) -> dict | None:
 
 def _detect_embedded_portrait_crop(
     source: Path,
-    video_stream: dict,
     width: int,
     height: int,
     duration: float | None,

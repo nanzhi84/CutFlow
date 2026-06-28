@@ -78,7 +78,7 @@
 
 当前状态：
 
-- 旧的详细 Spec、历史 milestone 日志、临时计划、审计 dump、旧 ops 小文档已移除。
+- 旧的详细规格长文、历史 milestone 日志、临时计划、审计 dump、旧 ops 小文档已移除。
 - README 作为产品和上手入口。
 - `docs/` 只保留 milestone、关键技术选型、关键设计决策。
 - 清理 PR 不再把临时证据作为长期文档保存。

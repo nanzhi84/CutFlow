@@ -81,9 +81,7 @@ class BrollCandidate:
     best_segment: ScriptSegment | None = field(default=None)
 
 
-def _scene_from_clip(
-    asset_id: str, clip, span: tuple[float, float] | None = None
-) -> BrollScene:
+def _scene_from_clip(clip, span: tuple[float, float] | None = None) -> BrollScene:
     semantics = clip.semantics
     retrieval = clip.retrieval
     start, end = span if span is not None else (clip.start, clip.end)
@@ -163,7 +161,7 @@ def rank_broll_candidates(
                 min_len=_MIN_CLEAN_SPAN_SEC,
             )
             for span_index, clean_span in enumerate(clean_spans):
-                scene = _scene_from_clip(asset_id, clip, span=clean_span)
+                scene = _scene_from_clip(clip, span=clean_span)
                 candidate_clip_id = _clip_id_for_clean_span(clip.segment_id, span_index)
                 best_segment, match = best_match(seg_list, scene)
                 if not match.has_overlap or match.similarity < _MIN_SIMILARITY:
