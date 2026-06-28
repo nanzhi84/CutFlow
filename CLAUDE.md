@@ -1,6 +1,6 @@
 # Cutagent（树影） · Clean-Slate
 
-Case-first 数字人短视频内容生产系统。Python（FastAPI + Temporal）+ TypeScript（React/Vite）monorepo，**contract-first**：FastAPI 是 OpenAPI 唯一事实源。产品/上手详见 `README.md`，文档入口见 `docs/README.md`，能力权威清单见 `docs/树影_Cutagent_CleanSlate重写Spec_v3_2026-06-11.md`（§2 / §34）。
+Case-first 数字人短视频内容生产系统。Python（FastAPI + Temporal）+ TypeScript（React/Vite）monorepo，**contract-first**：FastAPI 是 OpenAPI 唯一事实源。产品/上手详见 `README.md`，长期文档入口见 `docs/README.md`，能力边界以当前代码、README 与关键设计决策为准。
 
 ## 仓库地图（改对应代码前先读该目录的 CLAUDE.md）
 
