@@ -3,8 +3,7 @@
 Generates publish copy for a publish item: ``title`` + ``publish_content`` +
 ``cover_title`` + ``cover_subtitle`` from the adopted script / case context.
 
-Design (faithful port of the origin ``ScriptService.generate_title_and_description``
-+ ``_fallback_publish_copy`` from digital-human-Cutagent ``app/services/script_service.py``):
+Design:
 
 - When a real ``llm.chat`` provider is armed, the node renders the seeded
   ``PublishingCopy`` prompt through the prompt registry, invokes the gateway, and
@@ -13,8 +12,7 @@ Design (faithful port of the origin ``ScriptService.generate_title_and_descripti
   ``prompt.output_invalid`` — the §2.3 no-silent-degrade hard-fail.
 - When no real LLM is armed (e.g. the in-memory sandbox), the node derives the
   copy deterministically from the script text. This is an honest, non-fabricated
-  derivation (the same behavior the origin returned when ``llm_model_id`` was
-  unset), NOT a silent degrade of an LLM result.
+  derivation, NOT a silent degrade of an LLM result.
 
 This module is side-effect free apart from the optional ``llm_chat`` port, which
 the service supplies; it never reaches a real provider on its own.
@@ -59,7 +57,7 @@ class LlmChatPort(Protocol):
         ...
 
 
-# Deterministic derivation (origin _fallback_publish_copy parity)
+# Deterministic derivation
 
 
 def _limit_text(text: str, limit: int) -> str:
@@ -108,7 +106,7 @@ def _fallback_cover_subtitle(script_content: str, publish_content: str, cover_ti
 
 
 def derive_publish_copy(context: PublishCopyContext) -> PublishCopy:
-    """Deterministic, non-LLM publish copy from the script (origin fallback parity)."""
+    """Deterministic, non-LLM publish copy from the script."""
     script = context.script or ""
     title = _fallback_title(script, context.title_limit)
     publish_content = _fallback_publish_content(script)

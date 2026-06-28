@@ -3,7 +3,14 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from packages.core.contracts import CaseDetail, CaseListItem, CreateCaseRequest, PatchCaseRequest, utcnow
+from packages.core.contracts import (
+    CASE_MATERIAL_ASSET_KINDS,
+    CaseDetail,
+    CaseListItem,
+    CreateCaseRequest,
+    PatchCaseRequest,
+    utcnow,
+)
 from packages.core.storage.database import (
     CaseRow,
     FinishedVideoRow,
@@ -17,8 +24,7 @@ from packages.core.storage.repository import new_id
 
 ACTIVE_RUN_STATUSES = {"created", "admitted", "running", "cancelling"}
 ACTIVE_JOB_STATUSES = {"draft", "queued", "running"}
-# Media-asset kinds that count toward a case's reusable material library.
-MATERIAL_ASSET_KINDS = {"portrait", "broll", "video", "bgm", "font"}
+MATERIAL_ASSET_KINDS = CASE_MATERIAL_ASSET_KINDS
 
 
 def case_row_to_detail(row: CaseRow) -> CaseDetail:

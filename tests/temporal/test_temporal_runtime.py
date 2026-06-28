@@ -65,7 +65,7 @@ class WorkerThread:
         assert self.ready.wait(timeout=20), "Temporal worker did not start."
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
         if self.loop is not None and self.stop_event is not None:
             self.loop.call_soon_threadsafe(self.stop_event.set)
         self.thread.join(timeout=20)

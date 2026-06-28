@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import mimetypes
 from pathlib import Path
 
 from sqlalchemy import or_, select, update
@@ -10,7 +9,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from packages.core.contracts import (
     ArtifactKind,
     ArtifactRef,
-    Artifact,
     CasePerformanceResponse,
     CreateEditorHandoffRequest,
     CreateImportBatchRequest,
@@ -36,8 +34,6 @@ from packages.core.contracts import (
     PageResponse,
     PerformanceAttributionResponse,
     PerformanceMetricView,
-    PerformanceScore,
-    PerformanceObservation,
     PromptInvocation,
     ProviderInvocation,
     PublishPackage,
@@ -93,6 +89,17 @@ from packages.core.storage.database import (
     VideoVersionRow,
     YieldFunnelEventRow,
 )
+from packages.core.storage.import_metadata import (
+    imported_media_artifact_data,
+    optional_float as _optional_float,
+    optional_int as _optional_int,
+    optional_str as _optional_str,
+)
+from packages.core.storage.performance_mappers import (
+    performance_observation_to_row,
+    performance_score_to_row,
+)
+from packages.core.storage.sqlalchemy_uploads import artifact_to_row
 from packages.ai.gateway.sqlalchemy_repository import provider_profile_row_to_contract
 from packages.creative.cases import evolution, metrics_import
 from packages.creative.cases.sqlalchemy_learning_mappers import script_version_row_to_contract
@@ -130,11 +137,6 @@ from packages.production.sqlalchemy_mappers import (
     publish_record_row_to_contract,
     video_version_row_to_contract,
     workflow_run_row_to_contract,
-    _filename_from_uri,
-    _media_info_from_import_metadata,
-    _optional_float,
-    _optional_int,
-    _optional_str,
     _report_row,
 )
 
@@ -344,7 +346,7 @@ class SqlAlchemyProductionRepository(BaseRepository):
 
             run_artifacts = [artifact for artifact in repository.artifacts.values() if artifact.run_id == run.id]
             for artifact in run_artifacts:
-                session.merge(self._artifact_row(artifact))
+                session.merge(artifact_to_row(artifact))
             session.flush()
 
             session.merge(self._workflow_run_row(run))
@@ -1177,9 +1179,9 @@ class SqlAlchemyProductionRepository(BaseRepository):
                 # contract mapper (whose timestamp columns are still None pre-flush).
                 observation = metrics_import.observation_contract_from_match(case_id, matched)
                 if not payload.dry_run:
-                    session.add(self._observation_row_from_contract(observation))
+                    session.add(performance_observation_to_row(observation))
                     score = evolution.compute_performance_score(observation)
-                    session.add(self._performance_score_row(score))
+                    session.add(performance_score_to_row(score))
                 results.append(
                     ImportRowResult(row_index=matched.row_index, status="created", internal_id=observation.id)
                 )
@@ -1208,56 +1210,6 @@ class SqlAlchemyProductionRepository(BaseRepository):
                 session.add(_report_row(report))
             session.commit()
             return report
-
-    @staticmethod
-    def _observation_row_from_contract(
-        observation: PerformanceObservation,
-    ) -> PerformanceObservationRow:
-        """Persist an ORM row from an already-built contract observation.
-
-        The contract is the source of truth for the import (it is also what we
-        feed to ``compute_performance_score``), so the row simply mirrors it.
-        """
-        return PerformanceObservationRow(
-            id=observation.id,
-            case_id=observation.case_id,
-            publish_record_id=observation.publish_record_id,
-            video_version_id=observation.video_version_id,
-            platform=observation.platform,
-            account_id=observation.account_id,
-            window=observation.window,
-            metric_name=observation.metric_name,
-            metric_value=observation.metric_value,
-            impressions=observation.impressions,
-            views=observation.views,
-            avg_watch_sec=observation.avg_watch_sec,
-            completion_rate=observation.completion_rate,
-            like_rate=observation.like_rate,
-            comment_rate=observation.comment_rate,
-            share_rate=observation.share_rate,
-            follow_rate=observation.follow_rate,
-            conversion_count=observation.conversion_count,
-            conversion_rate=observation.conversion_rate,
-            raw_metrics=dict(observation.raw_metrics or {}),
-            observed_at=observation.observed_at,
-        )
-
-    @staticmethod
-    def _performance_score_row(score: PerformanceScore) -> PerformanceScoreRow:
-        return PerformanceScoreRow(
-            id=score.id,
-            observation_id=score.observation_id,
-            case_id=score.case_id,
-            video_version_id=score.video_version_id,
-            platform=score.platform,
-            account_id=score.account_id,
-            window=score.window,
-            primary_metric=score.primary_metric,
-            normalized_score=score.normalized_score,
-            confidence=score.confidence,
-            sample_size=score.sample_size,
-            excluded_reason=score.excluded_reason,
-        )
 
     def performance_attribution(self, video_version_id: str) -> PerformanceAttributionResponse | None:
         with self.session_factory() as session:
@@ -1642,44 +1594,16 @@ class SqlAlchemyProductionRepository(BaseRepository):
         uri: str,
         sha256: str | None,
     ) -> ArtifactRow:
-        probed = self._probe_import_media_if_local(uri)
-        content_type = (
-            _optional_str(row.get("mime"))
-            or (probed.mime_type if probed is not None else None)
-            or mimetypes.guess_type(uri)[0]
-            or "application/octet-stream"
-        )
-        duration_sec = (
-            probed.duration_sec
-            if probed is not None and probed.duration_sec is not None
-            else _optional_float(row.get("duration_sec"))
-        )
-        width = probed.width if probed is not None and probed.width is not None else _optional_int(row.get("width"))
-        height = probed.height if probed is not None and probed.height is not None else _optional_int(row.get("height"))
-        media_info = probed or _media_info_from_import_metadata(
-            uri=uri,
+        artifact_data = imported_media_artifact_data(
+            row,
+            case_id=case_id,
+            title=title,
             kind=kind,
-            content_type=content_type,
-            duration_sec=duration_sec,
-            width=width,
-            height=height,
+            uri=uri,
+            sha256=sha256,
+            probed=self._probe_import_media_if_local(uri),
         )
-        payload = {
-            "upload_session_id": None,
-            "filename": _filename_from_uri(uri, fallback=title),
-            "content_type": content_type,
-            "size_bytes": _optional_int(row.get("size_bytes")) or 0,
-            "object_uri": uri,
-            "sha256": sha256,
-            "metadata": {
-                "case_id": case_id,
-                "title": title,
-                "kind": kind,
-                "duration_sec": duration_sec if duration_sec is not None else 0,
-                "width": width,
-                "height": height,
-            },
-        }
+        payload = artifact_data.payload
         return ArtifactRow(
             id=new_id("art"),
             case_id=case_id,
@@ -1687,7 +1611,7 @@ class SqlAlchemyProductionRepository(BaseRepository):
             uri=uri,
             size_bytes=payload["size_bytes"],
             sha256=sha256,
-            media_info=media_info.model_dump(mode="json") if media_info is not None else None,
+            media_info=artifact_data.media_info.model_dump(mode="json") if artifact_data.media_info is not None else None,
             payload_schema="UploadedFileArtifact.v1",
             payload=payload,
         )
@@ -1714,29 +1638,6 @@ class SqlAlchemyProductionRepository(BaseRepository):
             schema_version=job.schema_version,
             created_at=job.created_at,
             updated_at=job.updated_at,
-        )
-
-    def _artifact_row(self, artifact: Artifact) -> ArtifactRow:
-        return ArtifactRow(
-            id=artifact.id,
-            case_id=artifact.case_id,
-            run_id=artifact.run_id,
-            node_run_id=artifact.node_run_id,
-            kind=artifact.kind.value,
-            uri=artifact.uri,
-            local_path=artifact.local_path,
-            oss_uri=artifact.oss_uri,
-            size_bytes=artifact.size_bytes,
-            immutable=artifact.immutable,
-            retention_policy=artifact.retention_policy,
-            sha256=artifact.sha256,
-            media_info=artifact.media_info.model_dump(mode="json") if artifact.media_info else None,
-            payload_schema=artifact.payload_schema,
-            payload=artifact.payload,
-            created_by_node_run_id=artifact.created_by_node_run_id,
-            schema_version=artifact.schema_version,
-            created_at=artifact.created_at,
-            updated_at=artifact.updated_at,
         )
 
     def _workflow_run_row(self, run: WorkflowRun) -> WorkflowRunRow:

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from packages.core.contracts import ArtifactKind, ErrorCode
-from packages.core.contracts.artifacts import RenderPlanArtifact, TimelinePlanArtifact
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._timeline_grid import build_tracks, to_frame, validate_timeline
+from packages.production.pipeline.nodes._timeline_output import timeline_output
 
 
 def run(ctx: NodeContext) -> NodeOutput:
@@ -47,31 +47,4 @@ def run(ctx: NodeContext) -> NodeOutput:
         raise NodeExecutionError(ErrorCode.render_invalid_timeline, "Timeline validation failed.")
 
     tracks = build_tracks(raw_segments, fps)
-    timeline = TimelinePlanArtifact(
-        fps=fps,
-        total_frames=total_frames,
-        tracks=tracks,
-        validation=validation,
-    )
-    render_plan = RenderPlanArtifact(
-        timeline_artifact_id="pending",
-        render_size=(state.request.output.width, state.request.output.height),
-        fps=fps,
-        tracks=tracks,
-    )
-    timeline_artifact = ctx.artifact(
-        ArtifactKind.plan_timeline,
-        timeline.model_dump(mode="json"),
-        "TimelinePlanArtifact.v1",
-    )
-    render_plan = render_plan.model_copy(update={"timeline_artifact_id": timeline_artifact.id})
-    return NodeOutput(
-        artifacts=[
-            timeline_artifact,
-            ctx.artifact(
-                ArtifactKind.plan_render,
-                render_plan.model_dump(mode="json"),
-                "RenderPlanArtifact.v1",
-            ),
-        ]
-    )
+    return timeline_output(ctx, fps=fps, total_frames=total_frames, tracks=tracks, validation=validation)

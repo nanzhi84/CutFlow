@@ -15,7 +15,7 @@ import { NavLink, Outlet, useLocation, useNavigate, useParams } from "react-rout
 import { routes } from "../routes";
 import { useAuth } from "../pages/auth/AuthContext";
 import { ConnectionStatus } from "./ConnectionStatus";
-import { LoadingState } from "./State";
+import { LoadingState } from "./ui/State";
 
 const mainNav = [
   { to: routes.overview(), label: "概览", icon: Home, end: true },

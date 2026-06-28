@@ -117,7 +117,7 @@ def test_execute_node_emits_node_started_and_node_succeeded():
     adapter, run, _ = _adapter_with_run(RunStatus.running)
     state = RunState(request=_request())
 
-    def ok(node_id, run_arg, node_run, state_arg):
+    def ok(_node_id, _run_arg, _node_run, _state_arg):
         return NodeOutput(status=NodeStatus.succeeded)
 
     adapter._run_node = ok  # type: ignore[method-assign]
@@ -137,7 +137,7 @@ def test_execute_node_degraded_counts_as_node_succeeded():
     adapter, run, _ = _adapter_with_run(RunStatus.running)
     state = RunState(request=_request())
 
-    def degraded(node_id, run_arg, node_run, state_arg):
+    def degraded(_node_id, _run_arg, _node_run, _state_arg):
         from packages.core.contracts import DegradationNotice, WarningCode
 
         return NodeOutput(
@@ -157,7 +157,7 @@ def test_node_failure_emits_node_failed_not_workflow_failed():
     adapter, run, _ = _adapter_with_run(RunStatus.running)
     state = RunState(request=_request())
 
-    def boom(node_id, run_arg, node_run, state_arg):
+    def boom(_node_id, _run_arg, _node_run, _state_arg):
         raise NodeExecutionError(ErrorCode.validation_invalid_options, "boom")
 
     adapter._run_node = boom  # type: ignore[method-assign]

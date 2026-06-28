@@ -379,23 +379,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         )
         return self.repository.runs[run_id]
 
-    def _execute(
-        self,
-        run_id: str,
-        *,
-        mode: str,
-        from_run_id: str | None,
-        reuse_plan: ReusePlan | None,
-    ) -> None:
-        run = self.repository.runs[run_id]
-        job = self.repository.jobs[run.job_id]
-        request = self._request(job)
-        state = _RunState(request=request)
-        start_index = 0
-        if job.status != JobStatus.running:
-            assert_transition("job", job.status, JobStatus.running)
-            job = job.model_copy(update={"status": JobStatus.running, "updated_at": utcnow()})
-            self.repository.jobs[job.id] = job
+    def _mark_run_running(self, run: WorkflowRun, job: Job) -> WorkflowRun:
         assert_transition("run", run.status, RunStatus.running)
         run = run.model_copy(update={"status": RunStatus.running, "started_at": utcnow()})
         self.repository.runs[run.id] = run
@@ -416,6 +400,26 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             dedupe_aggregate_id=run.id,
             event_time=run.started_at,
         )
+        return run
+
+    def _execute(
+        self,
+        run_id: str,
+        *,
+        mode: str,
+        from_run_id: str | None,
+        reuse_plan: ReusePlan | None,
+    ) -> None:
+        run = self.repository.runs[run_id]
+        job = self.repository.jobs[run.job_id]
+        request = self._request(job)
+        state = _RunState(request=request)
+        start_index = 0
+        if job.status != JobStatus.running:
+            assert_transition("job", job.status, JobStatus.running)
+            job = job.model_copy(update={"status": JobStatus.running, "updated_at": utcnow()})
+            self.repository.jobs[job.id] = job
+        run = self._mark_run_running(run, job)
         if mode == "resume" and from_run_id:
             start_index = self._reuse_prefix(run, state, from_run_id, reuse_plan)
         sequence = self._sequence_for_run(run)
@@ -440,26 +444,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             self._mark_cancelled(run_id)
             return self._node_activity_summary(run_id, node_id)
         if run.status == RunStatus.admitted:
-            assert_transition("run", run.status, RunStatus.running)
-            run = run.model_copy(update={"status": RunStatus.running, "started_at": utcnow()})
-            self.repository.runs[run.id] = run
-            self.repository.create_event(
-                "workflow.run.updated",
-                "run",
-                run.id,
-                {"status": RunStatus.running.value},
-                dedupe_key=f"{run.id}:run:{RunStatus.running.value}",
-                status=RunStatus.running.value,
-                message="Run is running.",
-            )
-            record_funnel_event(
-                self.repository,
-                event_type=workflow_stage(RunStatus.running),
-                job_id=job.id,
-                run_id=run.id,
-                dedupe_aggregate_id=run.id,
-                event_time=run.started_at,
-            )
+            run = self._mark_run_running(run, job)
         if self.repository.runs[run_id].status != RunStatus.running:
             return self._node_activity_summary(run_id, node_id)
         run = self.repository.runs[run_id]
@@ -1159,18 +1144,6 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                 confidence=0.5,
             )
         ]
-
-    # --------------------------------------------------- node test entry points
-    #
-    # The pipeline dispatches every node through ``_run_node`` / ``NODE_HANDLERS``.
-    # These two thin wrappers additionally preserve the historical
-    # ``adapter._<node>(run, node_run, state)`` call surface used by unit tests
-    # that build adapters via ``object.__new__`` and invoke a single node.
-    def _narration_alignment(self, run: WorkflowRun, node_run: NodeRun, state: _RunState) -> NodeOutput:
-        return nodes.narration_alignment.run(NodeContext(adapter=self, run=run, node_run=node_run, state=state))
-
-    def _finalize_run_report(self, run: WorkflowRun, node_run: NodeRun, state: _RunState) -> NodeOutput:
-        return nodes.finalize_run_report.run(NodeContext(adapter=self, run=run, node_run=node_run, state=state))
 
     # ----------------------------------------------------------- run reporting
     def _write_report(

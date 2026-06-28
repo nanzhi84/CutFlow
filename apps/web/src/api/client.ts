@@ -8,13 +8,13 @@ import {
   isRealVoice,
 } from "./realData";
 
-type JsonRequest<Operation> = Operation extends {
+export type JsonRequest<Operation> = Operation extends {
   requestBody: { content: { "application/json": infer Body } };
 }
   ? Body
   : never;
 
-type JsonResponse<Operation> = Operation extends {
+export type JsonResponse<Operation> = Operation extends {
   responses: {
     200: { content: { "application/json": infer Body } };
   };
@@ -34,7 +34,7 @@ type JsonResponse<Operation> = Operation extends {
       ? Body
       : never;
 
-type QueryParams<Operation> = Operation extends {
+export type QueryParams<Operation> = Operation extends {
   parameters: { query?: infer Query };
 }
   ? Query
@@ -176,7 +176,6 @@ export const api = {
         method: "POST",
         idempotencyKey: createIdempotencyKey("logout"),
       }),
-    me: () => fetchJson<JsonResponse<operations["me_api_auth_me_get"]>>("/api/auth/me"),
     updateMe: (payload: JsonRequest<operations["update_me_api_auth_me_patch"]>) =>
       fetchJson<JsonResponse<operations["update_me_api_auth_me_patch"]>>("/api/auth/me", {
         method: "PATCH",
@@ -440,12 +439,6 @@ export const api = {
         `/api/library/assets/${enc(kind)}/usage-ranking`,
         { query },
       ),
-    create: (payload: JsonRequest<operations["create_media_asset_api_media_assets_post"]>) =>
-      fetchJson<JsonResponse<operations["create_media_asset_api_media_assets_post"]>>("/api/media/assets", {
-        method: "POST",
-        body: payload,
-        idempotencyKey: createIdempotencyKey("media_asset"),
-      }),
     batchStabilize: (payload: JsonRequest<operations["batch_stabilize_assets_api_media_assets_batch_stabilize_post"]>) =>
       fetchJson<JsonResponse<operations["batch_stabilize_assets_api_media_assets_batch_stabilize_post"]>>(
         "/api/media/assets/batch-stabilize",
@@ -468,10 +461,6 @@ export const api = {
       fetchJson<JsonResponse<operations["replace_asset_source_api_media_assets__asset_id__replace_source_post"]>>(
         `/api/media/assets/${enc(assetId)}/replace-source`,
         { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("media_replace_source") },
-      ),
-    detail: (assetId: string) =>
-      fetchJson<JsonResponse<operations["media_asset_detail_api_media_assets__asset_id__get"]>>(
-        `/api/media/assets/${enc(assetId)}`,
       ),
     previewUrl: (assetId: string) =>
       fetchJson<JsonResponse<operations["media_asset_preview_api_media_assets__asset_id__preview_url_get"]>>(
@@ -560,11 +549,6 @@ export const api = {
     previewUrl: (id: string) =>
       fetchJson<JsonResponse<operations["finished_video_preview_api_finished_videos__id__preview_url_get"]>>(
         `/api/finished-videos/${enc(id)}/preview-url`,
-      ),
-    delete: (id: string) =>
-      fetchJson<JsonResponse<operations["delete_finished_video_api_finished_videos__id__delete"]>>(
-        `/api/finished-videos/${enc(id)}`,
-        { method: "DELETE", idempotencyKey: createIdempotencyKey("delete_video") },
       ),
   },
   publishing: {
@@ -797,7 +781,6 @@ export type CaseDetail = components["schemas"]["CaseDetail"];
 export type CreateCaseRequest = components["schemas"]["CreateCaseRequest"];
 export type PatchCaseRequest = components["schemas"]["PatchCaseRequest"];
 export type PromptTemplateView = components["schemas"]["PromptTemplateView"];
-export type PromptVersionView = components["schemas"]["PromptVersionView"];
 export type PromptBindingView = components["schemas"]["PromptBindingView"];
 export type NodeRun = components["schemas"]["NodeRun"];
 export type RunCard = components["schemas"]["RunCard"];
@@ -813,7 +796,6 @@ export type SignedUrlResponse = components["schemas"]["SignedUrlResponse"];
 export type AnnotationEditorVm = components["schemas"]["AnnotationEditorVm"];
 export type FinishedVideo = components["schemas"]["FinishedVideo"];
 export type PublishAttempt = components["schemas"]["PublishAttempt"];
-export type PublishAttemptDetail = components["schemas"]["PublishAttemptDetail"];
 export type PublishBatch = components["schemas"]["PublishBatchVm"];
 export type PublishBatchItem = components["schemas"]["PublishBatchItemVm"];
 export type PublishPackage = components["schemas"]["PublishPackage"];

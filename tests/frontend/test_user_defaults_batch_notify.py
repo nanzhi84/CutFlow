@@ -35,10 +35,11 @@ def _run_probe(probe: str) -> dict:
 
 def test_form_defaults_round_trip_preserves_preference_blocks() -> None:
     probe = r"""
-import { mapDefaultsToForm, mapFormToDefaults, defaultForm } from "./src/components/studio-create/studioCreateModel";
+import { loadStoredForm, mapDefaultsToForm, mapFormToDefaults } from "./src/components/studio-create/studioCreateModel";
 
+const baseForm = loadStoredForm();
 const customForm = {
-  ...defaultForm,
+  ...baseForm,
   title: "should-be-ignored",
   script: "ignored body",
   scriptVersionId: "ver_x",
@@ -65,7 +66,7 @@ const defaults = mapFormToDefaults(customForm);
 // defaults must NOT carry content (no title/script keys)
 const defaultsKeys = Object.keys(defaults);
 // hydrate a fresh base form from saved defaults
-const hydrated = mapDefaultsToForm(defaults, defaultForm);
+const hydrated = mapDefaultsToForm(defaults, baseForm);
 
 console.log(JSON.stringify({
   defaultsKeys,
@@ -125,10 +126,11 @@ console.log(JSON.stringify({
 
 def test_seedance_reference_assets_are_optional() -> None:
     probe = r"""
-import { defaultForm, validateAll, validateStep } from "./src/components/studio-create/studioCreateModel";
+import { loadStoredForm, validateAll, validateStep } from "./src/components/studio-create/studioCreateModel";
 
+const baseForm = loadStoredForm();
 const seedanceForm = {
-  ...defaultForm,
+  ...baseForm,
   contentMode: "seedance",
   seedanceReferenceAssetIds: [],
   script: "用纯文本生成一条 15 秒短视频",

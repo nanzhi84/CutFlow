@@ -41,7 +41,7 @@ class StaticHydrateSession:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
         return None
 
     def get(self, model, key):
@@ -60,7 +60,7 @@ class RecordingSyncSession:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
         return None
 
     def merge(self, row):

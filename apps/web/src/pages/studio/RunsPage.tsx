@@ -3,8 +3,8 @@ import { Eye, Image as ImageIcon, OctagonX, Play, RotateCw, Trash2 } from "lucid
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type RunCard } from "../../api/client";
-import { EmptyState, ErrorState, LoadingState } from "../../components/State";
-import { StatusPill } from "../../components/Status";
+import { EmptyState, ErrorState, LoadingState } from "../../components/ui/State";
+import { StatusPill } from "../../components/ui/StatusPill";
 import { StudioTabs } from "../../components/StudioTabs";
 import { TimeText } from "../../components/TimeText";
 import { RunDetailModal } from "../../components/runs/RunDetailModal";
@@ -16,7 +16,7 @@ import {
   connectionLabel,
   type PendingAction,
 } from "../../components/runs/runModel";
-import { useToast } from "../../components/Toast";
+import { useToast } from "../../components/ui/Toast";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { InfiniteScrollSentinel } from "../../components/ui/InfiniteScrollSentinel";
 import { useRunEvents } from "../../hooks/useRunEvents";

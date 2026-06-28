@@ -372,15 +372,11 @@ class JianyingDraftBuilder:
             folder_size = jy_json.folder_size_bytes(draft_dir)
             jy_json.dump_json(
                 draft_dir / "draft_meta_info.json",
-                jy_json.draft_meta(
-                    root, draft_dir, draft_name, draft_id, duration_us, folder_size, created_us
-                ),
+                jy_json.draft_meta(draft_name, draft_id, duration_us, folder_size, created_us),
             )
             jy_json.dump_json(
                 root / "root_meta_info.json",
-                jy_json.root_meta(
-                    root, draft_dir, draft_name, draft_id, duration_us, folder_size, created_us
-                ),
+                jy_json.root_meta(draft_name, draft_id, duration_us, folder_size, created_us),
             )
 
             zip_path = Path(directory) / f"{draft_name}.zip"

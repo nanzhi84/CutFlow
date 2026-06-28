@@ -3,7 +3,7 @@ import { RefreshCw } from "lucide-react";
 import { useMemo, useState } from "react";
 import { api } from "../api/client";
 import { providerObservabilityApi } from "../api/r6";
-import { ErrorState } from "../components/State";
+import { ErrorState } from "../components/ui/State";
 import { AnalyticsTabs, RangeSegmentedControl } from "../components/analytics/AnalyticsControls";
 import { AnalyticsKpiCards } from "../components/analytics/AnalyticsKpiCards";
 import { BalanceQuotaTab } from "../components/analytics/BalanceQuotaTab";

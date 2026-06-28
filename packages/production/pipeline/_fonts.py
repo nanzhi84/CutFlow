@@ -158,14 +158,14 @@ def _read_family_builtin(path: Path) -> str | None:
             rec = 6 + i * 12
             if rec + 12 > len(table):
                 break
-            platform_id, encoding_id, _lang, name_id, length, offset = struct.unpack(
+            platform_id, _encoding_id, _lang, name_id, length, offset = struct.unpack(
                 ">HHHHHH", table[rec : rec + 12]
             )
             if name_id not in (_NAME_ID_FAMILY, _NAME_ID_TYPOGRAPHIC_FAMILY):
                 continue
             start = string_offset + offset
             raw = table[start : start + length]
-            decoded = _decode_name_record(platform_id, encoding_id, raw)
+            decoded = _decode_name_record(platform_id, raw)
             if decoded:
                 candidates[name_id] = decoded
         return candidates.get(_NAME_ID_TYPOGRAPHIC_FAMILY) or candidates.get(_NAME_ID_FAMILY)
@@ -174,7 +174,7 @@ def _read_family_builtin(path: Path) -> str | None:
         return None
 
 
-def _decode_name_record(platform_id: int, encoding_id: int, raw: bytes) -> str | None:
+def _decode_name_record(platform_id: int, raw: bytes) -> str | None:
     if not raw:
         return None
     # Windows (3) and Unicode (0) platforms store UTF-16BE; Mac (1) typically uses

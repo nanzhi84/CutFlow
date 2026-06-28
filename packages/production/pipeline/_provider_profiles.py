@@ -8,11 +8,9 @@ one) with an active secret. When no real profile is armed the rules either fall
 back to a seeded sandbox profile (when ``sandbox_fallback_allowed()``) or fail
 loudly, never silently producing sandbox output in production.
 
-The logic is byte-identical to the inline ``LocalRuntimeAdapter`` methods it
-replaces; only its home changed. The resolver is stateless beyond the two
-collaborators it holds (the repository and the provider gateway), so
-``LocalRuntimeAdapter`` exposes it as a cached property and node handlers reach
-it through ``NodeContext`` proxies.
+The resolver is stateless beyond the two collaborators it holds (the repository
+and the provider gateway), so ``LocalRuntimeAdapter`` exposes it as a cached
+property and node handlers reach it through ``NodeContext`` proxies.
 """
 
 from __future__ import annotations
@@ -126,7 +124,7 @@ class ProviderProfileResolver:
         """A real lipsync path is active only when the profile is enabled, its
         provider plugin is registered, it is NOT the sandbox provider, and its
         secret (if any) is active. Without a secret this returns False, so the
-        sandbox pass-through path runs — byte-identical to today."""
+        sandbox pass-through path remains the selected route."""
         if profile is None or profile.capability != "lipsync.video" or not profile.enabled:
             return False
         if profile.provider_id == "sandbox":
@@ -141,8 +139,8 @@ class ProviderProfileResolver:
         """Return ``(profile, is_real)`` for the requested lipsync profile.
 
         ``is_real`` is True only when a real enabled profile + active secret
-        exist. Otherwise the caller uses the requested profile as-is (the gateway
-        routes the seeded sandbox provider for ``runninghub.heygem.default``)."""
+        exist. Otherwise the caller uses the requested profile as-is, and the
+        gateway routes the seeded sandbox provider for ``runninghub.heygem.default``."""
         profile = self._profile_by_id(request.lipsync.provider_profile_id)
         return profile, self._is_real_lipsync(profile)
 

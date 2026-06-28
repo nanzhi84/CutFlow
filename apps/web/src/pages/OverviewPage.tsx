@@ -3,8 +3,8 @@ import { ArrowRight, BarChart3, Bell, BellOff, RefreshCw, Sparkles } from "lucid
 import { useEffect, useMemo, useRef } from "react";
 import { Link } from "react-router-dom";
 import { api, type RunCard } from "../api/client";
-import { ErrorState } from "../components/State";
-import { useToast } from "../components/Toast";
+import { ErrorState } from "../components/ui/State";
+import { useToast } from "../components/ui/Toast";
 import { OverviewSidePanel } from "../components/overview/OverviewSidePanel";
 import { OverviewStatCards } from "../components/overview/OverviewStatCards";
 import { RecentRunsList } from "../components/overview/RecentRunsList";

@@ -214,18 +214,20 @@ def test_observation_contract_from_match_populates_entity_meta_defaults():
     assert score.excluded_reason is None
 
 
-def test_production_observation_row_from_contract_round_trips_without_flush_error():
-    """_observation_row_from_contract + mapper must not require a flush.
+def test_performance_observation_mappers_round_trip_without_flush_error():
+    """Observation row/contract mappers must not require a flush.
 
     Builds the ORM row from the contract (timestamps already set), then maps it
     back to a contract — exercising the exact pair of calls the production import
     makes, proving no None-timestamp ValidationError can occur on the happy path.
     """
-    from packages.production.sqlalchemy_repository import SqlAlchemyProductionRepository
-    from packages.production.sqlalchemy_mappers import performance_observation_row_to_contract
+    from packages.core.storage.performance_mappers import (
+        performance_observation_row_to_contract,
+        performance_observation_to_row,
+    )
 
     obs = metrics_import.observation_contract_from_match("case_x", _matched())
-    row = SqlAlchemyProductionRepository._observation_row_from_contract(obs)
+    row = performance_observation_to_row(obs)
     assert row.id == obs.id
     assert row.observed_at is not None
     # scoring is done on the contract, never on the (unflushed) row

@@ -1,7 +1,6 @@
-"""Pure narration / sentence text predicates (ported from editing_agent/narration_text.py).
+"""Pure narration / sentence text predicates.
 
 No state. Used by the narration splitter to classify sentence ends and detect intent.
-Behaviour is byte-identical to the origin's static helpers.
 """
 
 from __future__ import annotations

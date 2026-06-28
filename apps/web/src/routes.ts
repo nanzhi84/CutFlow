@@ -1,7 +1,6 @@
 export const routePatterns = {
   login: "/login",
   register: "/register",
-  overview: "/",
   studio: "/studio",
   caseStudio: "/studio/:caseId",
   caseProfile: "/studio/:caseId/profile",
@@ -30,7 +29,6 @@ export const routes = {
   caseProfile: (caseId: string) => `/studio/${segment(caseId)}/profile`,
   caseAgent: (caseId: string) => `/studio/${segment(caseId)}/agent`,
   caseOutputs: (caseId: string) => `/studio/${segment(caseId)}/outputs`,
-  caseRuns: (caseId: string) => `/studio/${segment(caseId)}/runs`,
   casePublish: (caseId: string) => `/studio/${segment(caseId)}/publish`,
   settings: (tab?: "providers" | "secrets" | "prices") => (tab ? `/settings?tab=${tab}` : "/settings"),
   library: () => "/library",

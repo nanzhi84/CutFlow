@@ -4,9 +4,9 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api, type ApiError, type CaseDetail, type PatchCaseRequest } from "../../api/client";
 import { joinList, parseList } from "../../components/modals/CaseModal";
-import { EmptyState, ErrorState, LoadingState } from "../../components/State";
+import { EmptyState, ErrorState, LoadingState } from "../../components/ui/State";
 import { StudioTabs } from "../../components/StudioTabs";
-import { useToast } from "../../components/Toast";
+import { useToast } from "../../components/ui/Toast";
 
 type ProfileForm = {
   name: string;

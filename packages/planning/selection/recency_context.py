@@ -1,13 +1,11 @@
 """Per-candidate portrait recency context from the case selection ledger.
 
-Ported from the origin ``material_planning/recency_context.build_portrait_recency_context_from_ledger``
-(adapted to the genesis ``SelectionLedgerEntry`` schema). Turns a case's recent
-portrait ledger rows into a ``recent_usage`` dict per candidate carrying the
-weighted-recency + opening-guard signals the already-ported scoring side consumes
-(``_candidate.portrait_recent_usage_penalty`` / ``is_recent_portrait_candidate`` /
-``portrait_boundary_option_score``).
+Turns a case's recent portrait ledger rows into a ``recent_usage`` dict per
+candidate carrying the weighted-recency + opening-guard signals consumed by
+portrait scoring (``_candidate.portrait_recent_usage_penalty`` /
+``is_recent_portrait_candidate`` / ``portrait_boundary_option_score``).
 
-Genesis ledger schema mapping vs. the origin's richer rows:
+Ledger schema mapping:
   - ``run_id``    -> task grouping (one video = one run; most-recent-first);
   - ``asset_id``  -> the portrait template identity (``template_id``);
   - ``slot_phase``-> ``"portrait_opening"`` marks the opening segment (opening guard);
@@ -24,8 +22,7 @@ from typing import Any
 
 from packages.core.contracts import SelectionLedgerEntry
 
-# Tunables ported verbatim from origin material_planning/constants.py so runtime
-# scoring matches the origin's calibration.
+# Tunables for the weighted recency/opening-guard penalty.
 RECENCY_DECAY = 0.75
 PORTRAIT_RECENT_TASK_PENALTY = 0.34
 PORTRAIT_RECENT_SEGMENT_PENALTY = 0.055
@@ -67,11 +64,11 @@ def build_portrait_recency_context_from_ledger(
 ) -> dict[str, Any]:
     """Weighted portrait recency for one candidate, sourced from ledger rows.
 
-    Replicates the origin's weighted penalty semantics over the genesis ledger:
-    per-task (run) time decay, a strength-weighted per-segment penalty
+    Applies per-task (run) time decay, a strength-weighted per-segment penalty
     (template_id 1.0 / diversity_key 0.18), an opening penalty when a matched
-    segment opened a run, a once-per-task task penalty, and a hard cap. ``entries``
-    must arrive most-recent-first; only the first ``window`` are considered.
+    segment opened a run, a once-per-task task penalty, and a hard cap.
+    ``entries`` must arrive most-recent-first; only the first ``window`` are
+    considered.
     """
     windowed = [entry for entry in list(entries)[: max(0, window)]]
     if not windowed:

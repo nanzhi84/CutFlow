@@ -73,8 +73,8 @@ def run_copy_node(
 
     Uses a real ``llm.chat`` provider when one is armed (``gateway`` +
     ``prompt_registry`` supplied by the API request path); otherwise falls back to
-    the deterministic derivation (origin parity, honest non-fabricated copy). The
-    §2.3 schema hard-fail lives in ``packages.publishing.copy_node``.
+    the deterministic derivation (honest non-fabricated copy). The §2.3 schema
+    hard-fail lives in ``packages.publishing.copy_node``.
     """
     context = resolve_copy_context(repo, package, item)
     if title_limit is not None:

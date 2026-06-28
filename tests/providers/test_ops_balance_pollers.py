@@ -328,7 +328,7 @@ def test_aliyun_bss_auth_error_drops_message():
     assert "InvalidAccessKeyId.NotFound" in (item.detail or "")
 
 
-# --- volcengine (火山引擎 billing QueryBalanceAcct, hand-rolled V4 sign) ---
+# --- volcengine (火山引擎 billing QueryBalanceAcct, shared V4 signing) ----
 
 def test_volcengine_parses_available_balance():
     def handler(request: httpx.Request) -> httpx.Response:

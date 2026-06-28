@@ -20,10 +20,10 @@ from packages.planning.material import (
 )
 from packages.core.workflow import NodeOutput
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline._run_state import degradation_notice
 from packages.production.pipeline.nodes._broll_policy import broll_generic_coverage_enabled
 
 _BROLL_RECENT_SELECTION_LIMIT = 80
-from packages.production.pipeline._run_state import degradation_notice
 
 
 def _narration_segments(units: list[NarrationUnit]) -> list[ScriptSegment]:

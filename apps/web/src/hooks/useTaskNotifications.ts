@@ -5,7 +5,7 @@ import {
   type RunLike,
 } from "./notificationModel";
 
-export type NotificationPermissionState = "default" | "granted" | "denied" | "unsupported";
+type NotificationPermissionState = "default" | "granted" | "denied" | "unsupported";
 
 function notificationsSupported(): boolean {
   return typeof window !== "undefined" && "Notification" in window;

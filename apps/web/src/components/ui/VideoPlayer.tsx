@@ -6,7 +6,7 @@ import { AlertTriangle, Maximize, Pause, Play, Volume2, VolumeX } from "lucide-r
 // Pure presentational, design-token driven (accent / status-* / brand from tailwind.config.js).
 // Draws `segments` as clip bars on the progress track and `qualityEvents` as risk markers; both are
 // clickable to seek. Highlights the segment under the playhead, and exposes onTimeUpdate / onSeek.
-// Ports the visualization approach from the old repo's VideoPlayer, adapted to genesis tokens.
+// Shared timeline visualization pattern adapted to the current design tokens.
 
 export interface VideoPlayerSegment {
   /** Stable key for highlight + callback identity (e.g. clip segment_id). */

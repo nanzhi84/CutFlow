@@ -82,7 +82,7 @@ function vendorKeyFromProviderProfileId(providerProfileId?: string | null): stri
   return head === "sandbox" ? "" : head;
 }
 
-export function voiceVendorSuffix(voice: Pick<VoiceProfile, "vendor" | "provider_profile_id">): string {
+function voiceVendorSuffix(voice: Pick<VoiceProfile, "vendor" | "provider_profile_id">): string {
   const vendor = voice.vendor.trim() || vendorKeyFromProviderProfileId(voice.provider_profile_id);
   return vendor ? vendorLabel(vendor) : "";
 }

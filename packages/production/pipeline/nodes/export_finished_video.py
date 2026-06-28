@@ -79,7 +79,6 @@ class _CoverReferenceImage:
 def run(ctx: NodeContext) -> NodeOutput:
     state = ctx.state
     run = ctx.run
-    node_run = ctx.node_run
     repository = ctx.repository
     final = state.require(ArtifactKind.video_final)
     timeline = state.require(ArtifactKind.plan_timeline)
@@ -132,10 +131,33 @@ def run(ctx: NodeContext) -> NodeOutput:
         style_plan_artifact_id=style.id,
     )
     repository.video_versions[video_version.id] = video_version
+    package_artifact = _create_publish_package_artifact(
+        ctx,
+        finished,
+        description=copy.publish_content or state.request.publish_content,
+    )
+    return NodeOutput(
+        status=NodeStatus.degraded if cover_degradations else NodeStatus.succeeded,
+        artifacts=[video_artifact, cover_artifact, package_artifact],
+        degradations=cover_degradations,
+        provider_invocation_ids=cover_invocation_ids
+        + ([copy_invocation_id] if copy_invocation_id else []),
+    )
+
+
+def _create_publish_package_artifact(
+    ctx: NodeContext,
+    finished: FinishedVideo,
+    *,
+    description: str,
+) -> Artifact:
+    repository = ctx.repository
+    run = ctx.run
+    node_run = ctx.node_run
     package = repository.create_publish_package_from_finished_video(
         finished,
         title=finished.title,
-        description=copy.publish_content or state.request.publish_content,
+        description=description,
     )
     repository.create_event(
         "workflow.finished_video.created",
@@ -158,17 +180,10 @@ def run(ctx: NodeContext) -> NodeOutput:
         dedupe_key=f"{finished.id}:finished_video_created",
         event_time=finished.created_at,
     )
-    package_artifact = ctx.artifact(
+    return ctx.artifact(
         ArtifactKind.publish_package,
         package.model_dump(mode="json"),
         "PublishPackageArtifact.v1",
-    )
-    return NodeOutput(
-        status=NodeStatus.degraded if cover_degradations else NodeStatus.succeeded,
-        artifacts=[video_artifact, cover_artifact, package_artifact],
-        degradations=cover_degradations,
-        provider_invocation_ids=cover_invocation_ids
-        + ([copy_invocation_id] if copy_invocation_id else []),
     )
 
 

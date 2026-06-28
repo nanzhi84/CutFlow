@@ -17,10 +17,10 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type ApiError, type PromptBindingView } from "../../api/client";
-import { Modal } from "../../components/Modal";
-import { EmptyState, ErrorState, LoadingState } from "../../components/State";
+import { Modal } from "../../components/ui/Modal";
+import { EmptyState, ErrorState, LoadingState } from "../../components/ui/State";
 import { TimeText } from "../../components/TimeText";
-import { useToast } from "../../components/Toast";
+import { useToast } from "../../components/ui/Toast";
 import {
   describePrompt,
   diffRows,
@@ -672,7 +672,7 @@ export default function PromptManagementPage() {
       </div>
 
       {createOpen ? (
-        <Modal title="新建提示词" onClose={() => setCreateOpen(false)} size="md">
+        <Modal isOpen title="新建提示词" onClose={() => setCreateOpen(false)} size="md">
           <form
             className="formGrid"
             onSubmit={(event) => {

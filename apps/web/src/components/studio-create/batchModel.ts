@@ -1,7 +1,7 @@
 import type { components } from "../../api/schema";
 
 export type BatchDigitalHumanVideoRequest = components["schemas"]["BatchDigitalHumanVideoRequest"];
-export type BatchItem = components["schemas"]["BatchItem"];
+type BatchItem = components["schemas"]["BatchItem"];
 export type BatchItemResult = components["schemas"]["BatchItemResult"];
 
 /** A single script row from a batch entry point (pasted list or candidate pool). */
@@ -24,7 +24,7 @@ export function parsePastedScripts(raw: string): string[] {
 }
 
 /** Map UI script rows into the contract `BatchItem[]` shape (trimmed, normalized). */
-export function scriptInputsToBatchItems(inputs: BatchScriptInput[]): BatchItem[] {
+function scriptInputsToBatchItems(inputs: BatchScriptInput[]): BatchItem[] {
   return inputs.map((input) => {
     const title = input.title?.trim();
     return {

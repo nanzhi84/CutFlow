@@ -59,7 +59,7 @@ class _ASGISyncTestClient:
         anyio.run(self._lifespan_cm.__aenter__)
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
         if self._lifespan_cm is not None:
             anyio.run(self._lifespan_cm.__aexit__, None, None, None)
             self._lifespan_cm = None
@@ -166,7 +166,7 @@ class _ASGIWebSocketSession:
             raise RuntimeError(f"WebSocket was not accepted: {message}")
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
         self.close()
         if self._thread is not None:
             self._thread.join(timeout=5)

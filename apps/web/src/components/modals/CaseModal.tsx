@@ -1,8 +1,8 @@
 import { Loader2, Plus } from "lucide-react";
 import { useState } from "react";
-import type { CreateCaseRequest, PatchCaseRequest } from "../../api/client";
-import { Modal } from "../Modal";
-import { ErrorState } from "../State";
+import type { CreateCaseRequest } from "../../api/client";
+import { Modal } from "../ui/Modal";
+import { ErrorState } from "../ui/State";
 
 // List profile fields are edited as one-per-line text. Newlines and commas both split.
 export function parseList(value: string): string[] {
@@ -14,55 +14,6 @@ export function parseList(value: string): string[] {
 
 export function joinList(value: readonly string[] | null | undefined): string {
   return (value ?? []).join("\n");
-}
-
-// Profile payload builders. The full case editor lives in CaseProfilePage; these
-// helpers stay here so the locked case-edit contract (CreateCaseRequest /
-// PatchCaseRequest field coverage) keeps a single typed source of truth.
-type CaseProfileFields = {
-  name: string;
-  description: string;
-  industry: string;
-  product: string;
-  target_audience: string;
-  key_selling_points: string;
-  ip_persona: string;
-  brand_voice: string;
-  strategy_tags: string;
-  brand_keywords: string;
-  competitor_names: string;
-};
-
-export function buildCreatePayload(form: CaseProfileFields): CreateCaseRequest {
-  return {
-    name: form.name.trim(),
-    description: form.description.trim() || null,
-    industry: form.industry.trim() || null,
-    product: form.product.trim() || null,
-    target_audience: form.target_audience.trim() || null,
-    key_selling_points: parseList(form.key_selling_points),
-    ip_persona: form.ip_persona.trim() || null,
-    brand_voice: form.brand_voice.trim() || null,
-    strategy_tags: parseList(form.strategy_tags),
-    brand_keywords: parseList(form.brand_keywords),
-    competitor_names: parseList(form.competitor_names),
-  };
-}
-
-export function buildPatchPayload(form: CaseProfileFields): PatchCaseRequest {
-  return {
-    name: form.name.trim(),
-    description: form.description.trim() || null,
-    industry: form.industry.trim() || null,
-    product: form.product.trim() || null,
-    target_audience: form.target_audience.trim() || null,
-    key_selling_points: parseList(form.key_selling_points),
-    ip_persona: form.ip_persona.trim() || null,
-    brand_voice: form.brand_voice.trim() || null,
-    strategy_tags: parseList(form.strategy_tags),
-    brand_keywords: parseList(form.brand_keywords),
-    competitor_names: parseList(form.competitor_names),
-  };
 }
 
 // Slimmed to draft creation only: capture a name, then route into CaseProfilePage
@@ -88,7 +39,7 @@ export function CaseModal({
   }
 
   return (
-    <Modal title="新建案例" onClose={onClose} size="md">
+    <Modal isOpen title="新建案例" onClose={onClose} size="md">
       <form className="formGrid" onSubmit={handleSubmit}>
         <p className="text-sm text-text-secondary">
           先填一个名称建草稿，创建后进入「案例画像」补全行业、卖点与人设等信息。

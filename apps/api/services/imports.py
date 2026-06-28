@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import mimetypes
-from pathlib import Path
-from urllib.parse import unquote, urlsplit
-
 from fastapi import Request
 
 from apps.api.common import (
@@ -15,6 +11,12 @@ from apps.api.common import (
 from apps.api.dependencies import current_user
 from packages.core import contracts as c
 from packages.core.storage.repository import new_id
+from packages.core.storage.import_metadata import (
+    imported_media_artifact_data,
+    optional_float as _optional_float,
+    optional_int as _optional_int,
+    optional_str as _optional_str,
+)
 from packages.media.assets import local_object_path
 from packages.media.video.ffmpeg import FfmpegCommandError, probe_media
 
@@ -241,52 +243,23 @@ def _create_imported_media_source_artifact(
     uri: str,
     sha256: str | None,
 ) -> c.Artifact:
-    probed = _probe_import_media_if_local(request, uri)
-    content_type = (
-        _optional_str(row.get("mime"))
-        or (probed.mime_type if probed is not None else None)
-        or mimetypes.guess_type(uri)[0]
-        or "application/octet-stream"
-    )
-    duration_sec = (
-        probed.duration_sec
-        if probed is not None and probed.duration_sec is not None
-        else _optional_float(row.get("duration_sec"))
-    )
-    width = probed.width if probed is not None and probed.width is not None else _optional_int(row.get("width"))
-    height = probed.height if probed is not None and probed.height is not None else _optional_int(row.get("height"))
-    media_info = probed or _media_info_from_import_metadata(
-        uri=uri,
+    artifact_data = imported_media_artifact_data(
+        row,
+        case_id=case_id,
+        title=title,
         kind=kind,
-        content_type=content_type,
-        duration_sec=duration_sec,
-        width=width,
-        height=height,
+        uri=uri,
+        sha256=sha256,
+        probed=_probe_import_media_if_local(request, uri),
     )
-    payload = {
-        "upload_session_id": None,
-        "filename": _filename_from_uri(uri, fallback=title),
-        "content_type": content_type,
-        "size_bytes": _optional_int(row.get("size_bytes")) or 0,
-        "object_uri": uri,
-        "sha256": sha256,
-        "metadata": {
-            "case_id": case_id,
-            "title": title,
-            "kind": kind,
-            "duration_sec": duration_sec if duration_sec is not None else 0,
-            "width": width,
-            "height": height,
-        },
-    }
     return repository(request).create_artifact(
         kind=c.ArtifactKind.uploaded_file,
         payload_schema="UploadedFileArtifact.v1",
-        payload=payload,
+        payload=artifact_data.payload,
         case_id=case_id,
         uri=uri,
         sha256=sha256,
-        media_info=media_info,
+        media_info=artifact_data.media_info,
     )
 
 
@@ -317,68 +290,4 @@ def _probe_import_media_if_local(request: Request, uri: str) -> c.MediaInfo | No
     try:
         return probe_media(local_object_path(object_store(request), uri))
     except (FfmpegCommandError, OSError, ValueError):
-        return None
-
-
-def _media_info_from_import_metadata(
-    *,
-    uri: str,
-    kind: str,
-    content_type: str,
-    duration_sec: float | None,
-    width: int | None,
-    height: int | None,
-) -> c.MediaInfo | None:
-    media_type = _media_type_from_metadata(kind, content_type)
-    if media_type is None:
-        return None
-    suffix = Path(urlsplit(uri).path).suffix.lstrip(".")
-    return c.MediaInfo(
-        media_type=media_type,
-        codec="unknown",
-        format=suffix or content_type.split("/")[-1] or "unknown",
-        mime_type=content_type,
-        duration_sec=None if media_type == "image" else duration_sec,
-        width=width,
-        height=height,
-    )
-
-
-def _media_type_from_metadata(kind: str, content_type: str) -> str | None:
-    if content_type.startswith("video/") or kind in {"portrait", "broll", "video"}:
-        return "video"
-    if content_type.startswith("audio/") or kind in {"bgm", "voice", "voice_reference"}:
-        return "audio"
-    if content_type.startswith("image/") or kind in {"image", "cover_template"}:
-        return "image"
-    return None
-
-
-def _filename_from_uri(uri: str, *, fallback: str) -> str:
-    filename = Path(unquote(urlsplit(uri).path)).name
-    return filename or fallback or "imported-media"
-
-
-def _optional_str(value) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _optional_float(value) -> float | None:
-    if value is None or value == "":
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _optional_int(value) -> int | None:
-    if value is None or value == "":
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
         return None

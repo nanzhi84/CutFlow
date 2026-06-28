@@ -3,9 +3,9 @@ import { ChevronLeft, ChevronRight, Info, Link2, Loader2, Play } from "lucide-re
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, type ApiError } from "../../api/client";
-import { ErrorState, LoadingState } from "../../components/State";
+import { ErrorState, LoadingState } from "../../components/ui/State";
 import { StudioTabs } from "../../components/StudioTabs";
-import { useToast } from "../../components/Toast";
+import { useToast } from "../../components/ui/Toast";
 import {
   ConfigSummary,
   PostProcessStep,

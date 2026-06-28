@@ -56,6 +56,7 @@ class FakeObjectStore:
         content_key: str | None = None,
         tier: str = "durable",
     ) -> ObjectRef:
+        _ = content_key
         self.prepare_calls.append({"filename": filename, "purpose": purpose, "tier": tier})
         return ObjectRef(bucket="cutagent-ephemeral", key=f"{purpose}/{filename}", uri=f"local://cutagent-ephemeral/{purpose}/{filename}")
 
@@ -81,7 +82,7 @@ class FakeYDL:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
         return None
 
     def extract_info(self, url: str, download: bool = False) -> dict:
@@ -89,6 +90,7 @@ class FakeYDL:
         return dict(self.info)
 
     def download(self, urls: list[str]) -> int:
+        _ = urls
         FakeYDL.download_calls += 1
         target = Path(str(self.opts["outtmpl"]).replace("%(ext)s", "m4a"))
         target.parent.mkdir(parents=True, exist_ok=True)

@@ -22,8 +22,50 @@ OBJECTSTORE_SECRET_KEY="${CUTAGENT_OBJECTSTORE_SECRET_KEY:-minioadmin}"
 OBJECTSTORE_BUCKET="${CUTAGENT_OBJECTSTORE_BUCKET:-cutagent-local}"
 EPHEMERAL_OBJECTSTORE_BUCKET="${CUTAGENT_EPHEMERAL_OBJECTSTORE_BUCKET:-cutagent-ephemeral}"
 
+TIMEOUT_BIN=""
+if command -v timeout >/dev/null 2>&1; then
+  TIMEOUT_BIN="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+  TIMEOUT_BIN="gtimeout"
+fi
+
+run_with_timeout() {
+  if [ -n "$TIMEOUT_BIN" ]; then
+    "$TIMEOUT_BIN" -k 5 600 "$@"
+    return
+  fi
+
+  "$PYTHON_BIN" - "$@" <<'PY'
+from __future__ import annotations
+
+import os
+import signal
+import subprocess
+import sys
+
+cmd = sys.argv[1:]
+process = subprocess.Popen(cmd, preexec_fn=os.setsid)
+try:
+    raise SystemExit(process.wait(timeout=600))
+except subprocess.TimeoutExpired:
+    print(f"command timed out after 600s: {' '.join(cmd)}", file=sys.stderr)
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    raise SystemExit(124)
+PY
+}
+
 run_pytest() {
-  timeout -k 5 600 "$PYTHON_BIN" -m pytest -q "$@"
+  run_with_timeout "$PYTHON_BIN" -m pytest -q "$@"
 }
 
 run_pytest

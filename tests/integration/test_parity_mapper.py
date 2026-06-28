@@ -47,6 +47,7 @@ if RUN_DB_TESTS:
         PublishRecordRow,
         UsageMeterRecordRow,
     )
+    from packages.core.storage.performance_mappers import performance_observation_to_row
     from packages.ops import SqlAlchemyOpsRepository
     from packages.production import SqlAlchemyProductionRepository
     from packages.production.sqlalchemy_mappers import (
@@ -377,7 +378,7 @@ def test_publish_record_and_performance_observation_existing_mappers_round_trip(
         updated_at=now,
     )
     with session_factory() as session:
-        session.add(production._observation_row_from_contract(observation))
+        session.add(performance_observation_to_row(observation))
         session.commit()
         publish_row = session.scalar(
             select(PublishRecordRow).where(PublishRecordRow.id == publish_record_id)

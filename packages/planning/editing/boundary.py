@@ -1,4 +1,4 @@
-"""Semantic + audio-pause boundary assembly (ported from editing_agent/semantic_audio.py).
+"""Semantic + audio-pause boundary assembly.
 
 Pure functions: read narration units (+ optional pause windows) + target duration and
 emit ordered boundary entries. When pause windows are given, semantic sentence-ends

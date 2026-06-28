@@ -4,10 +4,10 @@ import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, type ApiError, type CaseListItem, type CreateCaseRequest } from "../../api/client";
 import { CaseModal } from "../../components/modals/CaseModal";
-import { EmptyState, ErrorState, LoadingState } from "../../components/State";
+import { EmptyState, ErrorState, LoadingState } from "../../components/ui/State";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { SearchInput } from "../../components/ui/SearchInput";
-import { useToast } from "../../components/Toast";
+import { useToast } from "../../components/ui/Toast";
 import { TimeText } from "../../components/TimeText";
 import { routes } from "../../routes";
 

@@ -33,10 +33,27 @@ RUN_DIR="$ROOT/.data/dev"
 INFRA_SERVICES=(postgres redis minio temporal temporal-ui)
 DASHSCOPE_NO_PROXY_HOSTS=(dashscope.aliyuncs.com)
 
+main_checkout_dir() {
+  local common_dir
+  common_dir="$(git -C "$ROOT" rev-parse --git-common-dir 2>/dev/null || true)"
+  if [[ -n "$common_dir" ]]; then
+    [[ "$common_dir" == /* ]] || common_dir="$ROOT/$common_dir"
+    if [[ "$(basename "$common_dir")" == ".git" ]]; then
+      dirname "$common_dir"
+      return 0
+    fi
+  fi
+  case "$ROOT" in
+    */.claude/worktrees/*) printf '%s\n' "${ROOT%%/.claude/worktrees/*}" ;;
+    *) printf '%s\n' "$ROOT" ;;
+  esac
+}
+
 # Infra is owned by the main checkout's compose project. Pin its name + file so
 # running from a worktree reuses the existing containers instead of spinning up
 # a duplicate set (which would collide on :55432 / :7233 / :9000).
-COMPOSE_DIR="${ROOT%/.claude/worktrees/*}"
+COMPOSE_DIR="$(main_checkout_dir)"
+[[ -f "$COMPOSE_DIR/docker-compose.yml" ]] || COMPOSE_DIR="$ROOT"
 COMPOSE_PROJECT="$(basename "$COMPOSE_DIR")"
 
 # venv: prefer this checkout's .venv, else the main checkout's (worktrees share it).
@@ -45,7 +62,7 @@ if [[ -z "$VENV" ]]; then
   if [[ -x "$ROOT/.venv/bin/python" ]]; then
     VENV="$ROOT/.venv"
   else
-    VENV="${ROOT%/.claude/worktrees/*}/.venv"
+    VENV="$COMPOSE_DIR/.venv"
   fi
 fi
 PY="$VENV/bin/python"

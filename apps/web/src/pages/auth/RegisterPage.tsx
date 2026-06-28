@@ -3,8 +3,8 @@ import { ArrowRight, CheckCircle2, KeyRound, Loader2, ShieldCheck, Sparkles } fr
 import { useState } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../api/client";
-import { ErrorState } from "../../components/State";
-import { useToast } from "../../components/Toast";
+import { ErrorState } from "../../components/ui/State";
+import { useToast } from "../../components/ui/Toast";
 import { routes } from "../../routes";
 import { useAuth } from "./AuthContext";
 

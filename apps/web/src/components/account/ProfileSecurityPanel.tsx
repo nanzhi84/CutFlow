@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, KeyRound, Loader2, UserCircle2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, type AuthUser } from "../../api/client";
-import { useToast } from "../Toast";
+import { useToast } from "../ui/Toast";
 
 export function ProfileSecurityPanel({ user }: { user: AuthUser | null }) {
   const [displayName, setDisplayName] = useState(user?.display_name ?? "");

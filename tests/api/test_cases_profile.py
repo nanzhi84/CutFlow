@@ -62,10 +62,13 @@ def test_material_count_includes_unified_video_assets():
 
 def test_case_count_material_kind_allowlists_include_unified_video_assets():
     from apps.api.services.cases import MATERIAL_ASSET_KINDS as API_MATERIAL_ASSET_KINDS
+    from packages.core.contracts import CASE_MATERIAL_ASSET_KINDS
     from packages.creative.cases.sqlalchemy_repository import (
         MATERIAL_ASSET_KINDS as SQLA_MATERIAL_ASSET_KINDS,
     )
 
+    assert API_MATERIAL_ASSET_KINDS is CASE_MATERIAL_ASSET_KINDS
+    assert SQLA_MATERIAL_ASSET_KINDS is CASE_MATERIAL_ASSET_KINDS
     assert "video" in API_MATERIAL_ASSET_KINDS
     assert "video" in SQLA_MATERIAL_ASSET_KINDS
 

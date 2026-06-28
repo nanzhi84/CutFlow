@@ -1,6 +1,6 @@
 # tests
 
-按域组织的 pytest 套件（200+ 个测试文件）。默认只跑不依赖外部基础设施的单测；DB / Temporal 集成测试通过 env flag 显式 opt-in。
+按域组织的 pytest 套件。默认只跑不依赖外部基础设施的单测；DB / Temporal 集成测试通过 env flag 显式 opt-in。
 
 ## 布局
 - 按域分目录：`api` `core` `creative` `media` `planning` `production` `publishing` `ops` `observability` `providers` `prompts` `connectors` `import` `scripts` `workflow` `frontend` `storage`。其中 `media/annotation/` 是唯一的二级嵌套测试簇（16 个 `test_*.py`）。
@@ -20,7 +20,7 @@
 - 测试默认显式开了 sandbox fallback（与生产相反），勿据此以为生产会回退 sandbox。
 
 ## 运行
-- 默认：`timeout -k 5 600 python -m pytest -q`
+- 默认：`python -m pytest -q`；完整门禁脚本会给 pytest 段加 600s 超时保护。
 - DB 集成（opt-in）：`CUTAGENT_RUN_DB_TESTS=1` + `CUTAGENT_STORAGE_BACKEND=sqlalchemy` + `CUTAGENT_DATABASE_URL=…` → `pytest -q tests/integration`
 - Temporal（opt-in）：`CUTAGENT_RUN_TEMPORAL_TESTS=1` + 真实 Temporal + 共享 MinIO 对象存储 env → `pytest -q tests/temporal`
 - 完整门禁：`scripts/ci_gate.sh`（镜像 `.github/workflows/ci.yml`）。

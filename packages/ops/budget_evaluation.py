@@ -1,11 +1,10 @@
-"""§9.8 预算执行 — evaluate current-period spend against a Budget.
+"""Evaluate current-period spend against a Budget.
 
-Restores the OLD ``quota_monitor`` cost-ceiling story (daily_cost_limit_cny + 75/90%
-threshold alerts) on the new Budget contract. ``evaluate_budget`` computes spend for
-a budget's scope over the current period (day/week/month) and reports the ratio,
-whether the ``alert_threshold`` was crossed, and whether the limit was exceeded.
-The ops repository turns crossings/exceedances into ``OpsAlertEvent`` and (per env
-policy) can block over-budget provider calls.
+``evaluate_budget`` computes spend for a budget's scope over the current period
+(day/week/month) and reports the ratio, whether the ``alert_threshold`` was
+crossed, and whether the limit was exceeded. The ops repository turns
+crossings/exceedances into ``OpsAlertEvent`` and, per env policy, can block
+over-budget provider calls.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ def period_start(period: str, now: datetime) -> datetime:
     """Start of the current budget period containing ``now`` (UTC).
 
     ``day`` -> midnight UTC today; ``week`` -> Monday 00:00 UTC; ``month`` -> 1st
-    00:00 UTC. Matches the OLD per-day reset semantics for ``day`` budgets."""
+    00:00 UTC."""
 
     now = now.astimezone(timezone.utc) if now.tzinfo else now.replace(tzinfo=timezone.utc)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)

@@ -11,13 +11,13 @@ skipping ``VideoVersion`` entirely.
 
 from __future__ import annotations
 
-from packages.core.contracts import ArtifactKind, ErrorCode, FinishedVideo, NodeStatus
-from packages.core.observability import record_funnel_event
+from packages.core.contracts import ArtifactKind, ErrorCode, FinishedVideo
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.production.finished_video_numbering import next_finished_video_number
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline.nodes.export_finished_video import (
+    _create_publish_package_artifact,
     _frame_cover,
     _resolve_owner_user_id,
 )
@@ -28,7 +28,6 @@ _DEFAULT_DURATION_SEC = 15.0
 def run(ctx: NodeContext) -> NodeOutput:
     state = ctx.state
     run = ctx.run
-    node_run = ctx.node_run
     repository = ctx.repository
     video = state.require(ArtifactKind.video_rendered)
 
@@ -66,36 +65,10 @@ def run(ctx: NodeContext) -> NodeOutput:
         lipsync_fallback_used=False,
     )
     repository.finished_videos[finished.id] = finished
-    package = repository.create_publish_package_from_finished_video(
+    package_artifact = _create_publish_package_artifact(
+        ctx,
         finished,
-        title=finished.title,
         description=state.request.publish_content,
-    )
-    repository.create_event(
-        "workflow.finished_video.created",
-        "run",
-        run.id,
-        {"finished_video_id": finished.id, "publish_package_id": package.id},
-        dedupe_key=f"finished_video:{finished.id}",
-        event_type="artifact_created",
-        node_id=node_run.node_id,
-        status=NodeStatus.running.value,
-        message=f"Finished video {finished.id} created.",
-    )
-    record_funnel_event(
-        repository,
-        event_type="finished_video_created",
-        job_id=run.job_id,
-        run_id=run.id,
-        finished_video_id=finished.id,
-        publish_package_id=package.id,
-        dedupe_key=f"{finished.id}:finished_video_created",
-        event_time=finished.created_at,
-    )
-    package_artifact = ctx.artifact(
-        ArtifactKind.publish_package,
-        package.model_dump(mode="json"),
-        "PublishPackageArtifact.v1",
     )
     artifacts = [video_artifact]
     if cover_artifact is not None:

@@ -4,7 +4,7 @@ Case 领域：自进化闭环算法、指标导入匹配、Case/学习的 DB 落
 
 ## 职责
 - 自进化纯算法：`cases/evolution.py`（指标评分/特征抽取）+ `cases/rubric.py`（case_rubric_v1 评分卡、盲预测、复盘、升版）。
-- 指标导入匹配：`cases/metrics_import.py`（§25.4 / §25.1）—— `match_metrics_rows`（按 matching policy 把导入行匹配到 publish record）、`observation_contract_from_match`。
+- 指标导入匹配：`cases/metrics_import.py` —— `match_metrics_rows`（按 matching policy 把导入行匹配到 publish record）、`observation_contract_from_match`。
 - DB 落库：`cases/sqlalchemy_learning.py`（脚本草稿 / 采用 / active hard-memory 读取）、`cases/sqlalchemy_learning_mappers.py`（ORM Row↔contract 映射）、`cases/sqlalchemy_repository.py`（Case CRUD + 派生计数）、`cases/sqlalchemy_rubric.py`（评分卡 / 预测 / 奖励 / 升版）。
 - 参考抽取：`reference_extract.py`（yt-dlp 取信息+字幕，`source`=subtitle/asr，含抖音 `_DouyinExtract` 兜底）、`reference_cookies.py`（header/netscape/json 三格式 cookie 解析 + SecretStore 持久化）、`reference_browser.py`（Playwright 访客模式无头浏览器抓抖音视频流，cookie-free 兜底；被 `reference_extract.py` 在 HTTP/yt-dlp 被拦时调用，是生产链路兜底）。
 

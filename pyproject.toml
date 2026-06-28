@@ -51,7 +51,11 @@ line-length = 100
 [tool.ruff.lint.per-file-ignores]
 "packages/core/storage/alembic/env.py" = ["E402"]
 "packages/core/storage/object_store.py" = ["E402"]
+"scripts/bootstrap_database.py" = ["E402"]
+"scripts/export_openapi.py" = ["E402"]
 "tests/conftest.py" = ["E402"]
+"tests/connectors/test_oceanengine_import.py" = ["E402"]
+"tests/temporal/test_temporal_runtime.py" = ["E402"]
 
 [build-system]
 requires = ["setuptools>=69"]

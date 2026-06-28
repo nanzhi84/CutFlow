@@ -1,43 +1,10 @@
 import { createIdempotencyKey, fetchJson } from "./client";
+import type { JsonRequest, JsonResponse, QueryParams } from "./client";
 import type { components, operations } from "./schema";
-
-type JsonRequest<Operation> = Operation extends {
-  requestBody: { content: { "application/json": infer Body } };
-}
-  ? Body
-  : never;
-
-type JsonResponse<Operation> = Operation extends {
-  responses: {
-    200: { content: { "application/json": infer Body } };
-  };
-}
-  ? Body
-  : Operation extends {
-        responses: {
-          201: { content: { "application/json": infer Body } };
-        };
-      }
-    ? Body
-    : Operation extends {
-          responses: {
-            202: { content: { "application/json": infer Body } };
-          };
-        }
-      ? Body
-      : never;
-
-type QueryParams<Operation> = Operation extends {
-  parameters: { query?: infer Query };
-}
-  ? Query
-  : never;
 
 const enc = encodeURIComponent;
 
-export type AgentDraft = components["schemas"]["ScriptDraft"];
 export type ScorePrediction = components["schemas"]["ScorePrediction"];
-export type EditorHandoffResult = components["schemas"]["EditorHandoffPackageArtifact"];
 export type JianyingDraftResult = components["schemas"]["JianyingDraftPackageArtifact"];
 export type ProviderBalanceReport = components["schemas"]["ProviderBalanceReport"];
 export type ProviderBalanceItem = components["schemas"]["ProviderBalanceItem"];
@@ -45,20 +12,6 @@ export type ProviderUsageMetricsReport = components["schemas"]["ProviderUsageMet
 export type ProviderUsageMetricsItem = components["schemas"]["ProviderUsageMetricsItem"];
 
 export const caseAgentApi = {
-  drafts: (caseId: string, query: QueryParams<operations["script_drafts_api_cases__case_id__agent_drafts_get"]> = {}) =>
-    fetchJson<JsonResponse<operations["script_drafts_api_cases__case_id__agent_drafts_get"]>>(
-      `/api/cases/${enc(caseId)}/agent/drafts`,
-      { query },
-    ),
-  adoptDraft: (
-    caseId: string,
-    draftId: string,
-    payload: JsonRequest<operations["adopt_script_draft_api_cases__case_id__agent_drafts__draft_id__adopt_post"]>,
-  ) =>
-    fetchJson<JsonResponse<operations["adopt_script_draft_api_cases__case_id__agent_drafts__draft_id__adopt_post"]>>(
-      `/api/cases/${enc(caseId)}/agent/drafts/${enc(draftId)}/adopt`,
-      { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("agent_draft_adopt") },
-    ),
   generateScript: (
     caseId: string,
     payload: JsonRequest<operations["generate_script_with_memory_api_cases__case_id__scripts_generate_with_memory_post"]>,
@@ -108,14 +61,6 @@ export const caseRubricApi = {
 };
 
 export const editorHandoffApi = {
-  createEditorHandoff: (
-    videoId: string,
-    payload: JsonRequest<operations["editor_handoff_api_finished_videos__id__editor_handoff_post"]>,
-  ) =>
-    fetchJson<JsonResponse<operations["editor_handoff_api_finished_videos__id__editor_handoff_post"]>>(
-      `/api/finished-videos/${enc(videoId)}/editor-handoff`,
-      { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("editor_handoff") },
-    ),
   createJianyingDraft: (
     videoId: string,
     payload: JsonRequest<operations["jianying_draft_api_finished_videos__id__jianying_draft_post"]>,

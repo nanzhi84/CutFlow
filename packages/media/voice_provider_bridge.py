@@ -3,7 +3,7 @@ from __future__ import annotations
 from packages.core import contracts as c
 from packages.core.storage.database import ArtifactRow, UploadSessionRow, VoiceProfileRow
 from packages.core.storage.repository import Repository
-from packages.core.storage.sqlalchemy_uploads import upload_row_to_contract
+from packages.core.storage.sqlalchemy_uploads import artifact_to_row, upload_row_to_contract
 from packages.core.workflow import NodeExecutionError
 from packages.media.sqlalchemy_repository import artifact_ref_from_row, voice_row_to_contract
 
@@ -61,27 +61,7 @@ def persist_provider_preview(media_repository, voice_id: str, artifact: c.Artifa
     with media_repository.session_factory() as session:
         row = session.get(ArtifactRow, artifact.id)
         if row is None:
-            row = ArtifactRow(
-                id=artifact.id,
-                case_id=artifact.case_id,
-                run_id=artifact.run_id,
-                node_run_id=artifact.node_run_id,
-                kind=artifact.kind.value,
-                uri=artifact.uri,
-                local_path=artifact.local_path,
-                oss_uri=artifact.oss_uri,
-                size_bytes=artifact.size_bytes,
-                immutable=artifact.immutable,
-                retention_policy=artifact.retention_policy,
-                sha256=artifact.sha256,
-                media_info=artifact.media_info.model_dump(mode="json") if artifact.media_info else None,
-                payload_schema=artifact.payload_schema,
-                payload=artifact.payload,
-                created_by_node_run_id=artifact.created_by_node_run_id,
-                schema_version=artifact.schema_version,
-                created_at=artifact.created_at,
-                updated_at=artifact.updated_at,
-            )
+            row = artifact_to_row(artifact)
             session.add(row)
         voice = session.get(VoiceProfileRow, voice_id)
         if voice is None:

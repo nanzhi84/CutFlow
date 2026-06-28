@@ -75,7 +75,8 @@ def main() -> int:
     new = [a for a in prod_assets if a["id"] not in local_asset_ids]
     log(f"prod media_assets={len(prod_assets)} local={len(local_asset_ids)} new-to-sync={len(new)}")
     if not new:
-        log("nothing to sync."); return 0
+        log("nothing to sync.")
+        return 0
 
     ma_cols = columns(lc, "media_assets")
     art_cols = columns(lc, "artifacts")
@@ -109,7 +110,8 @@ def main() -> int:
         local.commit()
     log(f"sync: assets={synced_assets} source_artifacts={synced_arts} "
         f"({'applied' if args.apply else 'dry-run'})")
-    prod.close(); local.close()
+    prod.close()
+    local.close()
     return 0
 
 

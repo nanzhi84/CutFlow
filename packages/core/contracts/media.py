@@ -112,6 +112,7 @@ class MediaAssetRecord(EntityMeta):
 
 
 SelectionMedium = Literal["portrait", "broll", "bgm", "font"]
+CASE_MATERIAL_ASSET_KINDS = frozenset({"portrait", "broll", "video", "bgm", "font"})
 
 
 class SelectionLedgerEntry(ContractModel):
@@ -419,9 +420,9 @@ class SyncVoicesResponse(ContractModel):
 # share one schema; semantic fields are a unified superset, each optional and
 # filled per material_type. Strict validators are the quality-gate safety net:
 # illegal time ranges raise rather than silently coerce. The VLM-driven
-# annotation pipeline (a later step) populates the semantic layers; the sensors
-# ported here populate shot cuts, speech islands, quality events, windows, and
-# the deterministic quality report.
+# annotation pipeline populates the semantic layers; the sensors populate shot
+# cuts, speech islands, quality events, windows, and the deterministic quality
+# report.
 
 
 class AnnotationVersion(str, Enum):

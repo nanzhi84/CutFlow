@@ -115,7 +115,7 @@ class MiniMaxTTSProvider:
             payload["voice_setting"]["emotion"] = emotion
         # Opt-in TTS-native precise subtitles. MiniMax splits subtitle segments
         # on NEWLINES (not punctuation) and ignores ``\n`` for speech, so the
-        # synthesized audio is byte-identical; only the subtitle text is the
+        # speech content is unchanged; only the subtitle text is the
         # one-sentence-per-line split. If the split yields nothing, keep the
         # original text and skip subtitles.
         subtitle_requested = bool(call.input.get("subtitle"))

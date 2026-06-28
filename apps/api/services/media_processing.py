@@ -91,7 +91,7 @@ def trim_annotation(
 def replace_asset_source(
     asset_id: str, payload: c.MediaAssetReplaceSourceRequest, request: Request
 ) -> c.MediaAssetReplaceResponse:
-    # Capture the OLD source duration BEFORE swapping the source artifact, so the
+    # Capture the existing source duration BEFORE swapping the source artifact, so the
     # duration-drift guard can compare against the replacement.
     old_duration = _annotated_old_duration(request, asset_id)
     artifact = _upload_artifact(request, payload.upload_session_id)
@@ -99,10 +99,10 @@ def replace_asset_source(
 
     asset = _replace_with_existing_artifact(request, asset_id, artifact["artifact_id"], "replaced")
 
-    # Duration-drift guard (Spec §2.3 no-silent-degrade): replacing with a
+    # Duration-drift guard: replacing with a
     # differently-timed clip would leave the preserved annotation's clips /
     # usage_windows / quality_events pointing past or into the wrong frames. Within
-    # the 0.15s threshold (OLD: template_upload_runner) the annotation is preserved
+    # the 0.15s threshold the annotation is preserved
     # as-is; beyond it we re-clip the canonical to the new duration (clamp time
     # layers). If re-clipping can't yield a valid annotation, the annotation is
     # invalidated (annotation_status=pending) and preserved_annotation=false -- we
@@ -129,7 +129,7 @@ def replace_asset_source(
 
 
 def _annotated_old_duration(request: Request, asset_id: str) -> float | None:
-    """OLD media duration to compare against the replacement.
+    """Existing media duration to compare against the replacement.
 
     Prefers the annotation canonical's meta.duration (what the annotation was timed
     against), then the current source artifact's media_info, then probing it. None when

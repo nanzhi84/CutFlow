@@ -175,7 +175,7 @@ def ensure_supporting_files(draft_dir: Path) -> None:
         (draft_dir / alias).write_text(content_text, encoding="utf-8")
 
 
-def draft_meta(root: Path, draft_dir: Path, draft_name: str, draft_id: str, duration_us: int, size: int, created_us: int) -> dict[str, Any]:
+def draft_meta(draft_name: str, draft_id: str, duration_us: int, size: int, created_us: int) -> dict[str, Any]:
     return {
         "draft_fold_path": draft_name,
         "draft_id": draft_id,
@@ -190,7 +190,7 @@ def draft_meta(root: Path, draft_dir: Path, draft_name: str, draft_id: str, dura
     }
 
 
-def root_meta(root: Path, draft_dir: Path, draft_name: str, draft_id: str, duration_us: int, size: int, created_us: int) -> dict[str, Any]:
+def root_meta(draft_name: str, draft_id: str, duration_us: int, size: int, created_us: int) -> dict[str, Any]:
     return {
         "all_draft_store": [
             {

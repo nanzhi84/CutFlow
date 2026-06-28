@@ -40,7 +40,7 @@ export type FormState = {
 
 export const STORAGE_KEY = "m6ar_studio_create_preferences_v1";
 
-export const defaultForm: FormState = {
+const defaultForm: FormState = {
   title: "",
   script: "先指出内容生产低效。再展示 Case Memory 如何复用经验。最后推动发布复盘。",
   scriptVersionId: null,

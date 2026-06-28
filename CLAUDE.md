@@ -1,12 +1,12 @@
 # Cutagent（树影） · Clean-Slate
 
-Case-first 数字人短视频内容生产系统。Python（FastAPI + Temporal）+ TypeScript（React/Vite）monorepo，**contract-first**：FastAPI 是 OpenAPI 唯一事实源。产品/上手详见 `README.md`，能力权威清单见 `docs/树影_Cutagent_CleanSlate重写Spec_v3_2026-06-11.md`（§2 / §34）。
+Case-first 数字人短视频内容生产系统。Python（FastAPI + Temporal）+ TypeScript（React/Vite）monorepo，**contract-first**：FastAPI 是 OpenAPI 唯一事实源。产品/上手详见 `README.md`，长期文档入口见 `docs/README.md`，能力边界以当前代码、README 与关键设计决策为准。
 
 ## 仓库地图（改对应代码前先读该目录的 CLAUDE.md）
 
 - `apps/`：`api`（FastAPI）· `worker`（Temporal worker，独立进程）· `web`（React/Vite SPA）· `connectors`（OceanEngine 离线 ETL CLI）
 - `packages/`：`core`（contracts/storage【含对象存储 + secret 信封加密】/config/auth/observability/workflow）· `ai`（gateway/prompts/providers）· `creative`（Case/脚本/自进化）· `media` · `planning` · `production`（多工作流流水线：主链 digital_human_v2 16 节点，另有 broll_only_v1 13 节点 / seedance_t2v_v1 5 节点模板）· `publishing` · `ops` · `migrations`（保留目录约定，**非** Alembic）
-- `tests/`（按域）· `scripts/` · `deploy/`（Temporal 配置）· `docs/`
+- `tests/`（按域）· `scripts/` · `deploy/`（Temporal 配置）· `docs/`（入口：`docs/README.md`）
 
 ## 关键命令
 
@@ -19,14 +19,14 @@ python -m uvicorn apps.api.main:app --reload --port 8000
 python -m apps.worker                # 独立进程
 (cd apps/web && npm run dev)
 python -m pytest -q                  # 单测；完整门禁 scripts/ci_gate.sh
-python scripts/export_openapi.py && (cd apps/web && npm run generate:api)   # 改契约后重生成
+uv run --extra dev python scripts/export_openapi.py && (cd apps/web && npm run generate:api)   # 改契约后重生成
 ```
 
 ## 全局约定（必须遵守）
 
 - **Contract-first**：改任何 API 形状 → 必须重生成 `apps/web/src/api/openapi.json` + `schema.d.ts`（CI 校验漂移）。`schema.d.ts` 是生成物，**禁止手改**。
 - 领域类型唯一来源 `packages/core/contracts`（Pydantic v2），跨包共享走它。
-- DB schema 迁移**只**在 `packages/core/storage/alembic/versions/`（当前 `0001…0022`，单一 head `0022_drop_publish_hashtags`；`0012` 从 `0011` 分叉出 `case_rubric` / `selection_ledger_clip_id` 两支、由 merge revision `0014` 合并；`0018` 两个同号文件是线性顺接、非分叉）。
+- DB schema 迁移**只**在 `packages/core/storage/alembic/versions/`（当前 `0001…0022`，单一 head `0022_drop_publish_hashtags`；`0012` 从 `0011` 分叉出 `case_rubric` / `selection_ledger_clip_id` 两支，`0013` 接在 selection 分支后，由 merge revision `0014` 合并；两个 `0018` 文件是线性顺接、非分叉）。
 - 存储/运行时/对象存储后端由 `Settings`（`CUTAGENT_*` env）切换，清单见 `.env.example`。
 - 外部 AI/媒体调用一律经 `ProviderGateway` 按能力分发；prompt 不得硬编码，经 registry + binding，生产只解析 published 版本。
 - 真实 provider 未配置时**显式报错**；`CUTAGENT_ALLOW_SANDBOX_FALLBACK=1` 才回退 sandbox。

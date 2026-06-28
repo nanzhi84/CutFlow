@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
-from urllib.parse import unquote, urlsplit
-
 from packages.core.contracts import (
     AnnotationBatchRequest,
-    Artifact,
     ArtifactKind,
     ArtifactRef,
     CaseDetail,
@@ -18,13 +14,10 @@ from packages.core.contracts import (
     Job,
     JobStatus,
     JobType,
-    MediaInfo,
     NodeError,
     NodeRun,
     NodeStatus,
     CreativeFeatureVector,
-    PerformanceObservation,
-    PerformanceScore,
     PublishBatchRequest,
     PublishRecord,
     RunStatus,
@@ -39,12 +32,15 @@ from packages.core.storage.database import (
     ImportBatchReportRow,
     JobRow,
     NodeRunRow,
-    PerformanceObservationRow,
-    PerformanceScoreRow,
     PublishRecordRow,
     VideoVersionRow,
     WorkflowRunRow,
 )
+from packages.core.storage.performance_mappers import (
+    performance_observation_row_to_contract as performance_observation_row_to_contract,
+    performance_score_row_to_contract as performance_score_row_to_contract,
+)
+from packages.core.storage.sqlalchemy_uploads import artifact_row_to_contract as artifact_row_to_contract
 
 
 def artifact_ref_from_row(row: ArtifactRow) -> ArtifactRef:
@@ -54,30 +50,6 @@ def artifact_ref_from_row(row: ArtifactRow) -> ArtifactRef:
         uri=row.uri or f"artifact://{row.id}",
         schema_version=row.schema_version,
         sha256=row.sha256,
-    )
-
-
-def artifact_row_to_contract(row: ArtifactRow) -> Artifact:
-    return Artifact(
-        id=row.id,
-        case_id=row.case_id,
-        run_id=row.run_id,
-        node_run_id=row.node_run_id,
-        kind=ArtifactKind(row.kind),
-        uri=row.uri,
-        local_path=row.local_path,
-        oss_uri=row.oss_uri,
-        size_bytes=row.size_bytes,
-        immutable=row.immutable,
-        retention_policy=row.retention_policy,
-        sha256=row.sha256,
-        media_info=row.media_info,
-        payload_schema=row.payload_schema,
-        payload=row.payload,
-        created_by_node_run_id=row.created_by_node_run_id,
-        schema_version=row.schema_version,
-        created_at=row.created_at,
-        updated_at=row.updated_at,
     )
 
 
@@ -221,55 +193,6 @@ def publish_record_row_to_contract(row: PublishRecordRow) -> PublishRecord:
     )
 
 
-def performance_observation_row_to_contract(row: PerformanceObservationRow) -> PerformanceObservation:
-    return PerformanceObservation(
-        id=row.id,
-        case_id=row.case_id,
-        publish_record_id=row.publish_record_id,
-        video_version_id=row.video_version_id,
-        platform=row.platform,
-        account_id=row.account_id,
-        window=row.window,
-        metric_name=row.metric_name,
-        metric_value=row.metric_value,
-        impressions=row.impressions,
-        views=row.views,
-        avg_watch_sec=row.avg_watch_sec,
-        completion_rate=row.completion_rate,
-        like_rate=row.like_rate,
-        comment_rate=row.comment_rate,
-        share_rate=row.share_rate,
-        follow_rate=row.follow_rate,
-        conversion_count=row.conversion_count,
-        conversion_rate=row.conversion_rate,
-        raw_metrics=dict(row.raw_metrics or {}),
-        observed_at=row.observed_at,
-        schema_version=row.schema_version,
-        created_at=row.created_at,
-        updated_at=row.updated_at,
-    )
-
-
-def performance_score_row_to_contract(row: PerformanceScoreRow) -> PerformanceScore:
-    return PerformanceScore(
-        id=row.id,
-        observation_id=row.observation_id,
-        case_id=row.case_id,
-        video_version_id=row.video_version_id,
-        platform=row.platform,
-        account_id=row.account_id,
-        window=row.window,
-        primary_metric=row.primary_metric,
-        normalized_score=row.normalized_score,
-        confidence=row.confidence,
-        sample_size=row.sample_size,
-        excluded_reason=row.excluded_reason,
-        schema_version=row.schema_version,
-        created_at=row.created_at,
-        updated_at=row.updated_at,
-    )
-
-
 def creative_feature_vector_row_to_contract(row: CreativeFeatureVectorRow) -> CreativeFeatureVector:
     return CreativeFeatureVector(
         id=row.id,
@@ -321,67 +244,3 @@ def _report_row(report: ImportBatchReport) -> ImportBatchReportRow:
         results=[item.model_dump(mode="json") for item in report.results],
         mapping_artifact_id=report.mapping_artifact_id,
     )
-
-
-def _media_info_from_import_metadata(
-    *,
-    uri: str,
-    kind: str,
-    content_type: str,
-    duration_sec: float | None,
-    width: int | None,
-    height: int | None,
-) -> MediaInfo | None:
-    media_type = _media_type_from_metadata(kind, content_type)
-    if media_type is None:
-        return None
-    suffix = Path(urlsplit(uri).path).suffix.lstrip(".")
-    return MediaInfo(
-        media_type=media_type,
-        codec="unknown",
-        format=suffix or content_type.split("/")[-1] or "unknown",
-        mime_type=content_type,
-        duration_sec=None if media_type == "image" else duration_sec,
-        width=width,
-        height=height,
-    )
-
-
-def _media_type_from_metadata(kind: str, content_type: str) -> str | None:
-    if content_type.startswith("video/") or kind in {"portrait", "broll", "video"}:
-        return "video"
-    if content_type.startswith("audio/") or kind in {"bgm", "voice", "voice_reference"}:
-        return "audio"
-    if content_type.startswith("image/") or kind in {"image", "cover_template"}:
-        return "image"
-    return None
-
-
-def _filename_from_uri(uri: str, *, fallback: str) -> str:
-    filename = Path(unquote(urlsplit(uri).path)).name
-    return filename or fallback or "imported-media"
-
-
-def _optional_str(value) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _optional_float(value) -> float | None:
-    if value is None or value == "":
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _optional_int(value) -> int | None:
-    if value is None or value == "":
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None

@@ -1,11 +1,10 @@
-"""Audio-pause window matching (pure) — ported from editing_agent/audio_pause.py.
+"""Audio-pause window matching (pure).
 
-This is NOT pause *detection* (no ffmpeg / silencedetect — that is step 2b and out of
-scope). These helpers only MATCH already-supplied pause windows to a semantic
-boundary so the boundary planner can prefer cutting inside a real silence. A pause
-window is a dict ``{start, end, duration, center?}``. When no pause windows are
-given, the boundary planner falls back to semantic-only boundaries (these helpers
-are simply not consulted).
+This is NOT pause *detection* (no ffmpeg / silencedetect). These helpers only
+match already-supplied pause windows to a semantic boundary so the boundary
+planner can prefer cutting inside a real silence. A pause window is a dict
+``{start, end, duration, center?}``. When no pause windows are given, the
+boundary planner falls back to semantic-only boundaries.
 """
 
 from __future__ import annotations

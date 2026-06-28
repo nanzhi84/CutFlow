@@ -3,7 +3,7 @@ import { Loader2, RefreshCw, Save, UserPlus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, type AuthUser } from "../../api/client";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
-import { useToast } from "../Toast";
+import { useToast } from "../ui/Toast";
 import { displayTime, roleOptions, userStatusOptions } from "./accountModel";
 
 type UserDraft = {

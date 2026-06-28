@@ -473,21 +473,21 @@ export interface BgmSegment {
   source?: string;
 }
 
-export function asBgmRole(v: unknown): BgmSegmentRole {
+function asBgmRole(v: unknown): BgmSegmentRole {
   if (typeof v === "string" && (BGM_ROLES as string[]).includes(v)) {
     return v as BgmSegmentRole;
   }
   return "general";
 }
 
-export function asBgmSectionType(v: unknown): BgmSectionType {
+function asBgmSectionType(v: unknown): BgmSectionType {
   if (typeof v === "string" && (BGM_SECTION_TYPES as string[]).includes(v)) {
     return v as BgmSectionType;
   }
   return "general";
 }
 
-export function asBgmEnergyProfile(v: unknown): BgmEnergyProfile {
+function asBgmEnergyProfile(v: unknown): BgmEnergyProfile {
   if (typeof v === "string" && (BGM_ENERGY_PROFILES as string[]).includes(v)) {
     return v as BgmEnergyProfile;
   }

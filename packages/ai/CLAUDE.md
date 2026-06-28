@@ -17,7 +17,7 @@
 - `providers/seedance.py` — ArkSeedanceProvider（火山方舟 Ark，`video.generate` 文/图生视频）
 - `providers/volcengine_tts.py` — VolcengineTTSProvider（火山豆包 TTS，`tts.speech`，data/management 双 auth plane）
 - `providers/volc_openapi.py` — 火山管理面 OpenAPI（speech_saas_prod，AK/SK V4 签名；音色列表/签发 x-api-key，余额账单口径见 ops）
-- `providers/_volc_sigv4.py` — 火山 V4 签名（HMAC-SHA256）集中实现，seedance + volc_openapi 共用
+- `providers/_volc_sigv4.py` — 火山 V4 签名（HMAC-SHA256）集中实现，seedance / volc_openapi / 余额 poller 共用
 - `providers/common.py` — HTTP 封装：`map_http_status`（HTTP 状态→ProviderRuntimeError 映射）、`require_secret`
 - `gateway/sqlalchemy_repository.py` — `SqlAlchemyProviderRuntimeRepository`：gateway 的 DB 后端运行时读取（profile / price / secret 活性）
 - `prompts/registry.py` — PromptRegistry：`resolve_published_version`/`render`/`validate_output` + `extract_script_from_output`；仅解析 status==published 的绑定版本

@@ -19,6 +19,10 @@ from packages.core.config import build_providers_settings, build_publishing_sett
 _INFRA_ENV_VARS = (
     "CUTAGENT_STORAGE_BACKEND",
     "CUTAGENT_DATABASE_URL",
+    "CUTAGENT_DB_POOL_SIZE",
+    "CUTAGENT_DB_MAX_OVERFLOW",
+    "CUTAGENT_DB_POOL_RECYCLE",
+    "CUTAGENT_DB_POOL_TIMEOUT",
     "CUTAGENT_OBJECTSTORE_TIERED",
     "CUTAGENT_OBJECTSTORE_BACKEND",
     "CUTAGENT_OBJECTSTORE_BUCKET",
@@ -51,10 +55,48 @@ _INFRA_ENV_VARS = (
     "CUTAGENT_REGISTRATION_OPEN",
     "CUTAGENT_REGISTRATION_CODE_SALT",
     "CUTAGENT_SEED_LOCAL_AUTH",
+    "CUTAGENT_AUTH_MAX_LOGIN_ATTEMPTS",
+    "CUTAGENT_AUTH_LOGIN_WINDOW_MINUTES",
+    "CUTAGENT_AUTH_MAX_REGISTRATION_ATTEMPTS",
+    "CUTAGENT_AUTH_REGISTRATION_WINDOW_MINUTES",
+    "CUTAGENT_AUTH_TRUST_FORWARDED_FOR",
+    "CUTAGENT_AUTH_COOKIE_SECURE",
     "CUTAGENT_SECRET_STORE_DIR",
     "CUTAGENT_FFMPEG_BIN",
     "CUTAGENT_FFPROBE_BIN",
     "CUTAGENT_DISABLE_BACKGROUND_DISPATCHER",
+    "CUTAGENT_MOTION_GUARD_SAMPLE_FPS",
+    "CUTAGENT_MOTION_GUARD_WIDTH",
+    "CUTAGENT_MOTION_GUARD_WINDOW_SEC",
+    "CUTAGENT_MOTION_GUARD_HOP_SEC",
+    "CUTAGENT_MOTION_GUARD_ACTIVE_PX",
+    "CUTAGENT_MOTION_GUARD_HARD_PX",
+    "CUTAGENT_MOTION_GUARD_P95_HARD_PX",
+    "CUTAGENT_MOTION_GUARD_TAIL_Y_RANGE_HARD_PX",
+    "CUTAGENT_MOTION_GUARD_TAIL_NET_Y_HARD_PX",
+    "CUTAGENT_MOTION_GUARD_SMOOTH_MOVE_STRAIGHTNESS",
+    "CUTAGENT_MOTION_GUARD_SMOOTH_MOVE_FLIP_RATIO",
+    "CUTAGENT_MOTION_GUARD_SWEEP_AXIS_RATIO",
+    "CUTAGENT_MOTION_GUARD_JITTER_FLIP_RATIO",
+    "CUTAGENT_MOTION_GUARD_JITTER_JERK_RATIO",
+    "CUTAGENT_MOTION_GUARD_REFINE_MIN_DURATION",
+    "CUTAGENT_MOTION_GUARD_REFINE_ROUND_SEC",
+    "CUTAGENT_UPLOAD_MAX_SIZE_BYTES",
+    "CUTAGENT_UPLOAD_CHUNK_BYTES",
+    "CUTAGENT_UPLOAD_NORMALIZE_VIDEO",
+    "CUTAGENT_BALANCE_POLLER_ENABLED",
+    "CUTAGENT_BALANCE_POLL_INTERVAL_SECONDS",
+    "CUTAGENT_BALANCE_REQUEST_TIMEOUT_SECONDS",
+    "CUTAGENT_LEARNING_RETRO_WINDOW_DAYS",
+    "CUTAGENT_LEARNING_REWARD_DRAFT_ADOPTED",
+    "CUTAGENT_LEARNING_REWARD_DRAFT_PICK",
+    "CUTAGENT_LEARNING_REWARD_VIDEO_PRODUCED",
+    "CUTAGENT_LEARNING_REWARD_PUBLISHED",
+    "CUTAGENT_LEARNING_REWARD_VIDEO_DISCARDED_SCRIPT",
+    "CUTAGENT_LEARNING_REWARD_STALE_UNPUBLISHED",
+    "CUTAGENT_LEARNING_BUMP_MIN_SAMPLES",
+    "CUTAGENT_LEARNING_BUMP_MISS_STREAK",
+    "CUTAGENT_LEARNING_BUMP_CONSISTENCY_FLOOR",
     "CUTAGENT_PROVIDER_MAX_INFLIGHT",
     "CUTAGENT_PROVIDER_MAX_QPS",
     "CUTAGENT_PROVIDER_CIRCUIT_BREAKER",
@@ -64,20 +106,41 @@ _INFRA_ENV_VARS = (
     "CUTAGENT_ENFORCE_PROVIDER_HOST_ALLOWLIST",
     "CUTAGENT_XIAOVMAO_CDP_HOST",
     "CUTAGENT_XIAOVMAO_CDP_PORT",
+    "CUTAGENT_REDIS_URL",
 )
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in _INFRA_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
 
 
-def test_settings_built_in_defaults(clean_env) -> None:
+def _env_example_names() -> set[str]:
+    names: set[str] = set()
+    for line in Path(".env.example").read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            stripped = stripped[1:].strip()
+        if stripped.startswith("CUTAGENT_") and "=" in stripped:
+            names.add(stripped.split("=", 1)[0])
+    return names
+
+
+def test_env_example_documents_every_settings_env_var() -> None:
+    missing = set(_INFRA_ENV_VARS) - _env_example_names()
+    assert missing == set()
+
+
+def test_settings_built_in_defaults() -> None:
     settings = build_settings()
 
     assert settings.storage.backend == "sqlalchemy"
     assert settings.storage.database_url is None
+    assert settings.storage.pool_size == 5
+    assert settings.storage.max_overflow == 10
+    assert settings.storage.pool_recycle == 1800
+    assert settings.storage.pool_timeout == 30
 
     obj = settings.object_store
     assert obj.tiered is True
@@ -114,11 +177,51 @@ def test_settings_built_in_defaults(clean_env) -> None:
     assert settings.auth.registration_open is True
     assert settings.auth.registration_code_salt == "local-dev-registration-code-salt"
     assert settings.auth.seed_local_auth is True
+    assert settings.auth.max_login_attempts == 8
+    assert settings.auth.login_window_minutes == 15
+    assert settings.auth.max_registration_attempts == 5
+    assert settings.auth.registration_window_minutes == 60
+    assert settings.auth.trust_forwarded_for is False
+    assert settings.auth.cookie_secure is None
 
     assert settings.secret_store.dir == ".data/secrets"
     assert settings.media.ffmpeg_bin is None
     assert settings.media.ffprobe_bin is None
     assert settings.api.disable_background_dispatcher is False
+
+    assert settings.motion_guard.sample_fps == 10.0
+    assert settings.motion_guard.width == 360
+    assert settings.motion_guard.window_sec == 1.5
+    assert settings.motion_guard.hop_sec == 0.75
+    assert settings.motion_guard.active_px == 1.5
+    assert settings.motion_guard.hard_px == 3.0
+    assert settings.motion_guard.p95_hard_px == 7.0
+    assert settings.motion_guard.tail_y_range_hard_px == 70.0
+    assert settings.motion_guard.tail_net_y_hard_px == 65.0
+    assert settings.motion_guard.smooth_move_straightness == 0.88
+    assert settings.motion_guard.smooth_move_flip_ratio == 0.16
+    assert settings.motion_guard.sweep_axis_ratio == 2.3
+    assert settings.motion_guard.jitter_flip_ratio == 0.22
+    assert settings.motion_guard.jitter_jerk_ratio == 0.65
+    assert settings.motion_guard.refine_min_duration == 0.8
+    assert settings.motion_guard.refine_round_sec == 0.1
+
+    assert settings.upload.max_size_bytes == 2 * 1024 * 1024 * 1024
+    assert settings.upload.chunk_bytes == 1024 * 1024
+    assert settings.upload.normalize_video is False
+    assert settings.balance.poller_enabled is False
+    assert settings.balance.poll_interval_seconds == 900
+    assert settings.balance.request_timeout_seconds == 10
+    assert settings.learning.retro_window_days == 3
+    assert settings.learning.reward_draft_adopted == 0.2
+    assert settings.learning.reward_draft_pick == -0.05
+    assert settings.learning.reward_video_produced == 0.4
+    assert settings.learning.reward_published == 0.7
+    assert settings.learning.reward_video_discarded_script == -0.3
+    assert settings.learning.reward_stale_unpublished == -0.1
+    assert settings.learning.bump_min_samples == 5
+    assert settings.learning.bump_miss_streak == 3
+    assert settings.learning.bump_consistency_floor == 0.6
 
     # Provider gateway knobs (consolidated from packages/ai + packages/ops): these
     # defaults must equal the previous scattered os.getenv defaults byte-for-byte.
@@ -134,9 +237,10 @@ def test_settings_built_in_defaults(clean_env) -> None:
     # Publishing 小V猫 CDP endpoint (consolidated from apps/api + packages/publishing).
     assert settings.publishing.xiaovmao_cdp_host == "127.0.0.1"
     assert settings.publishing.xiaovmao_cdp_port == 9222
+    assert settings.redis_url is None
 
 
-def test_settings_reads_env_overrides(clean_env, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_settings_reads_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CUTAGENT_STORAGE_BACKEND", "MEMORY")  # lower-cased
     monkeypatch.setenv("CUTAGENT_DATABASE_URL", "postgresql+psycopg://x/db")
     monkeypatch.setenv("CUTAGENT_OBJECTSTORE_TIERED", "0")
@@ -162,9 +266,7 @@ def test_settings_reads_env_overrides(clean_env, monkeypatch: pytest.MonkeyPatch
     assert settings.api.disable_background_dispatcher is True
 
 
-def test_provider_publishing_settings_read_env_overrides(
-    clean_env, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_provider_publishing_settings_read_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CUTAGENT_PROVIDER_MAX_INFLIGHT", "7")
     monkeypatch.setenv("CUTAGENT_PROVIDER_MAX_QPS", "9")
     monkeypatch.setenv("CUTAGENT_PROVIDER_CIRCUIT_BREAKER", "1")
@@ -190,7 +292,7 @@ def test_provider_publishing_settings_read_env_overrides(
 
 
 def test_invalid_publishing_port_does_not_break_unrelated_settings(
-    clean_env, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Before the settings refactor, a bad 小V猫 port only failed at the 小V猫
     # call sites that parsed it with int(os.getenv(...)); provider/object-store
@@ -209,7 +311,7 @@ def test_invalid_publishing_port_does_not_break_unrelated_settings(
     [("8", 8), ("0", 4), ("-3", 4), ("abc", 4), ("", 4)],
 )
 def test_provider_max_inflight_defensive_parse(
-    clean_env, monkeypatch: pytest.MonkeyPatch, raw: str, expected: int
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: int
 ) -> None:
     # Mirror the previous provider_limiter._max_inflight: unset / non-integer /
     # non-positive falls back to the default rather than disabling backpressure.
@@ -222,7 +324,7 @@ def test_provider_max_inflight_defensive_parse(
     [("0.7", 0.7), ("2", 1.0), ("-1", 0.0), ("abc", 0.5), ("", 0.5)],
 )
 def test_circuit_error_rate_clamped_to_unit_interval(
-    clean_env, monkeypatch: pytest.MonkeyPatch, raw: str, expected: float
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: float
 ) -> None:
     # Mirror the previous circuit_breaker._float_env: invalid/unset -> default,
     # valid -> clamped to [0, 1].
@@ -235,7 +337,7 @@ def test_circuit_error_rate_clamped_to_unit_interval(
     [("5", 5), ("0", 1), ("-9", 1), ("abc", 24), ("", 24)],
 )
 def test_circuit_window_floored_at_one(
-    clean_env, monkeypatch: pytest.MonkeyPatch, raw: str, expected: int
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: int
 ) -> None:
     # Mirror the previous circuit_breaker._int_env: invalid/unset -> default,
     # valid -> floored at 1.
@@ -243,9 +345,7 @@ def test_circuit_window_floored_at_one(
     assert build_settings().providers.circuit_window_hours == expected
 
 
-def test_circuit_breaker_enabled_only_on_exact_one(
-    clean_env, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_circuit_breaker_enabled_only_on_exact_one(monkeypatch: pytest.MonkeyPatch) -> None:
     # Mirror the previous strict "== '1'" check (truthy strings do not enable it).
     monkeypatch.setenv("CUTAGENT_PROVIDER_CIRCUIT_BREAKER", "true")
     assert build_settings().providers.circuit_breaker_enabled is False
@@ -253,7 +353,7 @@ def test_circuit_breaker_enabled_only_on_exact_one(
     assert build_settings().providers.circuit_breaker_enabled is True
 
 
-def test_build_settings_reads_env_at_call_time(clean_env, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_settings_reads_env_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:
     # The call-time-read contract: a snapshot reflects env at the moment it is
     # built, and a later env change is only visible to a fresh build.
     first = build_settings()
@@ -264,13 +364,13 @@ def test_build_settings_reads_env_at_call_time(clean_env, monkeypatch: pytest.Mo
     assert build_settings().object_store.bucket == "cutagent-prod"
 
 
-def test_settings_is_immutable(clean_env) -> None:
+def test_settings_is_immutable() -> None:
     settings = build_settings()
     with pytest.raises(Exception):
         settings.storage.backend = "memory"  # type: ignore[misc]
 
 
-def test_local_ephemeral_store_honors_configured_bucket(clean_env, tmp_path) -> None:
+def test_local_ephemeral_store_honors_configured_bucket(tmp_path) -> None:
     # Intentional behavior of the Settings consolidation: the LOCAL ephemeral object
     # store honors a configured bucket (routed through Settings; previously hard-coded
     # for the local backend), while the default stays byte-identical. Locked here so

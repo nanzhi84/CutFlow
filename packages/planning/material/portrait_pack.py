@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from packages.core.contracts import AnnotationV4, SelectionLedgerEntry
+from packages.planning.material.subject_terms import PERSON_SUBJECT_TERMS
 from packages.planning.selection.recency import RecencyConfig, recency_penalty_for
 
 _COVERAGE_WEIGHT = 60.0
@@ -22,29 +23,6 @@ _RECENCY_WEIGHT = 12.0
 # A lip-sync source window shorter than this is too small to anchor a narration
 # chunk and would only fragment the portrait track, so it is never offered.
 _MIN_LIPSYNC_CLIP_SEC = 0.6
-
-_PERSON_SUBJECT_TERMS = (
-    "presenter",
-    "salesperson",
-    "spokes",
-    "host",
-    "anchor",
-    "streamer",
-    "influencer",
-    "person",
-    "people",
-    "human",
-    "speaker",
-    "主播",
-    "真人",
-    "导购",
-    "模特",
-    "口播",
-    "出镜",
-    "人物",
-    "讲解",
-)
-
 
 @dataclass(frozen=True)
 class SimpleCandidate:
@@ -97,7 +75,7 @@ def clip_is_lip_sync_usable(clip) -> bool:
 def _looks_like_static_lipsync_source(clip) -> bool:
     sem = clip.semantics
     subject = (sem.subject_type or "").lower()
-    if not any(term in subject for term in _PERSON_SUBJECT_TERMS):
+    if not any(term in subject for term in PERSON_SUBJECT_TERMS):
         return False
     if sem.contains_face is False and sem.face_count_max == 0:
         return False

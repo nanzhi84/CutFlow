@@ -40,7 +40,7 @@ import {
 import { Modal } from "../ui/Modal";
 import { VideoPlayer, type VideoPlayerQualityEvent, type VideoPlayerSeekRequest, type VideoPlayerSegment } from "../ui/VideoPlayer";
 import { useToast } from "../ui/Toast";
-import { ErrorState, LoadingState } from "../State";
+import { ErrorState, LoadingState } from "../ui/State";
 
 type AnnotationEditorModalProps = {
   assetId: string | null;

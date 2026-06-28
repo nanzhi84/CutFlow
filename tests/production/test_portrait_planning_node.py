@@ -558,7 +558,6 @@ def test_segment_payload_derives_clip_id_from_window_id():
         1,
         segment,
         recent_template_ids=set(),
-        total=2,
     )
 
     assert payload["asset_id"] == "asset_portrait_demo"

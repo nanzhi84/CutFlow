@@ -61,6 +61,30 @@ def artifact_row_to_contract(row: ArtifactRow) -> Artifact:
     )
 
 
+def artifact_to_row(artifact: Artifact) -> ArtifactRow:
+    return ArtifactRow(
+        id=artifact.id,
+        case_id=artifact.case_id,
+        run_id=artifact.run_id,
+        node_run_id=artifact.node_run_id,
+        kind=artifact.kind.value,
+        uri=artifact.uri,
+        local_path=artifact.local_path,
+        oss_uri=artifact.oss_uri,
+        size_bytes=artifact.size_bytes,
+        immutable=artifact.immutable,
+        retention_policy=artifact.retention_policy,
+        sha256=artifact.sha256,
+        media_info=artifact.media_info.model_dump(mode="json") if artifact.media_info else None,
+        payload_schema=artifact.payload_schema,
+        payload=artifact.payload,
+        created_by_node_run_id=artifact.created_by_node_run_id,
+        schema_version=artifact.schema_version,
+        created_at=artifact.created_at,
+        updated_at=artifact.updated_at,
+    )
+
+
 class SqlAlchemyUploadRepository(BaseRepository):
 
     def create_upload(self, upload: UploadSession) -> UploadSession:

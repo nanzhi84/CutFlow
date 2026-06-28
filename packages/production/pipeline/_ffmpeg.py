@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import math
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from packages.media.audio.loudness import measure_loudness_lufs
 from packages.media.rendering import _escape_subtitle_filter_value, render_slot
 from packages.media.video.ffmpeg import FfmpegRunner, ffmpeg_bin
 
@@ -26,61 +25,6 @@ AUTO_MIX_DUCKING_RATIO = 8.0
 # LUFS target as-is"; higher/lower shifts it as a taste preference.
 AUTO_MIX_NEUTRAL_VOLUME = 0.3
 BGM_FILTER_SAMPLE_RATE = 48000
-
-
-def _extract_loudnorm_json(output: str) -> dict | None:
-    """Pull the trailing JSON object printed by ffmpeg's ``loudnorm`` analysis."""
-    text = output or ""
-    start = text.rfind("{")
-    end = text.rfind("}")
-    if start < 0 or end <= start:
-        return None
-    try:
-        data = json.loads(text[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def measure_loudness_lufs(media_path: Path) -> float | None:
-    """Measure integrated loudness (LUFS) of an audio/video file via ffmpeg.
-
-    Returns ``None`` (caller falls back to the requested fixed volume) on any
-    probe failure -- a missing file, no audio stream, an unparseable measurement,
-    or a degenerate ``-inf`` reading. This is a diagnostic measurement, never a
-    hard failure: BGM mixing must still proceed with the user's requested volume.
-    """
-    path = Path(media_path)
-    if not path.exists():
-        return None
-    args = [
-        ffmpeg_bin(),
-        "-hide_banner",
-        "-nostats",
-        "-i",
-        str(path),
-        "-vn",
-        "-af",
-        "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json",
-        "-f",
-        "null",
-        "-",
-    ]
-    try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=120)
-    except (OSError, subprocess.SubprocessError) as exc:
-        logger.warning("[bgm] loudness probe failed for %s: %s", path, exc)
-        return None
-    data = _extract_loudnorm_json(f"{result.stdout or ''}\n{result.stderr or ''}")
-    if not data:
-        return None
-    try:
-        loudness = float(data.get("input_i"))
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(loudness) or loudness <= -99:
-        return None
-    return loudness
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -108,8 +52,8 @@ def resolve_adaptive_bgm_volume(
     When ``auto_mix`` is off (or the loudness probes fail) the requested volume is
     used verbatim. When on, the BGM is targeted to ``voice_lufs - margin`` so it
     sits perceptually under the voice, then scaled by the slider as a taste offset
-    and clamped to a sane range. The ``metadata`` mirrors the OLD ``last_mix_metadata``
-    so the decision is observable.
+    and clamped to a sane range. The ``metadata`` captures the mix decision so it
+    remains observable.
     """
     requested = _clamp(float(requested_bgm_volume or 0.0), 0.0, 1.0)
     metadata: dict[str, Any] = {

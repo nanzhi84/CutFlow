@@ -6,15 +6,15 @@ export type RunLike = {
   status: RunStatusLike;
 };
 
-export type TerminalKind = "succeeded" | "failed" | "cancelled";
+type TerminalKind = "succeeded" | "failed" | "cancelled";
 
-export type TerminalTransition = {
+type TerminalTransition = {
   runId: string;
   title: string;
   kind: TerminalKind;
 };
 
-export type NotificationPayload = {
+type NotificationPayload = {
   title: string;
   body: string;
 };
@@ -32,7 +32,7 @@ export type TerminalSummary = {
   notification: NotificationPayload | null;
 };
 
-export function isTerminalStatus(status: RunStatusLike): status is TerminalKind {
+function isTerminalStatus(status: RunStatusLike): status is TerminalKind {
   return status === "succeeded" || status === "failed" || status === "cancelled";
 }
 

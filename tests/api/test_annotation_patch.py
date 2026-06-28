@@ -13,7 +13,7 @@ from packages.media.annotation.reclip import (
 )
 
 
-def _asset(duration_meta: float = 0.0) -> c.MediaAssetRecord:
+def _asset() -> c.MediaAssetRecord:
     return c.MediaAssetRecord(
         id="asset1", case_id="case1", title="T", kind="broll", source_artifact_id="art1", tags=["x"]
     )

@@ -117,8 +117,8 @@ class BudgetEvaluation(ContractModel):
     """§9.8 预算执行: current-period spend evaluated against a Budget.
 
     ``ratio`` = spend / limit (``None`` if the limit is 0). ``exceeded`` flags a
-    hard over-limit; ``threshold_crossed`` flags ``ratio >= alert_threshold`` (the
-    75/90%-style warning level the OLD quota_monitor produced)."""
+    hard over-limit; ``threshold_crossed`` flags ``ratio >= alert_threshold`` for
+    warning-level budget alerts."""
 
     budget_id: str
     scope_type: str
