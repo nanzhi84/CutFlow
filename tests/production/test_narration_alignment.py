@@ -26,9 +26,11 @@ from packages.core.contracts import (
 )
 from packages.core.storage.repository import Repository
 from packages.core.workflow import NodeExecutionError
+from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline.degradation_policies import ASR_ESTIMATED_FALLBACK_POLICY
 from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
+from packages.production.pipeline.nodes import narration_alignment
 
 
 class FailingAsrGateway:
@@ -174,6 +176,15 @@ def _node_run() -> NodeRun:
     )
 
 
+def _run_narration_alignment(
+    workflow: LocalRuntimeAdapter,
+    run: WorkflowRun,
+    node_run: NodeRun,
+    state: RunState,
+):
+    return narration_alignment.run(NodeContext(adapter=workflow, run=run, node_run=node_run, state=state))
+
+
 def test_narration_alignment_sends_signed_https_url_to_asr(monkeypatch: pytest.MonkeyPatch):
     class FakeObjectStore:
         def signed_url(self, uri):
@@ -190,7 +201,8 @@ def test_narration_alignment_sends_signed_https_url_to_asr(monkeypatch: pytest.M
         lambda: FakeObjectStore(),
     )
 
-    output = workflow._narration_alignment(
+    output = _run_narration_alignment(
+        workflow,
         _run(),
         _node_run(),
         _run_state(
@@ -236,7 +248,8 @@ def test_narration_alignment_uses_script_text_not_asr_typos(monkeypatch: pytest.
         lambda: FakeObjectStore(),
     )
 
-    output = workflow._narration_alignment(
+    output = _run_narration_alignment(
+        workflow,
         _run(),
         _node_run(),
         _run_state(strict_timestamps=True, tts_uri="s3://cutagent-demo/generated-audio/tts.mp3"),
@@ -268,7 +281,7 @@ def test_narration_alignment_splits_glued_tts_subtitle_by_script_punctuation():
     ]
     state.scratch["tts_subtitle_invocation_id"] = "pinv_tts"
 
-    output = workflow._narration_alignment(_run(), _node_run(), state)
+    output = _run_narration_alignment(workflow, _run(), _node_run(), state)
 
     narration = {artifact.kind: artifact for artifact in output.artifacts}[ArtifactKind.narration_units].payload
     assert narration["source"] == "tts_subtitle"
@@ -284,7 +297,9 @@ def test_narration_alignment_splits_glued_tts_subtitle_by_script_punctuation():
 def test_narration_alignment_non_strict_estimates_when_asr_fails():
     workflow = _workflow_with_failing_asr()
 
-    output = workflow._narration_alignment(_run(), _node_run(), _run_state(strict_timestamps=False))
+    output = _run_narration_alignment(
+        workflow, _run(), _node_run(), _run_state(strict_timestamps=False)
+    )
 
     artifacts_by_kind = {artifact.kind: artifact for artifact in output.artifacts}
     narration = artifacts_by_kind[ArtifactKind.narration_units].payload
@@ -307,7 +322,7 @@ def test_narration_alignment_strict_raises_when_asr_fails():
     workflow = _workflow_with_failing_asr()
 
     with pytest.raises(NodeExecutionError) as exc:
-        workflow._narration_alignment(_run(), _node_run(), _run_state(strict_timestamps=True))
+        _run_narration_alignment(workflow, _run(), _node_run(), _run_state(strict_timestamps=True))
 
     assert exc.value.error.code == ErrorCode.provider_remote_failed
     assert exc.value.error.retryable is True

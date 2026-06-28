@@ -18,8 +18,10 @@ from packages.core.contracts import (
 from packages.core.storage.repository import Repository
 from packages.core.workflow import NodeExecutionError
 from packages.production.pipeline import digital_human
+from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
+from packages.production.pipeline.nodes import finalize_run_report
 
 
 class RecordingDeleteStore:
@@ -108,6 +110,15 @@ def _ephemeral_gc_event(repository: Repository):
     )
 
 
+def _run_finalize_report(
+    workflow: LocalRuntimeAdapter,
+    run: WorkflowRun,
+    node_run: NodeRun,
+    state: RunState,
+):
+    return finalize_run_report.run(NodeContext(adapter=workflow, run=run, node_run=node_run, state=state))
+
+
 def test_finalize_success_gc_deletes_lipsync_ephemeral_artifact(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -136,7 +147,7 @@ def test_finalize_success_gc_deletes_lipsync_ephemeral_artifact(
     object_store = RecordingDeleteStore()
     monkeypatch.setattr(digital_human, "get_object_store", lambda: object_store)
 
-    workflow._finalize_run_report(run, node_run, state)
+    _run_finalize_report(workflow, run, node_run, state)
 
     assert object_store.deleted == [
         "local://cutagent-ephemeral/generated-video/portrait.mp4",
@@ -186,7 +197,7 @@ def test_finalize_success_gc_keeps_ephemeral_uri_referenced_by_finished_video(
     object_store = RecordingDeleteStore()
     monkeypatch.setattr(digital_human, "get_object_store", lambda: object_store)
 
-    workflow._finalize_run_report(run, node_run, state)
+    _run_finalize_report(workflow, run, node_run, state)
 
     assert object_store.deleted == [
         "local://cutagent-ephemeral/generated-video/portrait.mp4",

@@ -52,8 +52,8 @@ def resolve_adaptive_bgm_volume(
     When ``auto_mix`` is off (or the loudness probes fail) the requested volume is
     used verbatim. When on, the BGM is targeted to ``voice_lufs - margin`` so it
     sits perceptually under the voice, then scaled by the slider as a taste offset
-    and clamped to a sane range. The ``metadata`` mirrors the OLD ``last_mix_metadata``
-    so the decision is observable.
+    and clamped to a sane range. The ``metadata`` captures the mix decision so it
+    remains observable.
     """
     requested = _clamp(float(requested_bgm_volume or 0.0), 0.0, 1.0)
     metadata: dict[str, Any] = {

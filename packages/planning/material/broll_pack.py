@@ -21,18 +21,16 @@ from packages.planning.material.portrait_pack import clip_is_lip_sync_usable
 from packages.planning.material.subject_terms import PERSON_SUBJECT_TERMS
 from packages.planning.selection.recency import RecencyConfig, recency_penalty_for
 
-# Score weights (ported from the origin base_score formula, normalized to the
-# same shape: semantic match dominates, quality + usage-window coverage refine).
+# Score weights: semantic match dominates, quality + usage-window coverage refine.
 _SEMANTIC_WEIGHT = 100.0
 _USAGE_COVER_WEIGHT = 18.0
 _QUALITY_WEIGHT = 8.0
 _DURATION_WEIGHT = 0.5
 _RECENCY_WEIGHT = 12.0
 # A candidate must clear a minimal semantic relevance to be offered at all,
-# otherwise an unrelated clip would still be picked (the honest alternative to
-# the old "anything usable is fine" seed). A clip also has to have *real*
-# semantic overlap (``MatchResult.has_overlap``) — the duration-fit tie-breaker
-# alone never makes an unrelated clip relevant.
+# otherwise an unrelated clip would still be picked. A clip also has to have
+# *real* semantic overlap (``MatchResult.has_overlap``) — the duration-fit
+# tie-breaker alone never makes an unrelated clip relevant.
 _MIN_SIMILARITY = 0.05
 _MIN_CLEAN_SPAN_SEC = 1.0
 

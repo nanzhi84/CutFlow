@@ -323,8 +323,8 @@ def _degraded_annotation(
 class SensorDeps:
     """Deterministic sensor callables the runner feeds into the pipeline.
 
-    ``real()`` binds the pure-CV sensor suite ported in step 2a. Tests construct a
-    mock instance so no ffmpeg / scenedetect / silero / opencv runs.
+    ``real()`` binds the pure-CV sensor suite. Tests construct a mock instance so
+    no ffmpeg / scenedetect / silero / opencv runs.
     """
 
     detect_shot_cuts: Callable[[str], list[float]]

@@ -1145,18 +1145,6 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             )
         ]
 
-    # --------------------------------------------------- node test entry points
-    #
-    # The pipeline dispatches every node through ``_run_node`` / ``NODE_HANDLERS``.
-    # These two thin wrappers additionally preserve the historical
-    # ``adapter._<node>(run, node_run, state)`` call surface used by unit tests
-    # that build adapters via ``object.__new__`` and invoke a single node.
-    def _narration_alignment(self, run: WorkflowRun, node_run: NodeRun, state: _RunState) -> NodeOutput:
-        return nodes.narration_alignment.run(NodeContext(adapter=self, run=run, node_run=node_run, state=state))
-
-    def _finalize_run_report(self, run: WorkflowRun, node_run: NodeRun, state: _RunState) -> NodeOutput:
-        return nodes.finalize_run_report.run(NodeContext(adapter=self, run=run, node_run=node_run, state=state))
-
     # ----------------------------------------------------------- run reporting
     def _write_report(
         self,

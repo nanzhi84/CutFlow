@@ -33,8 +33,8 @@ def map_row(row: object, contract_cls: type[TContract], /, **overrides: object) 
     - else if ``row`` carries a same-named attribute, copy it;
     - else leave it unset so the contract's own default/validation applies.
 
-    The result is built via the contract's normal constructor, so validation is
-    byte-identical to an explicit ``contract_cls(field=row.field, ...)`` call.
+    The result is built via the contract's normal constructor, so it follows the
+    same validation path as an explicit ``contract_cls(field=row.field, ...)`` call.
     Contract-only fields with no matching column (e.g. ``created_by`` / ``version``
     audit fields the rows don't store) fall through to their defaults — matching
     the explicit mappers, which omit them. A *required* field that is neither

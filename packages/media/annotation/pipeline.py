@@ -1,8 +1,8 @@
 """V4 unified annotation pipeline ``run_annotation_v4`` - the V4 protocol core.
 
-Ported from the b-roll analyzer's ``annotation_v4_pipeline`` (orchestration only;
-the sensor suite it builds on lives in this package's ``sensors`` / ``boundary`` /
-``windows`` / ``report`` modules - it is NOT re-ported here).
+This module only orchestrates the annotation flow; the sensor suite it builds on
+lives in this package's ``sensors`` / ``boundary`` / ``windows`` / ``report``
+modules.
 
 Two-layer "sensors + brain" design:
 
@@ -301,9 +301,9 @@ def _analyze_window_with_retry(
     deterministic multi-face sensor
     runs over this window's still-alive frame paths and sets each clip's
     ``semantics.face_count_max`` (authoritative CV source for the multi_face
-    blocker in report.py), exactly as OLD ``_annotate_face_counts`` did. The
-    frames are cleaned up in ``finally`` afterwards, so the count must happen here
-    while they still exist on disk. fail-open: 0 when cv2/model unavailable.
+    blocker in report.py). The frames are cleaned up in ``finally`` afterwards,
+    so the count must happen here while they still exist on disk. fail-open: 0
+    when cv2/model unavailable.
     """
     fmt_attempt = 0
     sem_attempt = 0

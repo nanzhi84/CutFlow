@@ -18,8 +18,10 @@ from packages.core.contracts import (
 )
 from packages.core.storage.repository import Repository
 from packages.production.pipeline import digital_human
+from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
+from packages.production.pipeline.nodes import finalize_run_report
 
 
 class NoopDeleteStore:
@@ -63,6 +65,15 @@ def _node_run(run_id: str) -> NodeRun:
         status=NodeStatus.running,
         input_manifest_hash="sha256:test",
     )
+
+
+def _run_finalize_report(
+    workflow: LocalRuntimeAdapter,
+    run: WorkflowRun,
+    node_run: NodeRun,
+    state: RunState,
+):
+    return finalize_run_report.run(NodeContext(adapter=workflow, run=run, node_run=node_run, state=state))
 
 
 def test_finalize_success_records_selected_assets_once(monkeypatch: pytest.MonkeyPatch):
@@ -121,8 +132,8 @@ def test_finalize_success_records_selected_assets_once(monkeypatch: pytest.Monke
     )
     monkeypatch.setattr(digital_human, "get_object_store", lambda: NoopDeleteStore())
 
-    workflow._finalize_run_report(run, node_run, state)
-    workflow._finalize_run_report(run, node_run, state)
+    _run_finalize_report(workflow, run, node_run, state)
+    _run_finalize_report(workflow, run, node_run, state)
 
     entries = sorted(
         repository.selection_ledger.values(),
@@ -179,7 +190,7 @@ def test_finalize_does_not_record_disabled_bgm(monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setattr(digital_human, "get_object_store", lambda: NoopDeleteStore())
 
-    workflow._finalize_run_report(run, node_run, state)
+    _run_finalize_report(workflow, run, node_run, state)
 
     assert [entry.medium for entry in repository.selection_ledger.values()] == ["font"]
 
@@ -222,7 +233,7 @@ def test_finalize_records_opening_segment_distinctly_and_commits_reservation(
     )
     monkeypatch.setattr(digital_human, "get_object_store", lambda: NoopDeleteStore())
 
-    workflow._finalize_run_report(run, node_run, state)
+    _run_finalize_report(workflow, run, node_run, state)
 
     portrait_entries = sorted(
         (e for e in repository.selection_ledger.values() if e.medium == "portrait"),
@@ -289,7 +300,7 @@ def test_finalize_records_same_portrait_asset_per_clip_and_broll_clip_id(
     )
     monkeypatch.setattr(digital_human, "get_object_store", lambda: NoopDeleteStore())
 
-    workflow._finalize_run_report(run, node_run, state)
+    _run_finalize_report(workflow, run, node_run, state)
 
     portrait_entries = sorted(
         (entry for entry in repository.selection_ledger.values() if entry.medium == "portrait"),

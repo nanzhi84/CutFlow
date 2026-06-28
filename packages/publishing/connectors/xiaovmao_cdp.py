@@ -1,9 +1,7 @@
 """小V猫 CDP connector (M6c) — UNVERIFIED real-platform driver.
 
-Faithful port of the origin ``XiaoVmaoDriver`` / ``XiaoVmaoPublisherAdapter``
-(digital-human-Cutagent ``app/services/publishers/xiaovmao_adapter.py``). Drives
-the 小V猫 Electron desktop app over its CDP (remote-debugging) endpoint to drive
-multi-platform publishing (抖音 / 快手 / 视频号 / 小红书).
+Drives the 小V猫 Electron desktop app over its CDP (remote-debugging) endpoint to
+drive multi-platform publishing (抖音 / 快手 / 视频号 / 小红书).
 
 UNVERIFIED: this code has NOT been validated against the live 小V猫 app or real
 platform accounts in this repo. It requires the desktop app running with
@@ -63,7 +61,7 @@ class Target:
 
 
 class XiaoVmaoDriver:
-    """Low-level CDP driver for the 小V猫 Electron app (origin parity)."""
+    """Low-level CDP driver for the 小V猫 Electron app."""
 
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
         self.host = host

@@ -131,8 +131,8 @@ def write_ass_subtitles(
             f"1,0,0,0,100,100,0,0,1,4,1,2,{_ASS_MARGIN_L},{_ASS_MARGIN_R},{margin_v},1"
         ),
     ]
-    # The Emphasis style row is emitted ONLY when there are overlay events, so the
-    # existing no-overlay output stays byte-identical. Yellow, larger, top-centered.
+    # The Emphasis style row is emitted ONLY when there are overlay events. Without
+    # overlays, the subtitle style table stays unchanged. Yellow, larger, top-centered.
     if overlay_events:
         lines.append(
             f"Style: Emphasis,{resolved_font},{emphasis_size},&H0000FFFF,&H000000FF,"
