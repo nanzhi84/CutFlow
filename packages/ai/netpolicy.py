@@ -6,7 +6,7 @@ through the authenticated provider-profile create/patch API
 (``POST/PATCH /api/providers/profiles``). Without a gate, an operator (or an
 attacker who reaches that admin surface) could point ``base_url`` at an arbitrary
 host and have the stored provider key delivered there — an SSRF / key-exfiltration
-vector (spec §33.2 security hardening, mirrors OLD ``app/ai/netpolicy.py``).
+vector.
 
 This module gates only those *user-supplied* URL overrides against an allow-list.
 The default list is the set of provider hosts already shipped in the registry /

@@ -9,8 +9,7 @@ Drives the multi-vendor voice management the data-plane ``x-api-key`` cannot:
   ``x-api-key`` the data-plane synthesis endpoint needs (path B), via
   ``ListAPIKeys`` with a ``CreateAPIKey`` fallback.
 
-Pure-stdlib V4 HMAC signing mirrors ``packages/ops/balance/providers/volcengine.py``
-(verified against a live main-account key), extended here to POST + JSON body.
+V4 HMAC signing uses the shared Volcengine signer, extended here to POST + JSON body.
 The Action→Version split is fixed by the official SDK: train-status is
 ``2025-05-21``, key management is ``2025-05-20``. All requests hit the shared
 gateway host ``open.volcengineapi.com`` with the ``speech_saas_prod`` signing scope.

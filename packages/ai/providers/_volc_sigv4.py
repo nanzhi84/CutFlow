@@ -2,12 +2,8 @@
 
 Single home for the canonical-request / string-to-sign / 4-step signing-key chain
 Volcengine uses for AK/SK auth, generalized over method/url/region/service so each
-caller passes its own scope. ``packages/ai/providers/volc_openapi.py`` (speech
-management plane) and this module's Ark callers both delegate here.
-
-NOTE: ``packages/ops/balance/providers/volcengine.py`` (the balance poller, a
-different domain, live-verified against a real account key) still carries its own
-copy and is the remaining one to fold in next.
+caller passes its own scope. Seedance, the speech management plane, and the billing
+balance poller all delegate here.
 """
 
 from __future__ import annotations

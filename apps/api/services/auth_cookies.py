@@ -1,9 +1,8 @@
 """Centralized session-cookie emission (HttpOnly + SameSite + Secure).
 
-Spec §33.2: the session cookie MUST be ``HttpOnly`` and, in production, ``Secure``.
-All three call sites (register / login / logout) route through here so the flags
-stay consistent and the prod-Secure invariant is enforced in exactly one place
-(mirrors OLD ``app/utils/auth_cookies.py``).
+The session cookie MUST be ``HttpOnly`` and, in production, ``Secure``. All three
+call sites (register / login / logout) route through here so the flags stay
+consistent and the prod-Secure invariant is enforced in exactly one place.
 
 ``Secure`` resolution (see ``AuthSettings.cookie_secure``):
 - explicit ``CUTAGENT_AUTH_COOKIE_SECURE=true/false`` forces it on/off;

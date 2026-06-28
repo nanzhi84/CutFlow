@@ -3,10 +3,9 @@
 Used by replace-source: when the replacement media's duration drifts from the
 annotated one, the preserved annotation's time-bearing layers (clips /
 usage_windows / quality_events / evidence_frames) would otherwise point past or
-into the wrong frames. Mirrors OLD ``template_reprocessor._clip_segments`` /
-``align_template_analysis_metadata``:
+into the wrong frames.
 
-- endpoints within ``endpoint_tolerance`` of the OLD duration snap to the NEW
+- endpoints within ``endpoint_tolerance`` of the old duration snap to the new
   duration (a segment that ended exactly at end-of-video keeps ending at
   end-of-video);
 - every start/end is then clamped to ``[0, new_duration]``;

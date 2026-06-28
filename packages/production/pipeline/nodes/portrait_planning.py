@@ -42,9 +42,8 @@ def run(ctx: NodeContext) -> NodeOutput:
 
     # Build planner candidates from the ranked material pack. Each candidate is a
     # clip-level source span; the planner enforces coverage/capacity.
-    # Recency context (weighted recency + opening guard, §6.6/§31/§32.10) is attached
-    # so the already-ported scoring (is_recent_portrait_candidate / opening penalty /
-    # exact-vs-similar split) fires on the real production path instead of dead-defaulting.
+    # Recency context (weighted recency + opening guard) is attached so portrait
+    # scoring fires on the real production path instead of dead-defaulting.
     portrait_ledger = ctx.repository.recent_selections(
         case_id=state.request.case_id, medium="portrait"
     )
@@ -126,8 +125,8 @@ def _plan_with_escalation(
     """Drive the portrait-insufficiency escalation ladder before giving up.
 
     The single (default) pass already reaches the unlimited-reuse fallback scope.
-    When even that fails to cover the audio, this runs the OLD ladder's true-yield
-    recovery rounds that do NOT need an external material-expansion service:
+    When even that fails to cover the audio, this runs local true-yield recovery
+    rounds that do NOT need an external material-expansion service:
 
       1. ``full_pool`` — re-plan against the full candidate pool (in genesis the node
          already receives the full ranked pool, so this is the recorded baseline pass);

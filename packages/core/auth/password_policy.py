@@ -5,11 +5,10 @@ password change. It raises :class:`NodeExecutionError` with
 ``ErrorCode.validation_invalid_options`` (400) so the API surfaces a clear
 client error, matching the locked auth error-code lane (no new ErrorCode).
 
-The rules mirror the dropped behaviour from the old repo's
-``AuthService._validate_password``: a minimum length, an upper length bound, a
-common-weak-password blocklist, a character-variety floor, a category-count
-floor (3 of {lowercase, uppercase, digit, symbol}), and a reuse guard that
-rejects passwords containing the user's email/display-name tokens.
+The rules enforce a minimum length, an upper length bound, a common-weak-password
+blocklist, a character-variety floor, a category-count floor (3 of {lowercase,
+uppercase, digit, symbol}), and a reuse guard that rejects passwords containing
+the user's email/display-name tokens.
 """
 
 from __future__ import annotations

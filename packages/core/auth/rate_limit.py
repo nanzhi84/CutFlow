@@ -23,7 +23,7 @@ from packages.core.contracts import ErrorCode, utcnow
 from packages.core.workflow import NodeExecutionError
 
 # Hard floors so a misconfigured (e.g. 0) env value never disables the limiter
-# or sets a zero-length window. Mirrors the old repo's max(...) clamps.
+# or sets a zero-length window.
 _MIN_ATTEMPTS = 1
 _MIN_WINDOW_MINUTES = 1
 _DEFAULT_NAMESPACE = "cutagent"

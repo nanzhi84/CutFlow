@@ -1,10 +1,9 @@
-"""Batch annotation (批量标注) endpoint + execution (Spec §2.1 must-retain).
+"""Batch annotation (批量标注) endpoint + execution.
 
 Creates an ``annotation_batch`` :class:`Job` from an :class:`AnnotationBatchRequest`
 and fans the SAME single-asset gated runner used by '重新分析/rerun' over the
-``asset_ids``, so batch annotation is a real end-to-end flow (not a dead contract).
-Mirrors OLD ``batch_analyze_videos`` (loop video_ids -> run_video_analysis): each
-asset is annotated independently so one bad asset can't sink the batch.
+``asset_ids``, so batch annotation is a real end-to-end flow. Each asset is
+annotated independently so one bad asset can't sink the batch.
 
 Behavior:
 

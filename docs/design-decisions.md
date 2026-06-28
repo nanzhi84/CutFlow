@@ -111,5 +111,6 @@ Artifacts 通过 URI 引用，可能跨进程或跨主机流转。
 - 只重启 API 不会更新 Temporal worker；改 production node、provider profile 解析或 workflow 代码后必须重启 worker。
 - Temporal 多 worker 下，本地 ephemeral 目录会导致跨 activity 找不到 artifact；共享 MinIO/S3 是运行时正确性，不是部署优化项。
 - Sandbox fallback 曾经会把真实 provider 配置缺失伪装成成功；生产默认必须显式失败，只有 demo/test 才打开 fallback。
+- 厂商签名和鉴权逻辑一旦复制，后续很容易出现行为漂移；Volcengine AK/SK V4 签名这类协议 glue 必须集中到共享 helper。
 - 素材不足时用固定占位或随机挑选会污染成片质量和学习闭环；正确行为是确定性排序、近期降权、覆盖不足则显式降级。
 - 发布漏斗事件如果在 submit 事务前后处理不清，会让 SQL 后端成品率结构性失真；发布状态机和漏斗记录必须保持可审计。
