@@ -9924,7 +9924,7 @@
           "limit"
         ],
         "title": "BudgetEvaluation",
-        "description": "§9.8 预算执行: current-period spend evaluated against a Budget.\n\n``ratio`` = spend / limit (``None`` if the limit is 0). ``exceeded`` flags a\nhard over-limit; ``threshold_crossed`` flags ``ratio >= alert_threshold`` (the\n75/90%-style warning level the OLD quota_monitor produced)."
+        "description": "§9.8 预算执行: current-period spend evaluated against a Budget.\n\n``ratio`` = spend / limit (``None`` if the limit is 0). ``exceeded`` flags a\nhard over-limit; ``threshold_crossed`` flags ``ratio >= alert_threshold`` for\nwarning-level budget alerts."
       },
       "CalibrationReport": {
         "properties": {
