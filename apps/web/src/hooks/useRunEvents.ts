@@ -5,7 +5,8 @@ export type RunEventMessage = {
   event_id?: string;
   run_id?: string;
   job_id?: string;
-  event_type?: "run_update" | "node_update" | "artifact_created" | "warning" | "error";
+  event_type?: "run_update" | "node_update" | "artifact_created" | "warning" | "error" | "heartbeat";
+  server_time?: string;
   node_id?: string | null;
   status?: string | null;
   progress?: number | null;
@@ -53,7 +54,7 @@ export function useRunEvents(runId: string | null | undefined, enabled = true) {
     function scheduleReconnect() {
       if (stopped) return;
       attempt += 1;
-      reconnectTimer = window.setTimeout(connect, Math.min(30000, 800 * 2 ** Math.min(attempt, 8)));
+      reconnectTimer = window.setTimeout(connect, Math.min(15000, 800 * 2 ** Math.min(attempt, 8)));
     }
 
     function kickReconnect() {
@@ -75,6 +76,9 @@ export function useRunEvents(runId: string | null | undefined, enabled = true) {
         socket.onmessage = (message) => {
           const event = parseEvent(message);
           if (!event) return;
+          // Server heartbeats only keep the proxy connection alive; they carry
+          // no run state, so don't add them to the event list (issue #74).
+          if (event.event_type === "heartbeat") return;
           const key = event.event_id ?? `${event.event_type}:${event.node_id}:${event.status}:${event.created_at}`;
           if (key && seen.current.has(key)) return;
           if (key) seen.current.add(key);

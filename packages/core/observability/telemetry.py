@@ -97,6 +97,23 @@ REDIS_RECONNECT_ATTEMPTS = Counter(
     ["component"],
     registry=REGISTRY,
 )
+# Run event-stream (WebSocket) health (issue #74). Heartbeats keep idle proxy
+# connections from being closed; the gauge/counters expose connection churn.
+EVENT_STREAM_CONNECTIONS_ACTIVE = Gauge(
+    "event_stream_connections_active",
+    "Currently open run event-stream WebSocket connections.",
+    registry=REGISTRY,
+)
+EVENT_STREAM_DISCONNECTS = Counter(
+    "event_stream_disconnects_total",
+    "Run event-stream WebSocket disconnects.",
+    registry=REGISTRY,
+)
+EVENT_STREAM_HEARTBEATS_SENT = Counter(
+    "event_stream_heartbeats_sent_total",
+    "Server-side heartbeats sent on idle run event-stream connections.",
+    registry=REGISTRY,
+)
 
 
 def record_redis_degraded(component: str) -> None:
@@ -109,6 +126,19 @@ def record_redis_recovered(component: str) -> None:
 
 def record_redis_reconnect_attempt(component: str) -> None:
     REDIS_RECONNECT_ATTEMPTS.labels(component=component).inc()
+
+
+def record_event_stream_connected() -> None:
+    EVENT_STREAM_CONNECTIONS_ACTIVE.inc()
+
+
+def record_event_stream_disconnected() -> None:
+    EVENT_STREAM_CONNECTIONS_ACTIVE.dec()
+    EVENT_STREAM_DISCONNECTS.inc()
+
+
+def record_event_stream_heartbeat() -> None:
+    EVENT_STREAM_HEARTBEATS_SENT.inc()
 
 
 def record_api_request(duration_seconds: float, status_code: int) -> None:

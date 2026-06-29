@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import timedelta
 
 from fastapi import Request, WebSocket, WebSocketDisconnect
@@ -30,6 +31,11 @@ from packages.core.contracts.state_machines import (
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 from packages.core.observability import record_funnel_event, workflow_stage
+from packages.core.observability.telemetry import (
+    record_event_stream_connected,
+    record_event_stream_disconnected,
+    record_event_stream_heartbeat,
+)
 from packages.production.pipeline import ReusePlan, ReuseSourceRun, compute_reuse_plan
 from packages.production.pipeline.digital_human import template_for
 from packages.production.pipeline.node_sequence import expected_node_count
@@ -55,6 +61,13 @@ NODE_LABELS = {
 }
 
 DELETABLE_RUN_STATUSES = {c.RunStatus.succeeded, c.RunStatus.failed, c.RunStatus.cancelled}
+
+# Server-side heartbeat cadence for the run event-stream WebSocket (issue #74).
+# When no real event flows for this long, the server sends a lightweight
+# heartbeat frame so intermediary proxies (relay VPS / tunnel / nginx) do not
+# close the connection on idle timeout. Kept well under typical 30–60s proxy
+# idle windows. Module-level so tests can shrink it.
+EVENT_STREAM_HEARTBEAT_INTERVAL_SECONDS = 15.0
 
 
 def _sync_workflow_snapshot(request: Request, run: c.WorkflowRun) -> None:
@@ -765,6 +778,7 @@ async def run_websocket(websocket: WebSocket, run_id: str) -> None:
         return
 
     await websocket.accept()
+    record_event_stream_connected()
     repo = websocket.app.state.repository
     sent_event_ids: set[str] = set()
     session_factory = getattr(websocket.app.state, "sqlalchemy_session_factory", None)
@@ -788,6 +802,7 @@ async def run_websocket(websocket: WebSocket, run_id: str) -> None:
 
     hub = websocket.app.state.event_hub
     subscriber = hub.subscribe(run_id)
+    last_send = time.monotonic()
     try:
         while True:
             payload = await receive_from_subscriber(subscriber)
@@ -798,7 +813,17 @@ async def run_websocket(websocket: WebSocket, run_id: str) -> None:
                 if event_id is not None:
                     sent_event_ids.add(str(event_id))
                 await websocket.send_json(payload)
+                last_send = time.monotonic()
                 continue
+            # Idle: emit a heartbeat so a relay/proxy does not close the
+            # connection on idle timeout. The frontend ignores heartbeat frames
+            # (they carry no event_id and are not added to the event list).
+            if time.monotonic() - last_send >= EVENT_STREAM_HEARTBEAT_INTERVAL_SECONDS:
+                await websocket.send_json(
+                    {"event_type": "heartbeat", "server_time": c.utcnow().isoformat()}
+                )
+                record_event_stream_heartbeat()
+                last_send = time.monotonic()
             try:
                 await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
             except TimeoutError:
@@ -807,3 +832,4 @@ async def run_websocket(websocket: WebSocket, run_id: str) -> None:
                 break
     finally:
         hub.unsubscribe(run_id, subscriber)
+        record_event_stream_disconnected()
