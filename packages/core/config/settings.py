@@ -525,6 +525,13 @@ class Settings(BaseModel):
     # ephemeral token store). When unset, those layers stay per-process. See
     # packages/ai/gateway/provider_limiter.py and packages/core/observability/events.py.
     redis_url: str | None = None
+    # CUTAGENT_REDIS_REQUIRED: when true (multi-replica production), a degraded
+    # Redis must fail readiness rather than silently fall back to per-process
+    # state — cross-replica fanout / stream tokens / provider limiting would
+    # otherwise break invisibly. The layers still keep serving via the local
+    # fallback (so a single request does not hard-fail), but readiness reports
+    # not-ready so the LB stops routing until Redis recovers. See issue #67.
+    redis_required: bool = False
 
 
 # Builder: read os.environ once and assemble a Settings snapshot.
@@ -755,6 +762,8 @@ def build_settings() -> Settings:
         providers=build_providers_settings(),
         publishing=build_publishing_settings(),
         redis_url=build_redis_url(),
+        redis_required=_env_str("CUTAGENT_REDIS_REQUIRED", "").strip().lower()
+        in {"1", "true", "yes", "on"},
     )
 
 

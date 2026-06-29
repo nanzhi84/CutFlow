@@ -4,25 +4,55 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from queue import Empty, Queue
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from packages.core.contracts import OutboxEvent, utcnow
-from packages.core.observability.telemetry import update_outbox_lag
+from packages.core.observability.telemetry import (
+    record_redis_degraded,
+    record_redis_reconnect_attempt,
+    record_redis_recovered,
+    update_outbox_lag,
+)
 from packages.core.storage.database import OutboxEventRow
 from packages.core.storage.repository import Repository
 
 logger = logging.getLogger(__name__)
 
+# After Redis degrades, the next coordination op past this cooldown triggers one
+# reconnect attempt; on success the layer rejoins Redis (issue #67). Lazy (no
+# background thread) so it never hammers a down Redis.
+REDIS_RECONNECT_COOLDOWN_SECONDS = 30.0
+
+
+def _build_redis_client(redis_url: str):
+    import redis
+
+    client = redis.Redis.from_url(
+        redis_url,
+        decode_responses=True,
+        socket_connect_timeout=0.5,
+        socket_timeout=1.0,
+    )
+    client.ping()
+    return client
+
 
 class InProcessFanoutHub:
-    def __init__(self, *, redis_url: str | None = None, namespace: str = "cutagent") -> None:
+    def __init__(
+        self,
+        *,
+        redis_url: str | None = None,
+        namespace: str = "cutagent",
+        redis_client_factory: Callable[[str], Any] = _build_redis_client,
+    ) -> None:
         self._subscribers: dict[str, list[Queue]] = {}
         self._lock = threading.RLock()
         self._redis_url = redis_url
@@ -30,6 +60,8 @@ class InProcessFanoutHub:
         self._instance_id = uuid4().hex
         self._redis = None
         self._redis_failed = False
+        self._degraded_at: float | None = None
+        self._redis_client_factory = redis_client_factory
         self._redis_lock = threading.RLock()
         self._pubsubs: dict[str, Any] = {}
         self._subscription_stops: dict[str, threading.Event] = {}
@@ -104,26 +136,39 @@ class InProcessFanoutHub:
         return f"{self._namespace}:run:{run_id}"
 
     def _redis_client(self):
-        if not self._redis_url or self._redis_failed or self._closed.is_set():
+        if not self._redis_url or self._closed.is_set():
             return None
         with self._redis_lock:
             if self._redis is not None:
                 return self._redis
+            if self._redis_failed and not self._reconnect_due():
+                return None
+            reconnecting = self._redis_failed
+            if reconnecting:
+                # Cooldown elapsed: attempt to rejoin Redis (lazy reconnect).
+                self._redis_failed = False
+                record_redis_reconnect_attempt("event_fanout")
             try:
-                import redis
-
-                client = redis.Redis.from_url(
-                    self._redis_url,
-                    decode_responses=True,
-                    socket_connect_timeout=0.5,
-                    socket_timeout=1.0,
-                )
-                client.ping()
+                client = self._redis_client_factory(self._redis_url)
                 self._redis = client
+                if self._degraded_at is not None:
+                    record_redis_recovered("event_fanout")
+                    self._degraded_at = None
                 return client
             except Exception as exc:  # pragma: no cover - exact Redis errors vary.
                 self._degrade(exc)
                 return None
+
+    def _reconnect_due(self) -> bool:
+        return (
+            self._degraded_at is not None
+            and (time.monotonic() - self._degraded_at) >= REDIS_RECONNECT_COOLDOWN_SECONDS
+        )
+
+    def is_redis_degraded(self) -> bool:
+        """Whether Redis is configured but this fanout has fallen back to
+        per-process delivery (cross-replica broadcast is currently broken)."""
+        return bool(self._redis_url) and self._redis_failed
 
     def _ensure_subscription(self, run_id: str) -> None:
         if self._closed.is_set():
@@ -215,6 +260,8 @@ class InProcessFanoutHub:
             if self._redis_failed:
                 return
             self._redis_failed = True
+            self._degraded_at = time.monotonic()
+            record_redis_degraded("event_fanout")
             redis = self._redis
             self._redis = None
             pubsubs = list(self._pubsubs.values())
@@ -421,12 +468,20 @@ class EventStreamToken:
 
 
 class EventStreamTokenStore:
-    def __init__(self, *, redis_url: str | None = None, namespace: str = "cutagent") -> None:
+    def __init__(
+        self,
+        *,
+        redis_url: str | None = None,
+        namespace: str = "cutagent",
+        redis_client_factory: Callable[[str], Any] = _build_redis_client,
+    ) -> None:
         self._tokens: dict[str, EventStreamToken] = {}
         self._redis_url = redis_url
         self._namespace = namespace.rstrip(":")
         self._redis = None
         self._redis_failed = False
+        self._degraded_at: float | None = None
+        self._redis_client_factory = redis_client_factory
         self._redis_lock = threading.RLock()
 
     def issue(self, run_id: str, ttl: timedelta) -> EventStreamToken:
@@ -462,32 +517,45 @@ class EventStreamTokenStore:
         return f"{self._namespace}:event-token:{token}"
 
     def _redis_client(self):
-        if not self._redis_url or self._redis_failed:
+        if not self._redis_url:
             return None
         with self._redis_lock:
             if self._redis is not None:
                 return self._redis
+            if self._redis_failed and not self._reconnect_due():
+                return None
+            if self._redis_failed:
+                self._redis_failed = False
+                record_redis_reconnect_attempt("event_token_store")
             try:
-                import redis
-
-                client = redis.Redis.from_url(
-                    self._redis_url,
-                    decode_responses=True,
-                    socket_connect_timeout=0.5,
-                    socket_timeout=1.0,
-                )
-                client.ping()
+                client = self._redis_client_factory(self._redis_url)
                 self._redis = client
+                if self._degraded_at is not None:
+                    record_redis_recovered("event_token_store")
+                    self._degraded_at = None
                 return client
             except Exception as exc:  # pragma: no cover - exact Redis errors vary.
                 self._degrade(exc)
                 return None
+
+    def _reconnect_due(self) -> bool:
+        return (
+            self._degraded_at is not None
+            and (time.monotonic() - self._degraded_at) >= REDIS_RECONNECT_COOLDOWN_SECONDS
+        )
+
+    def is_redis_degraded(self) -> bool:
+        """Whether Redis is configured but tokens are being issued/validated from
+        per-process state (cross-replica token validation is currently broken)."""
+        return bool(self._redis_url) and self._redis_failed
 
     def _degrade(self, exc: Exception) -> None:
         with self._redis_lock:
             if self._redis_failed:
                 return
             self._redis_failed = True
+            self._degraded_at = time.monotonic()
+            record_redis_degraded("event_token_store")
             redis = self._redis
             self._redis = None
         if redis is not None:

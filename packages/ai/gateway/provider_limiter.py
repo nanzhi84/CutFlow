@@ -30,9 +30,16 @@ from typing import Any
 from uuid import uuid4
 
 from packages.core.config.settings import build_providers_settings, build_redis_url
+from packages.core.observability.telemetry import (
+    record_redis_degraded,
+    record_redis_reconnect_attempt,
+    record_redis_recovered,
+)
 
 DEFAULT_MAX_INFLIGHT = 4
 _DEFAULT_NAMESPACE = "cutagent"
+# After Redis degrades, the next slot() past this cooldown retries connecting.
+_REDIS_RECONNECT_COOLDOWN_SECONDS = 30.0
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +125,8 @@ class DistributedRateLimiter:
         self._semaphores: dict[str, threading.BoundedSemaphore] = {}
         self._degradation_lock = threading.Lock()
         self._degraded = False
+        self._degraded_at: float | None = None
+        self._redis_client_factory = redis_client_factory
         self._redis = None
         if redis_url:
             try:
@@ -128,6 +137,8 @@ class DistributedRateLimiter:
     @contextmanager
     def slot(self, concurrency_key: str | None, provider_id: str) -> Iterator[None]:
         key = (concurrency_key or "").strip() or provider_id
+        if self._redis is None:
+            self._maybe_reconnect()
         if self._redis is None:
             with self._local_slot(key):
                 yield
@@ -207,6 +218,8 @@ class DistributedRateLimiter:
             if self._degraded:
                 return
             self._degraded = True
+            self._degraded_at = time.monotonic()
+            record_redis_degraded("provider_limiter")
         logger.warning(
             "redis limiter degraded; using per-process provider concurrency limiter",
             extra={
@@ -216,6 +229,36 @@ class DistributedRateLimiter:
                 "reason": str(exc),
             },
         )
+
+    def _maybe_reconnect(self) -> None:
+        """Lazily rejoin Redis once the degrade cooldown has elapsed (issue #67).
+
+        Called from ``slot()`` when running on the local fallback; on success the
+        limiter resumes shared cross-process concurrency/QPS enforcement.
+        """
+        if not self.redis_url:
+            return
+        with self._degradation_lock:
+            if not self._degraded or self._redis is not None:
+                return
+            if (
+                self._degraded_at is None
+                or (time.monotonic() - self._degraded_at) < _REDIS_RECONNECT_COOLDOWN_SECONDS
+            ):
+                return
+            record_redis_reconnect_attempt("provider_limiter")
+            try:
+                self._redis = self._redis_client_factory(self.redis_url)
+                self._degraded = False
+                self._degraded_at = None
+                record_redis_recovered("provider_limiter")
+            except Exception:  # pragma: no cover - reconnect retried next cooldown.
+                self._degraded_at = time.monotonic()
+
+    def is_redis_degraded(self) -> bool:
+        """Whether Redis is configured but the limiter is on its per-process
+        fallback (cross-process QPS is not enforced)."""
+        return bool(self.redis_url) and self._degraded
 
 
 def _get_default_limiter() -> DistributedRateLimiter:

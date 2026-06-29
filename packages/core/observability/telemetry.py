@@ -82,6 +82,33 @@ TEMPORAL_ACTIVITY_FAILURES = Counter(
     "Temporal activity failures.",
     registry=REGISTRY,
 )
+# Cross-process Redis coordination health (issue #67). ``component`` is one of
+# event_fanout / event_token_store / provider_limiter. The gauge is 1 while that
+# layer has degraded to its per-process fallback, 0 once it reconnects to Redis.
+REDIS_DEGRADED = Gauge(
+    "redis_degraded",
+    "Redis coordination layer degraded to per-process fallback (1=degraded).",
+    ["component"],
+    registry=REGISTRY,
+)
+REDIS_RECONNECT_ATTEMPTS = Counter(
+    "redis_reconnect_attempts_total",
+    "Attempts to reconnect a degraded Redis coordination layer.",
+    ["component"],
+    registry=REGISTRY,
+)
+
+
+def record_redis_degraded(component: str) -> None:
+    REDIS_DEGRADED.labels(component=component).set(1)
+
+
+def record_redis_recovered(component: str) -> None:
+    REDIS_DEGRADED.labels(component=component).set(0)
+
+
+def record_redis_reconnect_attempt(component: str) -> None:
+    REDIS_RECONNECT_ATTEMPTS.labels(component=component).inc()
 
 
 def record_api_request(duration_seconds: float, status_code: int) -> None:
