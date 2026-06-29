@@ -6,8 +6,6 @@ export const routePatterns = {
   caseProfile: "/studio/:caseId/profile",
   caseAgent: "/studio/:caseId/agent",
   caseOutputs: "/studio/:caseId/outputs",
-  caseRuns: "/studio/:caseId/runs",
-  caseFinishedVideos: "/studio/:caseId/finished-videos",
   casePublish: "/studio/:caseId/publish",
   settings: "/settings",
   library: "/library/*",
@@ -15,7 +13,6 @@ export const routePatterns = {
   account: "/account/*",
   promptOps: "/ops/prompts",
   publishOps: "/publish-ops",
-  ops: "/ops/*",
 } as const;
 
 const segment = (value: string) => encodeURIComponent(value);
