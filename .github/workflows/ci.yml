@@ -61,6 +61,22 @@ jobs:
           python scripts/export_openapi.py
           git diff --exit-code apps/web/src/api/openapi.json
 
+  production-preflight:
+    # Issue #70: assert the fail-closed startup preflight (#66) rejects unsafe
+    # production config and accepts a minimal safe one. Self-skips until the
+    # preflight script ships, then activates. Shares scripts/ci_preflight_gate.sh
+    # with the local gate (scripts/ci_gate.sh) so the two never drift.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Production startup preflight gate
+        run: bash scripts/ci_preflight_gate.sh
+
   integration:
     runs-on: ubuntu-latest
     services:

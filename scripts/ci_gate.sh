@@ -84,6 +84,10 @@ export CUTAGENT_DISABLE_BACKGROUND_DISPATCHER=1
 "$PYTHON_BIN" scripts/bootstrap_database.py
 run_pytest
 
+# Production startup preflight gate (#70). Shared with the CI production-preflight
+# job via scripts/ci_preflight_gate.sh so the local and remote gates never drift.
+PYTHON_BIN="$PYTHON_BIN" bash scripts/ci_preflight_gate.sh
+
 "$PYTHON_BIN" scripts/export_openapi.py
 git diff --exit-code apps/web/src/api/openapi.json
 
