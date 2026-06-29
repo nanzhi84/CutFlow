@@ -54,6 +54,10 @@ def node_error_response(exc: NodeExecutionError, *, status_override: int | None 
         status = 404
     elif error.code == c.ErrorCode.upload_too_large:
         status = 413
+    elif error.code == c.ErrorCode.workflow_worker_lost:
+        # The workflow runtime (Temporal) was unreachable or timed out on the
+        # request path — an upstream-dependency failure, not a client error.
+        status = 503
     return JSONResponse(
         status_code=status_override or status,
         content=c.ErrorEnvelope(error=error).model_dump(mode="json"),

@@ -39,6 +39,14 @@ def test_core_state_machines_allow_spec_paths_and_reject_failed_to_running():
     assert exc.value.error.code == ErrorCode.workflow_invalid_transition
 
 
+def test_start_failure_compensation_transitions_are_allowed():
+    # A run/job that could not be handed to the workflow runtime is compensated
+    # straight to ``failed`` (issue #69): admitted->failed and queued->failed
+    # must be legal so ``_compensate_failed_start`` never forces an illegal jump.
+    assert_transition("run", RunStatus.admitted, RunStatus.failed)
+    assert_transition("job", JobStatus.queued, JobStatus.failed)
+
+
 def test_prompt_version_draft_cannot_publish_directly():
     assert_transition("prompt_version", "draft", "reviewing")
     assert_transition("prompt_version", "reviewing", "approved")

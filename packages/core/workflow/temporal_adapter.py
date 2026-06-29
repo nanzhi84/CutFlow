@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -9,6 +10,8 @@ from typing import Any
 from temporalio import activity, workflow
 from temporalio.client import Client
 from temporalio.common import RetryPolicy as TemporalRetryPolicy
+from temporalio.exceptions import WorkflowAlreadyStartedError
+from temporalio.service import RPCError
 
 # Domain modules are data/typing + activity-side only; the workflow body never
 # calls their non-deterministic code paths, so they bypass sandbox validation.
@@ -20,9 +23,9 @@ with workflow.unsafe.imports_passed_through():
         record_temporal_activity_failure,
         reset_observability_context,
     )
-    from packages.core.contracts import Job, RunStatus, WorkflowRun, WorkflowTemplate
+    from packages.core.contracts import ErrorCode, Job, RunStatus, WorkflowRun, WorkflowTemplate
     from packages.core.storage import Repository
-    from packages.core.workflow.runtime import WorkflowRuntimeSettings
+    from packages.core.workflow.runtime import NodeExecutionError, WorkflowRuntimeSettings
     from packages.production.pipeline import LocalRuntimeAdapter, ReusePlan
     from packages.production.sqlalchemy_repository import SqlAlchemyProductionRepository
 
@@ -108,6 +111,16 @@ def temporal_activities() -> list:
 # of waiting out the multi-hour start_to_close_timeout.
 NODE_HEARTBEAT_INTERVAL_SECONDS = 20.0
 NODE_HEARTBEAT_TIMEOUT_SECONDS = 90
+
+# Control-plane (API request path) timeouts. The API creates/cancels runs by
+# talking to Temporal from a synchronous request handler, so every call MUST be
+# bounded: an unreachable or slow Temporal must surface a fast error instead of
+# blocking the API worker. ``CONNECT`` bounds the one-time client connect,
+# ``RPC`` bounds each start/signal/terminate gRPC call, and ``CALL`` is the
+# outer wall-clock bound enforced on the calling thread (connect + rpc + margin).
+TEMPORAL_CONNECT_TIMEOUT_SECONDS = 10.0
+TEMPORAL_RPC_TIMEOUT = timedelta(seconds=30)
+TEMPORAL_CALL_TIMEOUT_SECONDS = 45.0
 
 
 def _context() -> TemporalActivityContext:
@@ -365,6 +378,14 @@ class TemporalRuntimeAdapter:
     ) -> None:
         self.settings = settings
         self.repository = repository
+        # A single connected client is reused across requests on a dedicated
+        # background event loop. temporalio's Client is bound to the loop it was
+        # connected on, so we own a persistent loop instead of spinning up a new
+        # one (and a new connection) per call. ``close()`` tears both down.
+        self._client_obj: Client | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_thread: threading.Thread | None = None
+        self._lock = threading.Lock()
 
     def start_run(self, *, job: Job, run: WorkflowRun, template: WorkflowTemplate) -> None:
         self._run(
@@ -404,37 +425,104 @@ class TemporalRuntimeAdapter:
         return self.repository.runs.get(run_id) if self.repository is not None else None
 
     async def _client(self) -> Client:
-        return await Client.connect(
-            self.settings.temporal_address,
-            namespace=self.settings.temporal_namespace,
-        )
+        if self._client_obj is not None:
+            return self._client_obj
+        try:
+            client = await asyncio.wait_for(
+                Client.connect(
+                    self.settings.temporal_address,
+                    namespace=self.settings.temporal_namespace,
+                ),
+                timeout=TEMPORAL_CONNECT_TIMEOUT_SECONDS,
+            )
+        except (TimeoutError, asyncio.TimeoutError, RPCError, OSError) as exc:
+            raise NodeExecutionError(
+                ErrorCode.workflow_worker_lost,
+                f"Cannot reach Temporal at {self.settings.temporal_address}: {exc}",
+            ) from exc
+        self._client_obj = client
+        return client
 
     async def _start_workflow(self, payload: dict[str, Any]) -> None:
         client = await self._client()
-        await client.start_workflow(
-            WORKFLOW_TYPE,
-            payload,
-            id=str(payload["run_id"]),
-            task_queue=self.settings.temporal_task_queue,
-        )
+        try:
+            await client.start_workflow(
+                WORKFLOW_TYPE,
+                payload,
+                id=str(payload["run_id"]),
+                task_queue=self.settings.temporal_task_queue,
+                rpc_timeout=TEMPORAL_RPC_TIMEOUT,
+            )
+        except WorkflowAlreadyStartedError:
+            # Idempotent retry: a workflow with this run_id already exists (the
+            # first request succeeded at the Temporal side even if the client
+            # never saw the response). Treat as success and let the worker drive
+            # the run forward — do NOT fail/recreate it.
+            return
 
     async def _cancel_workflow(self, run_id: str, *, force: bool, reason: str | None) -> None:
         client = await self._client()
         handle = client.get_workflow_handle(run_id)
         if force:
-            await handle.terminate(reason=reason or "force cancel requested")
+            await handle.terminate(
+                reason=reason or "force cancel requested", rpc_timeout=TEMPORAL_RPC_TIMEOUT
+            )
         else:
-            await handle.signal("cancel", {"reason": reason or ""})
+            await handle.signal("cancel", {"reason": reason or ""}, rpc_timeout=TEMPORAL_RPC_TIMEOUT)
+
+    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+        with self._lock:
+            if self._loop is not None and self._loop.is_running():
+                return self._loop
+            loop = asyncio.new_event_loop()
+            thread = threading.Thread(
+                target=self._run_loop_forever,
+                args=(loop,),
+                name="temporal-control-plane-loop",
+                daemon=True,
+            )
+            thread.start()
+            self._loop = loop
+            self._loop_thread = thread
+            return loop
+
+    @staticmethod
+    def _run_loop_forever(loop: asyncio.AbstractEventLoop) -> None:
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
 
     def _run(self, coroutine):
+        loop = self._ensure_loop()
+        future = asyncio.run_coroutine_threadsafe(coroutine, loop)
         try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(coroutine)
-        # Called from a thread that already owns an event loop (e.g. async
-        # route / test harness): run on a private loop in a helper thread.
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coroutine).result()
+            return future.result(timeout=TEMPORAL_CALL_TIMEOUT_SECONDS)
+        except FuturesTimeoutError as exc:
+            future.cancel()
+            raise NodeExecutionError(
+                ErrorCode.workflow_worker_lost,
+                f"Temporal request timed out after {TEMPORAL_CALL_TIMEOUT_SECONDS}s.",
+            ) from exc
+        except RPCError as exc:
+            raise NodeExecutionError(
+                ErrorCode.workflow_worker_lost, f"Temporal RPC failed: {exc}"
+            ) from exc
+
+    def close(self) -> None:
+        """Stop the background loop and drop the cached client.
+
+        Wired into the API lifespan shutdown. Idempotent and safe to call even
+        if no loop/client was ever created.
+        """
+        with self._lock:
+            loop = self._loop
+            thread = self._loop_thread
+            self._loop = None
+            self._loop_thread = None
+            self._client_obj = None
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(loop.stop)
+            if thread is not None:
+                thread.join(timeout=5)
 
     def _mark_local_force_cancelled(self, run_id: str) -> None:
         if self.repository is None or run_id not in self.repository.runs:

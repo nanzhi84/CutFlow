@@ -12,7 +12,11 @@ State = Enum | str
 
 JOB_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.draft: frozenset({JobStatus.queued, JobStatus.cancelled}),
-    JobStatus.queued: frozenset({JobStatus.running, JobStatus.cancelled}),
+    # ``queued -> failed`` covers a job whose run could not be handed to the
+    # workflow runtime (e.g. Temporal unreachable). The run never reached
+    # ``running``, so the job is compensated straight to ``failed`` instead of
+    # being left stuck in ``queued``. See ``_compensate_failed_start``.
+    JobStatus.queued: frozenset({JobStatus.running, JobStatus.cancelled, JobStatus.failed}),
     JobStatus.running: frozenset({JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled}),
     JobStatus.succeeded: frozenset({JobStatus.queued, JobStatus.archived}),
     JobStatus.failed: frozenset({JobStatus.queued, JobStatus.archived}),
@@ -22,7 +26,11 @@ JOB_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
 
 RUN_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     RunStatus.created: frozenset({RunStatus.admitted, RunStatus.cancelled}),
-    RunStatus.admitted: frozenset({RunStatus.running, RunStatus.cancelled}),
+    # ``admitted -> failed`` is the start-failure compensation path: the run was
+    # persisted as admitted but the workflow could not be started on the runtime
+    # (Temporal unreachable / timed out), so it is failed in place rather than
+    # left orphaned in ``admitted``. See ``_compensate_failed_start``.
+    RunStatus.admitted: frozenset({RunStatus.running, RunStatus.cancelled, RunStatus.failed}),
     RunStatus.running: frozenset(
         {RunStatus.succeeded, RunStatus.failed, RunStatus.cancelling, RunStatus.cancelled}
     ),

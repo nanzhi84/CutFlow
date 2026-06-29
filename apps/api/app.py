@@ -118,6 +118,11 @@ async def lifespan(app: FastAPI):
         close_hub = getattr(app.state.event_hub, "close", None)
         if close_hub is not None:
             close_hub()
+        # Tear down the Temporal control-plane background loop + cached client
+        # (no-op for the local runtime / test adapters that lack ``close``).
+        close_workflow = getattr(app.state.workflow, "close", None)
+        if close_workflow is not None:
+            close_workflow()
 
 
 def configure_app_state(app: FastAPI, *, session_factory=None) -> None:

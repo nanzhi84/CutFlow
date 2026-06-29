@@ -22,7 +22,11 @@ from packages.core import contracts as c
 from packages.core.observability.events import receive_from_subscriber
 from packages.core.observability import replay_sqlalchemy_outbox
 from packages.core.observability.outbox import OutboxWriter
-from packages.core.contracts.state_machines import assert_transition
+from packages.core.contracts.state_machines import (
+    JOB_TRANSITIONS,
+    RUN_TRANSITIONS,
+    assert_transition,
+)
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 from packages.core.observability import record_funnel_event, workflow_stage
@@ -310,6 +314,48 @@ def _compute_reuse_plan(
     )
 
 
+def _compensate_failed_start(request: Request, run_id: str, reason: str) -> None:
+    """Mark a run (and its job) failed when its workflow could not be started.
+
+    Guards against orphaned ``admitted`` runs: when ``start_run``/``resume_run``
+    raises (e.g. Temporal unreachable / timed out) the run was already persisted
+    as admitted but no workflow exists to drive it forward. We transition it to
+    ``failed`` in place — guarded by the state-machine table so an illegal
+    transition is never forced — fail its job, emit a failure event, and sync the
+    snapshot. A run that already moved past ``admitted`` (local runtime that began
+    executing) is left for its own terminal handling.
+    """
+    repo = repository(request)
+    run = repo.runs.get(run_id)
+    if run is None:
+        return
+    if c.RunStatus.failed not in RUN_TRANSITIONS.get(run.status, frozenset()):
+        return
+    run = run.model_copy(
+        update={
+            "status": c.RunStatus.failed,
+            "finished_at": c.utcnow(),
+            "updated_at": c.utcnow(),
+        }
+    )
+    repo.runs[run_id] = run
+    job = repo.jobs.get(run.job_id)
+    if job is not None and c.JobStatus.failed in JOB_TRANSITIONS.get(job.status, frozenset()):
+        repo.jobs[job.id] = job.model_copy(
+            update={"status": c.JobStatus.failed, "updated_at": c.utcnow()}
+        )
+    repo.create_event(
+        "workflow.run.failed",
+        "run",
+        run_id,
+        {"job_id": run.job_id, "reason": reason, "status": c.RunStatus.failed.value},
+        dedupe_key=f"{run_id}:run:{c.RunStatus.failed.value}",
+        status=c.RunStatus.failed.value,
+        message="Workflow failed to start.",
+    )
+    _sync_workflow_snapshot(request, repo.runs[run_id])
+
+
 def _start_submitted_run(
     request: Request,
     *,
@@ -327,19 +373,31 @@ def _start_submitted_run(
         reason=reason,
     )
     _sync_workflow_snapshot(request, run)
-    if mode == "resume" and from_run_id:
-        workflow_runtime(request).resume_run(
-            source_run_id=from_run_id,
-            new_run=run,
-            reuse_plan=_compute_reuse_plan(
-                request,
+    try:
+        if mode == "resume" and from_run_id:
+            workflow_runtime(request).resume_run(
                 source_run_id=from_run_id,
-                template=template,
-                reuse_valid_artifacts=reuse_valid_artifacts,
-            ),
-        )
-    else:
-        workflow_runtime(request).start_run(job=job, run=run, template=template)
+                new_run=run,
+                reuse_plan=_compute_reuse_plan(
+                    request,
+                    source_run_id=from_run_id,
+                    template=template,
+                    reuse_valid_artifacts=reuse_valid_artifacts,
+                ),
+            )
+        else:
+            workflow_runtime(request).start_run(job=job, run=run, template=template)
+    except Exception as exc:
+        # The run was admitted + persisted but the workflow could not be started.
+        # Compensate to ``failed`` so it is not orphaned in ``admitted``, then
+        # surface the failure to the caller instead of returning a stuck run.
+        _compensate_failed_start(request, run.id, str(exc))
+        if isinstance(exc, NodeExecutionError):
+            raise
+        raise NodeExecutionError(
+            c.ErrorCode.workflow_worker_lost,
+            f"Failed to start the workflow run; it was marked failed: {exc}",
+        ) from exc
     _sync_workflow_snapshot(request, repository(request).runs[run.id])
     return repository(request).runs[run.id]
 
@@ -475,8 +533,14 @@ def create_digital_human_batch(
                     request, job_id=job.id, mode="new", from_run_id=None, reason=None
                 )
             except Exception:
-                # Roll back the half-created job so a failed item leaves no orphan.
-                repo.jobs.pop(job.id, None)
+                # A start failure has already compensated the admitted run + its
+                # job to ``failed`` (consistent in memory AND, under SQL, in the
+                # DB) — leaving a visible, retryable failed record rather than an
+                # orphan. Only when admission itself failed before any run row
+                # existed do we drop the half-created draft job (never synced to
+                # the DB), so a failed item leaves nothing dangling either way.
+                if not any(r.job_id == job.id for r in repo.runs.values()):
+                    repo.jobs.pop(job.id, None)
                 raise
             repo.idempotency_records[idem_key] = {"job_id": job.id, "run_id": run.id}
             results.append(
