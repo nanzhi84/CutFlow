@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { Navigate, Route, Routes, useParams } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { RequireAuth } from "./components/RequireAuth";
 import { LoadingState } from "./components/ui/State";
@@ -35,8 +35,6 @@ export default function App() {
             <Route path={routePatterns.caseProfile} element={<CaseProfilePage />} />
             <Route path={routePatterns.caseAgent} element={<CaseAgentPage />} />
             <Route path={routePatterns.caseOutputs} element={<RunsPage />} />
-            <Route path={routePatterns.caseRuns} element={<NavigateToCaseOutputs />} />
-            <Route path={routePatterns.caseFinishedVideos} element={<NavigateToCaseOutputs />} />
             <Route path={routePatterns.casePublish} element={<PublishCenterPage />} />
             <Route path={routePatterns.settings} element={<SettingsPage />} />
             <Route path={routePatterns.library} element={<LibraryLayout />} />
@@ -44,7 +42,6 @@ export default function App() {
             <Route path={routePatterns.account} element={<AccountPage />} />
             <Route path={routePatterns.promptOps} element={<PromptManagementPage />} />
             <Route path={routePatterns.publishOps} element={<PublishOpsPage />} />
-            <Route path={routePatterns.ops} element={<Navigate to={routes.analytics()} replace />} />
           </Route>
         </Route>
         <Route path="*" element={<Navigate to={routes.studio()} replace />} />
@@ -59,9 +56,4 @@ function PageFallback() {
       <LoadingState label="正在加载页面" />
     </main>
   );
-}
-
-function NavigateToCaseOutputs() {
-  const { caseId = "" } = useParams();
-  return <Navigate to={caseId ? routes.caseOutputs(caseId) : routes.studio()} replace />;
 }
