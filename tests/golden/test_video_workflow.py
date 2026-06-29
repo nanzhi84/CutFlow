@@ -409,7 +409,7 @@ def test_spec_20_2_8_broll_inserts_stay_in_bounds_on_short_timeline():
             for artifact in active_client.app.state.repository.artifacts.values()
             if artifact.run_id == run["id"]
         }
-        timeline = artifacts[ArtifactKind.timeline_plan].payload
+        timeline = artifacts[ArtifactKind.plan_timeline].payload
         assert timeline["validation"]["checks"]["out_of_bounds"] is True
         total_frames = timeline["total_frames"]
         broll_tracks = [t for t in timeline["tracks"] if t["track_id"] == "broll"]
@@ -537,7 +537,7 @@ def test_pipeline_writes_typed_artifact_payloads_with_frame_quantized_timeline()
     assert lipsync_report["skipped"] is True
     assert lipsync_report["input_video_artifact_id"] == portrait_track.id
 
-    timeline = artifacts[ArtifactKind.timeline_plan].payload
+    timeline = artifacts[ArtifactKind.plan_timeline].payload
     assert timeline["fps"] == 30
     assert timeline["total_frames"] > 0
     assert isinstance(timeline["tracks"], list)

@@ -158,7 +158,6 @@ class ArtifactKind(str, Enum):
     plan_portrait = "plan.portrait"
     plan_broll = "plan.broll"
     plan_style = "plan.style"
-    timeline_plan = "plan.timeline"
     plan_timeline = "plan.timeline"
     plan_render = "plan.render"
     video_portrait_track = "video.portrait_track"

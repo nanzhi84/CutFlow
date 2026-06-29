@@ -2728,7 +2728,7 @@ export interface components {
          * ArtifactKind
          * @enum {string}
          */
-        ArtifactKind: "uploaded.file" | "spec.validated_production" | "case.context" | "case.performance_analysis" | "script.strategy" | "creative.intent" | "audio.tts" | "audio.alignment.raw" | "audio.alignment" | "narration.units" | "plan.material_pack" | "plan.portrait" | "plan.broll" | "plan.style" | "plan.timeline" | "plan.timeline" | "plan.render" | "video.portrait_track" | "video.lipsync" | "lipsync.report" | "video.rendered" | "video.final" | "video.finished" | "subtitle.ass" | "cover.image" | "publish.package" | "run.report.public" | "run.report.debug" | "editor.handoff_package" | "editor.jianying_draft_package" | "provider.raw_request" | "provider.raw_response" | "import.mapping" | "material.annotation";
+        ArtifactKind: "uploaded.file" | "spec.validated_production" | "case.context" | "case.performance_analysis" | "script.strategy" | "creative.intent" | "audio.tts" | "audio.alignment.raw" | "audio.alignment" | "narration.units" | "plan.material_pack" | "plan.portrait" | "plan.broll" | "plan.style" | "plan.timeline" | "plan.render" | "video.portrait_track" | "video.lipsync" | "lipsync.report" | "video.rendered" | "video.final" | "video.finished" | "subtitle.ass" | "cover.image" | "publish.package" | "run.report.public" | "run.report.debug" | "editor.handoff_package" | "editor.jianying_draft_package" | "provider.raw_request" | "provider.raw_response" | "import.mapping" | "material.annotation";
         /** ArtifactRef */
         ArtifactRef: {
             /** Artifact Id */
