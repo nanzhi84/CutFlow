@@ -22,7 +22,7 @@ from packages.core.observability import (
 from packages.core.workflow import NodeExecutionError
 
 SESSION_COOKIE = "cutagent_session"
-PUBLIC_API_PATHS = {"/api/health"}
+PUBLIC_API_PATHS = {"/api/health", "/api/health/ready"}
 PUBLIC_PATHS = {"/metrics"}
 PUBLIC_API_PREFIXES = ("/api/auth/",)
 IDEMPOTENT_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}

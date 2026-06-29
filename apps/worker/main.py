@@ -9,6 +9,11 @@ from temporalio.worker import Worker
 
 from packages.ai.gateway import ProviderGateway, SqlAlchemyProviderRuntimeRepository
 from packages.ai.prompts import PromptRegistry, SqlAlchemyPromptRuntimeRepository
+from packages.core.config import (
+    build_settings,
+    format_preflight_report,
+    validate_startup_settings,
+)
 from packages.core.storage import Repository
 from packages.core.storage.bootstrap import (
     bootstrap_sqlalchemy_storage_if_enabled,
@@ -32,6 +37,10 @@ from packages.production.pipeline import build_digital_human_workflow
 
 async def async_main() -> None:
     configure_logging()
+    # Fail closed in production before connecting to anything (#66).
+    _preflight_issues = validate_startup_settings(build_settings())
+    if _preflight_issues:
+        raise RuntimeError(format_preflight_report(_preflight_issues))
     bootstrap_sqlalchemy_storage_if_enabled()
     settings = load_workflow_runtime_settings()
     session_factory = get_sqlalchemy_session_factory_if_enabled()

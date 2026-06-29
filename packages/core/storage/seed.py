@@ -317,7 +317,12 @@ def seed_database(session: Session, rows: Iterable[object] | None = None) -> int
         if existing is None:
             session.add(row)
             inserted += 1
-        elif isinstance(row, UserRow) and row.id in {"usr_admin", "usr_viewer"}:
-            existing.password_hash = row.password_hash
+        # NOTE: an EXISTING seed user's password is intentionally left untouched.
+        # Re-seeding used to overwrite usr_admin/usr_viewer back to the hardcoded
+        # "local-admin"/"local-viewer" hash on every bootstrap/startup, which
+        # silently reverted any operator-changed admin password on the next
+        # restart (issue #66). First-time seeding still creates them with the
+        # known local-dev credentials (the ``if existing is None`` branch above);
+        # after that, the stored password is authoritative.
     session.commit()
     return inserted

@@ -35,7 +35,11 @@ from apps.api.routers import (
 from packages.ai.gateway import ProviderGateway, SqlAlchemyProviderRepository, SqlAlchemyProviderRuntimeRepository
 from packages.ai.prompts import PromptRegistry, SqlAlchemyPromptRepository, SqlAlchemyPromptRuntimeRepository
 from packages.core.auth import create_sqlalchemy_auth_service
-from packages.core.config import build_settings
+from packages.core.config import (
+    build_settings,
+    format_preflight_report,
+    validate_startup_settings,
+)
 from packages.core.observability import (
     EventStreamTokenStore,
     InProcessFanoutHub,
@@ -93,6 +97,16 @@ ROUTER_MODULES = (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Fail closed in production BEFORE any startup side effect. bootstrap_* seeds
+    # the local admin/viewer with dev-default credentials when seed_local_auth is
+    # on, so it must run AFTER the gate, never before: a misconfigured prod deploy
+    # (open registration, local-dev salt, seeded admin, local object store, missing
+    # Redis, ...) must NEITHER seed NOR start serving. Mirror the worker's order —
+    # preflight on a fresh settings snapshot, fail closed, and only then bootstrap.
+    # Aggregates every unsafe setting into one error (#66).
+    _preflight_issues = validate_startup_settings(build_settings())
+    if _preflight_issues:
+        raise RuntimeError(format_preflight_report(_preflight_issues))
     bootstrap_sqlalchemy_storage_if_enabled()
     session_factory = get_sqlalchemy_session_factory_if_enabled()
     configure_app_state(app, session_factory=session_factory)

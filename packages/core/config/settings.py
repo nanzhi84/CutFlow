@@ -473,6 +473,31 @@ class PublishingSettings(BaseModel):
         return int(self.xiaovmao_cdp_port_raw)
 
 
+class DeploymentSettings(BaseModel):
+    """Deployment environment + topology knobs (``settings.deployment.*``).
+
+    Drives the production startup preflight (``validate_startup_settings``):
+    ``environment == "production"`` flips a set of dev-friendly defaults from
+    advisory to fail-closed. None of these are secrets."""
+
+    model_config = ConfigDict(frozen=True)
+
+    # CUTAGENT_ENV: "local" (default) | "staging" | "production". Only
+    # "production" triggers the fail-closed startup preflight.
+    environment: str = "local"
+    # CUTAGENT_REPLICA_COUNT: number of API replicas behind the LB. >1 requires a
+    # shared Redis for cross-replica fanout / stream tokens / provider limiter.
+    replica_count: int = 1
+    # CUTAGENT_PUBLISHING_LOCAL_PROXY: acknowledge that the publishing CDP host is
+    # intentionally a machine-local proxy (小V猫 on the deploy host), so the
+    # preflight does not flag a 127.0.0.1 CDP host in production.
+    publishing_local_proxy: bool = False
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.strip().lower() == "production"
+
+
 class Settings(BaseModel):
     """Typed, immutable snapshot of all infrastructure configuration.
 
@@ -482,6 +507,7 @@ class Settings(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    deployment: DeploymentSettings = Field(default_factory=DeploymentSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     object_store: ObjectStoreSettings = Field(default_factory=ObjectStoreSettings)
     workflow: WorkflowSettings = Field(default_factory=WorkflowSettings)
@@ -605,6 +631,14 @@ def build_settings() -> Settings:
     override — preserving the call-time semantics of the previous ``os.getenv``
     sites."""
     return Settings(
+        deployment=DeploymentSettings(
+            environment=_env_str("CUTAGENT_ENV", "local").strip().lower(),
+            replica_count=_env_int("CUTAGENT_REPLICA_COUNT", 1),
+            publishing_local_proxy=_env_str("CUTAGENT_PUBLISHING_LOCAL_PROXY", "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"},
+        ),
         storage=StorageSettings(
             backend=_env_str("CUTAGENT_STORAGE_BACKEND", "sqlalchemy").lower(),
             database_url=os.getenv("CUTAGENT_DATABASE_URL"),
