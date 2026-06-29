@@ -457,13 +457,15 @@ def test_hydrate_workflow_runtime_snapshot_loads_case_media_asset_source_artifac
         NodeRunRow: [],
         VoiceProfileRow: [],
         MediaAssetRow: [media_asset],
-        ArtifactRow: [],
+        # Source artifacts are now batch-loaded via a single IN query
+        # (select(ArtifactRow).where(id.in_(...))) instead of per-asset
+        # session.get, so the fake serves them through rows_by_model.
+        ArtifactRow: [source_artifact],
     }
     rows_by_key = {
         (JobRow, job.id): job,
         (WorkflowRunRow, run.id): run,
         (CaseRow, case.id): case,
-        (ArtifactRow, source_artifact.id): source_artifact,
     }
     production_repository = SqlAlchemyProductionRepository(
         lambda: StaticHydrateSession(rows_by_model, rows_by_key)
@@ -555,13 +557,14 @@ def test_hydrate_workflow_runtime_snapshot_queries_global_media_assets():
             NodeRunRow: [],
             VoiceProfileRow: [],
             MediaAssetRow: [global_bgm],
-            ArtifactRow: [],
+            # Batch-loaded via a single IN query now (see note above), so the
+            # fake serves the source artifact through rows_by_model.
+            ArtifactRow: [global_bgm_artifact],
         },
         rows_by_key={
             (JobRow, job.id): job,
             (WorkflowRunRow, run.id): run,
             (CaseRow, case.id): case,
-            (ArtifactRow, global_bgm_artifact.id): global_bgm_artifact,
         },
     )
     production_repository = SqlAlchemyProductionRepository(lambda: session)

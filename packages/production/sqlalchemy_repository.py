@@ -585,31 +585,50 @@ class SqlAlchemyProductionRepository(BaseRepository):
                 media_statement = select(MediaAssetRow).where(
                     or_(MediaAssetRow.case_id == run.case_id, MediaAssetRow.case_id.is_(None))
                 )
-                for row in session.scalars(media_statement):
+                media_rows = list(session.scalars(media_statement))
+                rows_by_asset_id = {row.id: row for row in media_rows}
+                for row in media_rows:
                     asset = media_asset_row_to_contract(row)
                     repository.media_assets[asset.id] = asset
-                    # Hydrate the latest annotation so material planning (b-roll
-                    # matching reads repo.annotation_v4_for_asset -> self.annotations)
-                    # sees the real AnnotationV4 in the WORKER process. Only API
-                    # services populate the in-memory annotations dict otherwise, so
-                    # without this the worker matches against zero annotations and
-                    # b-roll always soft-degrades. object_store=None skips evidence-
-                    # image signing (matching never needs the signed URLs).
-                    ann_rows = list(
-                        session.scalars(
-                            select(AnnotationRow)
-                            .where(AnnotationRow.asset_id == row.id)
-                            .order_by(AnnotationRow.updated_at.desc())
-                        )
+                # Hydrate the latest annotation per asset so material planning
+                # (b-roll matching reads repo.annotation_v4_for_asset ->
+                # self.annotations) sees the real AnnotationV4 in the WORKER
+                # process. Only API services populate the in-memory annotations
+                # dict otherwise, so without this the worker matches against zero
+                # annotations and b-roll always soft-degrades. object_store=None
+                # skips evidence-image signing (matching never needs the signed
+                # URLs). Batched into ONE ``IN`` query ordered by
+                # (asset_id, updated_at desc) instead of one query per asset — the
+                # media pool spans this case PLUS the global shared pool
+                # (case_id IS NULL), so a per-asset query was an N+1 over the whole
+                # library. ``setdefault`` keeps the first row seen per asset (its
+                # latest annotation).
+                asset_ids = list(rows_by_asset_id)
+                if asset_ids:
+                    latest_ann_by_asset: dict[str, AnnotationRow] = {}
+                    annotation_statement = (
+                        select(AnnotationRow)
+                        .where(AnnotationRow.asset_id.in_(asset_ids))
+                        .order_by(AnnotationRow.asset_id, AnnotationRow.updated_at.desc())
                     )
-                    ann_row = ann_rows[0] if ann_rows else None
-                    if ann_row is not None:
-                        repository.annotations[asset.id] = annotation_row_to_editor(
-                            ann_row, row, object_store=None
+                    for ann_row in session.scalars(annotation_statement):
+                        latest_ann_by_asset.setdefault(ann_row.asset_id, ann_row)
+                    for asset_id, ann_row in latest_ann_by_asset.items():
+                        repository.annotations[asset_id] = annotation_row_to_editor(
+                            ann_row, rows_by_asset_id[asset_id], object_store=None
                         )
-                    if asset.source_artifact_id and asset.source_artifact_id not in repository.artifacts:
-                        artifact_row = session.get(ArtifactRow, asset.source_artifact_id)
-                        if artifact_row is not None:
+                    # Batch-load source artifacts with a single ``IN`` query
+                    # instead of one ``session.get`` per asset.
+                    source_artifact_ids = {
+                        row.source_artifact_id
+                        for row in media_rows
+                        if row.source_artifact_id
+                        and row.source_artifact_id not in repository.artifacts
+                    }
+                    if source_artifact_ids:
+                        for artifact_row in session.scalars(
+                            select(ArtifactRow).where(ArtifactRow.id.in_(source_artifact_ids))
+                        ):
                             contract = artifact_row_to_contract(artifact_row)
                             repository.artifacts[contract.id] = contract
                 for video_row in session.scalars(
