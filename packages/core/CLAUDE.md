@@ -5,7 +5,7 @@
 ## 职责
 - 定义所有跨包领域类型：`contracts/` 下按域拆分（base/providers/jobs/auth/media/prompts/cases/publishing/ops/preferences/publish_accounts），经 `contracts/__init__.py` 统一 re-export，`__all__` 即权威公开面。**例外**：`contracts/artifacts.py`（`MaterialCandidate`/`CreativeIntentArtifact`/`NarrationUnit` 等）**不**走 `__init__.py` 出口（不 re-export/不入 `__all__`），下游一律直接 `from packages.core.contracts.artifacts import ...`。
 - 定义全部状态机与合法迁移（job/run/node/provider/prompt_version/case_memory/case_rubric/rubric_bump/upload_session/publish_*），由 `assert_transition()` 强制。
-- 提供持久化层：`storage/database.py`（SQLAlchemy ORM/`Base.metadata`）、`storage/repository.py`（内存 `Repository`）、seed 与 Alembic 迁移。
+- 提供持久化层：`storage/database.py`（SQLAlchemy ORM/`Base.metadata`）、`storage/repository.py`（运行态内存 `Repository`：工作流单次 run 的临时 run-state，**非存储后端**）、seed 与 Alembic 迁移。
 - 集中基础设施配置（`config/settings.py`）、argon2 认证与限流（`auth/`）、Prometheus 遥测与 outbox/funnel（`observability/`）、工作流运行时适配（`workflow/`）、对象存储与密钥库（`storage/`）。
 
 ## 关键文件 / 子目录
@@ -13,7 +13,7 @@
 - `contracts/base.py` — `ContractModel`(extra="forbid")、`ErrorCode`/`WarningCode`/`DegradationCode`、各 Status 枚举、`ArtifactKind`、`Money`。
 - `contracts/state_machines.py` — 各域 `*_TRANSITIONS` 表 + `assert_transition(kind, from, to)`。
 - `config/settings.py` — `build_settings()`/`Settings`（按域分组，frozen）、`sandbox_fallback_allowed()`；`CUTAGENT_*` env 在调用时读取，无模块级单例。
-- `storage/database.py` / `repository.py` / `bootstrap.py` — ORM 后端 / 内存后端 / 按 `storage.backend`(memory|sqlalchemy|postgres) 选型。
+- `storage/database.py` / `repository.py` / `bootstrap.py` — ORM 后端 / 运行态内存 `Repository`(**仅工作流单次 run 的临时 run-state,非存储后端;已不能当存储后端用**) / 按 `storage.backend`(sqlalchemy|postgres,memory 已移除并显式拒绝) 选型。
 - `storage/alembic/versions/` — 0001..0022（单一 head `0022_drop_publish_hashtags`），仓库内**唯一**的 Alembic 迁移目录。
 - `storage/seed.py` / `seed_media.py` / `provider_seed.py` — 用户/注册码、媒体、provider 配置 seed。
 - `storage/secret_store.py` — `SecretStore` 协议 + `LocalSecretStore`；自 `0017` 起做 **Fernet 信封加密**（`envelope_prefix = "fernet:v1:"`，key 来源 `CUTAGENT_SECRET_ENCRYPTION_KEY`，缺省落盘 `.db_encryption_key`），密钥不入 env/Settings。
@@ -32,7 +32,7 @@
 - 配置经 `build_settings()` 取快照（frozen、调用时读 env），勿引入缓存单例。
 
 ## 测试
-- `pytest tests/core`（`test_password_policy.py` / `test_row_mapper.py`）；契约/状态机/DB schema 相关另见 `tests/contract`。多数测试以 `CUTAGENT_STORAGE_BACKEND=memory` 跑内存后端。
+- `pytest tests/core`（`test_password_policy.py` / `test_row_mapper.py`）；契约/状态机/DB schema 相关另见 `tests/contract`。测试连真实 Postgres（内存存储后端已移除，见 `tests/CLAUDE.md`）。
 
 ## 注意 / 坑
 - `sandbox_fallback_allowed()` 默认 False：真实运行只走真 provider、无 provider 时显式报错，绝不静默降级到 sandbox；测试经 conftest 置 `CUTAGENT_ALLOW_SANDBOX_FALLBACK=1` 才走 sandbox 路径。

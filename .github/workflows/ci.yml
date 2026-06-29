@@ -10,6 +10,29 @@ on:
 jobs:
   unit:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: cutagent
+          POSTGRES_USER: cutagent
+          POSTGRES_PASSWORD: cutagent
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U cutagent -d cutagent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # The in-memory storage backend was removed: the whole suite now runs
+      # against a real Postgres database. Object artifacts use the node-local
+      # store (the default suite needs no MinIO; the Temporal tests in the
+      # integration job use a shared MinIO).
+      CUTAGENT_DATABASE_URL: postgresql+psycopg://cutagent:cutagent@localhost:55432/cutagent
+      CUTAGENT_STORAGE_BACKEND: sqlalchemy
+      CUTAGENT_OBJECTSTORE_BACKEND: local
+      CUTAGENT_LOCAL_OBJECTSTORE_PATH: /tmp/cutagent-objstore
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,8 +50,12 @@ jobs:
       - name: Install frontend dependencies for pytest probes
         working-directory: apps/web
         run: npm ci
+      - name: Bootstrap database
+        # The suite assumes a migrated + seeded database: tests/conftest.py only
+        # truncates and reseeds between tests, it does not run migrations.
+        run: python scripts/bootstrap_database.py
       - name: Run default pytest suite
-        run: timeout -k 5 600 python -m pytest -q
+        run: timeout -k 5 1200 python -m pytest -q
       - name: Verify OpenAPI export is committed
         run: |
           python scripts/export_openapi.py

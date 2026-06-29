@@ -5,13 +5,14 @@ from fastapi.testclient import TestClient
 from apps.api.app import create_app
 from packages.ai.gateway.provider_gateway import ProviderCall, ProviderResult
 from packages.core.contracts import (
-    PromptBinding,
-    PromptSchemaRef,
-    PromptTemplate,
-    PromptVersion,
+    CreateProviderProfileRequest,
     ProviderOptionsSchemaRef,
-    ProviderProfile,
-    ScriptDraft,
+)
+from packages.core.storage.database import (
+    PromptBindingRow,
+    PromptTemplateRow,
+    PromptVersionRow,
+    ScriptDraftRow,
 )
 
 
@@ -23,15 +24,24 @@ def _login_admin(client: TestClient) -> None:
     assert response.status_code == 200, response.text
 
 
-def _llm_profile(provider_id: str = "fake.llm") -> ProviderProfile:
-    return ProviderProfile(
-        id=f"{provider_id}.default",
-        provider_id=provider_id,
-        model_id="fake-chat",
-        capability="llm.chat",
-        display_name="Fake LLM",
-        environment="local",
-        options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.llm.options"),
+def _arm_llm_profile(client: TestClient, provider_id: str = "fake.llm"):
+    """Persist a real (non-sandbox) ``llm.chat`` provider profile in Postgres.
+
+    The provider gateway resolves profiles through its SQL ``provider_reader`` (the
+    in-memory ``app.state.repository`` is only the workflow run-state base, no longer
+    a storage backend), so the profile must live in the database for the case-agent /
+    creative-intent capability lookup to pick it up. Returns the persisted profile so
+    callers can assert against its server-assigned id.
+    """
+    return client.app.state.sqlalchemy_provider_repository.create_profile(
+        CreateProviderProfileRequest(
+            provider_id=provider_id,
+            model_id="fake-chat",
+            capability="llm.chat",
+            display_name="Fake LLM",
+            environment="local",
+            options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.llm.options"),
+        )
     )
 
 
@@ -63,8 +73,7 @@ def test_case_agent_generate_with_memory_uses_real_llm_profile():
         repository = client.app.state.repository
         provider = FakeLLMProvider()
         client.app.state.provider_gateway.register(provider)
-        profile = _llm_profile()
-        repository.provider_profiles[profile.id] = profile
+        profile = _arm_llm_profile(client)
 
         response = client.post(
             "/api/cases/case_demo/scripts/generate-with-memory",
@@ -82,41 +91,59 @@ def test_case_agent_generate_with_memory_uses_real_llm_profile():
 def test_case_agent_generation_prompt_appends_brief_and_recent_scripts_for_variant_prompt():
     with TestClient(create_app()) as client:
         _login_admin(client)
-        repository = client.app.state.repository
         provider = FakeLLMProvider()
         client.app.state.provider_gateway.register(provider)
-        profile = _llm_profile()
-        repository.provider_profiles[profile.id] = profile
-        template = PromptTemplate(
-            id="prompt_script_variant_test",
-            name="Script Variant Test",
-            purpose="prompt.script.hard_ad.fresh",
-            variables_schema_ref=PromptSchemaRef(schema_id="prompt.script.variables"),
-            output_schema_ref=PromptSchemaRef(schema_id="prompt.script.output"),
-            status="active",
-        )
-        version = PromptVersion(
-            id="prompt_script_variant_test_v1",
-            prompt_template_id=template.id,
-            content="只看产品：{product_name}",
-            status="published",
-        )
-        binding = PromptBinding(
-            id="prompt_binding_variant_test",
-            prompt_template_id=template.id,
-            prompt_version_id=version.id,
-            node_id="CaseAgentScriptGenerate.hard_ad.fresh",
-            priority=1,
-        )
-        repository.prompt_templates[template.id] = template
-        repository.prompt_versions[version.id] = version
-        repository.prompt_bindings[binding.id] = binding
-        repository.drafts["draft_recent"] = ScriptDraft(
-            id="draft_recent",
-            case_id="case_demo",
-            title="旧草稿",
-            script="旧开场不要重复，旧结构也不要重复。",
-        )
+        _arm_llm_profile(client)
+        # Bind a published variant prompt + a recent draft in Postgres so the
+        # variant node path resolves and the recency-aware context is built from
+        # real persisted scripts (prompt registry + case-learning repo read SQL).
+        with client.app.state.sqlalchemy_session_factory() as session:
+            session.add(
+                PromptTemplateRow(
+                    id="prompt_script_variant_test",
+                    name="Script Variant Test",
+                    purpose="prompt.script.hard_ad.fresh",
+                    variables_schema_ref={
+                        "schema_id": "prompt.script.variables",
+                        "schema_version": "v1",
+                    },
+                    output_schema_ref={
+                        "schema_id": "prompt.script.output",
+                        "schema_version": "v1",
+                    },
+                    status="active",
+                )
+            )
+            session.add(
+                PromptVersionRow(
+                    id="prompt_script_variant_test_v1",
+                    prompt_template_id="prompt_script_variant_test",
+                    content="只看产品：{product_name}",
+                    status="published",
+                )
+            )
+            session.flush()  # satisfy the binding's FK to template + version
+            session.add(
+                PromptBindingRow(
+                    id="prompt_binding_variant_test",
+                    prompt_template_id="prompt_script_variant_test",
+                    prompt_version_id="prompt_script_variant_test_v1",
+                    node_id="CaseAgentScriptGenerate.hard_ad.fresh",
+                    priority=1,
+                    enabled=True,
+                )
+            )
+            session.add(
+                ScriptDraftRow(
+                    id="draft_recent",
+                    case_id="case_demo",
+                    title="旧草稿",
+                    script="旧开场不要重复，旧结构也不要重复。",
+                    status="draft",
+                    memory_ids=[],
+                )
+            )
+            session.commit()
 
         response = client.post(
             "/api/cases/case_demo/scripts/generate-with-memory",
@@ -164,11 +191,9 @@ class _InvalidThenValidLLMProvider:
 def test_script_generation_retries_on_output_invalid_then_succeeds():
     with TestClient(create_app()) as client:
         _login_admin(client)
-        repository = client.app.state.repository
         provider = _InvalidThenValidLLMProvider(invalid_replies=1)
         client.app.state.provider_gateway.register(provider)
-        profile = _llm_profile()
-        repository.provider_profiles[profile.id] = profile
+        _arm_llm_profile(client)
 
         response = client.post(
             "/api/cases/case_demo/scripts/generate-with-memory",
@@ -184,12 +209,10 @@ def test_script_generation_retries_on_output_invalid_then_succeeds():
 def test_script_generation_hard_fails_with_prompt_output_invalid_after_exhaustion():
     with TestClient(create_app()) as client:
         _login_admin(client)
-        repository = client.app.state.repository
         # Always invalid: never yields a usable script -> hard_fail after retries.
         provider = _InvalidThenValidLLMProvider(invalid_replies=99)
         client.app.state.provider_gateway.register(provider)
-        profile = _llm_profile()
-        repository.provider_profiles[profile.id] = profile
+        _arm_llm_profile(client)
 
         response = client.post(
             "/api/cases/case_demo/scripts/generate-with-memory",
@@ -209,8 +232,7 @@ def test_creative_intent_prefers_real_llm_profile_over_sandbox():
         repository = client.app.state.repository
         provider = FakeLLMProvider()
         client.app.state.provider_gateway.register(provider)
-        profile = _llm_profile()
-        repository.provider_profiles[profile.id] = profile
+        _arm_llm_profile(client)
 
         response = client.post(
             "/api/jobs/digital-human-video",

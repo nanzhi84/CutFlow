@@ -12,30 +12,55 @@ from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
 from packages.core import contracts as c
+from packages.core.auth.sqlalchemy_service import hash_session_token
 from packages.core.observability import record_funnel_event
-from packages.core.storage.repository import new_id
+from packages.core.storage.database import (
+    ArtifactRow,
+    CaseRow,
+    SessionRow,
+    UserRow,
+    WorkflowRunRow,
+)
+from packages.core.storage.repository import Repository, new_id
 
 SESSION_COOKIE = "cutagent_session"
 
 
 def _make_user(app, *, role: c.UserRole) -> tuple[c.AuthUser, str]:
-    """Seed a user + session straight into the in-memory repo and return its
-    session token (used as the cookie value)."""
-    repo = app.state.repository
+    """Create a real user + session row in Postgres and return its session token
+    (used as the cookie value). Auth reads the SQL ``sessions``/``users`` tables."""
     user = c.AuthUser(
         id=new_id("usr"),
         email=f"{new_id('u')}@local.test",
         display_name="Iso User",
         role=role,
     )
-    repo.users[user.id] = user
     token = new_id("sess")
-    repo.sessions[token] = {"user_id": user.id, "expires_at": c.utcnow() + timedelta(days=7)}
+    with app.state.sqlalchemy_session_factory() as session:
+        session.add(
+            UserRow(
+                id=user.id,
+                email=user.email,
+                display_name=user.display_name,
+                password_hash="unused-session-auth",
+                role=role.value,
+                status="active",
+            )
+        )
+        session.flush()
+        session.add(
+            SessionRow(
+                id=hash_session_token(token),
+                user_id=user.id,
+                expires_at=c.utcnow() + timedelta(days=7),
+            )
+        )
+        session.commit()
     return user, token
 
 
 def _seed_finished_video_for(app, *, owner: str, case_id: str) -> tuple[c.Job, c.WorkflowRun, c.FinishedVideo]:
-    repo = app.state.repository
+    repo = Repository()
     job = c.Job(
         id=new_id("job"),
         type=c.JobType.digital_human_video,
@@ -101,22 +126,31 @@ def _seed_finished_video_for(app, *, owner: str, case_id: str) -> tuple[c.Job, c
         dedupe_aggregate_id=run.id,
         event_time=run.updated_at,
     )
-    return job, run, video
+    # Flush the assembled run snapshot (job/run/artifacts/finished-video/funnel)
+    # into Postgres so the SQL-backed read paths can see it.
+    app.state.sqlalchemy_production_repository.sync_workflow_snapshot(
+        job=repo.jobs[job.id], run=run, repository=repo
+    )
+    return repo.jobs[job.id], run, video
 
 
 def _cookie(client: TestClient, token: str) -> None:
     client.cookies.set(SESSION_COOKIE, token)
 
 
-def _seed_case(app, case_id: str) -> None:
-    repo = app.state.repository
-    if case_id in repo.cases:
-        return
-    repo.cases[case_id] = c.CaseDetail(
-        id=case_id,
-        name="共享案例",
-        owner_user_id="usr_admin",
-    )
+def _seed_case(app, case_id: str, *, owner_user_id: str | None = "usr_admin") -> None:
+    with app.state.sqlalchemy_session_factory() as session:
+        if session.get(CaseRow, case_id) is not None:
+            return
+        session.add(
+            CaseRow(
+                id=case_id,
+                name="共享案例",
+                owner_user_id=owner_user_id,
+                status="active",
+            )
+        )
+        session.commit()
 
 
 def test_run_cards_isolated_by_creator() -> None:
@@ -275,26 +309,28 @@ def test_overview_dashboard_admin_sees_all() -> None:
 def _seed_public_report(app, run: c.WorkflowRun) -> None:
     """Attach a minimal public report artifact so run_report returns 200 for the
     owner (otherwise it 404s on missing report, masking the owner-gate check)."""
-    repo = app.state.repository
     report = c.RunPublicReportArtifact(
         run_id=run.id,
         status=run.status,
         summary="iso report",
         node_statuses={},
     )
-    artifact = c.Artifact(
-        id=new_id("art"),
-        case_id=run.case_id,
-        run_id=run.id,
-        kind=c.ArtifactKind.run_report_public,
-        uri="sandbox://report.json",
-        payload_schema="run.report.public.v1",
-        payload=report.model_dump(mode="json"),
-    )
-    repo.artifacts[artifact.id] = artifact
-    repo.runs[run.id] = repo.runs[run.id].model_copy(
-        update={"public_report_artifact_id": artifact.id}
-    )
+    artifact_id = new_id("art")
+    with app.state.sqlalchemy_session_factory() as session:
+        session.add(
+            ArtifactRow(
+                id=artifact_id,
+                case_id=run.case_id,
+                run_id=run.id,
+                kind=c.ArtifactKind.run_report_public.value,
+                uri="sandbox://report.json",
+                payload_schema="run.report.public.v1",
+                payload=report.model_dump(mode="json"),
+            )
+        )
+        run_row = session.get(WorkflowRunRow, run.id)
+        run_row.public_report_artifact_id = artifact_id
+        session.commit()
 
 
 def test_run_report_artifacts_events_cross_user_404() -> None:
@@ -334,11 +370,7 @@ def test_cases_remain_shared() -> None:
         user_a, _ = _make_user(app, role=c.UserRole.operator)
         _user_b, token_b = _make_user(app, role=c.UserRole.operator)
         case_id = new_id("case")
-        app.state.repository.cases[case_id] = c.CaseDetail(
-            id=case_id,
-            name="A 的案例",
-            owner_user_id=user_a.id,
-        )
+        _seed_case(app, case_id, owner_user_id=user_a.id)
 
         _cookie(client, token_b)
         listed = client.get("/api/cases")

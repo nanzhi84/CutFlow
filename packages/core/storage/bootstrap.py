@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import sys
-
 from sqlalchemy import text
 
 from packages.core.config import build_settings
@@ -14,16 +12,9 @@ def storage_backend() -> str:
 
 
 def sqlalchemy_backend_enabled() -> bool:
+    # The in-memory storage backend has been removed; the only supported backends
+    # are the SQLAlchemy-backed ones (Settings rejects anything else at build time).
     return storage_backend() in {"sqlalchemy", "postgres"}
-
-
-def warn_if_memory_backend() -> None:
-    if storage_backend() != "memory":
-        return
-    print(
-        "WARNING: CUTAGENT_STORAGE_BACKEND=memory is for tests/demo only and is not for production.",
-        file=sys.stderr,
-    )
 
 
 def bootstrap_sqlalchemy_storage() -> int:
@@ -36,13 +27,8 @@ def bootstrap_sqlalchemy_storage() -> int:
 
 
 def bootstrap_sqlalchemy_storage_if_enabled() -> int:
-    if not sqlalchemy_backend_enabled():
-        warn_if_memory_backend()
-        return 0
     return bootstrap_sqlalchemy_storage()
 
 
 def get_sqlalchemy_session_factory_if_enabled():
-    if not sqlalchemy_backend_enabled():
-        return None
     return create_session_factory(create_database_engine())

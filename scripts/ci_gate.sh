@@ -21,6 +21,8 @@ OBJECTSTORE_ACCESS_KEY="${CUTAGENT_OBJECTSTORE_ACCESS_KEY:-minioadmin}"
 OBJECTSTORE_SECRET_KEY="${CUTAGENT_OBJECTSTORE_SECRET_KEY:-minioadmin}"
 OBJECTSTORE_BUCKET="${CUTAGENT_OBJECTSTORE_BUCKET:-cutagent-local}"
 EPHEMERAL_OBJECTSTORE_BUCKET="${CUTAGENT_EPHEMERAL_OBJECTSTORE_BUCKET:-cutagent-ephemeral}"
+# Node-local object store root for the default suite (no MinIO needed there).
+LOCAL_OBJECTSTORE_PATH="${CUTAGENT_LOCAL_OBJECTSTORE_PATH:-/tmp/cutagent-ci-objstore}"
 
 TIMEOUT_BIN=""
 if command -v timeout >/dev/null 2>&1; then
@@ -31,7 +33,7 @@ fi
 
 run_with_timeout() {
   if [ -n "$TIMEOUT_BIN" ]; then
-    "$TIMEOUT_BIN" -k 5 600 "$@"
+    "$TIMEOUT_BIN" -k 5 1200 "$@"
     return
   fi
 
@@ -46,9 +48,9 @@ import sys
 cmd = sys.argv[1:]
 process = subprocess.Popen(cmd, preexec_fn=os.setsid)
 try:
-    raise SystemExit(process.wait(timeout=600))
+    raise SystemExit(process.wait(timeout=1200))
 except subprocess.TimeoutExpired:
-    print(f"command timed out after 600s: {' '.join(cmd)}", file=sys.stderr)
+    print(f"command timed out after 1200s: {' '.join(cmd)}", file=sys.stderr)
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -68,6 +70,18 @@ run_pytest() {
   run_with_timeout "$PYTHON_BIN" -m pytest -q "$@"
 }
 
+# The in-memory storage backend was removed: bootstrap a migrated + seeded
+# database, then run the full default suite against it. tests/conftest.py only
+# truncates + reseeds between tests (it does not migrate), so the schema must exist
+# first. The default suite now also runs the SQLAlchemy integration tests (their
+# CUTAGENT_RUN_DB_TESTS gate was removed); the Temporal tests skip without
+# CUTAGENT_RUN_TEMPORAL_TESTS and run in the dedicated segment below.
+export CUTAGENT_STORAGE_BACKEND=sqlalchemy
+export CUTAGENT_DATABASE_URL="$DATABASE_URL"
+export CUTAGENT_OBJECTSTORE_BACKEND=local
+export CUTAGENT_LOCAL_OBJECTSTORE_PATH="$LOCAL_OBJECTSTORE_PATH"
+export CUTAGENT_DISABLE_BACKGROUND_DISPATCHER=1
+"$PYTHON_BIN" scripts/bootstrap_database.py
 run_pytest
 
 "$PYTHON_BIN" scripts/export_openapi.py
@@ -80,17 +94,6 @@ git diff --exit-code apps/web/src/api/openapi.json
   git diff --exit-code src/api/schema.d.ts
   npm run build
 )
-
-CUTAGENT_RUN_DB_TESTS=1 \
-CUTAGENT_STORAGE_BACKEND=sqlalchemy \
-CUTAGENT_DATABASE_URL="$DATABASE_URL" \
-"$PYTHON_BIN" scripts/bootstrap_database.py
-
-CUTAGENT_RUN_DB_TESTS=1 \
-CUTAGENT_STORAGE_BACKEND=sqlalchemy \
-CUTAGENT_DATABASE_URL="$DATABASE_URL" \
-CUTAGENT_DISABLE_BACKGROUND_DISPATCHER=1 \
-run_pytest tests/integration
 
 # Pre-create the durable + ephemeral MinIO buckets (distinct names). The
 # S3ObjectStore auto-creates its bucket on first connect, but creating them up

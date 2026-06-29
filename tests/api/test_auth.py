@@ -1,10 +1,25 @@
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from apps.api.app import create_app
-from apps.api.main import app, repository
+from apps.api.main import app
 from packages.core.auth import rate_limit
 from packages.core.auth.service import hash_registration_code
+from packages.core.storage.database import RegistrationCodeRow
+
+
+def _registration_code_used_count(code: str) -> int:
+    """Read a registration code's ``used_count`` from Postgres (the SQL backend is
+    now the only storage backend; the in-memory repo no longer tracks codes)."""
+    with app.state.sqlalchemy_session_factory() as session:
+        row = session.scalar(
+            select(RegistrationCodeRow).where(
+                RegistrationCodeRow.code_hash == hash_registration_code(code)
+            )
+        )
+        assert row is not None, f"registration code {code} not seeded"
+        return row.used_count
 
 
 @pytest.fixture(autouse=True)
@@ -31,7 +46,11 @@ def test_login_sets_httponly_cookie_and_session_reads_user():
     assert session.status_code == 200, session.text
     assert session.json()["user"]["email"] == "admin@local.cutagent"
     assert session.json()["user"]["status"] == "active"
-    assert session.json()["session_id"].startswith("sess_")
+    # R3: the SQL auth service stores only the HASH of the session token, so the
+    # /session endpoint intentionally returns an empty session_id (the raw token is
+    # known only to the client). The issued raw token — which still carries the
+    # ``sess_`` prefix — lives in the cookie, so assert it there.
+    assert "cutagent_session=sess_" in cookie
 
 
 def test_bad_login_is_unauthorized():
@@ -109,8 +128,7 @@ def test_logout_revokes_session_cookie():
 
 def test_registration_code_assigns_role_and_tracks_usage():
     client = TestClient(app)
-    code_id = repository().registration_code_hashes[hash_registration_code("reg_local_admin")]
-    before = repository().registration_codes[code_id].used_count
+    before = _registration_code_used_count("reg_local_admin")
     email = f"role-{before}@example.test"
     response = client.post(
         "/api/auth/register",
@@ -123,7 +141,7 @@ def test_registration_code_assigns_role_and_tracks_usage():
     )
     assert response.status_code == 201, response.text
     assert response.json()["user"]["role"] == "admin"
-    assert repository().registration_codes[code_id].used_count == before + 1
+    assert _registration_code_used_count("reg_local_admin") == before + 1
 
 
 def test_admin_created_registration_code_returns_plaintext_once_and_can_register():

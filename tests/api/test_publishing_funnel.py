@@ -17,14 +17,16 @@ import packages.publishing.platform_adapter as platform_adapter
 from packages.core.contracts import (
     ArtifactKind,
     ArtifactRef,
+    CreatePublishBatchRequest,
     FinishedVideo,
     PublishAttempt,
     PublishAttemptStatus,
     PublishBatchItemVm,
     PublishBatchVm,
+    PublishDefaults,
 )
-from packages.core.storage.repository import Repository
-from packages.publishing.accounts_repository import MemoryAccountsRepository
+from packages.core.storage.database import PublishPackageRow
+from packages.core.storage.repository import Repository, new_id
 from packages.publishing.platform_adapter import PublishOutcome, PublishPayload
 
 
@@ -154,19 +156,28 @@ def test_submit_publish_batch_records_per_account_results(monkeypatch):
         _login(client)
         object_ref = client.app.state.object_store.prepare_upload("video.mp4", "publish-test")
         client.app.state.object_store.put_bytes(object_ref, b"video")
-        finished = FinishedVideo(
-            id="fv_publish_accounts",
-            case_id="case_demo",
-            title="Account fanout",
-            video_artifact=ArtifactRef(
-                artifact_id="art_publish_accounts",
-                kind=ArtifactKind.video_finished,
-                uri=object_ref.uri,
-            ),
-        )
-        client.app.state.repository.finished_videos[finished.id] = finished
 
-        accounts = MemoryAccountsRepository(client.app.state.repository)
+        # Persist the package (case_demo) + its video artifact ref in Postgres so the
+        # submit fanout downloads the video and resolves the case's publish targets.
+        package_id = new_id("pkg")
+        with client.app.state.sqlalchemy_session_factory() as session:
+            session.add(
+                PublishPackageRow(
+                    id=package_id,
+                    case_id="case_demo",
+                    video_artifact=ArtifactRef(
+                        artifact_id=new_id("art"),
+                        kind=ArtifactKind.video_finished,
+                        uri=object_ref.uri,
+                    ).model_dump(mode="json"),
+                    platform_defaults=PublishDefaults(
+                        title="Publish me", description=""
+                    ).model_dump(mode="json"),
+                )
+            )
+            session.commit()
+
+        accounts = client.app.state.sqlalchemy_accounts_repository
         customer = accounts.create_client(name="ACME")
         first = accounts.create_account(
             client_id=customer.id,
@@ -180,19 +191,16 @@ def test_submit_publish_batch_records_per_account_results(monkeypatch):
         )
         accounts.set_targets("case_demo", [first.id, second.id])
 
-        package = client.app.state.repository.create_publish_package_from_finished_video(
-            finished,
-            title="Publish me",
-            description="",
+        batch = client.app.state.sqlalchemy_publishing_repository.create_batch(
+            CreatePublishBatchRequest(publish_package_ids=[package_id], platform_targets=["douyin"])
         )
-        batch = client.app.state.repository.create_publish_batch([package.id], ["douyin"])
 
         submitted = client.post(
             f"/api/publish/batches/{batch.id}/submit",
             json={"dry_run": False, "adapter_id": "fake.publish"},
         )
         assert submitted.status_code == 202, submitted.text
-        attempts = list(client.app.state.repository.publish_attempts.values())
+        attempts = client.app.state.sqlalchemy_publishing_repository.list_attempts(batch.id)
 
     assert [payload.account_id for payload in published_payloads] == [first.id, second.id]
     results = attempts[0].results

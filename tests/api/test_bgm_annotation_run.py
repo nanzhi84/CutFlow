@@ -76,11 +76,15 @@ def test_bgm_rerun_projection_exposes_segments_and_beats(monkeypatch):
 
     with TestClient(create_app()) as client:
         _login_admin(client)
+        # ``asset_bgm_demo`` is a seeded DB-backed BGM asset (kind="bgm"); the rerun
+        # path resolves it via the SQL media repo (the in-memory repo is no longer a
+        # storage backend).
 
         response = client.post("/api/annotations/asset_bgm_demo/rerun", json={"force": True})
 
         assert response.status_code == 202, response.text
-        editor = client.app.state.repository.annotations["asset_bgm_demo"]
+        media_repo = client.app.state.sqlalchemy_media_repository
+        editor = media_repo.get_or_create_annotation("asset_bgm_demo")
         body = editor.model_dump(mode="json")
         assert "bgm_usage_windows" not in body["projection"]
         assert body["projection"]["bgm_segments"][0]["segment_id"] == "seg_drop"
@@ -88,8 +92,9 @@ def test_bgm_rerun_projection_exposes_segments_and_beats(monkeypatch):
         assert "/canonical/bgm_segments" in body["editable_paths"]
         assert body["asset"]["annotation_status"] == "annotated"
         assert body["asset"]["usable"] is True
-        assert client.app.state.repository.media_assets["asset_bgm_demo"].annotation_status == "annotated"
-        assert client.app.state.repository.media_assets["asset_bgm_demo"].usable is True
+        asset = media_repo.asset_record("asset_bgm_demo")
+        assert asset.annotation_status == "annotated"
+        assert asset.usable is True
         assert calls and calls[0]["audio_profile"] is None
 
 

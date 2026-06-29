@@ -1,9 +1,8 @@
 """Publishing-center account foundation service (clients / accounts / case targets).
 
-Dual-track: uses the SqlAlchemy accounts repo when configured, else an in-memory
-mirror over the runtime Repository (memory backend / tests). Platform sessions are
-owned by 小V猫; this layer only persists binding anchors and injects live login_state
-from 小V猫 when listing accounts.
+Persistence goes through the SqlAlchemy accounts repo (the storage backend is
+always SQL). Platform sessions are owned by 小V猫; this layer only persists binding
+anchors and injects live login_state from 小V猫 when listing accounts.
 """
 
 from __future__ import annotations
@@ -13,17 +12,16 @@ import logging
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from apps.api.common import accounts_repository, get_case, repository, request_id, xiaovmao_login_manager
+from apps.api.common import accounts_repository, get_case, request_id, xiaovmao_login_manager
 from apps.api.dependencies import not_found_response
 from packages.core import contracts as c
 from packages.core.workflow import NodeExecutionError
-from packages.publishing import MemoryAccountsRepository
 
 logger = logging.getLogger(__name__)
 
 
 def _repo(request: Request):
-    return accounts_repository(request) or MemoryAccountsRepository(repository(request))
+    return accounts_repository(request)
 
 
 # --- clients ---

@@ -1,7 +1,9 @@
+from contextlib import contextmanager
+
 import pytest
 from fastapi.testclient import TestClient
 
-from apps.api.main import app, repository
+from apps.api.app import create_app
 from packages.ai.prompts.registry import PromptRegistry, extract_script_title_from_output
 from packages.core.contracts import (
     ErrorCode,
@@ -12,6 +14,29 @@ from packages.core.contracts import (
 )
 from packages.core.storage.repository import Repository
 from packages.core.workflow import NodeExecutionError
+
+
+@contextmanager
+def fresh_client():
+    """A per-test app/client whose SQLAlchemy engine is disposed on exit.
+
+    Each test gets its own in-memory workflow ``runtime_repository`` (aligned with
+    the per-test SQL reset) and releases its connection pool before teardown
+    TRUNCATEs the database, so a long run never deadlocks against it.
+    """
+    app = create_app()
+    # Do NOT enter the TestClient lifespan: app.state is fully configured at build
+    # time. Entering would re-run bootstrap_sqlalchemy_storage (a full seed_database
+    # merge over users/registration_codes/provider_profiles/media_assets) on every
+    # test, contending on exactly the tables the conftest teardown TRUNCATEs and
+    # deadlocking under a long run. Skipping it also avoids extra engine churn.
+    active_client = TestClient(app)
+    try:
+        yield active_client
+    finally:
+        engine = app.state.sqlalchemy_session_factory.kw.get("bind")
+        if engine is not None:
+            engine.dispose()
 
 
 def test_prompt_render_requires_all_variables():
@@ -187,65 +212,65 @@ def test_ai_cover_prompt_resolves_through_registry_binding():
 
 
 def test_prompt_publish_and_rollback_api_flow():
-    client = TestClient(app)
-    login = client.post(
-        "/api/auth/login",
-        json={"email": "admin@local.cutagent", "password": "local-admin"},
-    )
-    assert login.status_code == 200, login.text
-    template = client.post(
-        "/api/prompts",
-        json={
-            "name": "Ops prompt",
-            "purpose": "ops.test",
-            "variables_schema_ref": {"schema_id": "ops.variables", "schema_version": "v1"},
-            "output_schema_ref": {"schema_id": "ops.output", "schema_version": "v1"},
-        },
-    ).json()["template"]
-    version = client.post(
-        f"/api/prompts/{template['id']}/versions",
-        json={"content": "hello", "changelog": "initial"},
-    ).json()["version"]
-    approved = client.post(
-        f"/api/prompts/{template['id']}/versions/{version['id']}/approve",
-        json={"reason": "reviewed"},
-    ).json()["version"]
-    assert approved["status"] == "approved"
-    published = client.post(
-        f"/api/prompts/{template['id']}/versions/{version['id']}/publish",
-        json={"reason": "ship"},
-    ).json()["version"]
-    assert published["status"] == "published"
-    rolled_back = client.post(
-        f"/api/prompts/{template['id']}/rollback",
-        json={"target_version_id": version["id"], "reason": "verify rollback"},
-    ).json()["version"]
-    assert rolled_back["status"] == "published"
+    with fresh_client() as client:
+        login = client.post(
+            "/api/auth/login",
+            json={"email": "admin@local.cutagent", "password": "local-admin"},
+        )
+        assert login.status_code == 200, login.text
+        template = client.post(
+            "/api/prompts",
+            json={
+                "name": "Ops prompt",
+                "purpose": "ops.test",
+                "variables_schema_ref": {"schema_id": "ops.variables", "schema_version": "v1"},
+                "output_schema_ref": {"schema_id": "ops.output", "schema_version": "v1"},
+            },
+        ).json()["template"]
+        version = client.post(
+            f"/api/prompts/{template['id']}/versions",
+            json={"content": "hello", "changelog": "initial"},
+        ).json()["version"]
+        approved = client.post(
+            f"/api/prompts/{template['id']}/versions/{version['id']}/approve",
+            json={"reason": "reviewed"},
+        ).json()["version"]
+        assert approved["status"] == "approved"
+        published = client.post(
+            f"/api/prompts/{template['id']}/versions/{version['id']}/publish",
+            json={"reason": "ship"},
+        ).json()["version"]
+        assert published["status"] == "published"
+        rolled_back = client.post(
+            f"/api/prompts/{template['id']}/rollback",
+            json={"target_version_id": version["id"], "reason": "verify rollback"},
+        ).json()["version"]
+        assert rolled_back["status"] == "published"
 
 
 def test_prompt_invocation_links_to_provider_invocation_in_video_workflow():
-    client = TestClient(app)
-    login = client.post(
-        "/api/auth/login",
-        json={"email": "admin@local.cutagent", "password": "local-admin"},
-    )
-    assert login.status_code == 200, login.text
-    response = client.post(
-        "/api/jobs/digital-human-video",
-        json={
-            "case_id": "case_demo",
-            "title": "Prompt linkage",
-            "script": "验证 prompt 调用和 provider 调用的关联。",
-            "voice": {"voice_id": "voice_sandbox"},
-            "portrait": {"template_mode": "agent"},
-            "strictness": {"strict_timestamps": False},
-        },
-    )
-    assert response.status_code == 201, response.text
-    run_id = response.json()["initial_run"]["id"]
-    linked = [
-        invocation
-        for invocation in repository().prompt_invocations.values()
-        if invocation.run_id == run_id and invocation.provider_invocation_id
-    ]
-    assert linked
+    with fresh_client() as client:
+        login = client.post(
+            "/api/auth/login",
+            json={"email": "admin@local.cutagent", "password": "local-admin"},
+        )
+        assert login.status_code == 200, login.text
+        response = client.post(
+            "/api/jobs/digital-human-video",
+            json={
+                "case_id": "case_demo",
+                "title": "Prompt linkage",
+                "script": "验证 prompt 调用和 provider 调用的关联。",
+                "voice": {"voice_id": "voice_sandbox"},
+                "portrait": {"template_mode": "agent"},
+                "strictness": {"strict_timestamps": False},
+            },
+        )
+        assert response.status_code == 201, response.text
+        run_id = response.json()["initial_run"]["id"]
+        linked = [
+            invocation
+            for invocation in client.app.state.repository.prompt_invocations.values()
+            if invocation.run_id == run_id and invocation.provider_invocation_id
+        ]
+        assert linked

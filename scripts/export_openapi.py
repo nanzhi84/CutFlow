@@ -20,6 +20,14 @@ for _name in (
 ):
     os.environ.pop(_name, None)
 
+# Building the app now requires a database URL (the in-memory backend was removed),
+# but OpenAPI export never opens a connection. Provide a placeholder so the export
+# works without a live database; a real CUTAGENT_DATABASE_URL (CI) takes precedence.
+os.environ.setdefault("CUTAGENT_STORAGE_BACKEND", "sqlalchemy")
+os.environ.setdefault(
+    "CUTAGENT_DATABASE_URL", "postgresql+psycopg://openapi:openapi@127.0.0.1:5432/openapi"
+)
+
 from apps.api.main import app
 
 

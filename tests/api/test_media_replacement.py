@@ -2,7 +2,8 @@ import hashlib
 
 from fastapi.testclient import TestClient
 
-from apps.api.main import app, repository
+from apps.api.main import app
+from packages.core.storage.database import CaseRow
 from tests.fixtures.media import generate_test_video
 
 client = TestClient(app)
@@ -11,6 +12,16 @@ client = TestClient(app)
 def login_admin() -> None:
     response = client.post("/api/auth/login", json={"email": "admin@local.cutagent", "password": "local-admin"})
     assert response.status_code == 200, response.text
+
+
+def _seed_case(case_id: str) -> None:
+    """Ensure the case row exists in Postgres so uploads (FK on upload_sessions.case_id
+    -> cases) succeed. The SQL backend is the only storage backend now."""
+    with app.state.sqlalchemy_session_factory() as session:
+        if session.get(CaseRow, case_id) is not None:
+            return
+        session.add(CaseRow(id=case_id, name=case_id, owner_user_id="usr_admin", status="active"))
+        session.commit()
 
 
 def upload_video(
@@ -22,6 +33,7 @@ def upload_video(
     replace_mode: bool = False,
     duration_sec: float = 1,
 ) -> dict:
+    _seed_case(case_id)
     video = generate_test_video(tmp_path, duration_sec=duration_sec, width=160, height=120, fps=15, filename=filename)
     content = video.read_bytes()
     digest = hashlib.sha256(content).hexdigest()
@@ -91,7 +103,7 @@ def test_single_replace_source_preserves_existing_annotation(tmp_path):
     assert body["artifact"]["artifact_id"] == replacement["artifact"]["artifact_id"]
     assert body["preserved_annotation"] is True
     # The edited segment is now owned by the canonical AnnotationV4 (clips), not a blob.
-    canonical = repository().annotations[asset_id].canonical
+    canonical = client.get(f"/api/annotations/{asset_id}").json()["canonical"]
     assert [c["segment_id"] for c in canonical["clips"]] == ["seg_keep"]
     assert canonical["clips"][0]["usage"]["role"] == "cover"
 
@@ -129,7 +141,7 @@ def test_replace_source_reclips_annotation_on_duration_drift(tmp_path):
     body = response.json()
     # Annotation preserved, but re-clipped: the clip is clamped to the new 1s duration.
     assert body["preserved_annotation"] is True
-    canonical = repository().annotations[asset_id].canonical
+    canonical = client.get(f"/api/annotations/{asset_id}").json()["canonical"]
     assert canonical["clips"][0]["end"] <= 1.0 + 1e-6
     assert canonical["meta"]["duration"] <= 1.0 + 1e-6
 
@@ -180,10 +192,14 @@ def test_auto_match_replace_reports_matched_unmatched_and_ambiguous(tmp_path):
     assert results["hero-clip.mp4"]["asset_id"] == matched_asset_id
     assert results["missing.mp4"]["status"] == "unmatched"
     assert results["duplicate.mp4"]["status"] == "ambiguous"
-    assert repository().media_assets[matched_asset_id].source_artifact_id == replacement["artifact"]["artifact_id"]
+    assert (
+        app.state.sqlalchemy_media_repository.asset_record(matched_asset_id).source_artifact_id
+        == replacement["artifact"]["artifact_id"]
+    )
 
 
 def upload_cover_template(tmp_path, *, filename: str, case_id: str, title: str) -> dict:
+    _seed_case(case_id)
     image = tmp_path / filename
     # A tiny valid PNG is enough; the upload path only needs real bytes + sha.
     image.write_bytes(

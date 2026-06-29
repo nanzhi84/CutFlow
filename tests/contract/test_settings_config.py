@@ -241,7 +241,7 @@ def test_settings_built_in_defaults() -> None:
 
 
 def test_settings_reads_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CUTAGENT_STORAGE_BACKEND", "MEMORY")  # lower-cased
+    monkeypatch.setenv("CUTAGENT_STORAGE_BACKEND", "POSTGRES")  # lower-cased
     monkeypatch.setenv("CUTAGENT_DATABASE_URL", "postgresql+psycopg://x/db")
     monkeypatch.setenv("CUTAGENT_OBJECTSTORE_TIERED", "0")
     monkeypatch.setenv("CUTAGENT_OBJECTSTORE_BACKEND", "S3")  # lower-cased
@@ -254,7 +254,7 @@ def test_settings_reads_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
 
     settings = build_settings()
 
-    assert settings.storage.backend == "memory"
+    assert settings.storage.backend == "postgres"
     assert settings.storage.database_url == "postgresql+psycopg://x/db"
     assert settings.object_store.tiered is False
     assert settings.object_store.backend == "s3"

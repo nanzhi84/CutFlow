@@ -6,8 +6,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
-from apps.api.main import repository
+from packages.core.contracts import Artifact
+from packages.core.storage.database import ArtifactRow, CaseRow
 from packages.core.storage.object_store import parse_object_uri
+from packages.core.storage.sqlalchemy_uploads import artifact_row_to_contract
 from packages.media.assets import local_object_path
 from packages.media.video.ffmpeg import FfmpegCommandError, probe_media
 from tests.fixtures.media import (
@@ -29,6 +31,24 @@ def login_admin():
     assert response.status_code == 200, response.text
 
 
+def _seed_case(case_id: str) -> None:
+    """Insert the shared case so upload sessions satisfy the FK the SQL backend
+    enforces (the removed in-memory backend did not). Idempotent."""
+    with app.state.sqlalchemy_session_factory() as session:
+        if session.get(CaseRow, case_id) is not None:
+            return
+        session.add(CaseRow(id=case_id, name="流式上传测试案例", status="active"))
+        session.commit()
+
+
+def _get_artifact(artifact_id: str) -> Artifact:
+    """Read a persisted artifact back from Postgres (the API writes through to SQL)."""
+    with app.state.sqlalchemy_session_factory() as session:
+        row = session.get(ArtifactRow, artifact_id)
+        assert row is not None, f"artifact {artifact_id} not persisted"
+        return artifact_row_to_contract(row)
+
+
 @pytest.fixture
 def upload_settings_override():
     """Temporarily override settings.upload on the live app state, then restore."""
@@ -43,6 +63,7 @@ def upload_settings_override():
 
 
 def _prepare(kind: str, content: bytes, *, content_type: str, filename: str, stabilize: bool = False):
+    _seed_case("case_stream")
     digest = hashlib.sha256(content).hexdigest()
     prepared = client.post(
         "/api/uploads/prepare",
@@ -118,7 +139,7 @@ def test_complete_upload_normalizes_portrait_when_enabled(upload_settings_overri
     assert completed.status_code == 200, completed.text
     body = completed.json()
     assert "normalized" in body["media_asset"]["tags"]
-    artifact = repository().artifacts[body["artifact"]["artifact_id"]]
+    artifact = _get_artifact(body["artifact"]["artifact_id"])
     # The admitted asset is the normalized one (sha changed) and conforms to profile.
     assert artifact.sha256 != digest
     info = probe_media(local_object_path(client.app.state.object_store, artifact.uri))
@@ -147,7 +168,7 @@ def test_complete_upload_skips_normalization_when_disabled(tmp_path):
     assert completed.status_code == 200, completed.text
     body = completed.json()
     assert "normalized" not in body["media_asset"]["tags"]
-    artifact = repository().artifacts[body["artifact"]["artifact_id"]]
+    artifact = _get_artifact(body["artifact"]["artifact_id"])
     # Untouched: same bytes, original 320x568 dimensions.
     assert artifact.sha256 == digest
     info = probe_media(local_object_path(client.app.state.object_store, artifact.uri))
@@ -181,7 +202,7 @@ def test_complete_upload_normalizes_hdr_portrait_to_bt709_when_enabled(upload_se
     assert completed.status_code == 200, completed.text
     body = completed.json()
     assert "normalized" in body["media_asset"]["tags"]
-    artifact = repository().artifacts[body["artifact"]["artifact_id"]]
+    artifact = _get_artifact(body["artifact"]["artifact_id"])
     info = probe_media(local_object_path(client.app.state.object_store, artifact.uri))
     # HDR source admitted as BT.709 SDR — no silent color degrade downstream.
     assert info.is_hdr is False

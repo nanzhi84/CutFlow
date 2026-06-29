@@ -7,8 +7,10 @@ from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
 from packages.core import contracts as c
+from packages.core.storage.database import MediaAssetRow
 from packages.core.storage.object_store import parse_object_uri
-from packages.core.storage.repository import new_id
+from packages.core.storage.repository import Repository, new_id
+from packages.core.storage.sqlalchemy_uploads import artifact_to_row
 
 
 def test_jianying_draft_endpoint_exports_multitrack_sources_from_plans(media_fixture_factory):
@@ -30,30 +32,21 @@ def test_jianying_draft_endpoint_exports_multitrack_sources_from_plans(media_fix
         )
         assert login.status_code == 200, login.text
 
-        repo = app.state.repository
+        # Assemble the full run snapshot in a throwaway run-state repo, then flush it
+        # into Postgres (the in-memory repo is no longer a storage backend; the SQL
+        # jianying exporter reads everything from the database).
+        repo = Repository()
         portrait_artifact = _store_artifact(
-            app, portrait, kind=c.ArtifactKind.uploaded_file, run_id=None
+            app, repo, portrait, kind=c.ArtifactKind.uploaded_file, run_id=None
         )
-        broll_artifact = _store_artifact(app, broll, kind=c.ArtifactKind.uploaded_file, run_id=None)
+        broll_artifact = _store_artifact(
+            app, repo, broll, kind=c.ArtifactKind.uploaded_file, run_id=None
+        )
         final_artifact = _store_artifact(
-            app, final_video, kind=c.ArtifactKind.video_final, run_id="run_jy_api"
+            app, repo, final_video, kind=c.ArtifactKind.video_final, run_id="run_jy_api"
         )
         voice_artifact = _store_artifact(
-            app, voice, kind=c.ArtifactKind.audio_tts, run_id="run_jy_api"
-        )
-        repo.media_assets["asset_jy_portrait"] = c.MediaAssetRecord(
-            id="asset_jy_portrait",
-            case_id="case_demo",
-            title="API portrait",
-            kind="portrait",
-            source_artifact_id=portrait_artifact.id,
-        )
-        repo.media_assets["asset_jy_broll"] = c.MediaAssetRecord(
-            id="asset_jy_broll",
-            case_id="case_demo",
-            title="API broll",
-            kind="broll",
-            source_artifact_id=broll_artifact.id,
+            app, repo, voice, kind=c.ArtifactKind.audio_tts, run_id="run_jy_api"
         )
         timeline_artifact = c.Artifact(
             id="art_jy_timeline",
@@ -178,6 +171,40 @@ def test_jianying_draft_endpoint_exports_multitrack_sources_from_plans(media_fix
             },
         )
 
+        # Persist the run_id=None uploaded sources + their media-asset rows directly
+        # (``sync_workflow_snapshot`` only flushes run-scoped artifacts), then flush the
+        # run snapshot (job/run/run-scoped artifacts/finished/video version) to Postgres.
+        with app.state.sqlalchemy_session_factory() as session:
+            session.merge(artifact_to_row(portrait_artifact))
+            session.merge(artifact_to_row(broll_artifact))
+            session.flush()
+            session.add(
+                MediaAssetRow(
+                    id="asset_jy_portrait",
+                    case_id="case_demo",
+                    title="API portrait",
+                    kind="portrait",
+                    source_artifact_id=portrait_artifact.id,
+                    annotation_status="annotated",
+                    usable=True,
+                )
+            )
+            session.add(
+                MediaAssetRow(
+                    id="asset_jy_broll",
+                    case_id="case_demo",
+                    title="API broll",
+                    kind="broll",
+                    source_artifact_id=broll_artifact.id,
+                    annotation_status="annotated",
+                    usable=True,
+                )
+            )
+            session.commit()
+        app.state.sqlalchemy_production_repository.sync_workflow_snapshot(
+            job=repo.jobs[job.id], run=run, repository=repo
+        )
+
         missing_latest = client.get(f"/api/finished-videos/{finished.id}/jianying-draft/latest")
         assert missing_latest.status_code == 200, missing_latest.text
         assert missing_latest.json()["package"] is None
@@ -232,7 +259,9 @@ def test_jianying_draft_endpoint_exports_multitrack_sources_from_plans(media_fix
     assert content["materials"]["audios"][0]["name"] == "api-voice.wav"
 
 
-def _store_artifact(app, path, *, kind: c.ArtifactKind, run_id: str | None) -> c.Artifact:
+def _store_artifact(
+    app, repo: Repository, path, *, kind: c.ArtifactKind, run_id: str | None
+) -> c.Artifact:
     ref = app.state.object_store.prepare_upload(path.name, "test-jianying")
     stored = app.state.object_store.put_bytes(ref, path.read_bytes())
     artifact = c.Artifact(
@@ -246,5 +275,5 @@ def _store_artifact(app, path, *, kind: c.ArtifactKind, run_id: str | None) -> c
         sha256=stored.sha256,
         size_bytes=stored.size_bytes,
     )
-    app.state.repository.artifacts[artifact.id] = artifact
+    repo.artifacts[artifact.id] = artifact
     return artifact

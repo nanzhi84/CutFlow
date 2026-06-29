@@ -62,7 +62,9 @@ def _normalize_run_detail(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_local_request(payload: dict[str, Any]) -> dict[str, Any]:
-    with _env(CUTAGENT_WORKFLOW_RUNTIME="local", CUTAGENT_STORAGE_BACKEND="memory"):
+    # Both arms run on the real SQLAlchemy backend (the in-memory backend was
+    # removed); this still guards local-runtime vs Temporal-runtime parity.
+    with _env(CUTAGENT_WORKFLOW_RUNTIME="local", CUTAGENT_STORAGE_BACKEND="sqlalchemy"):
         with TestClient(create_app()) as client:
             _login(client)
             created = client.post("/api/jobs/digital-human-video", json=payload)

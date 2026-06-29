@@ -161,9 +161,14 @@ def test_get_object_store_uses_pytest_temp_root():
     root = Path(store.durable.root).resolve()
     ephemeral_root = Path(store.ephemeral.root).resolve()
     temp_root = Path(tempfile.gettempdir()).resolve()
+    configured_root = Path(os.environ["CUTAGENT_LOCAL_OBJECTSTORE_PATH"]).resolve()
     repository_objectstore = (Path(__file__).resolve().parents[2] / ".data" / "objectstore").resolve()
 
-    assert root.is_relative_to(temp_root)
+    # The durable tier honors the configured throwaway local objectstore path
+    # (the test harness points CUTAGENT_LOCAL_OBJECTSTORE_PATH at a temp dir), and
+    # the ephemeral tier lives under the system temp dir — never the repository's
+    # persistent .data/objectstore.
+    assert root == configured_root
     assert ephemeral_root.is_relative_to(temp_root)
     assert not root.is_relative_to(repository_objectstore)
     assert not ephemeral_root.is_relative_to(repository_objectstore)

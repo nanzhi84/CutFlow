@@ -1,17 +1,16 @@
-"""Accounts repository (memory backend, no HTTP)."""
+"""Accounts repository CRUD against real Postgres (no HTTP)."""
 
 from __future__ import annotations
 
-from packages.core.storage.repository import Repository
-from packages.publishing import MemoryAccountsRepository
+from packages.publishing import SqlAlchemyAccountsRepository
+
+# ``case_publish_targets.case_id`` has a NOT NULL FK to ``cases.id``; the seeded
+# baseline ships exactly one case (``case_demo``), so target tests anchor to it.
+CASE_ID = "case_demo"
 
 
-def _repo() -> MemoryAccountsRepository:
-    return MemoryAccountsRepository(Repository())
-
-
-def test_client_account_crud_roundtrip_with_xiaovmao_anchor():
-    repo = _repo()
+def test_client_account_crud_roundtrip_with_xiaovmao_anchor(db_session_factory):
+    repo = SqlAlchemyAccountsRepository(db_session_factory)
     client = repo.create_client(name="ACME", remark="vip")
     assert client.status == "active"
     assert repo.client_exists(client.id)
@@ -32,8 +31,8 @@ def test_client_account_crud_roundtrip_with_xiaovmao_anchor():
     assert repo.list_accounts(client_id=client.id, platform="kuaishou") == []
 
 
-def test_natural_key_lookup():
-    repo = _repo()
+def test_natural_key_lookup(db_session_factory):
+    repo = SqlAlchemyAccountsRepository(db_session_factory)
     client = repo.create_client(name="ACME")
     repo.create_account(client_id=client.id, platform="douyin", account_name="a")
     assert (
@@ -46,8 +45,8 @@ def test_natural_key_lookup():
     )
 
 
-def test_patch_account_can_clear_platform_and_xiaovmao_uids():
-    repo = _repo()
+def test_patch_account_can_clear_platform_and_xiaovmao_uids(db_session_factory):
+    repo = SqlAlchemyAccountsRepository(db_session_factory)
     client = repo.create_client(name="ACME")
     account = repo.create_account(
         client_id=client.id,
@@ -70,30 +69,30 @@ def test_patch_account_can_clear_platform_and_xiaovmao_uids():
     assert patched.xiaovmao_uid is None
 
 
-def test_targets_replace_is_idempotent_and_hydrated():
-    repo = _repo()
+def test_targets_replace_is_idempotent_and_hydrated(db_session_factory):
+    repo = SqlAlchemyAccountsRepository(db_session_factory)
     client = repo.create_client(name="ACME")
     a1 = repo.create_account(client_id=client.id, platform="douyin", account_name="a1")
     a2 = repo.create_account(client_id=client.id, platform="kuaishou", account_name="a2")
 
-    repo.set_targets("case_x", [a1.id, a2.id])
-    targets = {t.account_id: t for t in repo.list_targets("case_x")}
+    repo.set_targets(CASE_ID, [a1.id, a2.id])
+    targets = {t.account_id: t for t in repo.list_targets(CASE_ID)}
     assert set(targets) == {a1.id, a2.id}
     assert targets[a1.id].platform == "douyin"
     assert targets[a1.id].client_id == client.id
 
-    repo.set_targets("case_x", [a1.id])  # idempotent replace to subset
-    assert {t.account_id for t in repo.list_targets("case_x")} == {a1.id}
+    repo.set_targets(CASE_ID, [a1.id])  # idempotent replace to subset
+    assert {t.account_id for t in repo.list_targets(CASE_ID)} == {a1.id}
 
 
-def test_archived_account_excluded_from_client_map_and_targets_cleaned():
-    repo = _repo()
+def test_archived_account_excluded_from_client_map_and_targets_cleaned(db_session_factory):
+    repo = SqlAlchemyAccountsRepository(db_session_factory)
     client = repo.create_client(name="ACME")
     a1 = repo.create_account(client_id=client.id, platform="douyin", account_name="a1")
-    repo.set_targets("case_x", [a1.id])
-    assert {t.account_id for t in repo.list_targets("case_x")} == {a1.id}
+    repo.set_targets(CASE_ID, [a1.id])
+    assert {t.account_id for t in repo.list_targets(CASE_ID)} == {a1.id}
 
     repo.patch_account(a1.id, status="archived")
     repo.delete_targets_for_account(a1.id)
-    assert repo.list_targets("case_x") == []
+    assert repo.list_targets(CASE_ID) == []
     assert repo.accounts_client_map([a1.id]) == {}  # archived account can't be re-bound

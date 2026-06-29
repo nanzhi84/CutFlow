@@ -5,6 +5,7 @@ import hashlib
 from fastapi.testclient import TestClient
 
 from apps.api.main import app, repository
+from packages.core.storage.database import CaseRow, MediaAssetRow
 from tests.fixtures.media import generate_test_video
 
 client = TestClient(app)
@@ -15,7 +16,17 @@ def _login_admin() -> None:
     assert response.status_code == 200, response.text
 
 
+def _seed_case(case_id: str) -> None:
+    """Ensure the case row exists in Postgres (FK on upload_sessions.case_id -> cases)."""
+    with app.state.sqlalchemy_session_factory() as session:
+        if session.get(CaseRow, case_id) is not None:
+            return
+        session.add(CaseRow(id=case_id, name=case_id, owner_user_id="usr_admin", status="active"))
+        session.commit()
+
+
 def _upload_asset(tmp_path, *, filename: str, case_id: str) -> str:
+    _seed_case(case_id)
     video = generate_test_video(tmp_path, duration_sec=1, width=160, height=120, fps=15, filename=filename)
     content = video.read_bytes()
     digest = hashlib.sha256(content).hexdigest()
@@ -70,9 +81,12 @@ def test_batch_annotation_runs_gated_pipeline_over_assets(tmp_path):
 def test_batch_annotation_skips_already_annotated_when_not_forced(tmp_path):
     _login_admin()
     asset_id = _upload_asset(tmp_path, filename="batch-skip.mp4", case_id="case_batch_skip")
-    # Mark the asset as already annotated (a prior real annotation pass).
-    repo = repository()
-    repo.media_assets[asset_id] = repo.media_assets[asset_id].model_copy(update={"annotation_status": "annotated"})
+    # Mark the asset as already annotated (a prior real annotation pass). The skip
+    # gate reads annotation_status from the SQL media row, so update it there.
+    with app.state.sqlalchemy_session_factory() as session:
+        row = session.get(MediaAssetRow, asset_id)
+        row.annotation_status = "annotated"
+        session.commit()
 
     # force=False skips the already-annotated asset.
     skipped = client.post(

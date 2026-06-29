@@ -28,7 +28,7 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Small env helpers (single point that knows how to read os.environ).
 
@@ -136,9 +136,21 @@ class StorageSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    # CUTAGENT_STORAGE_BACKEND: "sqlalchemy" | "postgres" | "memory".
-    # Stored lower-cased, matching bootstrap.storage_backend().
+    # CUTAGENT_STORAGE_BACKEND: "sqlalchemy" | "postgres". Stored lower-cased,
+    # matching bootstrap.storage_backend(). The in-memory backend has been removed;
+    # _reject_memory_backend below fails loudly if "memory" is still configured.
     backend: str = "sqlalchemy"
+
+    @field_validator("backend")
+    @classmethod
+    def _reject_memory_backend(cls, value: str) -> str:
+        if value == "memory":
+            raise ValueError(
+                "CUTAGENT_STORAGE_BACKEND=memory is no longer supported; the in-memory "
+                "storage backend has been removed. Use 'sqlalchemy' (or 'postgres') with a "
+                "real CUTAGENT_DATABASE_URL."
+            )
+        return value
 
     # CUTAGENT_DATABASE_URL: required (no default) when the SQLAlchemy backend is
     # active; None here means "unset" so call sites raise their explicit error.

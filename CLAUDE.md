@@ -37,6 +37,6 @@ uv run --extra dev python scripts/export_openapi.py && (cd apps/web && npm run g
 
 - `worker` 是独立长驻进程：改 `packages/production` / 节点代码后要**重启 worker**（不只是 API）。
 - Postgres 主机端口是 **55432**（避让本地 5432）；MinIO 9000/9001、Temporal 7233 / UI 8080。
-- 默认存储后端是 `sqlalchemy`：缺 `CUTAGENT_DATABASE_URL` 会显式启动失败；演示/测试内存模式需显式设 `CUTAGENT_STORAGE_BACKEND=memory`。
+- 存储后端只支持 `sqlalchemy`/`postgres`（内存后端已移除，配 `CUTAGENT_STORAGE_BACKEND=memory` 会显式报错）；缺 `CUTAGENT_DATABASE_URL` 会显式启动失败；测试全连真实 Postgres（见 `tests/CLAUDE.md`）。
 - Temporal 测试需指向**共享 MinIO** 的 ephemeral 桶，节点本地 ephemeral 会被 fail-fast 拒绝。
 - lint：ruff（line-length 100，配置在 `pyproject.toml`）。

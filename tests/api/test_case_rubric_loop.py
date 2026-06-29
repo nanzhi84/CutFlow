@@ -1,9 +1,10 @@
-"""End-to-end API test for the case_rubric_v1 loop on the in-memory backend.
+"""End-to-end API test for the case_rubric_v1 loop on the SQL (Postgres) backend.
 
 create case → generate-with-memory (blind prediction) → adopt (reward + prediction
 linkage) → manual metrics backfill (settles the blind prediction) → calibration →
-pending-retro. Finished-video lineage is seeded directly via app.state.repository
-(the in-memory backend) since there is no public API to mint finished videos here.
+pending-retro. Finished-video lineage is seeded directly into Postgres (there is no
+public API to mint finished videos here) and the learning reads/writes go through the
+SQL case-rubric repository.
 """
 
 from __future__ import annotations
@@ -16,6 +17,11 @@ from fastapi.testclient import TestClient
 from apps.api.app import create_app
 from apps.api.services import case_rubric
 from packages.core import contracts as c
+from packages.core.storage.database import (
+    FinishedVideoRow,
+    PublishRecordRow,
+    VideoVersionRow,
+)
 
 
 def _login(client) -> None:
@@ -35,46 +41,59 @@ def _create_case(client) -> str:
 def _seed_published_lineage(
     client, case_id: str, script_version_id: str, *, days_ago: int
 ) -> tuple[str, str, str]:
-    """Seed FinishedVideo -> VideoVersion -> published PublishRecord into the memory repo."""
+    """Seed FinishedVideo -> VideoVersion -> published PublishRecord into Postgres."""
     finished_id, version_id = _seed_finished_lineage(client, case_id, script_version_id)
-    repo = client.app.state.repository
-    record = c.PublishRecord(
-        id="pr_rubric",
-        case_id=case_id,
-        video_version_id=version_id,
-        platform="douyin",
-        status="published",
-        published_at=c.utcnow() - timedelta(days=days_ago),
-    )
-    repo.publish_records[record.id] = record
-    return finished_id, version_id, record.id
+    record_id = "pr_rubric"
+    with client.app.state.sqlalchemy_session_factory() as session:
+        session.add(
+            PublishRecordRow(
+                id=record_id,
+                case_id=case_id,
+                video_version_id=version_id,
+                platform="douyin",
+                status="published",
+                published_at=c.utcnow() - timedelta(days=days_ago),
+            )
+        )
+        session.commit()
+    return finished_id, version_id, record_id
 
 
 def _seed_finished_lineage(client, case_id: str, script_version_id: str) -> tuple[str, str]:
-    repo = client.app.state.repository
-    finished = c.FinishedVideo(
-        id="fv_rubric",
-        case_id=case_id,
-        title="Seeded finished video",
-        video_artifact=c.ArtifactRef(
-            artifact_id="art_video",
-            kind=c.ArtifactKind.video_final,
-            uri="local://cutagent-local/seed.mp4",
-        ),
-        duration_sec=12.0,
-        qc_status="passed",
+    """Persist a FinishedVideo + its VideoVersion lineage directly into Postgres."""
+    finished_id = "fv_rubric"
+    version_id = "vv_rubric"
+    video_artifact = c.ArtifactRef(
+        artifact_id="art_video",
+        kind=c.ArtifactKind.video_final,
+        uri="local://cutagent-local/seed.mp4",
     )
-    repo.finished_videos[finished.id] = finished
-    version = c.VideoVersion(
-        id="vv_rubric",
-        case_id=case_id,
-        script_version_id=script_version_id,
-        finished_video_id=finished.id,
-        timeline_plan_artifact_id="art_timeline",
-        style_plan_artifact_id="art_style",
-    )
-    repo.video_versions[version.id] = version
-    return finished.id, version.id
+    with client.app.state.sqlalchemy_session_factory() as session:
+        session.add(
+            FinishedVideoRow(
+                id=finished_id,
+                case_id=case_id,
+                run_id=None,
+                owner_user_id=None,
+                title="Seeded finished video",
+                video_artifact=video_artifact.model_dump(mode="json"),
+                duration_sec=12.0,
+                qc_status="passed",
+            )
+        )
+        session.flush()
+        session.add(
+            VideoVersionRow(
+                id=version_id,
+                case_id=case_id,
+                script_version_id=script_version_id,
+                finished_video_id=finished_id,
+                timeline_plan_artifact_id="art_timeline",
+                style_plan_artifact_id="art_style",
+            )
+        )
+        session.commit()
+    return finished_id, version_id
 
 
 def test_case_rubric_loop_end_to_end():
@@ -112,12 +131,12 @@ def test_case_rubric_loop_end_to_end():
         assert adopt.status_code == 201, adopt.text
         script_version_id = adopt.json()["id"]
 
-        rewards = client.app.state.repository.reward_signals
+        rewards = client.app.state.sqlalchemy_case_rubric_repository.list_rewards(case_id)
         assert any(
             r.source_kind == "draft_adopted"
             and r.case_id == case_id
             and r.script_version_id == script_version_id
-            for r in rewards.values()
+            for r in rewards
         ), "expected a draft_adopted RewardSignal"
 
         linked = client.get(f"/api/cases/{case_id}/predictions").json()["items"]
@@ -276,11 +295,7 @@ def test_published_reward_is_idempotent_across_syncs():
         client.get(f"/api/cases/{case_id}/pending-retro")
         client.get(f"/api/cases/{case_id}/rubric/calibration")
 
-        rewards = [
-            r
-            for r in client.app.state.repository.reward_signals.values()
-            if r.case_id == case_id
-        ]
+        rewards = client.app.state.sqlalchemy_case_rubric_repository.list_rewards(case_id)
         published = [r for r in rewards if r.source_kind == "published"]
         produced = [r for r in rewards if r.source_kind == "video_produced"]
         assert len(published) == 1
@@ -299,42 +314,49 @@ def test_performance_reward_uses_observation_time_for_blind_gate():
         adopt = client.post(f"/api/cases/{case_id}/agent/drafts/{draft_id}/adopt", json={})
         script_version_id = adopt.json()["id"]
 
-        repo = client.app.state.repository
-        prediction = next(
-            p for p in repo.score_predictions.values() if p.script_draft_id == draft_id
-        )
+        rubric_repo = client.app.state.sqlalchemy_case_rubric_repository
+        prediction = rubric_repo.get_prediction_by_draft(draft_id)
+        assert prediction is not None
         old_observed_at = prediction.locked_at - timedelta(hours=1)
-        repo.video_versions["vv_old_metric"] = c.VideoVersion(
-            id="vv_old_metric",
-            case_id=case_id,
-            script_version_id=script_version_id,
-            finished_video_id=None,
-            timeline_plan_artifact_id="art_timeline",
-            style_plan_artifact_id="art_style",
-        )
-        repo.performance_observations["obs_old_metric"] = c.PerformanceObservation(
-            id="obs_old_metric",
-            case_id=case_id,
-            publish_record_id="pr_old_metric",
-            video_version_id="vv_old_metric",
-            metric_name="views",
-            metric_value=1000,
-            observed_at=old_observed_at,
-        )
-        repo.performance_scores["score_old_metric"] = c.PerformanceScore(
-            id="score_old_metric",
-            observation_id="obs_old_metric",
-            case_id=case_id,
-            video_version_id="vv_old_metric",
-            normalized_score=0.9,
-            confidence=0.8,
+        with client.app.state.sqlalchemy_session_factory() as session:
+            session.add(
+                VideoVersionRow(
+                    id="vv_old_metric",
+                    case_id=case_id,
+                    script_version_id=script_version_id,
+                    finished_video_id=None,
+                    timeline_plan_artifact_id="art_timeline",
+                    style_plan_artifact_id="art_style",
+                )
+            )
+            session.commit()
+        rubric_repo.add_performance(
+            c.PerformanceObservation(
+                id="obs_old_metric",
+                case_id=case_id,
+                publish_record_id="pr_old_metric",
+                video_version_id="vv_old_metric",
+                metric_name="views",
+                metric_value=1000,
+                observed_at=old_observed_at,
+            ),
+            c.PerformanceScore(
+                id="score_old_metric",
+                observation_id="obs_old_metric",
+                case_id=case_id,
+                video_version_id="vv_old_metric",
+                normalized_score=0.9,
+                confidence=0.8,
+            ),
         )
 
         calibration = client.get(f"/api/cases/{case_id}/rubric/calibration")
         assert calibration.status_code == 200, calibration.text
 
         performance_rewards = [
-            r for r in repo.reward_signals.values() if r.source_kind == "performance_scored"
+            r
+            for r in rubric_repo.list_rewards(case_id)
+            if r.source_kind == "performance_scored"
         ]
         assert len(performance_rewards) == 1
         assert performance_rewards[0].occurred_at == old_observed_at

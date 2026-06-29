@@ -5,10 +5,11 @@ import struct
 import wave
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from apps.api.main import app
-from apps.api.main import repository
 from packages.core.contracts import (
+    Artifact,
     ArtifactKind,
     DigitalHumanVideoRequest,
     FinishedVideo,
@@ -18,7 +19,9 @@ from packages.core.contracts import (
     RunStatus,
     WorkflowRun,
 )
-from packages.core.storage.repository import new_id
+from packages.core.storage.database import ArtifactRow, CaseRow, MediaAssetRow
+from packages.core.storage.repository import Repository, new_id
+from packages.core.storage.sqlalchemy_uploads import artifact_row_to_contract
 from packages.media.assets import local_object_path
 from packages.media.video.ffmpeg import probe_media
 from tests.fixtures.media import generate_test_video, require_ffmpeg_filters
@@ -33,6 +36,56 @@ def login_admin():
         json={"email": "admin@local.cutagent", "password": "local-admin"},
     )
     assert response.status_code == 200, response.text
+
+
+def _seed_case(case_id: str) -> None:
+    """Insert a shared case row so upload sessions can satisfy the
+    ``upload_sessions.case_id -> cases.id`` FK that the SQL backend enforces (the
+    removed in-memory backend did not). Idempotent."""
+    with app.state.sqlalchemy_session_factory() as session:
+        if session.get(CaseRow, case_id) is not None:
+            return
+        session.add(CaseRow(id=case_id, name="上传测试案例", status="active"))
+        session.commit()
+
+
+def _get_artifact(artifact_id: str) -> Artifact:
+    """Read a persisted artifact back from Postgres. The API writes through to SQL,
+    so assertions must query the database rather than the runtime repository."""
+    with app.state.sqlalchemy_session_factory() as session:
+        row = session.get(ArtifactRow, artifact_id)
+        assert row is not None, f"artifact {artifact_id} not persisted"
+        return artifact_row_to_contract(row)
+
+
+def _artifact_exists(artifact_id: str) -> bool:
+    with app.state.sqlalchemy_session_factory() as session:
+        return session.get(ArtifactRow, artifact_id) is not None
+
+
+def _cover_artifacts_for_source(source_artifact_id: str) -> list[Artifact]:
+    """All persisted cover_image artifacts derived from the given source artifact."""
+    with app.state.sqlalchemy_session_factory() as session:
+        rows = (
+            session.execute(
+                select(ArtifactRow).where(ArtifactRow.kind == ArtifactKind.cover_image.value)
+            )
+            .scalars()
+            .all()
+        )
+        artifacts = [artifact_row_to_contract(row) for row in rows]
+    return [
+        artifact
+        for artifact in artifacts
+        if (artifact.payload or {}).get("source_artifact_id") == source_artifact_id
+    ]
+
+
+def _media_asset_source_and_tags(asset_id: str) -> tuple[str | None, list[str]]:
+    with app.state.sqlalchemy_session_factory() as session:
+        row = session.get(MediaAssetRow, asset_id)
+        assert row is not None, f"media asset {asset_id} not persisted"
+        return row.source_artifact_id, list(row.tags)
 
 
 def _wav_bytes(duration_sec: float = 0.25, sample_rate: int = 8000) -> bytes:
@@ -51,6 +104,7 @@ def _wav_bytes(duration_sec: float = 0.25, sample_rate: int = 8000) -> bytes:
 
 def test_upload_flow_uses_object_store_uri_and_validates_integrity():
     login_admin()
+    _seed_case("case_stabilize_upload")
     content = b"cutagent object store"
     digest = hashlib.sha256(content).hexdigest()
     prepared = client.post(
@@ -129,7 +183,7 @@ def test_create_media_asset_from_completed_upload_points_to_uploaded_artifact():
 
     assert created.status_code == 201, created.text
     assert created.json()["source_artifact_id"] == artifact_id
-    assert created.json()["source_artifact_id"] in repository().artifacts
+    assert _artifact_exists(created.json()["source_artifact_id"])
 
 
 def test_local_media_preview_url_is_browser_playable_content_route():
@@ -183,7 +237,7 @@ def test_finished_video_preview_url_is_browser_playable_stream_route():
         store.prepare_upload("finished-preview.mp4", "finished-video"),
         content,
     )
-    repo = repository()
+    repo = Repository()
     case_id = "case_demo"
     job = Job(
         id=new_id("job"),
@@ -206,6 +260,7 @@ def test_finished_video_preview_url_is_browser_playable_stream_route():
     )
     repo.jobs[job.id] = job.model_copy(update={"active_run_id": run.id})
     repo.runs[run.id] = run
+    repo.node_runs[run.id] = []
     artifact = repo.create_artifact(
         kind=ArtifactKind.video_finished,
         payload_schema="uri-only",
@@ -225,6 +280,9 @@ def test_finished_video_preview_url_is_browser_playable_stream_route():
         video_artifact=repo.artifact_ref(artifact.id),
     )
     repo.finished_videos[finished.id] = finished
+    app.state.sqlalchemy_production_repository.sync_workflow_snapshot(
+        job=repo.jobs[job.id], run=run, repository=repo
+    )
 
     preview = client.get(f"/api/finished-videos/{finished.id}/preview-url")
     assert preview.status_code == 200, preview.text
@@ -240,19 +298,33 @@ def test_finished_video_preview_url_is_browser_playable_stream_route():
 
 
 def _register_finished_video(uri: str, *, title: str) -> str:
-    repo = repository()
     # A dedicated case so these (deliberately non-downloadable) finished videos
     # never leak into case_demo, whose last finished video other suites publish.
     case_id = "case_stream_proxy_test"
+    _seed_case(case_id)
+    repo = Repository()
+    job = Job(
+        id=new_id("job"),
+        type=JobType.digital_human_video,
+        case_id=case_id,
+        request_schema="DigitalHumanVideoRequest.v1",
+        request=DigitalHumanVideoRequest(
+            case_id=case_id,
+            script="stream proxy",
+            voice={"voice_id": "voice_sandbox"},
+        ),
+    )
     run = WorkflowRun(
         id=new_id("run"),
-        job_id=new_id("job"),
+        job_id=job.id,
         case_id=case_id,
         workflow_template_id="digital_human_v2",
         workflow_version="v1",
         status=RunStatus.succeeded,
     )
+    repo.jobs[job.id] = job.model_copy(update={"active_run_id": run.id})
     repo.runs[run.id] = run
+    repo.node_runs[run.id] = []
     artifact = repo.create_artifact(
         kind=ArtifactKind.video_finished,
         payload_schema="uri-only",
@@ -270,6 +342,9 @@ def _register_finished_video(uri: str, *, title: str) -> str:
         video_artifact=repo.artifact_ref(artifact.id),
     )
     repo.finished_videos[finished.id] = finished
+    app.state.sqlalchemy_production_repository.sync_workflow_snapshot(
+        job=repo.jobs[job.id], run=run, repository=repo
+    )
     return finished.id
 
 
@@ -390,17 +465,12 @@ def test_video_upload_probes_media_and_creates_real_thumbnail_artifacts(tmp_path
 
     assert completed.status_code == 200, completed.text
     artifact_id = completed.json()["artifact"]["artifact_id"]
-    uploaded_artifact = repository().artifacts[artifact_id]
+    uploaded_artifact = _get_artifact(artifact_id)
     assert uploaded_artifact.sha256 == digest
     assert uploaded_artifact.media_info is not None
     assert uploaded_artifact.media_info.media_type == "video"
     assert uploaded_artifact.media_info.width == 320
-    thumbnails = [
-        artifact
-        for artifact in repository().artifacts.values()
-        if artifact.kind == ArtifactKind.cover_image
-        and (artifact.payload or {}).get("source_artifact_id") == artifact_id
-    ]
+    thumbnails = _cover_artifacts_for_source(artifact_id)
     assert {artifact.payload["thumbnail_label"] for artifact in thumbnails} == {"first", "mid"}
     assert all(artifact.sha256 for artifact in thumbnails)
     assert all(artifact.media_info and artifact.media_info.media_type == "image" for artifact in thumbnails)
@@ -410,6 +480,7 @@ def test_unified_video_kind_upload_creates_video_media_asset(tmp_path):
     """P0: the unified ``video`` bucket creates a media asset (kind=video) through the
     same probe/normalize path as portrait/broll — the operator never picks A/B-roll."""
     login_admin()
+    _seed_case("case_unified_video")
     video = generate_test_video(tmp_path, duration_sec=1, width=320, height=568)
     content = video.read_bytes()
     digest = hashlib.sha256(content).hexdigest()
@@ -442,7 +513,7 @@ def test_unified_video_kind_upload_creates_video_media_asset(tmp_path):
     assert body["media_asset"] is not None
     assert body["media_asset"]["kind"] == "video"
     assert body["media_asset"]["source_artifact_id"] == body["artifact"]["artifact_id"]
-    artifact = repository().artifacts[body["artifact"]["artifact_id"]]
+    artifact = _get_artifact(body["artifact"]["artifact_id"])
     assert artifact.media_info is not None and artifact.media_info.media_type == "video"
 
 
@@ -481,7 +552,7 @@ def test_video_upload_can_stabilize_before_creating_media_asset(tmp_path):
     body = completed.json()
     assert body["media_asset"]["source_artifact_id"] == body["artifact"]["artifact_id"]
     assert "stabilized" in body["media_asset"]["tags"]
-    stabilized_artifact = repository().artifacts[body["artifact"]["artifact_id"]]
+    stabilized_artifact = _get_artifact(body["artifact"]["artifact_id"])
     assert stabilized_artifact.sha256 != digest
     assert (stabilized_artifact.payload or {})["stabilized"] is True
     info = probe_media(local_object_path(client.app.state.object_store, stabilized_artifact.uri))
@@ -492,6 +563,7 @@ def test_video_upload_can_stabilize_before_creating_media_asset(tmp_path):
 def test_batch_stabilize_updates_media_assets_and_reports_results(tmp_path):
     require_ffmpeg_filters("vidstabdetect", "vidstabtransform")
     login_admin()
+    _seed_case("case_batch_stabilize")
     video = generate_test_video(tmp_path, duration_sec=1.2, width=160, height=120, fps=15)
     content = video.read_bytes()
     digest = hashlib.sha256(content).hexdigest()
@@ -525,22 +597,23 @@ def test_batch_stabilize_updates_media_assets_and_reports_results(tmp_path):
 
     assert response.status_code == 200, response.text
     body = response.json()
+    updated_source_artifact_id, updated_tags = _media_asset_source_and_tags(asset_id)
     assert body["results"] == [
         {
             "asset_id": asset_id,
             "status": "completed",
-            "artifact_id": repository().media_assets[asset_id].source_artifact_id,
+            "artifact_id": updated_source_artifact_id,
             "error_code": None,
             "message": None,
         }
     ]
-    updated_asset = repository().media_assets[asset_id]
-    assert updated_asset.source_artifact_id != original_artifact_id
-    assert "stabilized" in updated_asset.tags
+    assert updated_source_artifact_id != original_artifact_id
+    assert "stabilized" in updated_tags
 
 
 def test_annotation_trim_creates_trimmed_artifact_from_invalid_segments(tmp_path):
     login_admin()
+    _seed_case("case_trim_annotation")
     video = generate_test_video(tmp_path, duration_sec=2, width=160, height=120, fps=15)
     content = video.read_bytes()
     digest = hashlib.sha256(content).hexdigest()
@@ -593,17 +666,19 @@ def test_annotation_trim_creates_trimmed_artifact_from_invalid_segments(tmp_path
 
     assert response.status_code == 200, response.text
     body = response.json()
-    artifact = repository().artifacts[body["artifact"]["artifact_id"]]
+    artifact = _get_artifact(body["artifact"]["artifact_id"])
     assert body["asset_id"] == asset_id
     assert 0.85 <= body["valid_duration_sec"] <= 1.15
     assert (artifact.payload or {})["trimmed"] is True
-    assert repository().media_assets[asset_id].source_artifact_id == artifact.id
+    trimmed_source_artifact_id, _ = _media_asset_source_and_tags(asset_id)
+    assert trimmed_source_artifact_id == artifact.id
     info = probe_media(local_object_path(client.app.state.object_store, artifact.uri))
     assert 0.85 <= (info.duration_sec or 0) <= 1.15
 
 
 def test_annotation_trim_rejects_empty_valid_region(tmp_path):
     login_admin()
+    _seed_case("case_trim_empty")
     video = generate_test_video(tmp_path, duration_sec=1, width=160, height=120, fps=15)
     content = video.read_bytes()
     digest = hashlib.sha256(content).hexdigest()

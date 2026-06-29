@@ -2,7 +2,8 @@ from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
 from packages.core import contracts as c
-from packages.core.storage.repository import new_id
+from packages.core.storage.database import FinishedVideoRow
+from packages.core.storage.repository import Repository, new_id
 
 
 def _login(client: TestClient, email: str = "admin@local.cutagent", password: str = "local-admin") -> None:
@@ -67,8 +68,15 @@ def test_delete_case_rejects_active_run_reference() -> None:
             workflow_version="v1",
             status=c.RunStatus.running,
         )
-        app.state.repository.jobs[job.id] = job
-        app.state.repository.runs[run.id] = run
+        # Flush the job + (active) run into Postgres so the SQL delete-guard sees a
+        # blocking reference (the in-memory repo is no longer a storage backend).
+        repo = Repository()
+        repo.jobs[job.id] = job
+        repo.runs[run.id] = run
+        repo.node_runs[run.id] = []
+        app.state.sqlalchemy_production_repository.sync_workflow_snapshot(
+            job=job, run=run, repository=repo
+        )
 
         rejected = client.delete(f"/api/cases/{case['id']}")
         assert rejected.status_code == 409
@@ -80,22 +88,27 @@ def test_delete_case_rejects_finished_video_reference() -> None:
     with TestClient(app) as client:
         _login(client)
         case = _create_case(client, "Case With Finished Video")
-        artifact = c.Artifact(
-            id=new_id("art"),
-            case_id=case["id"],
+        # A finished video referencing the case must block deletion. Persist it
+        # directly into Postgres (the SQL delete-guard reads ``finished_videos``).
+        video_ref = c.ArtifactRef(
+            artifact_id=new_id("art"),
             kind=c.ArtifactKind.video_final,
             uri="sandbox://final.mp4",
-            payload_schema="video.final.v1",
-            payload={},
         )
-        app.state.repository.artifacts[artifact.id] = artifact
-        video = c.FinishedVideo(
-            id=new_id("fv"),
-            case_id=case["id"],
-            title="Finished reference",
-            video_artifact=app.state.repository.artifact_ref(artifact.id),
-        )
-        app.state.repository.finished_videos[video.id] = video
+        with app.state.sqlalchemy_session_factory() as session:
+            session.add(
+                FinishedVideoRow(
+                    id=new_id("fv"),
+                    case_id=case["id"],
+                    run_id=None,
+                    owner_user_id="usr_admin",
+                    title="Finished reference",
+                    video_artifact=video_ref.model_dump(mode="json"),
+                    duration_sec=0,
+                    qc_status="passed",
+                )
+            )
+            session.commit()
 
         rejected = client.delete(f"/api/cases/{case['id']}")
         assert rejected.status_code == 409

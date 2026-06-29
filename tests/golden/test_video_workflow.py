@@ -1,11 +1,10 @@
 import json
 import zipfile
+from contextlib import contextmanager
 
 from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
-from apps.api.main import app
-from apps.api.main import repository
 from packages.ai.gateway.provider_gateway import ProviderRuntimeError, SandboxProvider
 from packages.core.contracts import (
     AnnotationEditorVm,
@@ -25,17 +24,6 @@ from packages.media.assets import local_object_path
 from packages.media.video.ffmpeg import probe_media, probe_stream_types, probe_video_frame_count
 
 
-client = TestClient(app)
-
-
-def login_admin():
-    response = client.post(
-        "/api/auth/login",
-        json={"email": "admin@local.cutagent", "password": "local-admin"},
-    )
-    assert response.status_code == 200, response.text
-
-
 def login_admin_for(active_client):
     response = active_client.post(
         "/api/auth/login",
@@ -44,8 +32,31 @@ def login_admin_for(active_client):
     assert response.status_code == 200, response.text
 
 
+@contextmanager
 def fresh_client():
-    return TestClient(create_app())
+    """A per-test FastAPI app + client whose database engine is disposed on exit.
+
+    Each test gets its own app, so its in-memory workflow ``runtime_repository``
+    stays aligned with the per-test SQL truncate-and-reseed isolation (no cross-test
+    artifact/script leakage that would break script_version FK references). The
+    fresh app spins up its own SQLAlchemy engine + connection pool; we dispose it
+    when the test finishes so pooled connections (and any locks they hold) are
+    released before the conftest teardown TRUNCATEs the database — otherwise a long
+    golden run accumulates live pools and deadlocks against that TRUNCATE.
+    """
+    app = create_app()
+    # Do NOT enter the TestClient lifespan: app.state is fully configured at build
+    # time. Entering would re-run bootstrap_sqlalchemy_storage (a full seed_database
+    # merge over users/registration_codes/provider_profiles/media_assets) on every
+    # test, contending on exactly the tables the conftest teardown TRUNCATEs and
+    # deadlocking under a long golden run. Skipping it also avoids extra engine churn.
+    active_client = TestClient(app)
+    try:
+        yield active_client
+    finally:
+        engine = app.state.sqlalchemy_session_factory.kw.get("bind")
+        if engine is not None:
+            engine.dispose()
 
 
 def video_payload(**overrides):
@@ -90,29 +101,30 @@ class FailingOnceLipSyncSandbox(SandboxProvider):
 
 
 def test_minimal_success_video_creates_finished_video_and_report():
-    login_admin()
-    response = client.post(
-        "/api/jobs/digital-human-video",
-        json=video_payload(),
-        headers={"Idempotency-Key": "golden-video-success"},
-    )
-    assert response.status_code == 201, response.text
-    body = response.json()
-    replayed = client.post(
-        "/api/jobs/digital-human-video",
-        json=video_payload(),
-        headers={"Idempotency-Key": "golden-video-success"},
-    )
-    assert replayed.status_code == 200, replayed.text  # spec 32.11: replay -> 200
-    assert replayed.headers["Idempotency-Replayed"] == "true"
-    assert replayed.json()["job"]["id"] == body["job"]["id"]
-    assert replayed.json()["initial_run"]["id"] == body["initial_run"]["id"]
-    run = body["initial_run"]
-    assert run["status"] == "succeeded"
-    report = client.get(f"/api/runs/{run['id']}/report").json()
-    assert report["public_report"]["status"] == "succeeded"
-    videos = client.get("/api/cases/case_demo/finished-videos").json()["items"]
-    assert videos
+    with fresh_client() as active_client:
+        login_admin_for(active_client)
+        response = active_client.post(
+            "/api/jobs/digital-human-video",
+            json=video_payload(),
+            headers={"Idempotency-Key": "golden-video-success"},
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        replayed = active_client.post(
+            "/api/jobs/digital-human-video",
+            json=video_payload(),
+            headers={"Idempotency-Key": "golden-video-success"},
+        )
+        assert replayed.status_code == 200, replayed.text  # spec 32.11: replay -> 200
+        assert replayed.headers["Idempotency-Replayed"] == "true"
+        assert replayed.json()["job"]["id"] == body["job"]["id"]
+        assert replayed.json()["initial_run"]["id"] == body["initial_run"]["id"]
+        run = body["initial_run"]
+        assert run["status"] == "succeeded"
+        report = active_client.get(f"/api/runs/{run['id']}/report").json()
+        assert report["public_report"]["status"] == "succeeded"
+        videos = active_client.get("/api/cases/case_demo/finished-videos").json()["items"]
+        assert videos
 
 
 def test_case_run_cards_list_recent_runs_for_case():
@@ -253,19 +265,20 @@ def test_spec_20_2_2b_broll_enabled_without_annotation_soft_degrades():
 
 
 def test_broll_missing_is_soft_degrade_and_reported():
-    login_admin()
-    response = client.post(
-        "/api/jobs/digital-human-video",
-        json=video_payload(
-            title="B-roll degraded",
-            broll={"enabled": True, "max_inserts": 2, "case_id": "case_without_broll"},
-        ),
-    )
-    assert response.status_code == 201, response.text
-    run = response.json()["initial_run"]
-    assert run["status"] == "succeeded"
-    report = client.get(f"/api/runs/{run['id']}/report").json()["public_report"]
-    assert "broll.skipped_no_material" in report["degradations"]
+    with fresh_client() as active_client:
+        login_admin_for(active_client)
+        response = active_client.post(
+            "/api/jobs/digital-human-video",
+            json=video_payload(
+                title="B-roll degraded",
+                broll={"enabled": True, "max_inserts": 2, "case_id": "case_without_broll"},
+            ),
+        )
+        assert response.status_code == 201, response.text
+        run = response.json()["initial_run"]
+        assert run["status"] == "succeeded"
+        report = active_client.get(f"/api/runs/{run['id']}/report").json()["public_report"]
+        assert "broll.skipped_no_material" in report["degradations"]
 
 
 def test_spec_20_2_4_bgm_missing_is_soft_degrade_and_reported_with_warning_code():
@@ -311,20 +324,21 @@ def test_bgm_enabled_with_seed_asset_mixes_audio_into_final_video():
 
 
 def test_portrait_missing_is_hard_fail():
-    login_admin()
-    case = client.post("/api/cases", json={"name": "No portrait case"}).json()
-    response = client.post(
-        "/api/jobs/digital-human-video",
-        json=video_payload(case_id=case["id"], title="Hard fail"),
-    )
-    assert response.status_code == 201, response.text
-    run = response.json()["initial_run"]
-    assert run["status"] == "failed"
-    detail = client.get(f"/api/runs/{run['id']}").json()
-    errors = [node.get("error") for node in detail["node_runs"] if node.get("error")]
-    assert errors[-1]["code"] == "material.insufficient.portrait"
-    report = client.get(f"/api/runs/{run['id']}/report").json()
-    assert report["debug_report"]["node_errors"][-1]["code"] == "material.insufficient.portrait"
+    with fresh_client() as active_client:
+        login_admin_for(active_client)
+        case = active_client.post("/api/cases", json={"name": "No portrait case"}).json()
+        response = active_client.post(
+            "/api/jobs/digital-human-video",
+            json=video_payload(case_id=case["id"], title="Hard fail"),
+        )
+        assert response.status_code == 201, response.text
+        run = response.json()["initial_run"]
+        assert run["status"] == "failed"
+        detail = active_client.get(f"/api/runs/{run['id']}").json()
+        errors = [node.get("error") for node in detail["node_runs"] if node.get("error")]
+        assert errors[-1]["code"] == "material.insufficient.portrait"
+        report = active_client.get(f"/api/runs/{run['id']}/report").json()
+        assert report["debug_report"]["node_errors"][-1]["code"] == "material.insufficient.portrait"
 
 
 def test_spec_20_2_6_lipsync_timeout_can_resume_reusing_valid_prefix():
@@ -494,162 +508,168 @@ def test_spec_20_2_10_editor_handoff_and_jianying_draft_exports_have_package_art
 
 
 def test_pipeline_writes_typed_artifact_payloads_with_frame_quantized_timeline():
-    login_admin()
-    response = client.post(
-        "/api/jobs/digital-human-video",
-        json=video_payload(title="Typed artifacts"),
-    )
-    assert response.status_code == 201, response.text
-    run = response.json()["initial_run"]
+    with fresh_client() as active_client:
+        login_admin_for(active_client)
+        response = active_client.post(
+            "/api/jobs/digital-human-video",
+            json=video_payload(title="Typed artifacts"),
+        )
+        assert response.status_code == 201, response.text
+        run = response.json()["initial_run"]
 
-    artifacts = {
-        artifact.kind: artifact
-        for artifact in repository().artifacts.values()
-        if artifact.run_id == run["id"]
-    }
-    narration = artifacts[ArtifactKind.narration_units].payload
-    assert narration["source"] == "estimated"
-    assert narration["strict"] is False
-    assert all({"unit_id", "start", "end", "confidence"} <= set(unit) for unit in narration["units"])
+        artifacts = {
+            artifact.kind: artifact
+            for artifact in active_client.app.state.repository.artifacts.values()
+            if artifact.run_id == run["id"]
+        }
+        narration = artifacts[ArtifactKind.narration_units].payload
+        assert narration["source"] == "estimated"
+        assert narration["strict"] is False
+        assert all({"unit_id", "start", "end", "confidence"} <= set(unit) for unit in narration["units"])
 
-    tts = artifacts[ArtifactKind.audio_tts]
-    assert tts.uri and tts.uri.startswith("local://")
-    assert tts.sha256 and tts.sha256 != "dev-unpinned"
-    assert tts.media_info is not None
-    assert tts.media_info.media_type == "audio"
-    assert tts.media_info.sample_rate == 16000
-    assert tts.media_info.channels == 1
-    assert probe_media(local_object_path(get_object_store(), tts.uri)).duration_sec == tts.media_info.duration_sec
+        tts = artifacts[ArtifactKind.audio_tts]
+        assert tts.uri and tts.uri.startswith("local://")
+        assert tts.sha256 and tts.sha256 != "dev-unpinned"
+        assert tts.media_info is not None
+        assert tts.media_info.media_type == "audio"
+        assert tts.media_info.sample_rate == 16000
+        assert tts.media_info.channels == 1
+        assert probe_media(local_object_path(get_object_store(), tts.uri)).duration_sec == tts.media_info.duration_sec
 
-    portrait_track = artifacts[ArtifactKind.video_portrait_track]
-    assert portrait_track.uri and portrait_track.uri.startswith("local://")
-    assert portrait_track.sha256 and portrait_track.sha256 != "dev-unpinned"
-    assert portrait_track.media_info is not None
-    assert portrait_track.media_info.media_type == "video"
-    assert portrait_track.media_info.width == 1080
-    assert portrait_track.media_info.height == 1920
-    assert get_object_store().exists(parse_object_uri(portrait_track.uri)) is False
+        portrait_track = artifacts[ArtifactKind.video_portrait_track]
+        assert portrait_track.uri and portrait_track.uri.startswith("local://")
+        assert portrait_track.sha256 and portrait_track.sha256 != "dev-unpinned"
+        assert portrait_track.media_info is not None
+        assert portrait_track.media_info.media_type == "video"
+        assert portrait_track.media_info.width == 1080
+        assert portrait_track.media_info.height == 1920
+        assert get_object_store().exists(parse_object_uri(portrait_track.uri)) is False
 
-    lipsync = artifacts[ArtifactKind.video_lipsync]
-    assert lipsync.uri == portrait_track.uri
-    assert lipsync.sha256 == portrait_track.sha256
-    lipsync_report = artifacts[ArtifactKind.lipsync_report].payload
-    assert lipsync_report["skipped"] is True
-    assert lipsync_report["input_video_artifact_id"] == portrait_track.id
+        lipsync = artifacts[ArtifactKind.video_lipsync]
+        assert lipsync.uri == portrait_track.uri
+        assert lipsync.sha256 == portrait_track.sha256
+        lipsync_report = artifacts[ArtifactKind.lipsync_report].payload
+        assert lipsync_report["skipped"] is True
+        assert lipsync_report["input_video_artifact_id"] == portrait_track.id
 
-    timeline = artifacts[ArtifactKind.plan_timeline].payload
-    assert timeline["fps"] == 30
-    assert timeline["total_frames"] > 0
-    assert isinstance(timeline["tracks"], list)
-    assert all(isinstance(segment["timeline_start_frame"], int) for segment in timeline["tracks"])
-    assert timeline["validation"]["checks"] == {
-        "overlap": True,
-        "negative_duration": True,
-        "out_of_bounds": True,
-    }
+        timeline = artifacts[ArtifactKind.plan_timeline].payload
+        assert timeline["fps"] == 30
+        assert timeline["total_frames"] > 0
+        assert isinstance(timeline["tracks"], list)
+        assert all(isinstance(segment["timeline_start_frame"], int) for segment in timeline["tracks"])
+        assert timeline["validation"]["checks"] == {
+            "overlap": True,
+            "negative_duration": True,
+            "out_of_bounds": True,
+        }
 
-    rendered = artifacts[ArtifactKind.video_rendered]
-    assert rendered.uri and rendered.uri.startswith("local://")
-    assert rendered.sha256 and rendered.sha256 != "dev-unpinned"
-    assert rendered.media_info is not None
-    assert rendered.media_info.width == 1080
-    assert rendered.media_info.height == 1920
-    assert rendered.media_info.fps == 30
-    assert get_object_store().exists(parse_object_uri(rendered.uri)) is False
+        rendered = artifacts[ArtifactKind.video_rendered]
+        assert rendered.uri and rendered.uri.startswith("local://")
+        assert rendered.sha256 and rendered.sha256 != "dev-unpinned"
+        assert rendered.media_info is not None
+        assert rendered.media_info.width == 1080
+        assert rendered.media_info.height == 1920
+        assert rendered.media_info.fps == 30
+        assert get_object_store().exists(parse_object_uri(rendered.uri)) is False
 
-    final = artifacts[ArtifactKind.video_final]
-    assert final.uri and final.uri.startswith("local://")
-    assert final.sha256 and final.sha256 != "dev-unpinned"
-    assert final.media_info is not None
-    assert get_object_store().exists(parse_object_uri(final.uri)) is True
-    final_path = local_object_path(get_object_store(), final.uri)
-    assert {"video", "audio"} <= probe_stream_types(final_path)
-    assert probe_video_frame_count(final_path) == timeline["total_frames"]
+        final = artifacts[ArtifactKind.video_final]
+        assert final.uri and final.uri.startswith("local://")
+        assert final.sha256 and final.sha256 != "dev-unpinned"
+        assert final.media_info is not None
+        assert get_object_store().exists(parse_object_uri(final.uri)) is True
+        final_path = local_object_path(get_object_store(), final.uri)
+        assert {"video", "audio"} <= probe_stream_types(final_path)
+        assert probe_video_frame_count(final_path) == timeline["total_frames"]
 
-    subtitle = artifacts[ArtifactKind.subtitle_ass]
-    assert subtitle.uri and subtitle.uri.startswith("local://")
-    assert subtitle.sha256 and subtitle.sha256 != "dev-unpinned"
-    assert get_object_store().exists(parse_object_uri(subtitle.uri)) is True
-    subtitle_text = local_object_path(get_object_store(), subtitle.uri).read_text(encoding="utf-8")
-    assert "[Events]" in subtitle_text
-    assert "Dialogue:" in subtitle_text
+        subtitle = artifacts[ArtifactKind.subtitle_ass]
+        assert subtitle.uri and subtitle.uri.startswith("local://")
+        assert subtitle.sha256 and subtitle.sha256 != "dev-unpinned"
+        assert get_object_store().exists(parse_object_uri(subtitle.uri)) is True
+        subtitle_text = local_object_path(get_object_store(), subtitle.uri).read_text(encoding="utf-8")
+        assert "[Events]" in subtitle_text
+        assert "Dialogue:" in subtitle_text
 
-    finished_artifact = artifacts[ArtifactKind.video_finished]
-    assert finished_artifact.uri == final.uri
-    assert finished_artifact.sha256 == final.sha256
-    assert finished_artifact.media_info == final.media_info
-    cover = artifacts[ArtifactKind.cover_image]
-    assert cover.uri and cover.uri.startswith("local://")
-    assert cover.sha256 and cover.sha256 != "dev-unpinned"
-    assert cover.media_info is not None
-    assert cover.media_info.media_type == "image"
-    assert get_object_store().exists(parse_object_uri(cover.uri)) is True
-    finished_video = next(
-        video for video in repository().finished_videos.values() if video.run_id == run["id"]
-    )
-    assert finished_video.duration_sec == final.media_info.duration_sec
+        finished_artifact = artifacts[ArtifactKind.video_finished]
+        assert finished_artifact.uri == final.uri
+        assert finished_artifact.sha256 == final.sha256
+        assert finished_artifact.media_info == final.media_info
+        cover = artifacts[ArtifactKind.cover_image]
+        assert cover.uri and cover.uri.startswith("local://")
+        assert cover.sha256 and cover.sha256 != "dev-unpinned"
+        assert cover.media_info is not None
+        assert cover.media_info.media_type == "image"
+        assert get_object_store().exists(parse_object_uri(cover.uri)) is True
+        finished_video = next(
+            video
+            for video in active_client.app.state.repository.finished_videos.values()
+            if video.run_id == run["id"]
+        )
+        assert finished_video.duration_sec == final.media_info.duration_sec
 
 
 def test_strict_alignment_rejects_estimated_narration_units():
-    login_admin()
-    response = client.post(
-        "/api/jobs/digital-human-video",
-        json=video_payload(title="Strict timestamps", strictness={"strict_timestamps": True}),
-    )
-    assert response.status_code == 201, response.text
-    run = response.json()["initial_run"]
-    assert run["status"] == "failed"
-    detail = client.get(f"/api/runs/{run['id']}").json()
-    errors = [node.get("error") for node in detail["node_runs"] if node.get("error")]
-    assert errors[-1]["code"] == "render.invalid_timeline"
+    with fresh_client() as active_client:
+        login_admin_for(active_client)
+        response = active_client.post(
+            "/api/jobs/digital-human-video",
+            json=video_payload(title="Strict timestamps", strictness={"strict_timestamps": True}),
+        )
+        assert response.status_code == 201, response.text
+        run = response.json()["initial_run"]
+        assert run["status"] == "failed"
+        detail = active_client.get(f"/api/runs/{run['id']}").json()
+        errors = [node.get("error") for node in detail["node_runs"] if node.get("error")]
+        assert errors[-1]["code"] == "render.invalid_timeline"
 
 
 def test_resume_from_successful_run_reuses_prefix_and_keeps_report_readable():
-    login_admin()
-    created = client.post(
-        "/api/jobs/digital-human-video",
-        json=video_payload(title="Resume source"),
-    )
-    assert created.status_code == 201, created.text
-    source_run = created.json()["initial_run"]
-    assert source_run["status"] == "succeeded"
+    with fresh_client() as active_client:
+        login_admin_for(active_client)
+        created = active_client.post(
+            "/api/jobs/digital-human-video",
+            json=video_payload(title="Resume source"),
+        )
+        assert created.status_code == 201, created.text
+        source_run = created.json()["initial_run"]
+        assert source_run["status"] == "succeeded"
 
-    resumed = client.post(
-        f"/api/runs/{source_run['id']}/resume",
-        json={"reason": "reuse successful prefix", "reuse_valid_artifacts": True},
-    )
+        resumed = active_client.post(
+            f"/api/runs/{source_run['id']}/resume",
+            json={"reason": "reuse successful prefix", "reuse_valid_artifacts": True},
+        )
 
-    assert resumed.status_code == 201, resumed.text
-    new_run = resumed.json()["run"]
-    assert new_run["status"] == "succeeded"
-    detail = client.get(f"/api/runs/{new_run['id']}").json()
-    assert detail["node_runs"]
-    skipped = {node["node_id"] for node in detail["node_runs"] if node["status"] == "skipped"}
-    assert {
-        "ValidateRequest",
-        "LoadCaseContext",
-        "ResolveCreativeIntent",
-        "TTS",
-        "MaterialPackPlanning",
-        "NarrationAlignment",
-    } <= skipped
-    assert "PortraitPlanning" not in skipped
-    assert "TimelinePlanning" not in skipped
-    report = client.get(f"/api/runs/{new_run['id']}/report")
-    assert report.status_code == 200, report.text
+        assert resumed.status_code == 201, resumed.text
+        new_run = resumed.json()["run"]
+        assert new_run["status"] == "succeeded"
+        detail = active_client.get(f"/api/runs/{new_run['id']}").json()
+        assert detail["node_runs"]
+        skipped = {node["node_id"] for node in detail["node_runs"] if node["status"] == "skipped"}
+        assert {
+            "ValidateRequest",
+            "LoadCaseContext",
+            "ResolveCreativeIntent",
+            "TTS",
+            "MaterialPackPlanning",
+            "NarrationAlignment",
+        } <= skipped
+        assert "PortraitPlanning" not in skipped
+        assert "TimelinePlanning" not in skipped
+        report = active_client.get(f"/api/runs/{new_run['id']}/report")
+        assert report.status_code == 200, report.text
 
 
 def test_resume_from_failed_job_is_rejected_by_state_machine():
-    login_admin()
-    case = client.post("/api/cases", json={"name": "Resume case"}).json()
-    failed = client.post(
-        "/api/jobs/digital-human-video",
-        json=video_payload(case_id=case["id"], title="Resume hard fail"),
-    ).json()
-    failed_run = failed["initial_run"]
-    resumed = client.post(
-        f"/api/runs/{failed_run['id']}/resume",
-        json={"reason": "verify resume prefix", "reuse_valid_artifacts": True},
-    )
-    assert resumed.status_code == 400
-    assert resumed.json()["error"]["code"] == "workflow.invalid_transition"
+    with fresh_client() as active_client:
+        login_admin_for(active_client)
+        case = active_client.post("/api/cases", json={"name": "Resume case"}).json()
+        failed = active_client.post(
+            "/api/jobs/digital-human-video",
+            json=video_payload(case_id=case["id"], title="Resume hard fail"),
+        ).json()
+        failed_run = failed["initial_run"]
+        resumed = active_client.post(
+            f"/api/runs/{failed_run['id']}/resume",
+            json={"reason": "verify resume prefix", "reuse_valid_artifacts": True},
+        )
+        assert resumed.status_code == 400
+        assert resumed.json()["error"]["code"] == "workflow.invalid_transition"

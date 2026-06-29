@@ -11,17 +11,40 @@ mandatory reference-image path (reference_asset_ids resolved to a source artifac
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from fastapi.testclient import TestClient
 
-from apps.api.main import app, repository
+from apps.api.app import create_app
 from packages.core import contracts as c
 from packages.core.contracts import ArtifactKind
 
-client = TestClient(app)
+
+@contextmanager
+def fresh_client():
+    """A per-test app/client whose SQLAlchemy engine is disposed on exit.
+
+    Each test gets its own in-memory workflow ``runtime_repository`` (aligned with
+    the per-test SQL reset) and releases its connection pool before teardown
+    TRUNCATEs the database, so a long golden run never deadlocks against it.
+    """
+    app = create_app()
+    # Do NOT enter the TestClient lifespan: app.state is fully configured at build
+    # time. Entering would re-run bootstrap_sqlalchemy_storage (a full seed_database
+    # merge over users/registration_codes/provider_profiles/media_assets) on every
+    # test, contending on exactly the tables the conftest teardown TRUNCATEs and
+    # deadlocking under a long golden run. Skipping it also avoids extra engine churn.
+    active_client = TestClient(app)
+    try:
+        yield active_client
+    finally:
+        engine = app.state.sqlalchemy_session_factory.kw.get("bind")
+        if engine is not None:
+            engine.dispose()
 
 
-def login_admin():
-    response = client.post(
+def login_admin_for(active_client):
+    response = active_client.post(
         "/api/auth/login",
         json={"email": "admin@local.cutagent", "password": "local-admin"},
     )
@@ -41,54 +64,57 @@ def _seedance_payload(**overrides):
     return payload
 
 
-def _finished_videos_for_run(run_id: str):
-    return [video for video in repository().finished_videos.values() if video.run_id == run_id]
+def _finished_videos_for_run(active_client, run_id: str):
+    repository = active_client.app.state.repository
+    return [video for video in repository.finished_videos.values() if video.run_id == run_id]
 
 
 def test_seedance_pure_text_to_video_creates_finished_video():
-    login_admin()
-    response = client.post(
-        "/api/jobs/digital-human-video",
-        json=_seedance_payload(),
-        headers={"Idempotency-Key": "seedance-t2v-smoke"},
-    )
-    assert response.status_code == 201, response.text
-    run = response.json()["initial_run"]
-    assert run["status"] == "succeeded", run
-    report = client.get(f"/api/runs/{run['id']}/report").json()
-    assert report["public_report"]["status"] == "succeeded"
-    assert _finished_videos_for_run(run["id"])
+    with fresh_client() as active_client:
+        login_admin_for(active_client)
+        response = active_client.post(
+            "/api/jobs/digital-human-video",
+            json=_seedance_payload(),
+            headers={"Idempotency-Key": "seedance-t2v-smoke"},
+        )
+        assert response.status_code == 201, response.text
+        run = response.json()["initial_run"]
+        assert run["status"] == "succeeded", run
+        report = active_client.get(f"/api/runs/{run['id']}/report").json()
+        assert report["public_report"]["status"] == "succeeded"
+        assert _finished_videos_for_run(active_client, run["id"])
 
 
 def test_seedance_with_reference_image_creates_finished_video():
-    login_admin()
-    # Seed a reference image asset backed by a source artifact so the node's
-    # reference resolution (source_artifact_for_asset) succeeds.
-    repo = repository()
-    artifact = repo.create_artifact(
-        kind=ArtifactKind.uploaded_file,
-        payload_schema="uri-only",
-        payload=None,
-        case_id="case_demo",
-        uri="local://cutagent-local/seedance-reference.png",
-    )
-    asset = c.MediaAssetRecord(
-        id="asset_seedance_ref",
-        case_id="case_demo",
-        title="门头参考图",
-        kind="image",
-        source_artifact_id=artifact.id,
-    )
-    repo.media_assets[asset.id] = asset
+    with fresh_client() as active_client:
+        login_admin_for(active_client)
+        # Seed a reference image asset backed by a source artifact so the node's
+        # reference resolution (source_artifact_for_asset) succeeds.
+        repo = active_client.app.state.repository
+        artifact = repo.create_artifact(
+            kind=ArtifactKind.uploaded_file,
+            payload_schema="uri-only",
+            payload=None,
+            case_id="case_demo",
+            uri="local://cutagent-local/seedance-reference.png",
+        )
+        asset = c.MediaAssetRecord(
+            id="asset_seedance_ref",
+            case_id="case_demo",
+            title="门头参考图",
+            kind="image",
+            source_artifact_id=artifact.id,
+        )
+        repo.media_assets[asset.id] = asset
 
-    response = client.post(
-        "/api/jobs/digital-human-video",
-        json=_seedance_payload(reference_asset_ids=[asset.id]),
-        headers={"Idempotency-Key": "seedance-i2v-smoke"},
-    )
-    assert response.status_code == 201, response.text
-    run = response.json()["initial_run"]
-    assert run["status"] == "succeeded", run
-    videos = _finished_videos_for_run(run["id"])
-    assert videos
-    assert videos[0].video_artifact is not None
+        response = active_client.post(
+            "/api/jobs/digital-human-video",
+            json=_seedance_payload(reference_asset_ids=[asset.id]),
+            headers={"Idempotency-Key": "seedance-i2v-smoke"},
+        )
+        assert response.status_code == 201, response.text
+        run = response.json()["initial_run"]
+        assert run["status"] == "succeeded", run
+        videos = _finished_videos_for_run(active_client, run["id"])
+        assert videos
+        assert videos[0].video_artifact is not None

@@ -22,13 +22,26 @@ from apps.api.dependencies import not_found_response
 from apps.api.services import publishing_nodes as nodes
 from packages.core import contracts as c
 from packages.core.contracts.state_machines import assert_transition
-from packages.core.storage.database import PublishBatchItemRow, PublishPackageRow
+from packages.core.storage.database import (
+    CaseRow,
+    FinishedVideoRow,
+    PublishBatchItemRow,
+    PublishPackageRow,
+    ScriptVersionRow,
+    WorkflowRunRow,
+)
 from packages.core.storage.object_store import parse_object_uri
-from packages.core.storage.repository import new_id
+from packages.core.storage.repository import Repository, new_id
+from packages.creative.cases.sqlalchemy_learning_mappers import script_version_row_to_contract
+from packages.production.sqlalchemy_mappers import (
+    case_row_to_contract,
+    finished_video_row_to_contract,
+    workflow_run_row_to_contract,
+)
 from packages.core.workflow import NodeExecutionError
 from packages.core.observability import record_funnel_event
 from packages.media.video import FfmpegCommandError
-from packages.publishing import MemoryAccountsRepository, normalize_publish_tags, normalize_scheduled_at, select_adapter
+from packages.publishing import normalize_publish_tags, normalize_scheduled_at, select_adapter
 from packages.publishing.platform_adapter import PublishOutcome, PublishPayload
 from packages.publishing.publish_executor import run_item_publish
 
@@ -98,7 +111,7 @@ def _build_publish_runner(
 ) -> tuple[Callable[[object, object], PublishOutcome], str]:
     adapter = select_adapter(payload.adapter_id)
     runtime_repo = repository(request)
-    target_repo = accounts_repository(request) or MemoryAccountsRepository(runtime_repo)
+    target_repo = accounts_repository(request)
     objects = object_store(request)
     scheduled_at = normalize_scheduled_at(payload.mode, payload.scheduled_at)
 
@@ -531,7 +544,15 @@ def _normalize_disposition(request: Request, package) -> str:
 
 def retry_publish_item(batch_id: str, item_id: str, request: Request) -> c.PublishBatchItemVm | JSONResponse:
     if publishing_repository(request) is not None:
-        return not_found_response("retry-publish is only implemented by the local sandbox adapter")
+        # Re-run the failed item through the resolved publish adapter (小V猫 CDP in
+        # production; sandbox.publish under the test env). The runner is the same one
+        # submit_batch uses, so retry honors targets/video-resolution and only reaches
+        # published when the adapter actually succeeds.
+        runner, _adapter_id = _build_publish_runner(c.SubmitPublishBatchRequest(), request)
+        item = publishing_repository(request).retry_item(batch_id, item_id, publish_runner=runner)
+        if item is None:
+            return not_found_response("Publish item not found")
+        return item
     batch = repository(request).publish_batches.get(batch_id)
     if batch is None:
         return not_found_response("Publish batch not found")
@@ -627,15 +648,97 @@ def _replace_item_in_memory(repo, batch, index: int, updated) -> None:
     repo.publish_batches[batch.id] = batch.model_copy(update={"items": items, "updated_at": c.utcnow()})
 
 
+def _generate_publish_copy_sql(
+    batch_id: str,
+    item_id: str,
+    payload: c.GeneratePublishCopyRequest,
+    request: Request,
+) -> c.PublishCopyResult | JSONResponse:
+    """SQL-backed generate-copy: hydrate the copy context (case + finished video +
+    run + adopted script) from Postgres into a run-state Repository, run the
+    Publishing Copy Node, and persist the derived copy back onto the batch item."""
+    session_factory = getattr(request.app.state, "sqlalchemy_session_factory", None)
+    if session_factory is None:
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Publishing repository is unavailable.")
+    runtime = Repository()
+    with session_factory() as session:
+        item_row = session.scalar(
+            select(PublishBatchItemRow).where(
+                PublishBatchItemRow.batch_id == batch_id,
+                PublishBatchItemRow.id == item_id,
+            )
+        )
+        if item_row is None:
+            return not_found_response("Publish item not found")
+        package_row = session.get(PublishPackageRow, item_row.publish_package_id)
+        if package_row is None:
+            raise NodeExecutionError(c.ErrorCode.artifact_missing, "Publish package is missing.")
+        item = SimpleNamespace(title=item_row.title, description=item_row.description)
+        package = SimpleNamespace(
+            id=package_row.id,
+            case_id=package_row.case_id,
+            source_finished_video_id=package_row.source_finished_video_id,
+        )
+        # Hydrate exactly what resolve_copy_context reads: case (name/description),
+        # the source finished video -> its run -> the case's adopted ScriptVersion.
+        if package_row.case_id:
+            case_row = session.get(CaseRow, package_row.case_id)
+            if case_row is not None:
+                runtime.cases[case_row.id] = case_row_to_contract(case_row)
+            for script_row in session.scalars(
+                select(ScriptVersionRow).where(ScriptVersionRow.case_id == package_row.case_id)
+            ):
+                runtime.scripts[script_row.id] = script_version_row_to_contract(script_row)
+        if package_row.source_finished_video_id:
+            fv_row = session.get(FinishedVideoRow, package_row.source_finished_video_id)
+            if fv_row is not None:
+                runtime.finished_videos[fv_row.id] = finished_video_row_to_contract(fv_row)
+                if fv_row.run_id:
+                    run_row = session.get(WorkflowRunRow, fv_row.run_id)
+                    if run_row is not None:
+                        runtime.runs[run_row.id] = workflow_run_row_to_contract(run_row)
+    copy, source, invocation_id = nodes.run_copy_node(
+        runtime,
+        package,
+        item,
+        title_limit=payload.title_limit,
+        gateway=request.app.state.provider_gateway,
+        prompt_registry=request.app.state.prompt_registry,
+    )
+    with session_factory() as session:
+        item_row = session.scalar(
+            select(PublishBatchItemRow).where(
+                PublishBatchItemRow.batch_id == batch_id,
+                PublishBatchItemRow.id == item_id,
+            )
+        )
+        if item_row is None:
+            return not_found_response("Publish item not found")
+        item_row.publish_content = copy.publish_content
+        item_row.cover_title = copy.cover_title
+        item_row.cover_subtitle = copy.cover_subtitle
+        final_title = item_row.title
+        if payload.overwrite or not item_row.title:
+            item_row.title = copy.title
+            final_title = copy.title
+        item_row.updated_at = c.utcnow()
+        session.commit()
+    return c.PublishCopyResult(
+        title=final_title,
+        publish_content=copy.publish_content,
+        cover_title=copy.cover_title,
+        cover_subtitle=copy.cover_subtitle,
+        source=source,
+        prompt_invocation_id=invocation_id,
+    )
+
+
 def generate_publish_copy(
     batch_id: str, item_id: str, payload: c.GeneratePublishCopyRequest, request: Request
 ) -> c.PublishCopyResult | JSONResponse:
     """Publishing Copy Node endpoint (§28.3 generate-copy)."""
     if publishing_repository(request) is not None:
-        return JSONResponse(
-            status_code=501,
-            content={"detail": "generate-copy is implemented by the local sandbox backend."},
-        )
+        return _generate_publish_copy_sql(batch_id, item_id, payload, request)
     repo = repository(request)
     batch, index, item = _find_item_in_memory(repo, batch_id, item_id)
     if item is None:

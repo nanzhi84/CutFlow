@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from apps.api.common import accounts_repository, repository, request_id, xiaovmao_login_manager
+from apps.api.common import accounts_repository, request_id, xiaovmao_login_manager
 from apps.api.dependencies import not_found_response
 from apps.api.services.publish_accounts import (
     _login_state_for_account,
@@ -20,11 +20,10 @@ from apps.api.services.publish_accounts import (
 from packages.core import contracts as c
 from packages.core.contracts.base import utcnow
 from packages.core.storage.repository import new_id
-from packages.publishing import MemoryAccountsRepository
 
 
 def _repo(request: Request):
-    return accounts_repository(request) or MemoryAccountsRepository(repository(request))
+    return accounts_repository(request)
 
 
 def _is_active_account(account: c.PublishAccount | None) -> bool:

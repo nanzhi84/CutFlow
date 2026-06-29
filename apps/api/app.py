@@ -34,16 +34,14 @@ from apps.api.routers import (
 )
 from packages.ai.gateway import ProviderGateway, SqlAlchemyProviderRepository, SqlAlchemyProviderRuntimeRepository
 from packages.ai.prompts import PromptRegistry, SqlAlchemyPromptRepository, SqlAlchemyPromptRuntimeRepository
-from packages.core.auth import AuthService, create_sqlalchemy_auth_service
+from packages.core.auth import create_sqlalchemy_auth_service
 from packages.core.config import build_settings
 from packages.core.observability import (
     EventStreamTokenStore,
     InProcessFanoutHub,
-    OutboxDispatcher,
     SqlAlchemyOutboxDispatcher,
     configure_logging,
 )
-from packages.core.auth.service import create_password_hasher
 from packages.core.storage import Repository, get_object_store
 from packages.core.storage.bootstrap import (
     bootstrap_sqlalchemy_storage_if_enabled,
@@ -120,6 +118,8 @@ async def lifespan(app: FastAPI):
 
 def configure_app_state(app: FastAPI, *, session_factory=None) -> None:
     app.state.settings = build_settings()
+    if session_factory is None:
+        session_factory = get_sqlalchemy_session_factory_if_enabled()
     runtime_repository = Repository()
     app.state.repository = runtime_repository
     # Publishing-center QR login: 小V猫 CDP manager. Platform sessions live in
@@ -131,62 +131,36 @@ def configure_app_state(app: FastAPI, *, session_factory=None) -> None:
     app.state.event_hub = InProcessFanoutHub(redis_url=app.state.settings.redis_url)
     app.state.event_tokens = EventStreamTokenStore(redis_url=app.state.settings.redis_url)
     app.state.sqlalchemy_session_factory = session_factory
-    if session_factory is None:
-        app.state.outbox_dispatcher = OutboxDispatcher(
-            repository=runtime_repository,
-            hub=app.state.event_hub,
-        )
-    else:
-        app.state.outbox_dispatcher = SqlAlchemyOutboxDispatcher(
-            session_factory=session_factory,
-            hub=app.state.event_hub,
-        )
+    app.state.outbox_dispatcher = SqlAlchemyOutboxDispatcher(
+        session_factory=session_factory,
+        hub=app.state.event_hub,
+    )
     app.state.object_store = get_object_store()
     local_secret_store = LocalSecretStore()
-    app.state.secret_store = local_secret_store
-    if session_factory is None:
-        app.state.sqlalchemy_case_repository = None
-        app.state.sqlalchemy_case_learning_repository = None
-        app.state.sqlalchemy_case_rubric_repository = None
-        app.state.sqlalchemy_upload_repository = None
-        app.state.sqlalchemy_media_repository = None
-        app.state.sqlalchemy_prompt_repository = None
-        app.state.sqlalchemy_provider_repository = None
-        app.state.sqlalchemy_idempotency_repository = None
-        app.state.sqlalchemy_secret_repository = None
-        app.state.sqlalchemy_ops_repository = None
-        app.state.sqlalchemy_publishing_repository = None
-        app.state.sqlalchemy_accounts_repository = None
-        app.state.sqlalchemy_production_repository = None
-        app.state.auth_service = AuthService(runtime_repository, create_password_hasher())
-        provider_reader = None
-        prompt_reader = None
-        budget_guard = None
-    else:
-        app.state.secret_store = SqlAlchemySecretStore(session_factory, fallback=local_secret_store)
-        app.state.sqlalchemy_case_repository = SqlAlchemyCaseRepository(session_factory)
-        app.state.sqlalchemy_case_learning_repository = SqlAlchemyCaseLearningRepository(session_factory)
-        app.state.sqlalchemy_case_rubric_repository = SqlAlchemyCaseRubricRepository(session_factory)
-        app.state.sqlalchemy_upload_repository = SqlAlchemyUploadRepository(session_factory)
-        app.state.sqlalchemy_media_repository = SqlAlchemyMediaRepository(session_factory, app.state.object_store)
-        app.state.sqlalchemy_prompt_repository = SqlAlchemyPromptRepository(session_factory)
-        app.state.sqlalchemy_provider_repository = SqlAlchemyProviderRepository(session_factory)
-        app.state.sqlalchemy_idempotency_repository = SqlAlchemyIdempotencyRepository(session_factory)
-        app.state.sqlalchemy_secret_repository = SqlAlchemySecretRepository(session_factory, app.state.secret_store)
-        app.state.sqlalchemy_ops_repository = SqlAlchemyOpsRepository(session_factory)
-        app.state.sqlalchemy_publishing_repository = SqlAlchemyPublishingRepository(session_factory)
-        app.state.sqlalchemy_accounts_repository = SqlAlchemyAccountsRepository(session_factory)
-        app.state.sqlalchemy_production_repository = SqlAlchemyProductionRepository(session_factory, app.state.object_store)
-        app.state.auth_service = create_sqlalchemy_auth_service(session_factory)
-        provider_reader = SqlAlchemyProviderRuntimeRepository(session_factory)
-        prompt_reader = SqlAlchemyPromptRuntimeRepository(session_factory)
-        budget_guard = BudgetEnforcementGuard(app.state.sqlalchemy_ops_repository)
+    app.state.secret_store = SqlAlchemySecretStore(session_factory, fallback=local_secret_store)
+    app.state.sqlalchemy_case_repository = SqlAlchemyCaseRepository(session_factory)
+    app.state.sqlalchemy_case_learning_repository = SqlAlchemyCaseLearningRepository(session_factory)
+    app.state.sqlalchemy_case_rubric_repository = SqlAlchemyCaseRubricRepository(session_factory)
+    app.state.sqlalchemy_upload_repository = SqlAlchemyUploadRepository(session_factory)
+    app.state.sqlalchemy_media_repository = SqlAlchemyMediaRepository(session_factory, app.state.object_store)
+    app.state.sqlalchemy_prompt_repository = SqlAlchemyPromptRepository(session_factory)
+    app.state.sqlalchemy_provider_repository = SqlAlchemyProviderRepository(session_factory)
+    app.state.sqlalchemy_idempotency_repository = SqlAlchemyIdempotencyRepository(session_factory)
+    app.state.sqlalchemy_secret_repository = SqlAlchemySecretRepository(session_factory, app.state.secret_store)
+    app.state.sqlalchemy_ops_repository = SqlAlchemyOpsRepository(session_factory)
+    app.state.sqlalchemy_publishing_repository = SqlAlchemyPublishingRepository(session_factory)
+    app.state.sqlalchemy_accounts_repository = SqlAlchemyAccountsRepository(session_factory)
+    app.state.sqlalchemy_production_repository = SqlAlchemyProductionRepository(session_factory, app.state.object_store)
+    app.state.auth_service = create_sqlalchemy_auth_service(session_factory)
+    provider_reader = SqlAlchemyProviderRuntimeRepository(session_factory)
+    prompt_reader = SqlAlchemyPromptRuntimeRepository(session_factory)
+    budget_guard = BudgetEnforcementGuard(app.state.sqlalchemy_ops_repository)
     app.state.provider_gateway = ProviderGateway(
         runtime_repository,
         provider_reader=provider_reader,
         secret_store=app.state.secret_store,
         budget_guard=budget_guard,
-        circuit_breaker=ProviderCircuitBreaker(session_factory) if session_factory is not None else None,
+        circuit_breaker=ProviderCircuitBreaker(session_factory),
     )
     app.state.prompt_registry = PromptRegistry(runtime_repository, prompt_reader=prompt_reader)
     app.state.workflow_runtime_settings = load_workflow_runtime_settings()

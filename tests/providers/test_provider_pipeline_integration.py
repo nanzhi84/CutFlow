@@ -4,14 +4,18 @@ from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
 from packages.ai.gateway.provider_gateway import ProviderCall, ProviderResult
+from sqlalchemy import select
+
 from packages.core.contracts import (
     ArtifactKind,
+    CreateProviderProfileRequest,
     ProviderOptionsSchemaRef,
     ProviderProfile,
     UploadSession,
     UploadStatus,
     UploadKind,
 )
+from packages.core.storage.database import ArtifactRow, MediaAssetRow
 from packages.core.storage.repository import Repository
 from packages.media.annotation import bgm as bgm_annotation
 from packages.media.assets import store_file
@@ -35,6 +39,25 @@ def _profile(provider_id: str, capability: str, model_id: str) -> ProviderProfil
         display_name=f"{provider_id} default",
         environment="local",
         options_schema_ref=ProviderOptionsSchemaRef(schema_id=f"provider.{capability}.options"),
+    )
+
+
+def _arm_profile(active_client, provider_id: str, capability: str, model_id: str) -> ProviderProfile:
+    """Persist a real provider profile in Postgres and return it.
+
+    Capability-based resolution (``first_available`` / ``list_profiles`` for ASR,
+    VLM, audio.understanding, voice clone) reads the gateway's SQL provider_reader,
+    not the in-memory run-state repository, so these profiles must live in the DB.
+    """
+    return active_client.app.state.sqlalchemy_provider_repository.create_profile(
+        CreateProviderProfileRequest(
+            provider_id=provider_id,
+            model_id=model_id,
+            capability=capability,
+            display_name=f"{provider_id} default",
+            environment="local",
+            options_schema_ref=ProviderOptionsSchemaRef(schema_id=f"provider.{capability}.options"),
+        )
     )
 
 
@@ -159,8 +182,11 @@ class FakeVLMProvider:
 class FakeVoiceBuildProvider:
     provider_id = "fake.voice"
 
-    def __init__(self, repository: Repository, object_store, source_audio) -> None:
-        self.repository = repository
+    def __init__(self, upload_repo, object_store, source_audio) -> None:
+        # ``upload_repo`` is the SQLAlchemy upload repository: the preview artifact
+        # must be persisted in Postgres because the cloned voice row carries a FK to
+        # ``artifacts.id`` (preview_artifact_id).
+        self.upload_repo = upload_repo
         self.object_store = object_store
         self.source_audio = source_audio
         self.operations: list[str] = []
@@ -172,7 +198,7 @@ class FakeVoiceBuildProvider:
             self.object_store, self.source_audio, purpose=f"fake-{operation}-preview"
         )
         media_info = probe_media(self.source_audio)
-        artifact = self.repository.create_artifact(
+        artifact = self.upload_repo.create_artifact(
             kind=ArtifactKind.audio_tts,
             payload_schema="VoicePreviewArtifact.v1",
             payload={"operation": operation},
@@ -246,8 +272,7 @@ def test_strict_alignment_uses_available_asr_provider(media_fixture_factory):
         _login_admin(client)
         repository = client.app.state.repository
         client.app.state.provider_gateway.register(FakeASRProvider())
-        profile = _profile("fake.asr", "asr.transcribe", "fake-asr")
-        repository.provider_profiles[profile.id] = profile
+        _arm_profile(client, "fake.asr", "asr.transcribe", "fake-asr")
 
         response = client.post(
             "/api/jobs/digital-human-video",
@@ -283,14 +308,17 @@ def test_annotation_rerun_degrades_without_source_video():
     the V4 schema (meta/clips/usage_windows), not a thin labels dict."""
     with TestClient(create_app()) as client:
         _login_admin(client)
-        repository = client.app.state.repository
         client.app.state.provider_gateway.register(FakeVLMProvider())
-        profile = _profile("fake.vlm", "vlm.annotation", "fake-vlm")
-        repository.provider_profiles[profile.id] = profile
+        profile = _arm_profile(client, "fake.vlm", "vlm.annotation", "fake-vlm")
         asset_id = "asset_broll_demo"
-        repository.media_assets[asset_id] = repository.media_assets[asset_id].model_copy(
-            update={"annotation_status": "pending", "usable": True, "source_artifact_id": None}
-        )
+        # Strip the seeded source artifact in Postgres so the gated runner sees a
+        # videoless asset and degrades (vlm_unconfigured) instead of burning a paid call.
+        with client.app.state.sqlalchemy_session_factory() as session:
+            asset_row = session.get(MediaAssetRow, asset_id)
+            asset_row.source_artifact_id = None
+            asset_row.annotation_status = "pending"
+            asset_row.usable = True
+            session.commit()
 
         rerun = client.post(
             f"/api/annotations/{asset_id}/rerun",
@@ -311,11 +339,17 @@ def test_annotation_rerun_degrades_without_source_video():
         # contract enum (pending/annotated/annotation_failed). The precise
         # "unconfigured" reason lives in quality_report (asserted above) and the
         # projection's vlm_configured flag -- not in this typed field.
-        assert repository.media_assets[asset_id].annotation_status == "annotation_failed"
+        detail = client.get(f"/api/media/assets/{asset_id}")
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["asset"]["annotation_status"] == "annotation_failed"
         # A persisted AnnotationV4 artifact must exist for the asset's case.
-        assert any(
-            art.kind == ArtifactKind.material_annotation for art in repository.artifacts.values()
-        )
+        with client.app.state.sqlalchemy_session_factory() as session:
+            annotations = session.scalars(
+                select(ArtifactRow).where(
+                    ArtifactRow.kind == ArtifactKind.material_annotation.value
+                )
+            ).all()
+        assert annotations
 
 
 class FakeBgmOmniProvider:
@@ -374,17 +408,19 @@ def test_bgm_annotation_rerun_uses_audio_path_and_omni_semantics(monkeypatch):
         lambda request, path: lambda start, end: "https://fake.local/clip.mp3",
     )
     # Pin a known duration so the window stays in-bounds regardless of the demo seed.
+    # The SQLAlchemy BGM annotation path reads the duration from the media repo
+    # (asset_source_duration), so pin that source (the in-memory _asset_duration is
+    # no longer on this code path).
     monkeypatch.setattr(
-        "apps.api.services.asset_annotation._asset_duration", lambda repo, asset: 30.0
+        "packages.media.sqlalchemy_repository.SqlAlchemyMediaRepository.asset_source_duration",
+        lambda self, asset_id: 30.0,
     )
     with TestClient(create_app()) as client:
         _login_admin(client)
-        repository = client.app.state.repository
         client.app.state.provider_gateway.register(FakeBgmOmniProvider())
-        profile = _profile("fake.bgmomni", "audio.understanding", "qwen3.5-omni-plus")
-        repository.provider_profiles[profile.id] = profile
+        profile = _arm_profile(client, "fake.bgmomni", "audio.understanding", "qwen3.5-omni-plus")
         asset_id = "asset_bgm_demo"
-        assert repository.media_assets[asset_id].kind == "bgm"
+        assert client.get(f"/api/media/assets/{asset_id}").json()["asset"]["kind"] == "bgm"
 
         rerun = client.post(
             f"/api/annotations/{asset_id}/rerun",
@@ -413,11 +449,16 @@ def test_bgm_annotation_rerun_uses_audio_path_and_omni_semantics(monkeypatch):
         assert body["projection"]["bgm_segments"]
         assert body["projection"]["usable"] is True
         # asset is annotated + usable so it becomes an eligible BGM candidate
-        assert repository.media_assets[asset_id].annotation_status == "annotated"
-        assert repository.media_assets[asset_id].usable is True
-        assert any(
-            art.kind == ArtifactKind.material_annotation for art in repository.artifacts.values()
-        )
+        asset_detail = client.get(f"/api/media/assets/{asset_id}").json()["asset"]
+        assert asset_detail["annotation_status"] == "annotated"
+        assert asset_detail["usable"] is True
+        with client.app.state.sqlalchemy_session_factory() as session:
+            annotations = session.scalars(
+                select(ArtifactRow).where(
+                    ArtifactRow.kind == ArtifactKind.material_annotation.value
+                )
+            ).all()
+        assert annotations
 
 
 def test_bgm_annotation_rerun_degrades_when_features_unavailable(monkeypatch):
@@ -427,7 +468,6 @@ def test_bgm_annotation_rerun_degrades_when_features_unavailable(monkeypatch):
 
     with TestClient(create_app()) as client:
         _login_admin(client)
-        repository = client.app.state.repository
         asset_id = "asset_bgm_demo"
 
         rerun = client.post(f"/api/annotations/{asset_id}/rerun", json={"force": True})
@@ -441,7 +481,10 @@ def test_bgm_annotation_rerun_degrades_when_features_unavailable(monkeypatch):
         bgm_report = canonical["quality_report"]["bgm"]
         assert bgm_report["status"] == "features_unavailable"
         assert bgm_report.get("mood") in (None, "")
-        assert repository.media_assets[asset_id].annotation_status == "annotation_failed"
+        assert (
+            client.get(f"/api/media/assets/{asset_id}").json()["asset"]["annotation_status"]
+            == "annotation_failed"
+        )
 
 
 def test_voice_preview_uses_tts_provider_artifact(media_fixture_factory):
@@ -470,22 +513,22 @@ def test_voice_preview_uses_tts_provider_artifact(media_fixture_factory):
 def test_voice_clone_uses_provider_voice_id_and_preview(media_fixture_factory):
     with TestClient(create_app()) as client:
         _login_admin(client)
-        repository = client.app.state.repository
         provider = FakeVoiceBuildProvider(
-            repository,
+            client.app.state.sqlalchemy_upload_repository,
             client.app.state.object_store,
             media_fixture_factory.audio(duration_sec=1.0, filename="voice-clone-preview.wav"),
         )
         client.app.state.provider_gateway.register(provider)
-        profile = _profile("fake.voice", "tts.speech", "fake-voice")
-        repository.provider_profiles[profile.id] = profile
-        repository.uploads["upl_voice_ref"] = UploadSession(
-            id="upl_voice_ref",
-            kind=UploadKind.voice_reference,
-            filename="voice-ref.wav",
-            content_type="audio/wav",
-            size_bytes=100,
-            status=UploadStatus.completed,
+        profile = _arm_profile(client, "fake.voice", "tts.speech", "fake-voice")
+        client.app.state.sqlalchemy_upload_repository.create_upload(
+            UploadSession(
+                id="upl_voice_ref",
+                kind=UploadKind.voice_reference,
+                filename="voice-ref.wav",
+                content_type="audio/wav",
+                size_bytes=100,
+                status=UploadStatus.completed,
+            )
         )
 
         response = client.post(

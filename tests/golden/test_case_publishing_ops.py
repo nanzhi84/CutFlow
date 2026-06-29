@@ -1,11 +1,31 @@
 from fastapi.testclient import TestClient
 import hashlib
+from contextlib import contextmanager
 
 from apps.api.app import create_app
-from apps.api.main import app
 
 
-client = TestClient(app)
+@contextmanager
+def fresh_client():
+    """A per-test app/client whose SQLAlchemy engine is disposed on exit.
+
+    Each test gets its own in-memory workflow ``runtime_repository`` (aligned with
+    the per-test SQL reset) and releases its connection pool before teardown
+    TRUNCATEs the database, so a long golden run never deadlocks against it.
+    """
+    app = create_app()
+    # Do NOT enter the TestClient lifespan: app.state is fully configured at build
+    # time. Entering would re-run bootstrap_sqlalchemy_storage (a full seed_database
+    # merge over users/registration_codes/provider_profiles/media_assets) on every
+    # test, contending on exactly the tables the conftest teardown TRUNCATEs and
+    # deadlocking under a long golden run. Skipping it also avoids extra engine churn.
+    active_client = TestClient(app)
+    try:
+        yield active_client
+    finally:
+        engine = app.state.sqlalchemy_session_factory.kw.get("bind")
+        if engine is not None:
+            engine.dispose()
 
 
 def login_admin_for(active_client):
@@ -79,46 +99,47 @@ def upload_cover_artifact(active_client) -> str:
 
 
 def test_case_publish_flow_reaches_ops_dashboard():
-    login = client.post(
-        "/api/auth/login",
-        json={"email": "admin@local.cutagent", "password": "local-admin"},
-    )
-    assert login.status_code == 200, login.text
-
-    videos = client.get("/api/cases/case_demo/finished-videos").json()["items"]
-    if not videos:
-        client.post(
-            "/api/jobs/digital-human-video",
-            json={
-                "case_id": "case_demo",
-                "title": "Publishing seed",
-                "script": "用一个简短脚本补齐发布测试。",
-                "voice": {"voice_id": "voice_sandbox"},
-                "portrait": {"template_mode": "agent"},
-                "strictness": {"strict_timestamps": False},
-            },
+    with fresh_client() as client:
+        login = client.post(
+            "/api/auth/login",
+            json={"email": "admin@local.cutagent", "password": "local-admin"},
         )
-        videos = client.get("/api/cases/case_demo/finished-videos").json()["items"]
-    package = client.post(
-        "/api/publish/packages",
-        json={"source_finished_video_id": videos[-1]["id"], "title": "Publish me", "description": ""},
-    ).json()
-    batch = client.post(
-        "/api/publish/batches",
-        json={"publish_package_ids": [package["id"]], "platform_targets": ["douyin"]},
-    ).json()
-    submitted = client.post(f"/api/publish/batches/{batch['id']}/submit", json={"dry_run": False}).json()
-    assert submitted["status"] == "completed"
-    assert submitted["items"][0]["status"] == "published"
+        assert login.status_code == 200, login.text
 
-    ops = client.get("/api/ops/dashboard").json()
-    assert "usage" in ops
-    assert "yield_funnel" in ops
+        videos = client.get("/api/cases/case_demo/finished-videos").json()["items"]
+        if not videos:
+            client.post(
+                "/api/jobs/digital-human-video",
+                json={
+                    "case_id": "case_demo",
+                    "title": "Publishing seed",
+                    "script": "用一个简短脚本补齐发布测试。",
+                    "voice": {"voice_id": "voice_sandbox"},
+                    "portrait": {"template_mode": "agent"},
+                    "strictness": {"strict_timestamps": False},
+                },
+            )
+            videos = client.get("/api/cases/case_demo/finished-videos").json()["items"]
+        package = client.post(
+            "/api/publish/packages",
+            json={"source_finished_video_id": videos[-1]["id"], "title": "Publish me", "description": ""},
+        ).json()
+        batch = client.post(
+            "/api/publish/batches",
+            json={"publish_package_ids": [package["id"]], "platform_targets": ["douyin"]},
+        ).json()
+        submitted = client.post(f"/api/publish/batches/{batch['id']}/submit", json={"dry_run": False}).json()
+        assert submitted["status"] == "completed"
+        assert submitted["items"][0]["status"] == "published"
+
+        ops = client.get("/api/ops/dashboard").json()
+        assert "usage" in ops
+        assert "yield_funnel" in ops
 
 
 def test_spec_20_2_12_publish_failure_can_retry_publish_successfully():
     """Spec 20.2 #12: sandbox publish failure can be retried through retry-publish."""
-    with TestClient(create_app()) as active_client:
+    with fresh_client() as active_client:
         login_admin_for(active_client)
         finished_video_id = create_finished_video(active_client, "Retry publish seed")
         batch = create_publish_batch(active_client, finished_video_id)
@@ -141,7 +162,7 @@ def test_spec_20_2_12_publish_failure_can_retry_publish_successfully():
 
 
 def test_publish_package_cover_can_be_uploaded_and_cleared():
-    with TestClient(create_app()) as active_client:
+    with fresh_client() as active_client:
         login_admin_for(active_client)
         finished_video_id = create_finished_video(active_client, "Cover upload seed")
         package = active_client.post(
@@ -167,7 +188,7 @@ def test_publish_package_cover_can_be_uploaded_and_cleared():
 
 
 def test_publish_batch_can_be_deleted_from_recent_list():
-    with TestClient(create_app()) as active_client:
+    with fresh_client() as active_client:
         login_admin_for(active_client)
         finished_video_id = create_finished_video(active_client, "Delete batch seed")
         batch = create_publish_batch(active_client, finished_video_id)
@@ -181,7 +202,7 @@ def test_publish_batch_can_be_deleted_from_recent_list():
 
 
 def test_publish_batch_item_can_be_deleted_before_submit():
-    with TestClient(create_app()) as active_client:
+    with fresh_client() as active_client:
         login_admin_for(active_client)
         finished_video_id = create_finished_video(active_client, "Delete item seed")
         batch = create_publish_batch(active_client, finished_video_id)
@@ -197,7 +218,7 @@ def test_publish_batch_item_can_be_deleted_before_submit():
 
 
 def test_publish_attempts_can_be_listed_by_batch():
-    with TestClient(create_app()) as active_client:
+    with fresh_client() as active_client:
         login_admin_for(active_client)
         finished_video_id = create_finished_video(active_client, "Attempt list seed")
         batch = create_publish_batch(active_client, finished_video_id)
@@ -249,7 +270,7 @@ def test_yield_funnel_records_full_lifecycle_stages():
     the bare §9.5 spec strings (submitted/admitted/started/node_*/published/...),
     and a manual approval surfaces manual_approved.
     """
-    with TestClient(create_app()) as active_client:
+    with fresh_client() as active_client:
         login_admin_for(active_client)
         finished_video_id = create_finished_video(active_client, "Funnel coverage seed")
         run_id = _finished_video(active_client, finished_video_id)["run_id"]
@@ -300,7 +321,7 @@ def test_yield_funnel_records_full_lifecycle_stages():
 
 def test_yield_funnel_records_publish_failure_stage():
     """G3: a simulated publish failure surfaces publish_failed."""
-    with TestClient(create_app()) as active_client:
+    with fresh_client() as active_client:
         login_admin_for(active_client)
         finished_video_id = create_finished_video(active_client, "Funnel failure seed")
         batch = create_publish_batch(active_client, finished_video_id)
@@ -321,7 +342,7 @@ def test_true_yield_rate_is_run_scoped_and_excludes_qc_failed_run():
     """G3 / §9.5: true_yield_rate counts DISTINCT runs that reached ``published``
     and were not ``qc_failed`` — NOT successes/total_events. A qc_failed run is
     excluded even though it published, so a single run that qc-fails yields 0.0."""
-    with TestClient(create_app()) as active_client:
+    with fresh_client() as active_client:
         login_admin_for(active_client)
         finished_video_id = create_finished_video(active_client, "True yield qc-fail seed")
         run_id = _finished_video(active_client, finished_video_id)["run_id"]
@@ -354,7 +375,7 @@ def test_true_yield_rate_is_run_scoped_and_excludes_qc_failed_run():
 
 def test_yield_funnel_records_manual_rejected_stage():
     """G3 / §9.5: a manual rejection surfaces manual_rejected."""
-    with TestClient(create_app()) as active_client:
+    with fresh_client() as active_client:
         login_admin_for(active_client)
         rejected = active_client.post(
             "/api/approval-requests/ar_funnel_reject/reject", json={"reason": "off-brand"}

@@ -21,23 +21,59 @@ from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
 from packages.core import contracts as c
+from packages.core.auth.sqlalchemy_service import hash_session_token
+from packages.core.storage.database import SessionRow, UserGenerationDefaultsRow, UserRow
 from packages.core.storage.repository import new_id
 
 SESSION_COOKIE = "cutagent_session"
 
 
 def _make_user(app, *, role: c.UserRole) -> tuple[c.AuthUser, str]:
-    repo = app.state.repository
+    """Create a real user + session row in Postgres and return its session token
+    (the cookie value). Auth reads the SQL ``users``/``sessions`` tables."""
     user = c.AuthUser(
         id=new_id("usr"),
         email=f"{new_id('u')}@local.test",
         display_name="Batch User",
         role=role,
     )
-    repo.users[user.id] = user
     token = new_id("sess")
-    repo.sessions[token] = {"user_id": user.id, "expires_at": c.utcnow() + timedelta(days=7)}
+    with app.state.sqlalchemy_session_factory() as session:
+        session.add(
+            UserRow(
+                id=user.id,
+                email=user.email,
+                display_name=user.display_name,
+                password_hash="unused-session-auth",
+                role=role.value,
+                status="active",
+            )
+        )
+        session.flush()
+        session.add(
+            SessionRow(
+                id=hash_session_token(token),
+                user_id=user.id,
+                expires_at=c.utcnow() + timedelta(days=7),
+            )
+        )
+        session.commit()
     return user, token
+
+
+def _save_generation_defaults(app, user_id: str, defaults: c.UserGenerationDefaults) -> None:
+    """Persist a user's saved generation defaults into Postgres so the batch
+    endpoint's ``use_my_defaults`` merge reads them from the SQL backend."""
+    with app.state.sqlalchemy_session_factory() as session:
+        session.add(
+            UserGenerationDefaultsRow(
+                id=new_id("ugd"),
+                user_id=user_id,
+                preset_name="default",
+                settings=defaults.model_dump(mode="json"),
+            )
+        )
+        session.commit()
 
 
 def _cookie(client: TestClient, token: str) -> None:
@@ -93,9 +129,13 @@ def test_batch_merge_precedence_overrides_over_defaults_over_system() -> None:
         _admin, token = _make_user(app, role=c.UserRole.operator)
         _cookie(client, token)
         # Save my defaults: a custom voice + custom output width.
-        app.state.repository.generation_defaults[_admin.id] = c.UserGenerationDefaults(
-            voice=c.VoiceOptions(voice_id="voice_my_default", speed=1.5),
-            output=c.OutputOptions(width=720, height=1280, fps=24),
+        _save_generation_defaults(
+            app,
+            _admin.id,
+            c.UserGenerationDefaults(
+                voice=c.VoiceOptions(voice_id="voice_my_default", speed=1.5),
+                output=c.OutputOptions(width=720, height=1280, fps=24),
+            ),
         )
         resp = client.post(
             "/api/jobs/digital-human-video/batch",

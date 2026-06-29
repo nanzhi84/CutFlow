@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import os
 
 import anyio
 import pytest
 from sqlalchemy import select
 
-if os.getenv("CUTAGENT_RUN_DB_TESTS") != "1":
-    pytest.skip("Set CUTAGENT_RUN_DB_TESTS=1 to run database integration tests.", allow_module_level=True)
 
 from packages.core.contracts import utcnow
 from packages.core.observability.events import (

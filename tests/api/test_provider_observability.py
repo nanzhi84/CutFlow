@@ -6,10 +6,10 @@ from apps.api.app import create_app
 from packages.core.contracts import (
     Money,
     ProviderBalanceSnapshot,
-    ProviderInvocation,
     ProviderStatus,
     utcnow,
 )
+from packages.core.storage.database import ProviderInvocationRow
 
 
 def login_admin(client: TestClient) -> None:
@@ -42,7 +42,7 @@ def test_provider_balances_reads_snapshots_instead_of_mock_values():
             status="ok",
             checked_at=utcnow(),
         )
-        app.state.repository.provider_balance_snapshots[snapshot.id] = snapshot
+        app.state.sqlalchemy_provider_repository.upsert_balance_snapshot(snapshot)
         login_admin(client)
         response = client.get("/api/providers/balances", params={"provider_id": "deepseek"})
 
@@ -50,7 +50,8 @@ def test_provider_balances_reads_snapshots_instead_of_mock_values():
     body = response.json()
     assert body["status"] == "ok"
     assert body["items"][0]["provider_id"] == "deepseek"
-    assert body["items"][0]["balance"]["amount"] == "42.5"
+    # SQL Numeric(20,6) renders 42.5 as "42.500000"; assert the value, not the form.
+    assert Decimal(body["items"][0]["balance"]["amount"]) == Decimal("42.5")
     assert body["items"][0]["quota_remaining"] == 10
 
 
@@ -108,7 +109,7 @@ def test_provider_balances_coalesces_shared_cloud_account_snapshots():
             ),
         ]
         for snapshot in snapshots:
-            app.state.repository.provider_balance_snapshots[snapshot.id] = snapshot
+            app.state.sqlalchemy_provider_repository.upsert_balance_snapshot(snapshot)
         login_admin(client)
         response = client.get("/api/providers/balances")
 
@@ -118,8 +119,9 @@ def test_provider_balances_coalesces_shared_cloud_account_snapshots():
         ("aliyun.billing", "aliyun.shared"),
         ("volcengine.billing", "volcengine.shared"),
     ]
-    assert items[0]["balance"]["amount"] == "113.24"
-    assert items[1]["balance"]["amount"] == "39.24"
+    # SQL Numeric(20,6) renders these as "113.240000"/"39.240000"; assert the value.
+    assert Decimal(items[0]["balance"]["amount"]) == Decimal("113.24")
+    assert Decimal(items[1]["balance"]["amount"]) == Decimal("39.24")
 
 
 def test_provider_balances_without_snapshots_returns_pending_empty_report():
@@ -154,36 +156,46 @@ def test_provider_usage_metrics_groups_invocations_by_provider_capability_and_mo
 
     with TestClient(app) as client:
         now = utcnow()
-        app.state.repository.provider_invocations["pinv_1"] = ProviderInvocation(
-            id="pinv_1",
-            provider_id="deepseek",
-            model_id="deepseek-chat",
-            provider_profile_id="deepseek.prod",
-            capability_id="llm.chat",
-            status=ProviderStatus.succeeded,
-            estimated_cost=Money(amount=Decimal("0.10"), currency="CNY"),
-            started_at=now,
-        )
-        app.state.repository.provider_invocations["pinv_2"] = ProviderInvocation(
-            id="pinv_2",
-            provider_id="deepseek",
-            model_id="deepseek-chat",
-            provider_profile_id="deepseek.prod",
-            capability_id="llm.chat",
-            status=ProviderStatus.failed,
-            estimated_cost=Money(amount=Decimal("0.05"), currency="CNY"),
-            started_at=now,
-        )
-        app.state.repository.provider_invocations["pinv_3"] = ProviderInvocation(
-            id="pinv_3",
-            provider_id="kimi",
-            model_id="moonshot-v1",
-            provider_profile_id="kimi.prod",
-            capability_id="llm.chat",
-            status=ProviderStatus.succeeded,
-            estimated_cost=Money(amount=Decimal("0.20"), currency="CNY"),
-            started_at=now,
-        )
+        # Persist the invocations in Postgres so the SQL ops repo's usage-metrics
+        # GROUP BY reads them (the in-memory runtime repo is no longer a storage
+        # backend). estimated_cost is the JSONB-serialized Money the SQL aggregate
+        # casts + sums.
+        with app.state.sqlalchemy_session_factory() as session:
+            session.add_all(
+                [
+                    ProviderInvocationRow(
+                        id="pinv_1",
+                        provider_id="deepseek",
+                        model_id="deepseek-chat",
+                        provider_profile_id="deepseek.prod",
+                        capability_id="llm.chat",
+                        status=ProviderStatus.succeeded.value,
+                        estimated_cost=Money(amount=Decimal("0.10"), currency="CNY").model_dump(mode="json"),
+                        started_at=now,
+                    ),
+                    ProviderInvocationRow(
+                        id="pinv_2",
+                        provider_id="deepseek",
+                        model_id="deepseek-chat",
+                        provider_profile_id="deepseek.prod",
+                        capability_id="llm.chat",
+                        status=ProviderStatus.failed.value,
+                        estimated_cost=Money(amount=Decimal("0.05"), currency="CNY").model_dump(mode="json"),
+                        started_at=now,
+                    ),
+                    ProviderInvocationRow(
+                        id="pinv_3",
+                        provider_id="kimi",
+                        model_id="moonshot-v1",
+                        provider_profile_id="kimi.prod",
+                        capability_id="llm.chat",
+                        status=ProviderStatus.succeeded.value,
+                        estimated_cost=Money(amount=Decimal("0.20"), currency="CNY").model_dump(mode="json"),
+                        started_at=now,
+                    ),
+                ]
+            )
+            session.commit()
         login_admin(client)
         response = client.get("/api/ops/provider-usage-metrics", params={"window_hours": 24})
 
@@ -195,5 +207,7 @@ def test_provider_usage_metrics_groups_invocations_by_provider_capability_and_mo
     assert deepseek["calls"] == 2
     assert deepseek["success_count"] == 1
     assert deepseek["success_rate"] == 0.5
-    assert deepseek["estimated_cost"]["amount"] == "0.15"
+    # SQL Numeric(20,6) aggregate renders 0.15 as "0.150000"; assert the value, not
+    # the in-memory string form, so the business meaning (0.15 CNY) is unchanged.
+    assert Decimal(deepseek["estimated_cost"]["amount"]) == Decimal("0.15")
     assert body["window_hours"] == 24

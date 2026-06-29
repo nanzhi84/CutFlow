@@ -438,6 +438,138 @@ class SqlAlchemyPublishingRepository(BaseRepository):
         persist_funnel_event_rows(self.session_factory, funnel_events)
         return result
 
+    def retry_item(
+        self,
+        batch_id: str,
+        item_id: str,
+        *,
+        publish_runner: Callable[[object, object], PublishOutcome],
+    ) -> PublishBatchItemVm | None:
+        """Re-publish a single ``publish_failed`` item through the resolved adapter.
+
+        Mirrors ``submit_batch`` for one item: re-runs the publish adapter and only
+        advances the item to ``published`` when the adapter actually reports success
+        (never hard-coded). A successful retry lifts a ``partial_failed`` batch back to
+        ``publishing`` and to ``completed`` once every item has published, records a
+        ``PublishAttempt`` + ``PublishRecord``, and stages the §9.5 publish funnel
+        events (``publish_started`` + ``published``) persisted after commit.
+        """
+        with self.session_factory() as session:
+            batch = session.get(PublishBatchRow, batch_id)
+            if batch is None:
+                return None
+            item = session.get(PublishBatchItemRow, item_id)
+            if item is None or item.batch_id != batch_id:
+                return None
+            if item.status != "publish_failed":
+                raise NodeExecutionError(
+                    ErrorCode.validation_invalid_options,
+                    "Publish item is not failed.",
+                )
+            package = session.get(PublishPackageRow, item.publish_package_id)
+            outcome = publish_runner(item, package)
+            if not outcome.success:
+                raise NodeExecutionError(
+                    ErrorCode.validation_invalid_options,
+                    outcome.error_message or "Retry publish failed.",
+                )
+
+            assert_transition("publish_item", item.status, "publishing")
+            assert_transition("publish_item", "publishing", "published")
+            item.status = "published"
+            item.updated_at = utcnow()
+
+            if package is not None and package.case_id:
+                version = None
+                if package.source_finished_video_id:
+                    version = session.scalar(
+                        select(VideoVersionRow)
+                        .where(VideoVersionRow.finished_video_id == package.source_finished_video_id)
+                        .order_by(VideoVersionRow.updated_at.desc())
+                        .limit(1)
+                    )
+                cover_ref = (
+                    ArtifactRef.model_validate(package.cover_artifact) if package.cover_artifact else None
+                )
+                record_cover_id = item.cover_artifact_id or (cover_ref.artifact_id if cover_ref else None)
+                session.add(
+                    PublishRecordRow(
+                        id=new_id("pub_record"),
+                        case_id=package.case_id,
+                        video_version_id=version.id if version else None,
+                        publish_package_id=package.id,
+                        publish_batch_id=batch.id,
+                        platform=item.platform,
+                        status="published",
+                        cover_artifact_id=record_cover_id,
+                        published_at=utcnow(),
+                    )
+                )
+
+            attempt_id = new_id("pub_attempt")
+            attempt_time = utcnow()
+            assert_transition("publish_attempt", "created", "published")
+            session.add(
+                PublishAttemptRow(
+                    id=attempt_id,
+                    batch_id=batch.id,
+                    item_id=item.id,
+                    platforms=[item.platform],
+                    manual_review=False,
+                    status="published",
+                    adapter_id=outcome.adapter_id,
+                    external_task_id=outcome.external_task_id,
+                    results=list(outcome.results) if outcome.results else [{"retry": True}],
+                    error=None,
+                    finished_at=attempt_time,
+                )
+            )
+
+            all_items = list(
+                session.scalars(
+                    select(PublishBatchItemRow).where(PublishBatchItemRow.batch_id == batch_id)
+                )
+            )
+            if batch.status == "partial_failed":
+                assert_transition("publish_batch", batch.status, "publishing")
+                batch.status = "publishing"
+            if batch.status == "publishing" and all(
+                existing.status == "published" for existing in all_items
+            ):
+                assert_transition("publish_batch", batch.status, "completed")
+                batch.status = "completed"
+            batch.updated_at = utcnow()
+
+            run_id = job_id = case_id = None
+            finished_video_id = package.source_finished_video_id if package else None
+            if finished_video_id:
+                finished = session.get(FinishedVideoRow, finished_video_id)
+                if finished is not None:
+                    case_id = finished.case_id
+                    run_id = finished.run_id
+                    if run_id:
+                        run = session.get(WorkflowRunRow, run_id)
+                        job_id = getattr(run, "job_id", None) if run else None
+            if case_id is None and package is not None:
+                case_id = package.case_id
+            base_event = {
+                "job_id": job_id,
+                "run_id": run_id,
+                "case_id": case_id,
+                "publish_package_id": package.id if package else None,
+                "publish_attempt_id": attempt_id,
+                "event_time": attempt_time,
+            }
+            funnel_events = [
+                {**base_event, "event_type": "publish_started", "dedupe_key": f"{attempt_id}:publish_started"},
+                {**base_event, "event_type": "published", "dedupe_key": f"{attempt_id}:published"},
+            ]
+            session.commit()
+            session.refresh(item)
+            result = publish_item_row_to_contract(item)
+        persist_funnel_event_rows(self.session_factory, funnel_events)
+        return result
+
     def patch_item(self, item_id: str, payload: PatchPublishItemRequest) -> PublishBatchItemVm | None:
         with self.session_factory() as session:
             row = session.get(PublishBatchItemRow, item_id)

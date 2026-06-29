@@ -37,24 +37,16 @@ async def async_main() -> None:
     session_factory = get_sqlalchemy_session_factory_if_enabled()
     runtime_repository = Repository()
     local_secret_store = LocalSecretStore()
-    secret_store = (
-        SqlAlchemySecretStore(session_factory, fallback=local_secret_store)
-        if session_factory is not None
-        else local_secret_store
-    )
-    provider_reader = (
-        SqlAlchemyProviderRuntimeRepository(session_factory) if session_factory is not None else None
-    )
-    prompt_reader = (
-        SqlAlchemyPromptRuntimeRepository(session_factory) if session_factory is not None else None
-    )
-    ops_repository = SqlAlchemyOpsRepository(session_factory) if session_factory is not None else None
+    secret_store = SqlAlchemySecretStore(session_factory, fallback=local_secret_store)
+    provider_reader = SqlAlchemyProviderRuntimeRepository(session_factory)
+    prompt_reader = SqlAlchemyPromptRuntimeRepository(session_factory)
+    ops_repository = SqlAlchemyOpsRepository(session_factory)
     provider_gateway = ProviderGateway(
         runtime_repository,
         provider_reader=provider_reader,
         secret_store=secret_store,
-        budget_guard=BudgetEnforcementGuard(ops_repository) if ops_repository is not None else None,
-        circuit_breaker=ProviderCircuitBreaker(session_factory) if session_factory is not None else None,
+        budget_guard=BudgetEnforcementGuard(ops_repository),
+        circuit_breaker=ProviderCircuitBreaker(session_factory),
     )
     prompt_registry = PromptRegistry(runtime_repository, prompt_reader=prompt_reader)
     # Under the SQL backend this worker-global runtime is only a stateless-service
@@ -68,9 +60,7 @@ async def async_main() -> None:
         provider_gateway=provider_gateway,
         prompt_registry=prompt_registry,
     )
-    production_repository = (
-        SqlAlchemyProductionRepository(session_factory) if session_factory is not None else None
-    )
+    production_repository = SqlAlchemyProductionRepository(session_factory)
     configure_temporal_activity_context(
         TemporalActivityContext(
             repository=runtime_repository,

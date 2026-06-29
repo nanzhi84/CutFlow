@@ -9,6 +9,14 @@ _TEST_OBJECTSTORE_PATH = tempfile.mkdtemp(prefix="cutagent-test-objstore-")
 os.environ.setdefault("CUTAGENT_LOCAL_OBJECTSTORE_PATH", _TEST_OBJECTSTORE_PATH)
 atexit.register(shutil.rmtree, _TEST_OBJECTSTORE_PATH, ignore_errors=True)
 
+# Isolate the secret store to an empty per-session directory so a developer's real
+# armed secrets under ``.data/secrets`` never leak into the suite (which would make
+# real providers resolve as "active" and shadow the sandbox path -> local-only
+# golden/provider false failures). This mirrors CI, which has no real secrets.
+_TEST_SECRET_STORE_PATH = tempfile.mkdtemp(prefix="cutagent-test-secrets-")
+os.environ.setdefault("CUTAGENT_SECRET_STORE_DIR", _TEST_SECRET_STORE_PATH)
+atexit.register(shutil.rmtree, _TEST_SECRET_STORE_PATH, ignore_errors=True)
+
 import anyio
 import httpx
 import asyncio
@@ -24,8 +32,27 @@ import pytest
 from tests.fixtures.media import MediaFixtureFactory
 
 
-os.environ.setdefault("CUTAGENT_STORAGE_BACKEND", "memory")
+os.environ.setdefault("CUTAGENT_STORAGE_BACKEND", "sqlalchemy")
+# The whole suite runs against a REAL Postgres database (the memory storage
+# backend has been removed). Default to a throwaway `cutagent_test` database so a
+# developer's dev `cutagent` DB is never truncated; CI and ci_gate.sh override
+# CUTAGENT_DATABASE_URL explicitly. The per-test isolation fixture TRUNCATEs all
+# tables, so this MUST point at a disposable database.
+os.environ.setdefault(
+    "CUTAGENT_DATABASE_URL",
+    "postgresql+psycopg://cutagent:cutagent@127.0.0.1:55432/cutagent_test",
+)
 os.environ.setdefault("CUTAGENT_DISABLE_BACKGROUND_DISPATCHER", "1")
+# Point the 小V猫 CDP probe at a closed port so publish-login/account tests resolve
+# deterministically to "小V猫 unavailable" (matching CI, which has no 小V猫 desktop
+# app). Without this, a developer running a live 小V猫/CatBridge on :9222 turns the
+# probe into a real call -> local-only false failures.
+os.environ.setdefault("CUTAGENT_XIAOVMAO_CDP_PORT", "1")
+# Tests build many short-lived apps (TestClient(create_app())), each with its own
+# engine pool. Keep per-engine pools small so a long suite — and several suites
+# sharing one Postgres server — never exhaust max_connections.
+os.environ.setdefault("CUTAGENT_DB_POOL_SIZE", "2")
+os.environ.setdefault("CUTAGENT_DB_MAX_OVERFLOW", "3")
 # The golden / fallback fixtures deliberately run without armed real provider
 # secrets and rely on the seeded sandbox providers. Production defaults to no
 # sandbox fallback (fail loudly when no real provider is armed); the suite opts
@@ -262,3 +289,98 @@ def pytest_configure() -> None:
 @pytest.fixture(scope="session")
 def media_fixture_factory(tmp_path_factory):
     return MediaFixtureFactory(tmp_path_factory.mktemp("media-fixtures"))
+
+
+# ---------------------------------------------------------------------------
+# Real-Postgres test harness (the memory storage backend has been removed).
+#
+# Every test runs against a real Postgres database. Schema is migrated to head
+# once per session; base seed rows (users/registration codes/providers/media)
+# are inserted once; each test gets a clean database via a TRUNCATE-and-reseed
+# isolation step so tests never leak state into one another.
+# ---------------------------------------------------------------------------
+from sqlalchemy import event as _sa_event  # noqa: E402
+from sqlalchemy.engine import Engine as _SAEngine  # noqa: E402
+
+# Whether the current test checked out a database connection from *any* engine
+# (the app builds its own engine, so we listen on the Engine base class). Tests
+# that never touch the database skip the truncate-and-reseed reset entirely and
+# therefore do not require a running Postgres. The schema itself is provisioned
+# out-of-band (CI / ci_gate.sh run scripts/bootstrap_database.py before pytest;
+# locally the throwaway cutagent_test database is bootstrapped once).
+_DB_TOUCHED = {"flag": False}
+
+
+@_sa_event.listens_for(_SAEngine, "checkout")
+def _mark_db_touched(*_args, **_kwargs):
+    _DB_TOUCHED["flag"] = True
+
+
+def _seed_base(session_factory) -> None:
+    """(Re)insert the deterministic base seed. Idempotent."""
+    from packages.core.storage.object_store import get_object_store
+    from packages.core.storage.seed import seed_database
+    from packages.core.storage.seed_media import seed_media_assets
+
+    with session_factory() as session:
+        seed_database(session)
+        seed_media_assets(session, get_object_store())
+        session.commit()
+
+
+@pytest.fixture(scope="session")
+def _db_engine():
+    """Session-scoped engine used only by the isolation reset (lazily created)."""
+    from packages.core.storage.database import create_database_engine
+
+    engine = create_database_engine()
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _db_isolation(_db_engine):
+    """Reset the database after any test that touched it.
+
+    Autouse + dirty-detection: every test starts with the flag cleared; only
+    tests that actually opened a DB connection trigger a truncate-and-reseed in
+    teardown, so the next test sees the clean seeded baseline. Pure-logic tests
+    never connect, so they pay nothing (the engine is created but never dialed).
+    """
+    _DB_TOUCHED["flag"] = False
+    yield
+    if not _DB_TOUCHED["flag"]:
+        return
+    from sqlalchemy import text
+
+    from packages.core.storage.database import Base, create_session_factory
+
+    table_list = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
+    with _db_engine.begin() as conn:
+        conn.execute(text(f"TRUNCATE {table_list} RESTART IDENTITY CASCADE"))
+    _seed_base(create_session_factory(_db_engine))
+
+
+@pytest.fixture
+def db_session_factory(_db_engine):
+    """A real Postgres ``sessionmaker`` bound to the test database."""
+    from packages.core.storage.database import create_session_factory
+
+    return create_session_factory(_db_engine)
+
+
+@pytest.fixture
+def seeded_app():
+    """A fresh FastAPI app wired to the SQLAlchemy backend + real database."""
+    from apps.api.app import create_app
+
+    return create_app()
+
+
+@pytest.fixture
+def client(seeded_app):
+    """``TestClient`` (in-process ASGI) over a SQL-backed app."""
+    from fastapi.testclient import TestClient
+
+    with TestClient(seeded_app) as test_client:
+        yield test_client

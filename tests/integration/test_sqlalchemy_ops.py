@@ -1,12 +1,9 @@
-import os
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-if os.getenv("CUTAGENT_RUN_DB_TESTS") != "1":
-    pytest.skip("Set CUTAGENT_RUN_DB_TESTS=1 to run database integration tests.", allow_module_level=True)
 
 from apps.api.main import app
 from packages.core.storage.bootstrap import get_sqlalchemy_session_factory_if_enabled

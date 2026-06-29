@@ -1,7 +1,9 @@
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from apps.api.app import create_app
 from apps.api.main import app
+from packages.core.storage.database import ArtifactRow, MediaAssetRow, ScriptVersionRow
 
 
 client = TestClient(app)
@@ -48,19 +50,19 @@ def test_media_import_with_uri_creates_uploaded_file_source_artifact():
         report = response.json()
         assert report["created_count"] == 1
         asset_id = report["results"][0]["internal_id"]
-        repo = active_client.app.state.repository
-        asset = repo.media_assets[asset_id]
-        assert asset.source_artifact_id is not None
-        artifact = repo.artifacts[asset.source_artifact_id]
-        assert artifact.kind.value == "uploaded.file"
-        assert artifact.payload_schema == "UploadedFileArtifact.v1"
-        assert artifact.uri == row["uri"]
-        assert artifact.sha256 == row["sha256"]
-        assert artifact.payload["content_type"] == row["mime"]
-        assert artifact.payload["sha256"] == row["sha256"]
-        assert artifact.payload["metadata"]["duration_sec"] == row["duration_sec"]
-        assert artifact.payload["metadata"]["width"] == row["width"]
-        assert artifact.payload["metadata"]["height"] == row["height"]
+        with active_client.app.state.sqlalchemy_session_factory() as session:
+            asset = session.get(MediaAssetRow, asset_id)
+            assert asset.source_artifact_id is not None
+            artifact = session.get(ArtifactRow, asset.source_artifact_id)
+            assert artifact.kind == "uploaded.file"
+            assert artifact.payload_schema == "UploadedFileArtifact.v1"
+            assert artifact.uri == row["uri"]
+            assert artifact.sha256 == row["sha256"]
+            assert artifact.payload["content_type"] == row["mime"]
+            assert artifact.payload["sha256"] == row["sha256"]
+            assert artifact.payload["metadata"]["duration_sec"] == row["duration_sec"]
+            assert artifact.payload["metadata"]["width"] == row["width"]
+            assert artifact.payload["metadata"]["height"] == row["height"]
 
 
 def test_media_import_with_uri_is_idempotent_by_sha256_or_uri():
@@ -89,19 +91,23 @@ def test_media_import_with_uri_is_idempotent_by_sha256_or_uri():
         assert first.json()["results"][1]["status"] == "skipped"
         assert second.json()["created_count"] == 0
         assert second.json()["skipped_count"] == 1
-        repo = active_client.app.state.repository
-        matching_assets = [
-            asset
-            for asset in repo.media_assets.values()
-            if asset.case_id == row["case_id"] and asset.kind == row["kind"] and asset.title == row["title"]
-        ]
-        assert len(matching_assets) == 1
-        matching_artifacts = [
-            artifact
-            for artifact in repo.artifacts.values()
-            if artifact.kind.value == "uploaded.file" and artifact.sha256 == row["sha256"] and artifact.uri == row["uri"]
-        ]
-        assert len(matching_artifacts) == 1
+        with active_client.app.state.sqlalchemy_session_factory() as session:
+            matching_assets = session.scalars(
+                select(MediaAssetRow).where(
+                    MediaAssetRow.case_id == row["case_id"],
+                    MediaAssetRow.kind == row["kind"],
+                    MediaAssetRow.title == row["title"],
+                )
+            ).all()
+            assert len(matching_assets) == 1
+            matching_artifacts = session.scalars(
+                select(ArtifactRow).where(
+                    ArtifactRow.kind == "uploaded.file",
+                    ArtifactRow.sha256 == row["sha256"],
+                    ArtifactRow.uri == row["uri"],
+                )
+            ).all()
+            assert len(matching_artifacts) == 1
 
 
 def test_fresh_import_accepts_all_spec_types():
@@ -169,7 +175,8 @@ def test_spec_20_2_13_imported_case_script_and_media_are_frontend_visible():
         case_detail = active_client.get(f"/api/cases/{case_id}")
         assert case_detail.status_code == 200, case_detail.text
         assert case_detail.json()["name"] == "Imported showcase case"
-        assert script_id in active_client.app.state.repository.scripts
+        with active_client.app.state.sqlalchemy_session_factory() as session:
+            assert session.get(ScriptVersionRow, script_id) is not None
         media = active_client.get(f"/api/media/assets?case_id={case_id}")
         assert media.status_code == 200, media.text
         assert any(item["asset"]["id"] == media_id for item in media.json()["items"])

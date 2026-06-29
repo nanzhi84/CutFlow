@@ -1,13 +1,10 @@
 import hashlib
-import os
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
 from fastapi.testclient import TestClient
 
-if os.getenv("CUTAGENT_RUN_DB_TESTS") != "1":
-    pytest.skip("Set CUTAGENT_RUN_DB_TESTS=1 to run database integration tests.", allow_module_level=True)
 
 from apps.api.main import app
 from packages.core.auth.service import hash_registration_code

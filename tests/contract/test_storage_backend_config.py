@@ -1,9 +1,8 @@
 import pytest
+from pydantic import ValidationError
 
-from packages.core.storage.bootstrap import (
-    bootstrap_sqlalchemy_storage_if_enabled,
-    sqlalchemy_backend_enabled,
-)
+from packages.core.config import build_settings
+from packages.core.storage.bootstrap import sqlalchemy_backend_enabled
 from packages.core.storage.database import database_url
 
 
@@ -21,11 +20,10 @@ def test_sqlalchemy_backend_requires_explicit_database_url(monkeypatch):
         database_url()
 
 
-def test_memory_backend_emits_non_production_warning(monkeypatch, capsys):
+def test_memory_backend_is_rejected(monkeypatch):
+    # The in-memory storage backend has been removed; configuring it must fail loudly
+    # instead of silently degrading to a non-durable store.
     monkeypatch.setenv("CUTAGENT_STORAGE_BACKEND", "memory")
 
-    assert bootstrap_sqlalchemy_storage_if_enabled() == 0
-
-    captured = capsys.readouterr()
-    assert "CUTAGENT_STORAGE_BACKEND=memory" in captured.err
-    assert "not for production" in captured.err
+    with pytest.raises(ValidationError, match="memory is no longer supported"):
+        build_settings()
