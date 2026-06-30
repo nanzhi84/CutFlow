@@ -15,13 +15,13 @@ from sqlalchemy import event
 
 from apps.api.main import app
 from packages.core.storage import Repository
-from packages.core.storage.bootstrap import get_sqlalchemy_session_factory_if_enabled
+from packages.core.storage.bootstrap import get_sqlalchemy_session_factory
 from packages.core.storage.database import AnnotationRow, MediaAssetRow
 from packages.core.storage.repository import new_id
 
 
 def _session_factory():
-    session_factory = get_sqlalchemy_session_factory_if_enabled()
+    session_factory = get_sqlalchemy_session_factory()
     if session_factory is None:
         pytest.skip("Set CUTAGENT_STORAGE_BACKEND=sqlalchemy to run database integration tests.")
     return session_factory

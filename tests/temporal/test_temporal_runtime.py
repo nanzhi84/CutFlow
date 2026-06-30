@@ -28,7 +28,7 @@ from apps.api.main import app
 from packages.ai.gateway import ProviderGateway, SqlAlchemyProviderRuntimeRepository
 from packages.ai.prompts import PromptRegistry, SqlAlchemyPromptRuntimeRepository
 from packages.core.storage import Repository
-from packages.core.storage.bootstrap import get_sqlalchemy_session_factory_if_enabled
+from packages.core.storage.bootstrap import get_sqlalchemy_session_factory
 from packages.core.storage.database import ArtifactRow, FinishedVideoRow, NodeRunRow, OutboxEventRow, WorkflowRunRow
 from packages.core.storage.secret_store import LocalSecretStore
 from packages.core.workflow import load_workflow_runtime_settings
@@ -47,7 +47,7 @@ from packages.production.pipeline import build_digital_human_workflow
 
 
 def _session_factory():
-    session_factory = get_sqlalchemy_session_factory_if_enabled()
+    session_factory = get_sqlalchemy_session_factory()
     if session_factory is None:
         pytest.skip("Set CUTAGENT_STORAGE_BACKEND=sqlalchemy for Temporal integration tests.")
     return session_factory

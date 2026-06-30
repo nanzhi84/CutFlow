@@ -16,8 +16,8 @@ from packages.core.config import (
 )
 from packages.core.storage import Repository
 from packages.core.storage.bootstrap import (
-    bootstrap_sqlalchemy_storage_if_enabled,
-    get_sqlalchemy_session_factory_if_enabled,
+    bootstrap_sqlalchemy_storage,
+    get_sqlalchemy_session_factory,
 )
 from packages.core.observability import configure_logging
 from packages.core.storage.secret_store import LocalSecretStore
@@ -41,9 +41,9 @@ async def async_main() -> None:
     _preflight_issues = validate_startup_settings(build_settings())
     if _preflight_issues:
         raise RuntimeError(format_preflight_report(_preflight_issues))
-    bootstrap_sqlalchemy_storage_if_enabled()
+    bootstrap_sqlalchemy_storage()
     settings = load_workflow_runtime_settings()
-    session_factory = get_sqlalchemy_session_factory_if_enabled()
+    session_factory = get_sqlalchemy_session_factory()
     runtime_repository = Repository()
     local_secret_store = LocalSecretStore()
     secret_store = SqlAlchemySecretStore(session_factory, fallback=local_secret_store)

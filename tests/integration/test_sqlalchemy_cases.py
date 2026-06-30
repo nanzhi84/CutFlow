@@ -5,13 +5,13 @@ from fastapi.testclient import TestClient
 
 
 from apps.api.main import app
-from packages.core.storage.bootstrap import get_sqlalchemy_session_factory_if_enabled
+from packages.core.storage.bootstrap import get_sqlalchemy_session_factory
 from packages.core.storage.database import CaseRow, IdempotencyRecordRow
 from packages.creative.cases import SqlAlchemyCaseRepository
 
 
 def test_sqlalchemy_case_repository_reads_seeded_case():
-    session_factory = get_sqlalchemy_session_factory_if_enabled()
+    session_factory = get_sqlalchemy_session_factory()
     assert session_factory is not None
     repository = SqlAlchemyCaseRepository(session_factory)
     cases = repository.list_cases(limit=200)
@@ -34,7 +34,7 @@ def test_cases_api_reads_from_sqlalchemy_backend():
 
 
 def test_cases_api_persists_created_and_patched_case():
-    session_factory = get_sqlalchemy_session_factory_if_enabled()
+    session_factory = get_sqlalchemy_session_factory()
     assert session_factory is not None
 
     with TestClient(app) as client:
@@ -118,7 +118,7 @@ def test_cases_api_persists_created_and_patched_case():
 
 
 def test_sqlalchemy_idempotency_replays_after_app_reconfiguration():
-    session_factory = get_sqlalchemy_session_factory_if_enabled()
+    session_factory = get_sqlalchemy_session_factory()
     assert session_factory is not None
 
     idem_key = f"case-create-after-restart-{uuid4().hex[:8]}"

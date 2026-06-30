@@ -26,9 +26,5 @@ def bootstrap_sqlalchemy_storage() -> int:
         return seed_database(session)
 
 
-def bootstrap_sqlalchemy_storage_if_enabled() -> int:
-    return bootstrap_sqlalchemy_storage()
-
-
-def get_sqlalchemy_session_factory_if_enabled():
+def get_sqlalchemy_session_factory():
     return create_session_factory(create_database_engine())
