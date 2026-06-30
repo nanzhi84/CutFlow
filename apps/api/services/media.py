@@ -10,17 +10,14 @@ from fastapi.responses import FileResponse
 from apps.api.common import (
     media_repository,
     object_store,
-    page,
     provider_repository,
-    repository,
     request_id,
     signed,
 )
 from packages.core import contracts as c
-from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 from apps.api.services import annotation_batch as annotation_batch_service
-from apps.api.services import annotation_patch, asset_annotation, media_processing
+from apps.api.services import asset_annotation, media_processing
 from packages.media.assets import local_object_path
 
 _PLAYABLE_MEDIA_TYPES = {"video", "audio"}
@@ -72,16 +69,7 @@ def _with_browser_preview_url(
 
 
 def _source_for_asset(request: Request, asset_id: str) -> tuple[str, c.MediaInfo | None] | None:
-    if media_repository(request) is not None:
-        return media_repository(request).media_source_for_asset(asset_id)
-    if asset_id not in repository(request).media_assets:
-        return None
-    asset = repository(request).media_assets[asset_id]
-    if asset.source_artifact_id and asset.source_artifact_id in repository(request).artifacts:
-        artifact = repository(request).artifacts[asset.source_artifact_id]
-        if artifact.uri:
-            return artifact.uri, artifact.media_info
-    return None
+    return media_repository(request).media_source_for_asset(asset_id)
 
 
 def list_media_assets(
@@ -91,22 +79,13 @@ def list_media_assets(
     kind: str | None = None,
     annotation_status: str | None = None,
 ) -> c.PageResponse[c.MediaAssetCard]:
-    if media_repository(request) is not None:
-        values = media_repository(request).list_assets(
-            limit=limit,
-            case_id=case_id,
-            kind=kind,
-            annotation_status=annotation_status,
-        )
-        return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
-    assets = list(repository(request).media_assets.values())
-    if case_id:
-        assets = [asset for asset in assets if asset.case_id == case_id]
-    if kind:
-        assets = [asset for asset in assets if asset.kind == kind]
-    if annotation_status:
-        assets = [asset for asset in assets if asset.annotation_status == annotation_status]
-    return page([c.MediaAssetCard(asset=asset, preview_url=f"local://media/{asset.id}") for asset in assets], limit)
+    values = media_repository(request).list_assets(
+        limit=limit,
+        case_id=case_id,
+        kind=kind,
+        annotation_status=annotation_status,
+    )
+    return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
 
 
 def material_usage_ranking(
@@ -115,74 +94,30 @@ def material_usage_ranking(
     case_id: str | None = None,
     top_n: int = 20,
 ) -> c.MaterialUsageRankingReport:
-    if media_repository(request) is not None:
-        report = media_repository(request).material_usage_ranking(
-            kind=kind,
-            case_id=case_id,
-            top_n=top_n,
-        )
-    else:
-        report = repository(request).material_usage_ranking(
-            kind=kind,
-            case_id=case_id,
-            top_n=top_n,
-        )
+    report = media_repository(request).material_usage_ranking(
+        kind=kind,
+        case_id=case_id,
+        top_n=top_n,
+    )
     return report.model_copy(update={"request_id": request_id()})
 
 
 def create_media_asset(payload: c.CreateMediaAssetFromUploadRequest, request: Request) -> c.MediaAssetRecord:
-    if media_repository(request) is not None:
-        return media_repository(request).create_asset_from_upload(payload)
-    repo = repository(request)
-    upload = repo.uploads[payload.upload_session_id]
-    if upload.status != c.UploadStatus.completed:
-        raise NodeExecutionError(c.ErrorCode.upload_invalid_state, "Upload must be completed first.")
-    source_artifact = _uploaded_artifact_for_upload(repo, upload)
-    asset = c.MediaAssetRecord(
-        id=new_id("asset"),
-        case_id=payload.case_id,
-        title=payload.title,
-        kind=payload.kind,
-        source_artifact_id=source_artifact.id,
-        tags=payload.tags,
-    )
-    repo.media_assets[asset.id] = asset
-    return asset
-
-
-def _uploaded_artifact_for_upload(repo, upload: c.UploadSession) -> c.Artifact:
-    for artifact in repo.artifacts.values():
-        payload = artifact.payload if isinstance(artifact.payload, dict) else {}
-        if artifact.kind != c.ArtifactKind.uploaded_file:
-            continue
-        if payload.get("id") == upload.id or (upload.object_uri and artifact.uri == upload.object_uri):
-            return artifact
-    return repo.create_artifact(
-        kind=c.ArtifactKind.uploaded_file,
-        payload_schema="UploadedFileArtifact.v1",
-        payload=upload.model_dump(mode="json"),
-        uri=upload.object_uri,
-        sha256=upload.sha256,
-    )
+    return media_repository(request).create_asset_from_upload(payload)
 
 
 def media_asset_detail(request: Request, asset_id: str) -> c.MediaAssetDetail:
 
-    if media_repository(request) is not None:
-        detail = media_repository(request).get_asset_detail(asset_id)
-        if detail is None:
-            raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
-        return detail
-    asset = repository(request).media_assets[asset_id]
-    return c.MediaAssetDetail(asset=asset, preview_url=f"local://media/{asset.id}")
+    detail = media_repository(request).get_asset_detail(asset_id)
+    if detail is None:
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
+    return detail
 
 
 def media_asset_preview(request: Request, asset_id: str) -> c.SignedUrlResponse:
     source = _source_for_asset(request, asset_id)
     if source is None:
-        if media_repository(request) is not None or asset_id not in repository(request).media_assets:
-            raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
-        return _with_preview_playback(signed(request, f"media/{asset_id}"), None, None)
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
     uri, media_info = source
     if uri:
         return _with_browser_preview_url(
@@ -219,13 +154,8 @@ def delete_media_asset(request: Request, asset_id: str) -> c.OkResponse:
     """Delete a media-asset registration (e.g. a retired ``cover_template``). The
     backing source artifact/object is intentionally retained — artifacts are
     append-only and may be referenced by prior runs."""
-    if media_repository(request) is not None:
-        if not media_repository(request).delete_asset(asset_id):
-            raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
-        return c.OkResponse(request_id=request_id())
-    if asset_id not in repository(request).media_assets:
+    if not media_repository(request).delete_asset(asset_id):
         raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
-    del repository(request).media_assets[asset_id]
     return c.OkResponse(request_id=request_id())
 
 
@@ -255,55 +185,17 @@ def trim_annotation(
 
 def get_annotation(request: Request, asset_id: str) -> c.AnnotationEditorVm:
 
-    if media_repository(request) is not None:
-        editor = media_repository(request).get_or_create_annotation(asset_id)
-        if editor is None:
-            raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
-        return editor
-    asset = repository(request).media_assets[asset_id]
-    if asset_id not in repository(request).annotations:
-        repository(request).annotations[asset_id] = c.AnnotationEditorVm(
-            asset=asset,
-            etag=new_id("etag"),
-            canonical={"labels": asset.tags, "kind": asset.kind},
-            projection={"title": asset.title, "usable": asset.usable},
-            editable_paths=["/labels", "/usable", "/title"],
-        )
-    return repository(request).annotations[asset_id]
+    editor = media_repository(request).get_or_create_annotation(asset_id)
+    if editor is None:
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
+    return editor
 
 
 def patch_annotation(asset_id: str, payload: c.PatchAnnotationRequest, request: Request) -> c.AnnotationEditorVm:
-    if media_repository(request) is not None:
-        editor = media_repository(request).patch_annotation(asset_id, payload)
-        if editor is None:
-            raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
-        return editor
-    editor = get_annotation(request, asset_id)
-    # canonical may be an AnnotationV4 (coerced on load) or the minimal editor dict;
-    # normalize to a plain mutable dict so the PatchService can merge uniformly.
-    raw_canonical = editor.canonical
-    if isinstance(raw_canonical, c.AnnotationV4):
-        canonical = raw_canonical.model_dump(mode="json")
-    else:
-        canonical = dict(raw_canonical or {})
-    asset = repository(request).media_assets[asset_id]
-    # PatchService merges structural edits (segments / quality_events) into the
-    # canonical AnnotationV4 -> new canonical version, then rebuilds the projection
-    # from canonical (Spec §12.1/§12.2). Invalid edits raise artifact.schema_mismatch (400).
-    new_canonical, new_projection = annotation_patch.apply_patch(
-        canonical=canonical,
-        projection=dict(editor.projection or {}),
-        asset=asset,
-        operations=payload.patch.operations,
-    )
-    updated = editor.model_copy(
-        update={"etag": new_id("etag"), "canonical": new_canonical, "projection": new_projection}
-    )
-    repository(request).annotations[asset_id] = updated
-    repository(request).media_assets[asset_id] = asset.model_copy(
-        update={"annotation_status": "annotated", "updated_at": c.utcnow()}
-    )
-    return updated
+    editor = media_repository(request).patch_annotation(asset_id, payload)
+    if editor is None:
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
+    return editor
 
 
 def batch_annotation(
@@ -316,59 +208,34 @@ def rerun_annotation(
     asset_id: str, payload: c.RerunAnnotationRequest, request: Request
 ) -> c.AnnotationRunResponse:
     media_repo = media_repository(request)
-    if media_repo is not None:
-        # Production (DB) path: drive the SAME gated sensors + (gated) VLM -> AnnotationV4
-        # pipeline as in-memory, persisting a real AnnotationV4 canonical so material
-        # planning reads it (Spec §12.2). Without a real vlm.annotation profile it
-        # degrades to a sensor-only vlm_unconfigured result (never fabricated semantics).
-        if payload.provider_profile_id:
-            # BGM/audio assets are annotated through the gated audio.understanding path;
-            # everything else through vlm.annotation. Validate the explicit profile's
-            # capability against the asset's annotation path so a correct profile isn't rejected.
-            db_asset = media_repo.asset_record(asset_id)
-            expected_capability = (
-                "audio.understanding"
-                if (db_asset is not None and db_asset.kind == "bgm")
-                else "vlm.annotation"
-            )
-            provider_repo = provider_repository(request)
-            profile = (
-                next(
-                    (
-                        p
-                        for p in provider_repo.list_profiles(capability=expected_capability, limit=100)
-                        if p.id == payload.provider_profile_id
-                    ),
-                    None,
-                )
-                if provider_repo is not None
-                else None
-            )
-            if profile is None:
-                raise NodeExecutionError(
-                    c.ErrorCode.provider_unsupported_option, "Annotation provider profile is invalid."
-                )
-        response = asset_annotation.run_sqlalchemy_asset_annotation(request, asset_id, payload)
-        if response is None:
-            raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
-        return response
-    repo = repository(request)
-    if asset_id not in repo.media_assets:
-        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
+    # Production (DB) path: drive the gated sensors + (gated) VLM -> AnnotationV4
+    # pipeline, persisting a real AnnotationV4 canonical so material planning reads it
+    # (Spec §12.2). Without a real vlm.annotation profile it degrades to a sensor-only
+    # vlm_unconfigured result (never fabricated semantics).
     if payload.provider_profile_id:
-        profile = repo.provider_profiles.get(payload.provider_profile_id)
         # BGM/audio assets are annotated through the gated audio.understanding path;
         # everything else through vlm.annotation. Validate the explicit profile's
         # capability against the asset's annotation path so a correct profile isn't rejected.
+        db_asset = media_repo.asset_record(asset_id)
         expected_capability = (
-            "audio.understanding" if repo.media_assets[asset_id].kind == "bgm" else "vlm.annotation"
+            "audio.understanding"
+            if (db_asset is not None and db_asset.kind == "bgm")
+            else "vlm.annotation"
         )
-        if profile is None or profile.capability != expected_capability:
+        provider_repo = provider_repository(request)
+        profile = next(
+            (
+                p
+                for p in provider_repo.list_profiles(capability=expected_capability, limit=100)
+                if p.id == payload.provider_profile_id
+            ),
+            None,
+        )
+        if profile is None:
             raise NodeExecutionError(
                 c.ErrorCode.provider_unsupported_option, "Annotation provider profile is invalid."
             )
-    # The gated runner drives the full sensors + (gated) VLM -> AnnotationV4 path,
-    # persists the AnnotationV4 artifact, and projects it into the editor. Without a
-    # real vlm.annotation profile + active secret it degrades to a sensor-only
-    # vlm_unconfigured result (never fabricated semantics).
-    return asset_annotation.run_inmemory_asset_annotation(request, asset_id, payload)
+    response = asset_annotation.run_sqlalchemy_asset_annotation(request, asset_id, payload)
+    if response is None:
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
+    return response
