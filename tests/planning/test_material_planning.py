@@ -23,6 +23,7 @@ from packages.core.contracts import (
 )
 from packages.core.contracts.artifacts import NarrationUnit
 from packages.planning.material import (
+    demote_recent_broll_candidates,
     extract_keywords,
     plan_insertions,
     rank_broll_candidates,
@@ -370,6 +371,53 @@ def test_portrait_clip_recency_demotes_recently_used_portrait():
     assert by_asset["p_used"].source_end == 15.0
     assert by_asset["p_used"].recency_penalty > 0.0
     assert by_asset["p_used"].score < by_asset["p_fresh"].score
+
+
+def test_demote_recent_broll_with_empty_penalties_is_a_noop_over_empty_ledger_ranking():
+    # The b-roll planning nodes rank against an EMPTY ledger and then re-apply
+    # MaterialPack's recency penalties. With no recorded penalties this is a pure
+    # no-op: same scores, same order as the empty-ledger ranking.
+    units = _units()
+    segments = _narration_segments(units)
+    annotations = {
+        "asset_a": _annotation("asset_a", [_clip("a1", 0.0, 4.0, ["补漆", "效果"])]),
+        "asset_b": _annotation(
+            "asset_b", [_clip("b1", 0.0, 4.0, ["补漆", "效果"], scene_type="场景B")]
+        ),
+    }
+    ranked = rank_broll_candidates(annotations=annotations, segments=segments, ledger_entries=())
+    demoted = demote_recent_broll_candidates(ranked, penalty_by_clip={})
+
+    assert [(c.asset_id, c.clip_id, c.score, c.recency_penalty) for c in demoted] == [
+        (c.asset_id, c.clip_id, c.score, c.recency_penalty) for c in ranked
+    ]
+
+
+def test_demote_recent_broll_applies_material_pack_penalty_to_score_and_order():
+    # A penalty MaterialPack computed for one cluster demotes that clip's score AND
+    # ranks it behind the fresh alternative — reproducing the ledger demotion without
+    # the planning node reading the ledger.
+    units = _units()
+    segments = _narration_segments(units)
+    annotations = {
+        "asset_a": _annotation("asset_a", [_clip("a1", 0.0, 4.0, ["补漆", "效果"])]),
+        "asset_b": _annotation(
+            "asset_b", [_clip("b1", 0.0, 4.0, ["补漆", "效果"], scene_type="场景B")]
+        ),
+    }
+    ranked = rank_broll_candidates(annotations=annotations, segments=segments, ledger_entries=())
+    fresh_first = ranked[0]  # equal base scores -> tie broken deterministically by id
+    demoted = demote_recent_broll_candidates(
+        ranked,
+        penalty_by_clip={},
+        penalty_by_diversity={(fresh_first.asset_id, fresh_first.diversity_key): 0.5},
+    )
+
+    by_asset = {c.asset_id: c for c in demoted}
+    assert by_asset[fresh_first.asset_id].recency_penalty == 0.5
+    assert by_asset[fresh_first.asset_id].score < fresh_first.score
+    # The demoted clip is no longer ranked first; the untouched (fresh) clip wins.
+    assert demoted[0].asset_id != fresh_first.asset_id
 
 
 def test_no_annotations_yields_no_broll_candidates():

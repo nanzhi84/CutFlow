@@ -16,9 +16,6 @@ from packages.planning.editing import (
     plan_boundary_timeline,
 )
 from packages.planning.material import subtract_bad_spans
-from packages.planning.selection.recency_context import (
-    build_portrait_recency_context_from_ledger,
-)
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.production.pipeline._node_context import NodeContext
 
@@ -41,13 +38,11 @@ def run(ctx: NodeContext) -> NodeOutput:
         )
 
     # Build planner candidates from the ranked material pack. Each candidate is a
-    # clip-level source span; the planner enforces coverage/capacity.
-    # Recency context (weighted recency + opening guard) is attached so portrait
-    # scoring fires on the real production path instead of dead-defaulting.
-    portrait_ledger = ctx.repository.recent_selections(
-        case_id=state.request.case_id, medium="portrait"
-    )
-    candidates = _portrait_window_candidates(ctx, portrait_candidate_items, portrait_ledger)
+    # clip-level source span; the planner enforces coverage/capacity. The recency
+    # context (weighted recency + opening guard) was already computed by
+    # MaterialPackPlanning — the single node that reads the selection ledger — and is
+    # carried on each candidate's metadata, so this node never touches the ledger.
+    candidates = _portrait_window_candidates(ctx, portrait_candidate_items)
     if portrait_candidate_items and not candidates:
         raise NodeExecutionError(
             ErrorCode.material_insufficient_portrait,
@@ -271,7 +266,7 @@ def _planner_narration_units(
     )
 
 
-def _portrait_window_candidates(ctx: NodeContext, items: list[dict], ledger) -> list[dict]:
+def _portrait_window_candidates(ctx: NodeContext, items: list[dict]) -> list[dict]:
     """One clip source-window candidate per ranked material-pack portrait candidate.
 
     MaterialPackPlanning now emits portrait candidates only from annotated lip-sync
@@ -280,8 +275,10 @@ def _portrait_window_candidates(ctx: NodeContext, items: list[dict], ledger) -> 
 
     ``template_id`` stays the asset id so the planned segment maps back to the source
     artifact for the render node; ``window_id`` is per-clip so several clips of one
-    asset compete as distinct windows. ``recent_usage`` is built from the case's
-    recent portrait ledger so a recently-used source is demoted.
+    asset compete as distinct windows. ``recent_usage`` (the weighted recency +
+    opening-guard context that demotes a recently-used source) is read straight from
+    the MaterialPack candidate metadata — MaterialPackPlanning is the one node that
+    reads the selection ledger, so this node never queries it.
     """
     candidates: list[dict] = []
     for rank, item in enumerate(items):
@@ -312,11 +309,9 @@ def _portrait_window_candidates(ctx: NodeContext, items: list[dict], ledger) -> 
         clean_spans = subtract_bad_spans(win_start, win_end, avoid_spans, min_len=0.08)
         if not clean_spans:
             continue
-        recent_usage = build_portrait_recency_context_from_ledger(
-            entries=ledger,
-            template_id=asset_id,
-            diversity_key=None,
-        )
+        recent_usage = meta.get("recent_usage")
+        if not isinstance(recent_usage, dict):
+            recent_usage = {}
         confidence = round(max(0.1, 0.9 - rank * 0.05), 3)
         for clean_index, (clean_start, clean_end) in enumerate(clean_spans):
             window_id = (

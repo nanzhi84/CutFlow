@@ -10,6 +10,7 @@ from packages.planning.material._avoid import avoid_intervals, subtract_bad_span
 from packages.planning.material.broll_pack import (
     BrollCandidate,
     clip_shows_person,
+    demote_recent_broll_candidates,
     rank_broll_candidates,
 )
 from packages.planning.material.broll_plan import (
@@ -32,6 +33,7 @@ __all__ = [
     "subtract_bad_spans",
     "BrollCandidate",
     "rank_broll_candidates",
+    "demote_recent_broll_candidates",
     "clip_shows_person",
     "plan_coverage",
     "plan_insertions",

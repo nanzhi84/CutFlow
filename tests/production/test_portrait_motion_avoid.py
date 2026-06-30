@@ -37,18 +37,37 @@ def _window_ctx(*, duration: float = 10.0):
     return SimpleNamespace(source_artifact_for_asset=lambda asset_id: source)
 
 
-def _portrait_item(*, start: float = 0.0, end: float = 8.0, avoid_spans=None) -> dict:
+def _portrait_item(*, start: float = 0.0, end: float = 8.0, avoid_spans=None, recent_usage=None) -> dict:
     metadata = {"clip_id": "talk", "source_start": start, "source_end": end}
     if avoid_spans is not None:
         metadata["avoid_spans"] = avoid_spans
+    if recent_usage is not None:
+        metadata["recent_usage"] = recent_usage
     return {"asset_id": "asset_portrait", "score": 1.0, "metadata": metadata}
 
 
-def test_portrait_window_candidates_without_avoid_spans_keeps_original_window():
+def test_portrait_window_candidates_carries_material_pack_recent_usage_without_ledger():
+    # The node no longer reads the ledger: it consumes the ``recent_usage`` context
+    # MaterialPackPlanning already stamped onto the candidate metadata, carrying it
+    # verbatim and deriving the planner ``recency_penalty`` from it.
+    recent_usage = {
+        "is_recently_used": True,
+        "recency_penalty": 0.42,
+        "exact_recency_penalty": 0.42,
+        "similarity_penalty": 0.0,
+        "summary": "最近 3 条同案例选择中出现 1 次（1 条视频）。",
+        "history_task_count": 1,
+        "history_segment_count": 1,
+        "recent_task_use_count": 1,
+        "recent_segment_use_count": 1,
+        "recent_opening_use_count": 1,
+        "similar_recent_task_use_count": 0,
+        "similar_recent_segment_use_count": 0,
+        "similar_recent_opening_use_count": 0,
+    }
     candidates = nodes.portrait_planning._portrait_window_candidates(
         _window_ctx(duration=10.0),
-        [_portrait_item(start=1.25, end=5.75)],
-        ledger=[],
+        [_portrait_item(start=1.25, end=5.75, recent_usage=recent_usage)],
     )
 
     assert candidates == [
@@ -62,32 +81,29 @@ def test_portrait_window_candidates_without_avoid_spans_keeps_original_window():
             "role": "main",
             "confidence": 0.9,
             "source_mode_hint": "lipsynced",
-            "recent_usage": {
-                "is_recently_used": False,
-                "recency_penalty": 0.0,
-                "exact_recency_penalty": 0.0,
-                "similarity_penalty": 0.0,
-                "summary": "最近同案例任务暂无历史记录。",
-                "history_task_count": 0,
-                "history_segment_count": 0,
-                "recent_task_use_count": 0,
-                "recent_segment_use_count": 0,
-                "recent_opening_use_count": 0,
-                "similar_recent_task_use_count": 0,
-                "similar_recent_segment_use_count": 0,
-                "similar_recent_opening_use_count": 0,
-            },
-            "recency_penalty": 0.0,
+            "recent_usage": recent_usage,
+            "recency_penalty": 0.42,
             "diversity_key": None,
         }
     ]
+
+
+def test_portrait_window_candidates_defaults_recent_usage_when_metadata_omits_it():
+    # Missing ``recent_usage`` (e.g. an older material pack) degrades to "fresh" —
+    # no demotion — rather than the node reaching back to the ledger.
+    candidates = nodes.portrait_planning._portrait_window_candidates(
+        _window_ctx(duration=10.0),
+        [_portrait_item(start=1.25, end=5.75)],
+    )
+
+    assert candidates[0]["recent_usage"] == {}
+    assert candidates[0]["recency_penalty"] == 0.0
 
 
 def test_portrait_window_candidates_uses_clean_head_before_tail_bad_span():
     candidates = nodes.portrait_planning._portrait_window_candidates(
         _window_ctx(duration=10.0),
         [_portrait_item(start=0.0, end=8.0, avoid_spans=[[4.2, 8.0]])],
-        ledger=[],
     )
 
     assert len(candidates) == 1
@@ -101,7 +117,6 @@ def test_portrait_window_candidates_splits_middle_bad_span_into_multiple_windows
     candidates = nodes.portrait_planning._portrait_window_candidates(
         _window_ctx(duration=10.0),
         [_portrait_item(start=0.0, end=6.0, avoid_spans=[[2.0, 4.0]])],
-        ledger=[],
     )
 
     assert [(c["window_id"], c["start"], c["end"], c["duration"]) for c in candidates] == [

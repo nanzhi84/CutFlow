@@ -218,3 +218,41 @@ def test_generic_coverage_off_reverts_to_soft_degrade():
     payload = _broll_payload(output)
     assert payload["overlays"] == []
     assert output.status == NodeStatus.degraded
+
+
+def test_broll_planning_never_reads_selection_ledger(monkeypatch: pytest.MonkeyPatch):
+    # The selection ledger is read once, in MaterialPackPlanning. BrollPlanning must
+    # re-rank against the real narration WITHOUT touching the ledger, while still
+    # producing real narration-anchored overlays.
+    adapter, state = _state_with_clean_unrelated_clip(allow_generic_coverage=True)
+    # Even with prior broll history for this case on the ledger, the node must not read
+    # it (recency now arrives via the material pack metadata).
+    from packages.core.contracts import SelectionLedgerEntry
+
+    adapter.repository.record_selection_ledger_entries(
+        [
+            SelectionLedgerEntry(
+                case_id="case_demo",
+                run_id="run_prev",
+                medium="broll",
+                asset_id="asset_clean",
+                slot_phase="broll_1",
+            )
+        ]
+    )
+    ledger_calls: list = []
+    real_recent_selections = adapter.repository.recent_selections
+
+    def _spy_recent_selections(*args, **kwargs):
+        ledger_calls.append((args, kwargs))
+        return real_recent_selections(*args, **kwargs)
+
+    monkeypatch.setattr(adapter.repository, "recent_selections", _spy_recent_selections)
+
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+    output = nodes.broll_planning.run(ctx)
+    payload = _broll_payload(output)
+
+    assert ledger_calls == []
+    assert payload["overlays"], "still selects a narration-anchored insert without the ledger"
+    assert payload["overlays"][0]["asset_id"] == "asset_clean"

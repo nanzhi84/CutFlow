@@ -27,6 +27,7 @@ from packages.core.contracts import (
     NodeRun,
     NodeStatus,
     RunStatus,
+    SelectionLedgerEntry,
     UsageRole,
     WorkflowRun,
 )
@@ -220,6 +221,52 @@ def test_material_pack_splits_one_video_into_portrait_and_broll(tmp_path, monkey
     # Honest diagnostics for the unified bucket.
     assert payload["diagnostics"]["portrait_from_video"] >= 1
     assert payload["diagnostics"]["video_no_lipsync"] is False
+
+
+def test_material_pack_is_single_point_for_portrait_recency_scoring(tmp_path, monkeypatch):
+    # MaterialPackPlanning is the ONE node that reads the selection ledger: a portrait
+    # template used in a prior run is demoted (scalar recency_penalty + score) AND the
+    # full weighted recency/opening context is stamped onto the candidate metadata for
+    # PortraitPlanning to consume — so the fresh template ranks first.
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    adapter.repository.media_assets.clear()
+    adapter.repository.annotations.clear()
+    _inject_video_asset(adapter.repository, "vid_used", [_talk_clip("talk_used", 0.0, 15.0)])
+    _inject_video_asset(adapter.repository, "vid_fresh", [_talk_clip("talk_fresh", 0.0, 15.0)])
+    # vid_used opened a prior run for this case.
+    adapter.repository.record_selection_ledger_entries(
+        [
+            SelectionLedgerEntry(
+                case_id="case_demo",
+                run_id="run_prev",
+                medium="portrait",
+                asset_id="vid_used",
+                slot_phase="portrait_opening",
+            )
+        ]
+    )
+
+    output = nodes.material_pack_planning.run(_ctx(adapter, _request(), "MaterialPackPlanning"))
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_material_pack)
+
+    by_asset = {c["asset_id"]: c for c in payload["portrait_candidates"]}
+    used, fresh = by_asset["vid_used"], by_asset["vid_fresh"]
+
+    # Scalar recency demotion (recency.py) is applied to the score + metadata.
+    assert used["metadata"]["recency_penalty"] > 0.0
+    assert fresh["metadata"]["recency_penalty"] == 0.0
+    assert used["score"] < fresh["score"]
+
+    # The full weighted recency/opening context (recency_context.py) is stamped on each
+    # candidate so PortraitPlanning never needs the ledger.
+    assert used["metadata"]["recent_usage"]["is_recently_used"] is True
+    assert used["metadata"]["recent_usage"]["recent_opening_use_count"] >= 1
+    assert fresh["metadata"]["recent_usage"]["is_recently_used"] is False
+
+    # Ranking: the fresh template wins the portrait pool ordering.
+    assert payload["portrait_candidates"][0]["asset_id"] == "vid_fresh"
 
 
 def test_material_pack_respects_active_reservations_from_parallel_run(tmp_path, monkeypatch):

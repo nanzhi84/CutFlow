@@ -14,6 +14,7 @@ from packages.core.contracts import ArtifactKind, NodeStatus, WarningCode
 from packages.core.contracts.artifacts import BrollOverlay, BrollPlanArtifact, NarrationUnit
 from packages.planning.material import (
     ScriptSegment,
+    demote_recent_broll_candidates,
     extract_keywords,
     plan_insertions,
     rank_broll_candidates,
@@ -21,9 +22,10 @@ from packages.planning.material import (
 from packages.core.workflow import NodeOutput
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
-from packages.production.pipeline.nodes._broll_policy import broll_generic_coverage_enabled
-
-_BROLL_RECENT_SELECTION_LIMIT = 80
+from packages.production.pipeline.nodes._broll_policy import (
+    broll_generic_coverage_enabled,
+    broll_recency_penalties,
+)
 
 
 def _narration_segments(units: list[NarrationUnit]) -> list[ScriptSegment]:
@@ -71,22 +73,25 @@ def run(ctx: NodeContext) -> NodeOutput:
     segments = _narration_segments(units)
 
     # Re-rank the candidate assets against the *real* narration beats so matched
-    # keywords and the anchor beat come from true narration timing.
+    # keywords and the anchor beat come from true narration timing. The ledger is NOT
+    # read here (MaterialPackPlanning is the single ledger-reading node); recency is
+    # re-applied from the MaterialPack-computed penalties below.
     annotations = {
         asset_id: annotation
         for asset_id in dict.fromkeys(candidate_asset_ids)
         if (annotation := ctx.repository.annotation_v4_for_asset(asset_id)) is not None
     }
-    ledger_entries = ctx.repository.recent_selections(
-        case_id=state.request.case_id,
-        medium="broll",
-        limit=_BROLL_RECENT_SELECTION_LIMIT,
-    )
     candidates = rank_broll_candidates(
         annotations=annotations,
         segments=segments,
-        ledger_entries=ledger_entries,
+        ledger_entries=(),
         include_generic_coverage=broll_generic_coverage_enabled(state.request),
+    )
+    penalty_by_clip, penalty_by_diversity = broll_recency_penalties(material)
+    candidates = demote_recent_broll_candidates(
+        candidates,
+        penalty_by_clip=penalty_by_clip,
+        penalty_by_diversity=penalty_by_diversity,
     )
     insertions = plan_insertions(
         candidates=candidates,

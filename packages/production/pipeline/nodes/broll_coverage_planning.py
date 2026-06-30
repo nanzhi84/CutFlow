@@ -7,14 +7,16 @@ from packages.core.contracts.artifacts import BrollOverlay, BrollPlanArtifact, N
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.planning.material import (
     ScriptSegment,
+    demote_recent_broll_candidates,
     extract_keywords,
     plan_coverage,
     rank_broll_candidates,
 )
 from packages.production.pipeline._node_context import NodeContext
-from packages.production.pipeline.nodes._broll_policy import broll_generic_coverage_enabled
-
-_BROLL_RECENT_SELECTION_LIMIT = 80
+from packages.production.pipeline.nodes._broll_policy import (
+    broll_generic_coverage_enabled,
+    broll_recency_penalties,
+)
 
 
 def _narration_segments(units: list[NarrationUnit]) -> list[ScriptSegment]:
@@ -51,16 +53,19 @@ def run(ctx: NodeContext) -> NodeOutput:
         for asset_id in dict.fromkeys(candidate_asset_ids)
         if (annotation := ctx.repository.annotation_v4_for_asset(asset_id)) is not None
     }
-    ledger_entries = ctx.repository.recent_selections(
-        case_id=state.request.case_id,
-        medium="broll",
-        limit=_BROLL_RECENT_SELECTION_LIMIT,
-    )
+    # The ledger is NOT read here (MaterialPackPlanning is the single ledger-reading
+    # node); recency is re-applied from the MaterialPack-computed penalties below.
     candidates = rank_broll_candidates(
         annotations=annotations,
         segments=segments,
-        ledger_entries=ledger_entries,
+        ledger_entries=(),
         include_generic_coverage=broll_generic_coverage_enabled(state.request),
+    )
+    penalty_by_clip, penalty_by_diversity = broll_recency_penalties(material)
+    candidates = demote_recent_broll_candidates(
+        candidates,
+        penalty_by_clip=penalty_by_clip,
+        penalty_by_diversity=penalty_by_diversity,
     )
     plan = plan_coverage(
         candidates=candidates,

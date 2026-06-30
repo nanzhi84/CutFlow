@@ -26,6 +26,9 @@ from packages.planning.material import (
 )
 from packages.planning.material.broll_pack import _MIN_CLEAN_SPAN_SEC
 from packages.planning.selection.recency import recency_penalty_for
+from packages.planning.selection.recency_context import (
+    build_portrait_recency_context_from_ledger,
+)
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline.nodes._broll_policy import broll_generic_coverage_enabled
 
@@ -121,6 +124,14 @@ def run(ctx: NodeContext) -> NodeOutput:
         if (annotation := repo.annotation_v4_for_asset(asset.id)) is not None
     }
     portrait_avoid_cache: dict[str, list[tuple[float, float]]] = {}
+    # Weighted recency + opening-guard context is the single ledger-derived signal the
+    # downstream PortraitPlanning boundary planner consumes; computing it HERE (the one
+    # node that reads the ledger) and stamping the full ``recent_usage`` dict onto each
+    # candidate's open metadata is what lets PortraitPlanning stop reading the ledger
+    # itself. It depends only on ``asset_id`` (template identity), so it is cached per
+    # asset and shared across that asset's clip windows — identical to the value the
+    # old per-window recompute produced.
+    portrait_recent_usage_cache: dict[str, dict] = {}
     for clip_candidate in rank_portrait_clip_candidates(
         annotations=portrait_annotations,
         ledger_entries=portrait_ledger,
@@ -129,6 +140,14 @@ def run(ctx: NodeContext) -> NodeOutput:
         if avoid is None:
             avoid = avoid_intervals(portrait_annotations[clip_candidate.asset_id])
             portrait_avoid_cache[clip_candidate.asset_id] = avoid
+        recent_usage = portrait_recent_usage_cache.get(clip_candidate.asset_id)
+        if recent_usage is None:
+            recent_usage = build_portrait_recency_context_from_ledger(
+                entries=portrait_ledger,
+                template_id=clip_candidate.asset_id,
+                diversity_key=None,
+            )
+            portrait_recent_usage_cache[clip_candidate.asset_id] = recent_usage
         portrait_candidates.append(
             MaterialCandidate(
                 asset_id=clip_candidate.asset_id,
@@ -142,6 +161,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                     "source_end": clip_candidate.source_end,
                     "duration": clip_candidate.duration,
                     "avoid_spans": [[float(s), float(e)] for s, e in avoid],
+                    "recent_usage": recent_usage,
                 },
             )
         )
@@ -204,6 +224,10 @@ def run(ctx: NodeContext) -> NodeOutput:
                     "source_end": candidate.source_end,
                     "base_score": candidate.base_score,
                     "recency_penalty": candidate.recency_penalty,
+                    # Carry the recency cluster so the b-roll planning nodes can re-apply
+                    # this MaterialPack-computed recency penalty by (asset_id, clip_id) /
+                    # (asset_id, diversity_key) without reading the ledger themselves.
+                    "diversity_key": candidate.diversity_key,
                 },
             )
         )

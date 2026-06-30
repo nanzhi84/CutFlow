@@ -174,6 +174,43 @@ def test_broll_coverage_planning_outputs_full_duration_plan(monkeypatch: pytest.
     assert payload["overlays"][-1]["timeline_end"] == 5.0
 
 
+def test_broll_coverage_planning_never_reads_selection_ledger(monkeypatch: pytest.MonkeyPatch):
+    # The selection ledger is read once, in MaterialPackPlanning. BrollCoveragePlanning
+    # must cover the narration WITHOUT reading the ledger.
+    monkeypatch.setattr(
+        broll_coverage_planning,
+        "rank_broll_candidates",
+        lambda **_: [
+            _candidate(
+                asset_id="asset_broll_demo", clip_id="cover_a", source_start=0.0, source_end=3.0
+            ),
+            _candidate(
+                asset_id="asset_broll_demo", clip_id="cover_b", source_start=0.0, source_end=3.0
+            ),
+        ],
+    )
+    ctx = _ctx(duration=5.0)
+    ledger_calls: list = []
+    real_recent_selections = ctx.repository.recent_selections
+
+    def _spy_recent_selections(*args, **kwargs):
+        ledger_calls.append((args, kwargs))
+        return real_recent_selections(*args, **kwargs)
+
+    monkeypatch.setattr(ctx.repository, "recent_selections", _spy_recent_selections)
+
+    output = broll_coverage_planning.run(ctx)
+    payload = next(
+        artifact.payload
+        for artifact in output.artifacts
+        if artifact.kind == ArtifactKind.plan_broll
+    )
+
+    assert ledger_calls == []
+    assert payload["overlays"][0]["timeline_start"] == 0.0
+    assert payload["overlays"][-1]["timeline_end"] == 5.0
+
+
 def test_broll_coverage_planning_hard_fails_when_material_is_insufficient(
     monkeypatch: pytest.MonkeyPatch,
 ):

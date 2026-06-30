@@ -10,8 +10,8 @@ empty list (the node soft-degrades; never a fabricated pick).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 
 from packages.core.contracts import AnnotationV4, SelectionLedgerEntry
 from packages.planning.material._avoid import avoid_intervals, subtract_bad_spans
@@ -217,6 +217,61 @@ def rank_broll_candidates(
 
     candidates.sort(key=lambda c: _recent_reuse_sort_key(c, ledger_entries))
     return candidates
+
+
+def demote_recent_broll_candidates(
+    candidates: Sequence[BrollCandidate],
+    *,
+    penalty_by_clip: Mapping[tuple[str, str], float],
+    penalty_by_diversity: Mapping[tuple[str, str], float] | None = None,
+    recency_weight: float = _RECENCY_WEIGHT,
+) -> list[BrollCandidate]:
+    """Re-apply MaterialPack-computed recency penalties to narration-ranked b-roll.
+
+    The b-roll planning nodes re-rank the candidate pool against the *real* narration
+    with an EMPTY ledger (the selection ledger is read once, in MaterialPackPlanning).
+    This folds the recency demotion MaterialPack already computed back into the score +
+    ordering, so a recently-used clip stays behind fresh material without the node ever
+    touching the ledger.
+
+    The penalty is looked up by ``(asset_id, clip_id)`` first, then by
+    ``(asset_id, diversity_key)`` — the latter is the key the b-roll recency penalty
+    actually depends on, so it covers candidates that cleared the narration floor but
+    not MaterialPack's script floor. An unknown candidate is treated as fresh
+    (penalty 0), which is exactly the no-ledger-history baseline; with an all-empty
+    penalty map this function is a no-op re-sort identical to ranking against an empty
+    ledger.
+    """
+    by_diversity = penalty_by_diversity or {}
+    demoted: list[BrollCandidate] = []
+    for candidate in candidates:
+        penalty = penalty_by_clip.get((candidate.asset_id, candidate.clip_id))
+        if penalty is None:
+            penalty = by_diversity.get((candidate.asset_id, candidate.diversity_key), 0.0)
+        penalty = max(0.0, float(penalty))
+        final = max(0.0, candidate.base_score - penalty * recency_weight)
+        demoted.append(
+            replace(candidate, score=round(final, 3), recency_penalty=round(penalty, 3))
+        )
+    demoted.sort(key=_recency_demoted_sort_key)
+    return demoted
+
+
+def _recency_demoted_sort_key(
+    candidate: BrollCandidate,
+) -> tuple[bool, float, float, str, str]:
+    """Fresh clips first, then by ascending recency penalty, then by descending score.
+
+    With every penalty 0 this collapses to ``(-score, asset_id, clip_id)`` — the same
+    order ``rank_broll_candidates`` produces against an empty ledger.
+    """
+    return (
+        candidate.recency_penalty > 0.0,
+        candidate.recency_penalty,
+        -candidate.score,
+        candidate.asset_id,
+        candidate.clip_id,
+    )
 
 
 def _clip_id_for_clean_span(segment_id: str, span_index: int) -> str:

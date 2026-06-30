@@ -72,6 +72,7 @@ def _state(
     candidate_ids: list[str],
     duration: float = 12.0,
     with_clip_metadata: bool = True,
+    recent_usage: dict | None = None,
 ) -> RunState:
     request = DigitalHumanVideoRequest(
         case_id="case_demo",
@@ -80,16 +81,23 @@ def _state(
         portrait={"template_mode": "agent"},
         strictness={"strict_timestamps": False},
     )
+
+    def _metadata(cid: str) -> dict:
+        if not with_clip_metadata:
+            return {}
+        meta = {"clip_id": f"{cid}_talk", "source_start": 0.0, "source_end": 15.0}
+        if recent_usage is not None:
+            # Mirror MaterialPackPlanning, which (as the single ledger reader) stamps the
+            # recency context onto each portrait candidate's metadata.
+            meta["recent_usage"] = recent_usage
+        return meta
+
     material = {
         "portrait_candidates": [
             {
                 "asset_id": cid,
                 "score": 1.0,
-                "metadata": (
-                    {"clip_id": f"{cid}_talk", "source_start": 0.0, "source_end": 15.0}
-                    if with_clip_metadata
-                    else {}
-                ),
+                "metadata": _metadata(cid),
             }
             for cid in candidate_ids
         ]
@@ -502,9 +510,12 @@ def test_capacity_controlled_split_retry_drives_recovery(monkeypatch, tmp_path):
 
 
 def test_recency_context_demotes_recently_used_template_and_records_opening(monkeypatch, tmp_path):
-    # A prior run used asset_portrait_demo as its opening -> the next run's candidate
-    # carries a live recency/opening context (previously dead), AND the new plan records
-    # its opening segment distinctly so the guard has data for the run after this one.
+    # A prior run used asset_portrait_demo as its opening. MaterialPackPlanning (the
+    # single ledger reader) stamps that recency/opening context onto the candidate
+    # metadata; PortraitPlanning consumes it WITHOUT reading the ledger, yet the new
+    # plan still demotes the recently-used template and records its opening segment
+    # distinctly so the guard has data for the run after this one. Behaviour is
+    # equivalent to the old self-read path — only the ledger read moved upstream.
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
     monkeypatch.setattr(
@@ -513,9 +524,14 @@ def test_recency_context_demotes_recently_used_template_and_records_opening(monk
     )
     adapter = _adapter(object_store)
     from packages.core.contracts import SelectionLedgerEntry
+    from packages.planning.selection.recency_context import (
+        build_portrait_recency_context_from_ledger,
+    )
 
-    adapter.repository.record_selection_ledger_entries(
-        [
+    # The exact recency context MaterialPackPlanning would compute from the case's
+    # recent portrait ledger for this template (same function, same ledger row).
+    recent_usage = build_portrait_recency_context_from_ledger(
+        entries=[
             SelectionLedgerEntry(
                 case_id="case_demo",
                 run_id="run_prev",
@@ -523,12 +539,34 @@ def test_recency_context_demotes_recently_used_template_and_records_opening(monk
                 asset_id="asset_portrait_demo",
                 slot_phase="portrait_opening",
             )
-        ]
+        ],
+        template_id="asset_portrait_demo",
+        diversity_key=None,
     )
+    assert recent_usage["is_recently_used"] is True  # guard: the fixture really is "recent"
+
+    # Spy: PortraitPlanning must never touch the selection ledger now.
+    ledger_calls: list = []
+    real_recent_selections = adapter.repository.recent_selections
+
+    def _spy_recent_selections(*args, **kwargs):
+        ledger_calls.append((args, kwargs))
+        return real_recent_selections(*args, **kwargs)
+
+    monkeypatch.setattr(adapter.repository, "recent_selections", _spy_recent_selections)
+
     output = _run_node(
-        adapter, _state(adapter, candidate_ids=["asset_portrait_demo"], duration=12.0)
+        adapter,
+        _state(
+            adapter,
+            candidate_ids=["asset_portrait_demo"],
+            duration=12.0,
+            recent_usage=recent_usage,
+        ),
     )
     payload = _portrait_payload(output)
+    # Zero ledger reads from the portrait node (single-point ledger read moved upstream).
+    assert ledger_calls == []
     # The only template is recently used -> diagnostics surface a non-zero recent count.
     assert payload["diagnostics"]["recently_used_segment_count"] >= 1
     # Opening segment recorded with the distinct slot_phase (drives the next-run guard).
