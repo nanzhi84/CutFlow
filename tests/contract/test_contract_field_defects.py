@@ -21,6 +21,13 @@ from pydantic import ValidationError
 
 import packages.core.contracts as contracts_pkg
 from packages.core.contracts import LipSyncOptions, OutboxEvent, OutputOptions, StrictnessOptions
+from packages.core.contracts.artifacts import (
+    CaseContextArtifact,
+    FontPlan,
+    MaterialCandidate,
+    StylePlanArtifact,
+    SubtitleStylePlan,
+)
 
 _CONTRACTS_DIR = pathlib.Path(contracts_pkg.__file__).parent
 _CONTRACT_FILES = sorted(_CONTRACTS_DIR.glob("*.py"))
@@ -125,6 +132,69 @@ def test_strictness_options_still_accepts_supported_fields():
     options = StrictnessOptions(strict_timestamps=False, portrait_insufficient_policy="hard_fail")
     assert options.strict_timestamps is False
     assert options.portrait_insufficient_policy == "hard_fail"
+
+
+# Artifact-layer dead fields removed in issue #118: each was written by an upstream
+# node (StylePlanning) or merely defaulted, but no consumer ever read it, so the
+# plan/candidate/context artifacts carried "looks-effective" config nothing honoured.
+#   * SubtitleStylePlan.enabled / StylePlanArtifact.subtitle_enabled — the single
+#     source of truth for "render subtitles?" is request.subtitle.enabled
+#     (SubtitleAndBgmMix reads that, never the plan).
+#   * SubtitleStylePlan.style_preset — write_ass_subtitles never maps a preset.
+#   * FontPlan.fallback_family / FontPlan.size — font resolution walks
+#     font_asset_id -> font.font_id -> subtitle.font_id; sizing comes from
+#     subtitle.font_size, never these.
+#   * StylePlanArtifact.selection_reservation_ids / MaterialCandidate.reservation_id
+#     — reservations live on MaterialPackArtifact.reservations + the repository
+#     reservation APIs; these duplicate slots had no producer/consumer.
+#   * CaseContextArtifact.recent_video_versions / negative_lessons — LoadCaseContext
+#     never populates them and nothing reads them.
+# These models live on packages.core.contracts.artifacts, are dict-consumed (no
+# model_validate re-check) and not on the public OpenAPI surface, so removal needs
+# no migration and no schema regen.
+_REMOVED_ARTIFACT_FIELDS = {
+    MaterialCandidate: ("reservation_id",),
+    SubtitleStylePlan: ("enabled", "style_preset"),
+    FontPlan: ("fallback_family", "size"),
+    StylePlanArtifact: ("subtitle_enabled", "selection_reservation_ids"),
+    CaseContextArtifact: ("recent_video_versions", "negative_lessons"),
+}
+
+# Sibling fields on the same models that ARE wired and must survive the cleanup.
+_RETAINED_ARTIFACT_FIELDS = {
+    MaterialCandidate: ("asset_id", "score", "metadata"),
+    SubtitleStylePlan: ("font_id", "font_size", "position"),
+    FontPlan: ("font_id",),
+    StylePlanArtifact: ("subtitle", "bgm", "font", "font_asset_id", "overlay_events"),
+    CaseContextArtifact: (
+        "case_id",
+        "case_profile",
+        "active_memories",
+        "recent_script_versions",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("model", "field"),
+    [(model, field) for model, fields in _REMOVED_ARTIFACT_FIELDS.items() for field in fields],
+)
+def test_artifact_dead_field_removed(model, field):
+    assert field not in model.model_fields, (
+        f"{model.__name__}.{field} was removed as an un-consumed dead field (#118) "
+        "but is still declared on the artifact model"
+    )
+
+
+@pytest.mark.parametrize(
+    ("model", "field"),
+    [(model, field) for model, fields in _RETAINED_ARTIFACT_FIELDS.items() for field in fields],
+)
+def test_artifact_wired_field_retained(model, field):
+    assert field in model.model_fields, (
+        f"{model.__name__}.{field} is still consumed by the production pipeline "
+        "and must not be dropped"
+    )
 
 
 def test_outbox_event_dedupe_key_is_required_str():

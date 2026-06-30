@@ -69,8 +69,6 @@ def run(ctx: NodeContext) -> NodeOutput:
         ArtifactKind.plan_style,
         StylePlanArtifact(
             subtitle=SubtitleStylePlan(
-                enabled=state.request.subtitle.enabled,
-                style_preset=state.request.subtitle.style_preset,
                 font_id=state.request.subtitle.font_id,
                 font_size=state.request.subtitle.font_size,
                 position=state.request.subtitle.position,
@@ -97,10 +95,9 @@ def run(ctx: NodeContext) -> NodeOutput:
                 volume=state.request.bgm.volume,
                 auto_mix=state.request.bgm.auto_mix,
             ),
-            font=FontPlan(font_id=font_asset_id, size=state.request.subtitle.font_size),
+            font=FontPlan(font_id=font_asset_id),
             font_asset_id=font_asset_id,
             bgm_asset_id=bgm_asset_id,
-            subtitle_enabled=state.request.subtitle.enabled,
             overlay_events=overlay_events,
         ).model_dump(mode="json"),
         "StylePlanArtifact.v1",

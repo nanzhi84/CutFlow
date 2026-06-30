@@ -12,7 +12,6 @@ from packages.core.contracts import (
     DegradationNotice,
     NodeError,
     ScriptVersion,
-    VideoVersion,
     utcnow,
 )
 
@@ -21,13 +20,10 @@ class MaterialCandidate(ContractModel):
     asset_id: str
     score: float = 0
     reason: str = ""
-    reservation_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class SubtitleStylePlan(ContractModel):
-    enabled: bool = True
-    style_preset: str = "douyin"
     font_id: str | None = None
     font_size: int | None = None
     position: dict[str, float] | None = None
@@ -56,8 +52,6 @@ class BgmPlan(ContractModel):
 
 class FontPlan(ContractModel):
     font_id: str | None = None
-    fallback_family: str = "sans"
-    size: int | None = None
 
 
 class TimelineValidationReport(ContractModel):
@@ -72,9 +66,7 @@ class CaseContextArtifact(ContractModel):
     case_profile: dict[str, Any] = Field(default_factory=dict)
     active_memories: list[CaseMemory] = Field(default_factory=list)
     recent_script_versions: list[ScriptVersion] = Field(default_factory=list)
-    recent_video_versions: list[VideoVersion] = Field(default_factory=list)
     performance_summary: dict[str, Any] = Field(default_factory=dict)
-    negative_lessons: list[CaseMemory] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=utcnow)
 
 
@@ -207,8 +199,6 @@ class StylePlanArtifact(ContractModel):
     font: FontPlan | None = None
     font_asset_id: str | None = None
     bgm_asset_id: str | None = None
-    subtitle_enabled: bool = True
-    selection_reservation_ids: list[str] = Field(default_factory=list)
     overlay_events: list[OverlayEvent] = Field(default_factory=list)
 
 
