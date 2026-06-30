@@ -274,6 +274,16 @@ def _get_default_limiter() -> DistributedRateLimiter:
         return limiter
 
 
+def default_limiter_redis_degraded() -> bool:
+    """Read-only readiness probe: ``True`` when the process-wide provider limiter
+    has fallen back to per-process limiting because its Redis is degraded.
+
+    Returns ``False`` when no limiter has been constructed yet (nothing to
+    degrade) — never constructs the limiter as a side effect of probing."""
+    limiter = _default_limiter
+    return limiter.is_redis_degraded() if limiter is not None else False
+
+
 @contextmanager
 def provider_slot(concurrency_key: str | None, provider_id: str) -> Iterator[None]:
     """Acquire one in-flight slot for the given concurrency key.

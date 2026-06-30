@@ -10,6 +10,7 @@ from apps.api.common import (
     repository,
     request_id,
 )
+from packages.ai.gateway.provider_limiter import default_limiter_redis_degraded
 from packages.core import contracts as c
 from packages.core.config import validate_startup_settings
 from packages.core.observability import metric_snapshot
@@ -25,17 +26,37 @@ def readiness(request: Request) -> JSONResponse:
     In production this surfaces any unsafe-config preflight findings as a 503 so
     an orchestrator never routes traffic to a misconfigured replica. Outside
     production the preflight is a no-op, so this reflects a plain liveness-ish
-    ready. PR4 (#67) extends this with live Redis/dependency checks.
+    ready.
+
+    When ``CUTAGENT_REDIS_REQUIRED`` is set (#81), the fail-closed contract is
+    enforced here: if Redis is required but any Redis-backed singleton (event
+    fan-out hub, event-stream token store, provider rate limiter) has fallen
+    back to its per-process degraded mode, this replica is reported not-ready
+    (503) so the orchestrator drains it rather than serving with cross-replica
+    guarantees silently broken.
     """
     settings = request.app.state.settings
     issues = validate_startup_settings(settings)
+    redis_degradations: list[str] = []
+    if settings.redis_required:
+        state = request.app.state
+        for name in ("event_hub", "event_tokens"):
+            component = getattr(state, name, None)
+            checker = getattr(component, "is_redis_degraded", None)
+            if checker is not None and checker():
+                redis_degradations.append(name)
+        if default_limiter_redis_degraded():
+            redis_degradations.append("provider_limiter")
+    not_ready = bool(issues) or bool(redis_degradations)
     payload = {
-        "status": "ready" if not issues else "not_ready",
+        "status": "not_ready" if not_ready else "ready",
         "environment": settings.deployment.environment,
         "preflight_issues": issues,
+        "redis_required": settings.redis_required,
+        "redis_degradations": redis_degradations,
         "request_id": request_id(),
     }
-    return JSONResponse(status_code=200 if not issues else 503, content=payload)
+    return JSONResponse(status_code=503 if not_ready else 200, content=payload)
 
 
 def metrics(request: Request) -> str:
