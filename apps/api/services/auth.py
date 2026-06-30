@@ -235,19 +235,16 @@ def get_my_generation_defaults(request: Request) -> c.UserGenerationDefaults:
     ``user_generation_defaults`` table when running on the SQLAlchemy backend, and
     by the in-memory repository otherwise."""
     user = auth(request).authenticate_token(request.cookies.get(SESSION_COOKIE))
-    session_factory = getattr(request.app.state, "sqlalchemy_session_factory", None)
-    if session_factory is not None:
-        with session_factory() as session:
-            row = session.scalar(
-                select(UserGenerationDefaultsRow).where(
-                    UserGenerationDefaultsRow.user_id == user.id
-                )
+    session_factory = request.app.state.sqlalchemy_session_factory
+    with session_factory() as session:
+        row = session.scalar(
+            select(UserGenerationDefaultsRow).where(
+                UserGenerationDefaultsRow.user_id == user.id
             )
-            if row is None:
-                return c.UserGenerationDefaults()
-            return c.UserGenerationDefaults.model_validate(row.settings)
-    stored = repository(request).generation_defaults.get(user.id)
-    return stored if stored is not None else c.UserGenerationDefaults()
+        )
+        if row is None:
+            return c.UserGenerationDefaults()
+        return c.UserGenerationDefaults.model_validate(row.settings)
 
 
 def put_my_generation_defaults(
@@ -256,26 +253,23 @@ def put_my_generation_defaults(
     """Upsert the caller's generation defaults (full replace) and echo the saved value."""
     user = auth(request).authenticate_token(request.cookies.get(SESSION_COOKIE))
     settings_payload = payload.model_dump(mode="json")
-    session_factory = getattr(request.app.state, "sqlalchemy_session_factory", None)
-    if session_factory is not None:
-        with session_factory() as session:
-            row = session.scalar(
-                select(UserGenerationDefaultsRow).where(
-                    UserGenerationDefaultsRow.user_id == user.id
-                )
+    session_factory = request.app.state.sqlalchemy_session_factory
+    with session_factory() as session:
+        row = session.scalar(
+            select(UserGenerationDefaultsRow).where(
+                UserGenerationDefaultsRow.user_id == user.id
             )
-            if row is None:
-                row = UserGenerationDefaultsRow(
-                    id=new_id("ugd"),
-                    user_id=user.id,
-                    preset_name="default",
-                    settings=settings_payload,
-                )
-                session.add(row)
-            else:
-                row.settings = settings_payload
-                row.updated_at = c.utcnow()
-            session.commit()
-        return c.UserGenerationDefaults.model_validate(settings_payload)
-    repository(request).generation_defaults[user.id] = payload
-    return payload
+        )
+        if row is None:
+            row = UserGenerationDefaultsRow(
+                id=new_id("ugd"),
+                user_id=user.id,
+                preset_name="default",
+                settings=settings_payload,
+            )
+            session.add(row)
+        else:
+            row.settings = settings_payload
+            row.updated_at = c.utcnow()
+        session.commit()
+    return c.UserGenerationDefaults.model_validate(settings_payload)

@@ -9,7 +9,6 @@ from apps.api.common import (
     request_id,
 )
 from packages.core import contracts as c
-from packages.core.observability import record_funnel_event
 
 
 def ops_dashboard(
@@ -132,50 +131,6 @@ def _qc_run_ids(repo, *, target_type: str, target_id: str) -> tuple[str | None, 
     run_id = getattr(finished, "run_id", None) if finished else None
     run = repo.runs.get(run_id) if run_id else None
     return run_id, getattr(run, "job_id", None)
-
-
-def _record_quality_check_funnel(repo, check: c.ProductionQualityCheck) -> None:
-    """Emit the §9.5 qc_* stages for one quality check. Always records
-    ``qc_started``; then ``qc_passed`` (result == passed) or ``qc_failed``
-    (result == failed). ``warning`` / ``manual_required`` results emit only
-    ``qc_started`` (the QC ran but did not terminally pass/fail). Best-effort —
-    ``qc_failed`` disqualifies the run from true yield."""
-
-    run_id, job_id = _qc_run_ids(repo, target_type=check.target_type, target_id=check.target_id)
-    record_funnel_event(
-        repo,
-        event_type="qc_started",
-        job_id=job_id,
-        run_id=run_id,
-        finished_video_id=check.target_id if check.target_type == "finished_video" else None,
-        dedupe_key=f"{check.id}:qc_started",
-        event_time=check.created_at,
-    )
-    result = check.result.value if hasattr(check.result, "value") else str(check.result)
-    terminal = {"passed": "qc_passed", "failed": "qc_failed"}.get(result)
-    if terminal is not None:
-        record_funnel_event(
-            repo,
-            event_type=terminal,
-            job_id=job_id,
-            run_id=run_id,
-            finished_video_id=check.target_id if check.target_type == "finished_video" else None,
-            dedupe_key=f"{check.id}:{terminal}",
-            event_time=check.created_at,
-        )
-    # §9.6: a failed QC is a terminal failure -> classify ``qc_failed``.
-    if result == "failed":
-        run = repo.runs.get(run_id or "")
-        repo.record_failure_taxonomy(
-            target_type=check.target_type,
-            target_id=check.target_id,
-            failure_class=c.FailureClass.qc_failed,
-            run_id=run_id,
-            job_id=job_id,
-            case_id=getattr(run, "case_id", None),
-            message=check.reason_code,
-            dedupe_key=f"{check.id}:qc_failed",
-        )
 
 
 def run_quality_check(

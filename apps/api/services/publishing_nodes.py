@@ -100,7 +100,7 @@ def run_copy_node(
 
 
 def _cover_artifact_writer(request: Request, *, run_id: str | None = None):
-    session_factory = getattr(request.app.state, "sqlalchemy_session_factory", None)
+    session_factory = request.app.state.sqlalchemy_session_factory
     def _write(*, uri: str, sha256: str, case_id: str | None) -> c.ArtifactRef:
         with session_factory() as session:
             artifact = ArtifactRow(
