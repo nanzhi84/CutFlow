@@ -191,14 +191,7 @@ def _render_with_fallback(
 def _select_real_llm_profile(request: Request) -> c.ProviderProfile | None:
     gateway = request.app.state.provider_gateway
     provider_repo = provider_repository(request)
-    if provider_repo is not None:
-        candidates = provider_repo.list_profiles(capability="llm.chat", limit=200)
-    else:
-        candidates = [
-            profile
-            for profile in repository(request).provider_profiles.values()
-            if profile.capability == "llm.chat"
-        ]
+    candidates = provider_repo.list_profiles(capability="llm.chat", limit=200)
     for profile in candidates:
         if not profile.enabled or profile.provider_id == "sandbox":
             continue

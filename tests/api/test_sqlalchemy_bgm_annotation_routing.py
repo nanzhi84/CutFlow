@@ -126,6 +126,13 @@ class _FakeMediaRepo:
         )
 
 
+class _FakeProviderRepo:
+    """No provider profiles configured -> resolve_*_profile yields None (degraded path)."""
+
+    def list_profiles(self, *, capability: str, limit: int):
+        return []
+
+
 def _request() -> SimpleNamespace:
     gateway = SimpleNamespace(get_profile=lambda _pid: None)
     return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(provider_gateway=gateway)))
@@ -136,7 +143,7 @@ def _wire(monkeypatch, asset: c.MediaAssetRecord) -> tuple[_FakeMediaRepo, dict]
     calls: dict[str, list] = {"bgm": [], "visual": []}
 
     monkeypatch.setattr(asset_annotation, "media_repository", lambda _req: media_repo)
-    monkeypatch.setattr(asset_annotation, "provider_repository", lambda _req: None)
+    monkeypatch.setattr(asset_annotation, "provider_repository", lambda _req: _FakeProviderRepo())
     # The s3:// -> local-path resolution is exercised elsewhere; stub it here so the
     # test stays offline regardless of object-store wiring.
     monkeypatch.setattr(
@@ -206,7 +213,7 @@ def test_sqlalchemy_bgm_unconfigured_degrades_without_crash(monkeypatch):
     """No real llm.chat profile -> degraded BGM annotation persisted (not a crash)."""
     media_repo = _FakeMediaRepo(_asset("bgm"))
     monkeypatch.setattr(asset_annotation, "media_repository", lambda _req: media_repo)
-    monkeypatch.setattr(asset_annotation, "provider_repository", lambda _req: None)
+    monkeypatch.setattr(asset_annotation, "provider_repository", lambda _req: _FakeProviderRepo())
     monkeypatch.setattr(asset_annotation, "_sqlalchemy_local_audio_path", lambda *a, **k: "")
 
     visual_calls: list = []
