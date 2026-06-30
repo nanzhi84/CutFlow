@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import timedelta
 
 from fastapi import Request
@@ -99,8 +100,21 @@ def _safe_delete(store: ObjectStore, uri: str) -> None:
         pass
 
 
-def _fail_upload(request: Request, store: ObjectStore, upload_id: str, staging_uri: str) -> None:
+def _fail_upload(
+    request: Request,
+    store: ObjectStore,
+    upload_id: str,
+    staging_uri: str,
+    derived_uris: Iterable[str] = (),
+) -> None:
+    # Drop the browser-written staging object AND any server-written derived
+    # objects (normalize/stabilize each store_file a fresh object before a later
+    # step may fail). Best-effort, per-object: one delete failing must not block
+    # the others or mask the original error.
     _safe_delete(store, staging_uri)
+    for uri in derived_uris:
+        if uri and uri != staging_uri:
+            _safe_delete(store, uri)
     try:
         _patch_upload(request, upload_id, {"status": c.UploadStatus.failed})
     except Exception:  # noqa: BLE001 — never mask the original failure
@@ -115,6 +129,10 @@ def complete_upload(payload: c.CompleteUploadRequest, request: Request) -> c.Com
         raise NodeExecutionError(c.ErrorCode.upload_invalid_state, "Upload session has no object.")
     # First hop: the API never observed the browser's direct PUT.
     upload = _patch_upload(request, upload.id, {"status": c.UploadStatus.uploading})
+
+    # Server-written derived objects (normalize/stabilize outputs). A failure
+    # after one of these is written must clean them up too, not just staging.
+    derived_uris: set[str] = set()
 
     # Verify + post-process the uploaded object. ANY failure here drops the
     # staging object and fails the session — the API never held the bytes, so a
@@ -150,9 +168,13 @@ def complete_upload(payload: c.CompleteUploadRequest, request: Request) -> c.Com
         )
         if is_av_video and settings(request).upload.normalize_video:
             upload, media_info = _normalize_upload_video(request, upload)
+            if upload.object_uri:
+                derived_uris.add(upload.object_uri)
             was_normalized = True
         if upload.stabilize and upload.kind in {c.UploadKind.portrait, c.UploadKind.broll, c.UploadKind.video}:
             upload, media_info = _stabilize_upload_video(request, upload)
+            if upload.object_uri:
+                derived_uris.add(upload.object_uri)
 
         # Move the verified object from the browser-writable staging key to a
         # server-only final key (routed by kind), then drop staging. If
@@ -165,7 +187,7 @@ def complete_upload(payload: c.CompleteUploadRequest, request: Request) -> c.Com
         if upload.object_uri != staging_uri:
             _safe_delete(store, staging_uri)
     except Exception:
-        _fail_upload(request, store, upload.id, staging_uri)
+        _fail_upload(request, store, upload.id, staging_uri, derived_uris)
         raise
 
     # Second hop: uploading -> completed, then register the artifact.
