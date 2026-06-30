@@ -29,6 +29,17 @@ def test_delete_case_requires_authenticated_operator() -> None:
         assert forbidden.json()["error"]["code"] == "auth.forbidden"
 
 
+def test_case_detail_missing_case_raises_missing_case() -> None:
+    # get_case (apps.api.common) folds its dual-track dispatch in #87 A1: when the
+    # SQL case repository has no such case it must raise validation_missing_case,
+    # not fall through to the (now-empty) in-memory runtime repo. Pin that 404.
+    with TestClient(create_app()) as client:
+        _login(client)
+        resp = client.get("/api/cases/case_nonexistent")
+        assert resp.status_code == 404, resp.text
+        assert resp.json()["error"]["code"] == "validation.missing_case", resp.text
+
+
 def test_delete_case_removes_unreferenced_case_from_listing() -> None:
     with TestClient(create_app()) as client:
         _login(client)

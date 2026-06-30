@@ -176,11 +176,7 @@ async def authenticate_api_request(request: Request, call_next):
             record_method = request.method
             record_path = request.url.path
             store = common.idempotency_repository(request)
-            existing = (
-                store.get(key=record_key, method=record_method, path=record_path, now=c.utcnow())
-                if store is not None
-                else common.repository(request).idempotency_records.get(f"{record_key}:{record_method}:{record_path}")
-            )
+            existing = store.get(key=record_key, method=record_method, path=record_path, now=c.utcnow())
             if existing is not None:
                 if existing["request_hash"] != request_hash:
                     response = node_error_response(
@@ -255,23 +251,15 @@ async def authenticate_api_request(request: Request, call_next):
                     status_code = passthrough.status_code
                     return passthrough
                 expires_at = c.utcnow() + timedelta(hours=24)
-                if store is not None:
-                    store.put(
-                        key=record_key,
-                        method=record_method,
-                        path=record_path,
-                        request_hash=request_hash,
-                        response_status=response.status_code,
-                        response_body=content,
-                        expires_at=expires_at,
-                    )
-                else:
-                    common.repository(request).idempotency_records[f"{record_key}:{record_method}:{record_path}"] = {
-                        "request_hash": request_hash,
-                        "content": content,
-                        "status_code": response.status_code,
-                        "expires_at": expires_at,
-                    }
+                store.put(
+                    key=record_key,
+                    method=record_method,
+                    path=record_path,
+                    request_hash=request_hash,
+                    response_status=response.status_code,
+                    response_body=content,
+                    expires_at=expires_at,
+                )
                 response.headers["X-Request-Id"] = request_id()
                 stored = Response(
                     content=response_body,

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from fastapi import Request
 
-from apps.api.common import object_store, publishing_repository, repository
+from apps.api.common import object_store
 from packages.core import contracts as c
 from packages.core.storage.database import ArtifactRow
 from packages.core.storage.repository import new_id
@@ -101,39 +101,22 @@ def run_copy_node(
 
 def _cover_artifact_writer(request: Request, *, run_id: str | None = None):
     session_factory = getattr(request.app.state, "sqlalchemy_session_factory", None)
-    if publishing_repository(request) is not None and session_factory is not None:
-        def _write(*, uri: str, sha256: str, case_id: str | None) -> c.ArtifactRef:
-            with session_factory() as session:
-                artifact = ArtifactRow(
-                    id=new_id("art"),
-                    case_id=case_id,
-                    run_id=run_id,
-                    kind=c.ArtifactKind.cover_image.value,
-                    uri=uri,
-                    sha256=sha256,
-                    payload_schema="uri-only",
-                    payload=None,
-                )
-                session.add(artifact)
-                session.commit()
-                session.refresh(artifact)
-                return artifact_ref_from_row(artifact)
-
-        return _write
-
-    repo = repository(request)
-
     def _write(*, uri: str, sha256: str, case_id: str | None) -> c.ArtifactRef:
-        artifact = repo.create_artifact(
-            kind=c.ArtifactKind.cover_image,
-            payload_schema="uri-only",
-            payload=None,
-            case_id=case_id,
-            run_id=run_id,
-            uri=uri,
-            sha256=sha256,
-        )
-        return repo.artifact_ref(artifact.id)
+        with session_factory() as session:
+            artifact = ArtifactRow(
+                id=new_id("art"),
+                case_id=case_id,
+                run_id=run_id,
+                kind=c.ArtifactKind.cover_image.value,
+                uri=uri,
+                sha256=sha256,
+                payload_schema="uri-only",
+                payload=None,
+            )
+            session.add(artifact)
+            session.commit()
+            session.refresh(artifact)
+            return artifact_ref_from_row(artifact)
 
     return _write
 

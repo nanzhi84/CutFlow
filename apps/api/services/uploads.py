@@ -8,14 +8,12 @@ from apps.api.common import (
     media_repository,
     object_store,
     publishing_repository,
-    repository,
     request_id,
     settings,
     upload_repository,
 )
 from packages.core import contracts as c
 from packages.core.contracts.media import ALLOWED_UPLOAD_CONTENT_TYPES
-from packages.core.contracts.state_machines import assert_transition
 from packages.core.storage.object_store import ObjectStore, parse_object_uri, sha256_file
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
@@ -66,10 +64,7 @@ def prepare_upload(
         object_uri=staging_ref.uri,
         stabilize=payload.stabilize,
     )
-    if upload_repository(request) is not None:
-        upload = upload_repository(request).create_upload(upload)
-    else:
-        repository(request).uploads[upload.id] = upload
+    upload = upload_repository(request).create_upload(upload)
     return c.PrepareUploadResponse(
         upload_session=upload,
         put_url=signed.url,
@@ -79,23 +74,14 @@ def prepare_upload(
 
 
 def _load_upload(request: Request, upload_id: str) -> c.UploadSession:
-    upload = (
-        upload_repository(request).get_upload(upload_id)
-        if upload_repository(request) is not None
-        else repository(request).uploads.get(upload_id)
-    )
+    upload = upload_repository(request).get_upload(upload_id)
     if upload is None:
         raise NodeExecutionError(c.ErrorCode.upload_invalid_state, "Upload session not found.")
     return upload
 
 
 def _patch_upload(request: Request, upload_id: str, updates: dict) -> c.UploadSession:
-    if upload_repository(request) is not None:
-        return upload_repository(request).patch_upload(upload_id, updates)
-    if "status" in updates:
-        current = repository(request).uploads[upload_id]
-        assert_transition("upload_session", current.status, updates["status"])
-    return repository(request).patch(repository(request).uploads, upload_id, updates)
+    return upload_repository(request).patch_upload(upload_id, updates)
 
 
 def _final_uri_for(store: ObjectStore, staging_uri: str, kind: c.UploadKind) -> str:
@@ -184,19 +170,8 @@ def complete_upload(payload: c.CompleteUploadRequest, request: Request) -> c.Com
 
     # Second hop: uploading -> completed, then register the artifact.
     upload = _patch_upload(request, upload.id, {"status": c.UploadStatus.completed})
-    if upload_repository(request) is not None:
-        artifact = upload_repository(request).create_artifact_from_upload(upload, media_info=media_info)
-        artifact_ref = upload_repository(request).artifact_ref(artifact.id)
-    else:
-        artifact = repository(request).create_artifact(
-            kind=c.ArtifactKind.uploaded_file,
-            payload_schema="UploadedFileArtifact.v1",
-            payload=upload.model_dump(mode="json"),
-            uri=upload.object_uri,
-            sha256=upload.sha256,
-            media_info=media_info,
-        )
-        artifact_ref = repository(request).artifact_ref(artifact.id)
+    artifact = upload_repository(request).create_artifact_from_upload(upload, media_info=media_info)
+    artifact_ref = upload_repository(request).artifact_ref(artifact.id)
     _create_upload_thumbnails(request, artifact)
     media_asset = None
     publish_package = None
@@ -226,38 +201,14 @@ def complete_upload(payload: c.CompleteUploadRequest, request: Request) -> c.Com
         # field needed — rides the existing metadata dict).
         if payload.metadata.get("ai_material") == "1" and "ai_material" not in media_payload.tags:
             media_payload.tags.append("ai_material")
-        if media_repository(request) is not None:
-            media_asset = media_repository(request).create_asset_from_upload(media_payload)
-        else:
-            media_asset = c.MediaAssetRecord(
-                id=new_id("asset"),
-                case_id=media_payload.case_id,
-                title=media_payload.title,
-                kind=media_payload.kind,
-                source_artifact_id=artifact.id,
-                tags=media_payload.tags,
-            )
-            repository(request).media_assets[media_asset.id] = media_asset
+        media_asset = media_repository(request).create_asset_from_upload(media_payload)
     elif upload.kind == c.UploadKind.publish_video:
         package_payload = c.CreatePublishPackageRequest(
             upload_artifact_id=artifact.id,
             title=payload.metadata.get("title") or upload.filename,
             description=payload.metadata.get("description", ""),
         )
-        if publishing_repository(request) is not None:
-            publish_package = publishing_repository(request).create_package(package_payload)
-        else:
-            publish_package = c.PublishPackage(
-                id=new_id("pkg"),
-                case_id=upload.case_id,
-                upload_artifact_id=artifact.id,
-                video_artifact=artifact_ref,
-                platform_defaults=c.PublishDefaults(
-                    title=package_payload.title,
-                    description=package_payload.description,
-                ),
-            )
-            repository(request).publish_packages[publish_package.id] = publish_package
+        publish_package = publishing_repository(request).create_package(package_payload)
     return c.CompleteUploadResponse(
         upload_session=upload,
         artifact=artifact_ref,
@@ -298,10 +249,7 @@ def _stabilize_upload_video(
         "size_bytes": stored.size_bytes,
         "stabilized": True,
     }
-    if upload_repository(request) is not None:
-        upload = upload_repository(request).patch_upload(upload.id, updates)
-    else:
-        upload = repository(request).patch(repository(request).uploads, upload.id, updates)
+    upload = upload_repository(request).patch_upload(upload.id, updates)
     return upload, media_info
 
 
@@ -334,10 +282,7 @@ def _normalize_upload_video(
         "sha256": stored.sha256,
         "size_bytes": stored.size_bytes,
     }
-    if upload_repository(request) is not None:
-        upload = upload_repository(request).patch_upload(upload.id, updates)
-    else:
-        upload = repository(request).patch(repository(request).uploads, upload.id, updates)
+    upload = upload_repository(request).patch_upload(upload.id, updates)
     return upload.model_copy(update={"normalized": True}), result.media_info
 
 
@@ -356,24 +301,14 @@ def _create_upload_thumbnails(request: Request, artifact: c.Artifact) -> None:
             "source_artifact_id": artifact.id,
             "thumbnail_label": thumbnail.label,
         }
-        if upload_repository(request) is not None:
-            upload_repository(request).create_artifact(
-                kind=c.ArtifactKind.cover_image,
-                payload_schema="uri-only",
-                payload=payload,
-                uri=stored.ref.uri,
-                sha256=stored.sha256,
-                media_info=thumbnail.media_info,
-            )
-        else:
-            repository(request).create_artifact(
-                kind=c.ArtifactKind.cover_image,
-                payload_schema="uri-only",
-                payload=payload,
-                uri=stored.ref.uri,
-                sha256=stored.sha256,
-                media_info=thumbnail.media_info,
-            )
+        upload_repository(request).create_artifact(
+            kind=c.ArtifactKind.cover_image,
+            payload_schema="uri-only",
+            payload=payload,
+            uri=stored.ref.uri,
+            sha256=stored.sha256,
+            media_info=thumbnail.media_info,
+        )
 
 
 def cancel_upload(upload_session_id: str, request: Request) -> c.UploadSession:
@@ -385,9 +320,7 @@ def cancel_upload(upload_session_id: str, request: Request) -> c.UploadSession:
 
 
 def get_upload(upload_session_id: str, request: Request) -> c.UploadSession:
-    if upload_repository(request) is not None:
-        upload = upload_repository(request).get_upload(upload_session_id)
-        if upload is None:
-            raise NodeExecutionError(c.ErrorCode.upload_invalid_state, "Upload session not found.")
-        return upload
-    return repository(request).uploads[upload_session_id]
+    upload = upload_repository(request).get_upload(upload_session_id)
+    if upload is None:
+        raise NodeExecutionError(c.ErrorCode.upload_invalid_state, "Upload session not found.")
+    return upload

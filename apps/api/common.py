@@ -149,48 +149,26 @@ def job_owner(request: Request, job_id: str) -> str | None:
     unowned — both correctly hide the resource from a non-owner via
     :func:`assert_owner_or_404` (a genuinely missing resource is 404'd by the
     detail handler regardless)."""
-    prod = production_repository(request)
-    if prod is not None:
-        return prod.job_owner_user_id(job_id)
-    job = repository(request).jobs.get(job_id)
-    return job.created_by if job is not None else None
+    return production_repository(request).job_owner_user_id(job_id)
 
 
 def run_owner(request: Request, run_id: str) -> str | None:
     """Owner of a run = its job's ``created_by`` (the run's ``requested_by`` mirrors
     it). ``None`` when the run is unknown or unowned."""
-    prod = production_repository(request)
-    if prod is not None:
-        return prod.run_owner_user_id(run_id)
-    run = repository(request).runs.get(run_id)
-    if run is None:
-        return None
-    if run.requested_by:
-        return run.requested_by
-    job = repository(request).jobs.get(run.job_id)
-    return job.created_by if job is not None else None
+    return production_repository(request).run_owner_user_id(run_id)
 
 
 def finished_video_owner(request: Request, video_id: str) -> str | None:
     """Owner of a finished video = its denormalized ``owner_user_id``. ``None`` when
     the finished video is unknown or unowned."""
-    prod = production_repository(request)
-    if prod is not None:
-        return prod.finished_video_owner_user_id(video_id)
-    finished = repository(request).finished_videos.get(video_id)
-    return finished.owner_user_id if finished is not None else None
+    return production_repository(request).finished_video_owner_user_id(video_id)
 
 
 def get_case(request: Request, case_id: str) -> c.CaseDetail:
-    repo = case_repository(request)
-    if repo is not None:
-        case = repo.get_case(case_id)
-        if case is not None:
-            return case
-    runtime_repo = repository(request)
-    if case_id not in runtime_repo.cases:
+    case = case_repository(request).get_case(case_id)
+    if case is None:
         raise NodeExecutionError(c.ErrorCode.validation_missing_case, f"Case {case_id} does not exist.")
-    return runtime_repo.cases[case_id]
+    return case
 
 
 def signed(request: Request, path: str) -> c.SignedUrlResponse:

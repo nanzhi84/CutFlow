@@ -6,21 +6,13 @@ from fastapi import Request
 from apps.api.common import (
     case_repository,
     get_case,
-    page,
-    repository,
     request_id,
 )
 from packages.core import contracts as c
 from packages.core.contracts import CASE_MATERIAL_ASSET_KINDS as MATERIAL_ASSET_KINDS
-from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 
-ACTIVE_RUN_STATUSES = {
-    c.RunStatus.created,
-    c.RunStatus.admitted,
-    c.RunStatus.running,
-    c.RunStatus.cancelling,
-}
+
 def list_cases(
     request: Request,
     limit: int = 50,
@@ -28,28 +20,22 @@ def list_cases(
     owner_user_id: str | None = None,
     industry: str | None = None,
 ) -> c.PageResponse[c.CaseListItem]:
-    if case_repository(request) is not None:
-        values = case_repository(request).list_cases(
-            search=search,
-            owner_user_id=owner_user_id,
-            industry=industry,
-            limit=limit,
-        )
-        return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
-    repo = repository(request)
-    values = list(repo.cases.values())
-    if search:
-        values = [case for case in values if search.lower() in case.name.lower()]
-    if owner_user_id:
-        values = [case for case in values if case.owner_user_id == owner_user_id]
-    if industry:
-        values = [case for case in values if case.industry == industry]
-    items = [_with_counts(repo, case) for case in values]
-    return page(items, limit)
+    values = case_repository(request).list_cases(
+        search=search,
+        owner_user_id=owner_user_id,
+        industry=industry,
+        limit=limit,
+    )
+    return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
 
 
 def _with_counts(repo, case: c.CaseDetail) -> c.CaseListItem:
     """Project an in-memory CaseDetail to a CaseListItem with per-case counts.
+
+    Production-dead after #87 A1 folded the in-memory list_cases dispatch (the SQL
+    case_repository.list_cases computes these counts now), but retained because
+    test_cases_profile pins the count semantics through it; migrating that to a
+    SQL-path test and deleting this is a follow-up.
 
     Mirrors the SQLAlchemy R6 count semantics: material/voice from media assets,
     scripts from script versions, quality from QC'd finished videos (a terminal
@@ -88,12 +74,7 @@ def _with_counts(repo, case: c.CaseDetail) -> c.CaseListItem:
 
 
 def create_case(payload: c.CreateCaseRequest, request: Request, user: c.AuthUser) -> c.CaseDetail:
-
-    if case_repository(request) is not None:
-        return case_repository(request).create_case(payload, owner_user_id=user.id)
-    case = c.CaseDetail(id=new_id("case"), owner_user_id=user.id, **payload.model_dump())
-    repository(request).cases[case.id] = case
-    return case
+    return case_repository(request).create_case(payload, owner_user_id=user.id)
 
 
 def case_detail(request: Request, case_id: str) -> c.CaseDetail:
@@ -102,37 +83,19 @@ def case_detail(request: Request, case_id: str) -> c.CaseDetail:
 
 
 def patch_case(case_id: str, payload: c.PatchCaseRequest, request: Request) -> c.CaseDetail:
-    if case_repository(request) is not None:
-        case = case_repository(request).patch_case(case_id, payload)
-        if case is None:
-            raise NodeExecutionError(c.ErrorCode.validation_missing_case, f"Case {case_id} does not exist.")
-        return case
-    get_case(request, case_id)
-    return repository(request).patch(repository(request).cases, case_id, payload.model_dump(exclude_none=True))
+    case = case_repository(request).patch_case(case_id, payload)
+    if case is None:
+        raise NodeExecutionError(c.ErrorCode.validation_missing_case, f"Case {case_id} does not exist.")
+    return case
 
 
 def delete_case(case_id: str, request: Request) -> c.OkResponse:
-    if case_repository(request) is not None:
-        deleted = case_repository(request).delete_case(case_id)
-        if deleted is None:
-            raise NodeExecutionError(c.ErrorCode.validation_missing_case, f"Case {case_id} does not exist.")
-        if not deleted:
-            raise NodeExecutionError(
-                c.ErrorCode.validation_conflict,
-                "Case cannot be deleted while active runs or finished videos still reference it.",
-            )
-        return c.OkResponse(request_id=request_id())
-
-    get_case(request, case_id)
-    repo = repository(request)
-    has_active_run = any(
-        run.case_id == case_id and run.status in ACTIVE_RUN_STATUSES for run in repo.runs.values()
-    )
-    has_finished_video = any(video.case_id == case_id for video in repo.finished_videos.values())
-    if has_active_run or has_finished_video:
+    deleted = case_repository(request).delete_case(case_id)
+    if deleted is None:
+        raise NodeExecutionError(c.ErrorCode.validation_missing_case, f"Case {case_id} does not exist.")
+    if not deleted:
         raise NodeExecutionError(
             c.ErrorCode.validation_conflict,
             "Case cannot be deleted while active runs or finished videos still reference it.",
         )
-    del repo.cases[case_id]
     return c.OkResponse(request_id=request_id())
