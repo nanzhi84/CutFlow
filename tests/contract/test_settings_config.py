@@ -110,6 +110,7 @@ _INFRA_ENV_VARS = (
     "CUTAGENT_XIAOVMAO_CDP_PORT",
     "CUTAGENT_REDIS_URL",
     "CUTAGENT_REDIS_REQUIRED",
+    "CUTAGENT_HEALTH_PROBE_TIMEOUT",
 )
 
 
@@ -240,6 +241,7 @@ def test_settings_built_in_defaults() -> None:
     assert settings.publishing.xiaovmao_cdp_host == "127.0.0.1"
     assert settings.publishing.xiaovmao_cdp_port == 9222
     assert settings.redis_url is None
+    assert settings.health_probe_timeout_seconds == 2.0
 
 
 def test_settings_reads_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
