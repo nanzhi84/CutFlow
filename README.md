@@ -242,10 +242,9 @@ python -m pytest -q
 scripts/ci_gate.sh
 ```
 
-DB 集成测试需要显式打开：
+DB 集成测试已随默认套件运行（不再需要开关，只要 Postgres:55432 起着）；单独跑该子集：
 
 ```bash
-export CUTAGENT_RUN_DB_TESTS=1
 python -m pytest -q tests/integration
 ```
 

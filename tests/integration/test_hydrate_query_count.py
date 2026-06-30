@@ -3,20 +3,15 @@
 The worker hydrates a run snapshot before every node activity. Annotation and
 source-artifact loading used to issue one query *per media asset*, an N+1 over
 the whole shared media pool (this case + the global ``case_id IS NULL`` pool).
-This gated DB test pins the batched shape: the number of ``annotations`` SELECTs
+This DB test pins the batched shape: the number of ``annotations`` SELECTs
 during hydrate must stay at 1 regardless of how many assets exist.
 """
 
 from __future__ import annotations
 
-import os
-
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event
-
-if os.getenv("CUTAGENT_RUN_DB_TESTS") != "1":
-    pytest.skip("Set CUTAGENT_RUN_DB_TESTS=1 to run database integration tests.", allow_module_level=True)
 
 from apps.api.main import app
 from packages.core.storage import Repository

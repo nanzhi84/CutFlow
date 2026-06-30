@@ -195,8 +195,6 @@ jobs:
           CUTAGENT_EPHEMERAL_OBJECTSTORE_ADDRESSING_STYLE: path
         run: python scripts/bootstrap_database.py
       - name: Run database integration tests
-        env:
-          CUTAGENT_RUN_DB_TESTS: "1"
         run: timeout -k 5 600 python -m pytest -q tests/integration
       - name: Run Temporal integration tests
         # Mirror the local demo: a MinIO-backed durable tier AND a MinIO-backed

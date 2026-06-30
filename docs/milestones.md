@@ -54,7 +54,7 @@
 当前状态：
 
 - 默认 pytest 覆盖不依赖外部基础设施的单测。
-- DB 集成测试通过 `CUTAGENT_RUN_DB_TESTS=1` opt-in。
+- DB 集成测试已并入默认 pytest 套件（需 Postgres，不再 opt-in）。
 - Temporal 测试通过 `CUTAGENT_RUN_TEMPORAL_TESTS=1` opt-in。
 - `scripts/ci_gate.sh` 镜像主要 CI 门禁。
 - GitHub Actions 包含 `unit`、`integration`、`frontend` jobs。

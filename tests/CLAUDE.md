@@ -20,6 +20,7 @@
 - 对外部第三方 API（火山/OpenAI/小V猫/dashscope 等 HTTP）仍必须 mock（`FakeDriver`/`_FakeLlmProvider`/`monkeypatch`）——CI 不能真打。这类 mock 与"内存存储后端"无关，保留。
 - 契约类断言（`contract/`、`golden/`）是 OpenAPI/schema 漂移与单一事实源的护栏；改契约后这些会失败 → 先按根 `CLAUDE.md` 重新生成 `openapi.json` + `schema.d.ts`。
 - 测试默认显式开了 sandbox fallback（与生产相反），勿据此以为生产会回退 sandbox。
+- 默认套件**必须串行运行**，已禁用 pytest-xdist/`-n`（`pyproject.toml` 的 addopts 带 `-p no:xdist`，conftest 的 `pytest_configure` 探测到分布式运行即抛 `UsageError`）。原因是全套件共用一次性 `cutagent_test` 库、靠 autouse `TRUNCATE`+reseed 隔离，并行 worker 会互相清表、污染彼此数据。别加 `-n/--dist` 提速。
 
 ## 运行
 - 前置：起 Postgres（55432）并 `python scripts/bootstrap_database.py` 建库 + seed（只需一次；用一次性测试库，勿指向开发库——conftest 会 TRUNCATE）。

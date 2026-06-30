@@ -269,7 +269,20 @@ class _ASGIWebSocketSession:
         self._loop.call_soon_threadsafe(self._client_to_app.put_nowait, message)
 
 
-def pytest_configure() -> None:
+def pytest_configure(config) -> None:
+    # The suite shares one throwaway `cutagent_test` database and isolates tests
+    # via an autouse TRUNCATE-and-reseed step; pytest-xdist would let parallel
+    # workers TRUNCATE each other's data mid-test. Fail loudly, never produce
+    # flaky garbage. (issue #87 / A5 — see tests/CLAUDE.md)
+    if getattr(config, "workerinput", None) is not None or (
+        config.pluginmanager.hasplugin("xdist")
+        and getattr(config.option, "numprocesses", None)
+    ):
+        raise pytest.UsageError(
+            "This suite must run serially: it shares one cutagent_test database "
+            "with TRUNCATE+reseed isolation, which pytest-xdist (-n/--dist) "
+            "corrupts. Remove -n/--dist (see tests/CLAUDE.md)."
+        )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         import fastapi.testclient
