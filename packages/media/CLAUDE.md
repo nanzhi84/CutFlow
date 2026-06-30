@@ -5,7 +5,7 @@
 ## 职责
 - 素材库 CRUD 与用量：`SqlAlchemyMediaRepository` 管 portrait/b-roll/BGM 素材、标注、音色（voice）持久化，含 `replace_asset_source_artifact`、`material_usage_ranking`、标注读写 `get_or_create_annotation`/`patch_annotation`/`rerun_annotation`。
 - V4 标注：传感器（PySceneDetect/Silero VAD/OpenCV）出客观信号，VLM 只判语义；产出 `AnnotationV4`。
-- 视频原语（`video/ffmpeg.py`）：ffmpeg/ffprobe 子进程做 `probe_media`、抽帧（`extract_thumbnails`/`extract_frame_at_time`）、`stabilize_video`、`compress_video_to_budget`、`normalize_for_upload`、`trim_to_valid_segments`、`probe_stream_types`。
+- 视频原语（`video/ffmpeg.py`）：ffmpeg/ffprobe 子进程做 `probe_media`、抽帧（`extract_thumbnails`/`extract_frame_at_time`）、`stabilize_video`、`compress_video_to_budget`、`normalize_for_upload`（上传可选规范化：旋转/裁剪/1080p/BT.709/H.264 + post-encode 校验）、`trim_to_valid_segments`、`probe_stream_types`。
 - 纯转换：`audio/forced_alignment.py`（MiniMax TTS 字幕→ASR 形状）、`audio/silence.py`（silencedetect→停顿窗）；封面 prompt 组装与音色 provider 桥接（`voice_provider_bridge.py`：load / hydrate 上传水合 / persist 音色与预览，`clone_voice` 在仓储 `sqlalchemy_repository.py`）。
 
 ## 关键文件 / 子目录
@@ -19,7 +19,7 @@
 - `cover_frame.py` — 确定性「最佳人像参考帧」选择：密集抽帧 + YuNet 人脸 + Laplacian 清晰度打分，选最大/居中/清晰/正脸的单脸帧（无 VLM、无付费）；纯函数 `score_portrait_frame` + 编排 `select_best_portrait_frame`（fail-open）。被 `ExportFinishedVideo` 用作 AI 封面参考帧
 - `annotation/bgm.py` — BGM/音频资产标注：客观特征（librosa 特征 / loudnorm LUFS，`extract_audio_features`/`measure_loudness_lufs`）+ LLM 语义 mood/scene（`annotate_bgm`）
 - `annotation/assets/face_detection_yunet_2023mar.onnx` — YuNet 人脸模型权重
-- `audio/forced_alignment.py`、`audio/silence.py`、`audio/sandbox_tts.py`（sandbox 兜底 TTS）、`cover.py`、`voice_provider_bridge.py`、`assets.py`（object-store 落盘助手 `store_file`）
+- `audio/forced_alignment.py`、`audio/silence.py`、`audio/sandbox_tts.py`（sandbox 兜底 TTS）、`cover.py`、`voice_provider_bridge.py`、`assets.py`（object-store 落盘助手 `store_file`，S3 后端走 path-based multipart upload/download，避免整文件进内存）
 
 ## 约定与要求
 - ffmpeg/ffprobe 一律走子进程；二进制路径解析顺序为 settings（env `CUTAGENT_FFMPEG_BIN`/`CUTAGENT_FFPROBE_BIN`）→ `shutil.which` → `~/.local/bin`。
@@ -29,7 +29,7 @@
 - pipeline/runner 全部依赖注入，测试零真实 IO。
 
 ## 测试
-- `pytest tests/media`（含 `tests/media/annotation/`，传感器与 pipeline 用 mock/fixtures，不触真 ffmpeg/VLM）。
+- `pytest tests/media`；`tests/media/annotation/` 的传感器/pipeline 主要用 mock/fixtures，不触 VLM；`test_ffmpeg_tools.py` / `test_ffmpeg_hdr_normalize.py` 会生成真实媒体并调用 ffmpeg/ffprobe，缺可选 filter 时按 fixture skip。
 
 ## 注意 / 坑
 - `silence.py` 只产停顿窗；语义边界 snap 到窗口的纯匹配器在消费方 `packages/planning/editing/audio_pause.py`，本模块只提供检测原语。

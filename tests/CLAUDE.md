@@ -5,6 +5,7 @@
 ## 布局
 - 按域分目录：`api` `core` `creative` `media` `planning` `production` `publishing` `ops` `observability` `providers` `prompts` `connectors` `import` `scripts` `workflow` `frontend` `storage`。其中 `media/annotation/` 是唯一的二级嵌套测试簇（16 个 `test_*.py`）。
 - `contract/` — 契约/schema 守卫：OpenAPI 矩阵、DB schema、状态机、错误信封、单一依赖方向（`test_api_contract_matrix.py`/`test_openapi_matrix.py`/`test_database_schema.py`/`test_state_machines.py`/`test_single_source_dependencies.py` 等）。
+- 上传/对象存储守卫分散在 `api`（direct upload、presign、object-store backends）、`core`（upload settings/preflight）、`contract`（upload contract/settings/storage backend）、`storage`（object-store lazy）与 `integration/test_oss_direct_upload_real.py`（需真实 S3/OSS env）。
 - `golden/` — 端到端 golden 流程（用 seeded sandbox provider 跑，存储走真 Postgres）。
 - `integration/` — `test_sqlalchemy_*.py`（SQLAlchemy 后端集成，需 Postgres）。已与默认套件合流：不再有 `CUTAGENT_RUN_DB_TESTS` gate，`pytest -q` 默认就跑。（memory↔SQL 的 `test_parity_*.py` 已随内存后端删除。）
 - `temporal/` — Temporal 运行时集成（仍 opt-in，需真实 Temporal + 共享 MinIO）。
@@ -26,7 +27,7 @@
 - 前置：起 Postgres（55432）并 `python scripts/bootstrap_database.py` 建库 + seed（只需一次；用一次性测试库，勿指向开发库——conftest 会 TRUNCATE）。
 - 默认：`CUTAGENT_DATABASE_URL=… python -m pytest -q`（含集成测试；Temporal 测试缺 flag 时 skip）。
 - Temporal（opt-in）：`CUTAGENT_RUN_TEMPORAL_TESTS=1` + 真实 Temporal + 共享 MinIO 对象存储 env → `pytest -q tests/temporal`。
-- 完整门禁：`scripts/ci_gate.sh`（镜像 `.github/workflows/ci.yml`：bootstrap → 全量 `pytest -q` → openapi/前端 → MinIO+Temporal 段）。
+- 完整门禁：`scripts/ci_gate.sh`（镜像 `.github/workflows/ci.yml`：bootstrap → 全量 `pytest -q` → production preflight → openapi/前端 → MinIO+Temporal 段）。
 
 ## 注意 / 坑
 - conftest **不建表**：必须先 bootstrap 一个已迁移+seed 的库；否则碰库的测试会报表不存在。
