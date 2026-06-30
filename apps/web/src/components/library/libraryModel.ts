@@ -6,7 +6,11 @@ export const VOICE_UPLOAD_ACCEPT = ".mp3,.wav,.m4a,.aac,.ogg,.flac";
 
 export type LibraryTab = "voices" | "templates" | "fonts" | "bgm" | "ai_source";
 export type VoiceSourceFilter = "all" | VoiceProfile["source"];
-export type TemplateKind = "portrait" | "broll" | "video";
+// Issue #99: visual asset kinds converge to the unified `video` bucket — the
+// create/upload path no longer exposes portrait/broll. Legacy portrait/broll
+// assets are still merged in for display (see TemplatesTab), but no new visual
+// asset is ever created with those kinds.
+export type TemplateKind = "video";
 export type LibraryAssetKind = "font" | "bgm";
 
 export type UploadPlaceholder = {
@@ -33,8 +37,6 @@ export const voiceSourceLabels: Record<VoiceProfile["source"], string> = {
 };
 
 export const templateKindLabels: Record<TemplateKind, string> = {
-  portrait: "人像模板",
-  broll: "B-roll",
   video: "视频素材",
 };
 

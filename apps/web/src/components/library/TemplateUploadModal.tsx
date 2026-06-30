@@ -37,7 +37,9 @@ export function TemplateUploadModal({
   const [mode, setMode] = useState<UploadMode>("create");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const accept = kind === "portrait" ? ".mp4,.mov,.m4v,.webm" : ".mp4,.mov,.m4v,.webm,.avi,.mkv";
+  // Issue #99: the unified `video` bucket is the only visual upload kind now, so a
+  // single broad video accept list (no portrait-specific narrowing).
+  const accept = ".mp4,.mov,.m4v,.webm,.avi,.mkv";
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();

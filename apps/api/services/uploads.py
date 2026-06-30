@@ -31,6 +31,31 @@ from packages.media.video.ffmpeg import (
 # copies the verified object to its final, kind-routed key and drops staging.
 _STAGING_PURPOSE = "incoming/uploads"
 
+# Issue #99: visual asset kinds converge to the unified ``video`` bucket. New
+# ``portrait`` / ``broll`` uploads are still ACCEPTED — the ``UploadKind`` enum
+# members are retained this round (the hard enum removal is a follow-up gated on
+# the production data migration ``0026`` landing zero legacy rows) — but the
+# created media asset is normalized to ``kind="video"`` so AnnotationV4 does the
+# per-clip A-roll/B-roll classification. The original kind is preserved as a
+# ``legacy_kind:<x>`` tag for traceability. The object itself still routes to the
+# shared materials bucket either way (portrait/broll/video share that purpose).
+# NOTE: this is the visual *asset kind*; the selection *medium* (A-roll/B-roll
+# track role in the selection ledger / usage ranking) is a separate concept and
+# is intentionally left untouched.
+_LEGACY_VISUAL_UPLOAD_KINDS = frozenset({c.UploadKind.portrait, c.UploadKind.broll})
+
+
+def _visual_asset_kind_and_tags(upload_kind: c.UploadKind) -> tuple[str, list[str]]:
+    """Map an upload kind to the persisted media-asset kind + base tags.
+
+    Legacy visual kinds (portrait/broll) normalize to ``video`` with a
+    ``legacy_kind:<original>`` tag; every other kind is persisted unchanged.
+    """
+    if upload_kind in _LEGACY_VISUAL_UPLOAD_KINDS:
+        video_kind = c.UploadKind.video.value
+        return video_kind, [video_kind, "upload", f"legacy_kind:{upload_kind.value}"]
+    return upload_kind.value, [upload_kind.value, "upload"]
+
 
 def prepare_upload(
     payload: c.PrepareUploadRequest, request: Request
@@ -207,12 +232,13 @@ def complete_upload(payload: c.CompleteUploadRequest, request: Request) -> c.Com
         c.UploadKind.font,
         c.UploadKind.cover_template,
     } and not replace_mode:
+        asset_kind, base_tags = _visual_asset_kind_and_tags(upload.kind)
         media_payload = c.CreateMediaAssetFromUploadRequest(
             upload_session_id=upload.id,
             case_id=upload.case_id,
             title=payload.metadata.get("title") or upload.filename,
-            kind=upload.kind.value,
-            tags=[upload.kind.value, "upload"],
+            kind=asset_kind,
+            tags=base_tags,
         )
         if upload.stabilized:
             media_payload.tags.append("stabilized")

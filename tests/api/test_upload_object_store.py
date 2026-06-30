@@ -4,6 +4,7 @@ import math
 import struct
 import wave
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -441,6 +442,64 @@ def test_unified_video_kind_upload_creates_video_media_asset(tmp_path):
     assert body["media_asset"]["source_artifact_id"] == body["artifact"]["artifact_id"]
     artifact = _get_artifact(body["artifact"]["artifact_id"])
     assert artifact.media_info is not None and artifact.media_info.media_type == "video"
+
+
+def test_visual_asset_kind_and_tags_normalizes_legacy_kinds():
+    """Pure-function guard for the issue #99 normalization (no DB / ffmpeg)."""
+    from packages.core.contracts import UploadKind
+    from apps.api.services.uploads import _visual_asset_kind_and_tags
+
+    # Legacy visual kinds converge to ``video`` + carry a traceable legacy tag.
+    for legacy in (UploadKind.portrait, UploadKind.broll):
+        kind, tags = _visual_asset_kind_and_tags(legacy)
+        assert kind == "video"
+        assert tags == ["video", "upload", f"legacy_kind:{legacy.value}"]
+    # ``video`` and non-visual kinds pass through unchanged (no legacy tag).
+    for passthrough in (
+        UploadKind.video,
+        UploadKind.bgm,
+        UploadKind.font,
+        UploadKind.image,
+        UploadKind.cover_template,
+    ):
+        kind, tags = _visual_asset_kind_and_tags(passthrough)
+        assert kind == passthrough.value
+        assert tags == [passthrough.value, "upload"]
+
+
+@pytest.mark.parametrize("legacy_kind", ["portrait", "broll"])
+def test_legacy_visual_upload_normalizes_asset_kind_to_video(tmp_path, legacy_kind):
+    """Issue #99: a legacy portrait/broll upload is still accepted, but the created
+    media asset is normalized to ``kind=video`` with a ``legacy_kind:<x>`` tag so
+    AnnotationV4 does the per-clip A/B-roll classification (the UploadKind enum
+    member stays this round; hard removal is a follow-up after the data migration)."""
+    login_admin()
+    _seed_case("case_legacy_visual")
+    video = generate_test_video(tmp_path, duration_sec=1, width=320, height=568)
+    content = video.read_bytes()
+    prepared, completed = direct_upload(
+        client,
+        kind=legacy_kind,
+        case_id="case_legacy_visual",
+        filename=f"{legacy_kind}.mp4",
+        content_type="video/mp4",
+        body=content,
+    )
+    # The legacy kind is still accepted at prepare/complete.
+    assert prepared.status_code == 201, prepared.text
+    assert prepared.json()["upload_session"]["kind"] == legacy_kind
+    assert completed.status_code == 200, completed.text
+    body = completed.json()
+    asset = body["media_asset"]
+    assert asset is not None
+    # ...but the persisted asset kind converges to the unified video bucket.
+    assert asset["kind"] == "video"
+    assert f"legacy_kind:{legacy_kind}" in asset["tags"]
+    assert "video" in asset["tags"]
+    assert legacy_kind not in asset["tags"]
+    # The original kind also survives in the DB row (source-of-truth check).
+    _source, tags = _media_asset_source_and_tags(asset["id"])
+    assert f"legacy_kind:{legacy_kind}" in tags
 
 
 def test_video_upload_can_stabilize_before_creating_media_asset(tmp_path):

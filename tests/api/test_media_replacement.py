@@ -166,7 +166,11 @@ def test_auto_match_replace_reports_matched_unmatched_and_ambiguous(tmp_path):
         "/api/media/assets/auto-match-replace",
         json={
             "case_id": "case_auto_replace",
-            "kind": "broll",
+            # Issue #99: visual uploads normalize to kind="video" (the seeded
+            # broll uploads above are persisted as video assets), so auto-match
+            # runs against the unified video bucket — matching the PR-4 frontend
+            # which always calls auto-match-replace with kind="video".
+            "kind": "video",
             "upload_session_ids": [
                 replacement["upload_session"]["id"],
                 unmatched["upload_session"]["id"],
