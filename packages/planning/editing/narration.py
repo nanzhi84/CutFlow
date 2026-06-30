@@ -157,7 +157,6 @@ def build_narration_units_from_script_sentences(
                 hard_end=bool(hard_end),
                 boundary_score=boundary_score,
                 portrait_cut_allowed=bool(hard_end),
-                broll_overlay_allowed=end - start >= 0.18,
                 boundary_reason="脚本句尾" if hard_end else "脚本阅读分句",
             )
         )
@@ -201,7 +200,6 @@ def build_narration_units_from_asr(
             boundary_score += 0.08
         boundary_score = round(util.clamp(boundary_score, 0.0, 1.0), 3)
         portrait_cut_allowed = bool(hard_end or soft_end)
-        broll_overlay_allowed = max(0.0, float(seg.end) - float(seg.start)) >= 0.18
         if idx == len(ordered) - 1:
             boundary_reason = "句尾收口"
         elif narration_text.is_hard_sentence_end(seg.text):
@@ -227,7 +225,6 @@ def build_narration_units_from_asr(
                 hard_end=bool(hard_end),
                 boundary_score=boundary_score,
                 portrait_cut_allowed=portrait_cut_allowed,
-                broll_overlay_allowed=broll_overlay_allowed,
                 boundary_reason=boundary_reason,
             )
         )
@@ -261,7 +258,6 @@ def build_narration_units_without_asr(
                 hard_end=True,
                 boundary_score=0.78,
                 portrait_cut_allowed=True,
-                broll_overlay_allowed=True,
                 boundary_reason="句子切分回退",
             )
         )

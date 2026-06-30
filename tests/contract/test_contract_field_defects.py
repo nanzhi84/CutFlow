@@ -25,6 +25,7 @@ from packages.core.contracts.artifacts import (
     CaseContextArtifact,
     FontPlan,
     MaterialCandidate,
+    NarrationUnit,
     StylePlanArtifact,
     SubtitleStylePlan,
 )
@@ -158,6 +159,11 @@ _REMOVED_ARTIFACT_FIELDS = {
     FontPlan: ("fallback_family", "size"),
     StylePlanArtifact: ("subtitle_enabled", "selection_reservation_ids"),
     CaseContextArtifact: ("recent_video_versions", "negative_lessons"),
+    # issue #100: written by the narration builders (end-start>=0.18) but never
+    # consumed -- BrollPlanning/BrollCoveragePlanning convert NarrationUnit into
+    # ScriptSegment using only text/start/end/keywords, and real inserts are
+    # governed by plan_insertions()'s host window + _MIN_INSERT_SECONDS.
+    NarrationUnit: ("broll_overlay_allowed",),
 }
 
 # Sibling fields on the same models that ARE wired and must survive the cleanup.
@@ -172,6 +178,9 @@ _RETAINED_ARTIFACT_FIELDS = {
         "active_memories",
         "recent_script_versions",
     ),
+    # Sibling boundary-planning fields on NarrationUnit that ARE read by the
+    # editing-agent boundary planner and must survive.
+    NarrationUnit: ("portrait_cut_allowed", "boundary_score", "boundary_reason"),
 }
 
 

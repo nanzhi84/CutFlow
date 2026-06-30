@@ -121,7 +121,6 @@ class NarrationUnit(ContractModel):
     hard_end: bool = False
     boundary_score: float = 0.0
     portrait_cut_allowed: bool = False
-    broll_overlay_allowed: bool = False
     boundary_reason: str = ""
 
 
