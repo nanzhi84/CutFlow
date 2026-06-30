@@ -6,10 +6,7 @@ import anyio
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
-from packages.core.observability.events import InProcessFanoutHub, OutboxDispatcher
-from packages.core.observability.outbox import OutboxWriter
 from packages.core.storage.database import JobRow, OutboxEventRow, WorkflowRunRow
-from packages.core.storage.repository import Repository
 
 
 def _seed_run_in_sql(session_factory, *, run_id: str, job_id: str) -> None:
@@ -64,45 +61,6 @@ def _write_sql_outbox_event(
             )
         )
         session.commit()
-
-
-def test_outbox_dispatcher_publishes_pending_events_in_stable_order() -> None:
-    repository = Repository()
-    hub = InProcessFanoutHub()
-    dispatcher = OutboxDispatcher(repository=repository, hub=hub)
-    writer = OutboxWriter(repository)
-    created_at = datetime(2026, 6, 11, tzinfo=timezone.utc)
-
-    writer.write(
-        topic="workflow.node.updated",
-        aggregate_type="run",
-        aggregate_id="run_1",
-        payload_schema="RunEvent.v1",
-        payload={"event_id": "evt_b", "run_id": "run_1", "job_id": "job_1", "event_type": "node_update"},
-        dedupe_key="node:b",
-        created_at=created_at,
-        event_id="evt_b",
-    )
-    writer.write(
-        topic="workflow.run.updated",
-        aggregate_type="run",
-        aggregate_id="run_1",
-        payload_schema="RunEvent.v1",
-        payload={"event_id": "evt_a", "run_id": "run_1", "job_id": "job_1", "event_type": "run_update"},
-        dedupe_key="run:a",
-        created_at=created_at,
-        event_id="evt_a",
-    )
-
-    subscriber = hub.subscribe("run_1")
-    anyio.run(dispatcher.dispatch_once)
-
-    assert [hub.get_nowait(subscriber)["event_id"], hub.get_nowait(subscriber)["event_id"]] == [
-        "evt_a",
-        "evt_b",
-    ]
-    assert [event.status for event in repository.outbox.values()] == ["published", "published"]
-    assert [event.attempts for event in repository.outbox.values()] == [1, 1]
 
 
 def test_run_websocket_replays_history_and_receives_dispatched_events() -> None:

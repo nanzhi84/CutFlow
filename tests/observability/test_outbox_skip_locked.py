@@ -58,8 +58,13 @@ def test_claim_runs_under_sqlite_without_skip_locked_error() -> None:
     run_id = "run_skip_locked"
     created_at = utcnow()
     with session_factory() as session:
-        session.add(_make_row("evt_sl_a", run_id, created_at))
+        # Insert in REVERSE id order (same created_at) so the published order
+        # asserted below can only come out [a, b] if the dispatcher's
+        # ``ORDER BY (created_at, id)`` actually reorders — not if it merely
+        # echoes insertion order. (#87 A2: preserves the stable-ordering
+        # coverage of the deleted in-memory OutboxDispatcher test.)
         session.add(_make_row("evt_sl_b", run_id, created_at))
+        session.add(_make_row("evt_sl_a", run_id, created_at))
         session.commit()
 
     hub = InProcessFanoutHub()

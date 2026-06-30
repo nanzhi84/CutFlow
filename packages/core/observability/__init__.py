@@ -1,7 +1,6 @@
 from .events import (
     EventStreamTokenStore,
     InProcessFanoutHub,
-    OutboxDispatcher,
     SqlAlchemyOutboxDispatcher,
     replay_sqlalchemy_outbox,
 )
@@ -39,7 +38,6 @@ from .telemetry import (
 __all__ = [
     "EventStreamTokenStore",
     "InProcessFanoutHub",
-    "OutboxDispatcher",
     "OutboxWriter",
     "JsonLogFormatter",
     "REQUIRED_LOG_FIELDS",

@@ -14,15 +14,13 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from packages.core.contracts import OutboxEvent, utcnow
+from packages.core.contracts import utcnow
 from packages.core.observability.telemetry import (
     record_redis_degraded,
     record_redis_reconnect_attempt,
     record_redis_recovered,
-    update_outbox_lag,
 )
 from packages.core.storage.database import OutboxEventRow
-from packages.core.storage.repository import Repository
 
 logger = logging.getLogger(__name__)
 
@@ -289,75 +287,6 @@ class InProcessFanoutHub:
                 "redis_url_configured": bool(self._redis_url),
                 "reason": str(exc),
             },
-        )
-
-
-class OutboxDispatcher:
-    def __init__(
-        self,
-        *,
-        repository: Repository,
-        hub: InProcessFanoutHub,
-        poll_interval_seconds: float = 0.2,
-        batch_size: int = 100,
-    ) -> None:
-        self.repository = repository
-        self.hub = hub
-        self.poll_interval_seconds = poll_interval_seconds
-        self.batch_size = batch_size
-        self._stopped = asyncio.Event()
-
-    async def run(self) -> None:
-        while not self._stopped.is_set():
-            await self.dispatch_once()
-            try:
-                await asyncio.wait_for(self._stopped.wait(), timeout=self.poll_interval_seconds)
-            except TimeoutError:
-                continue
-
-    def stop(self) -> None:
-        self._stopped.set()
-
-    async def dispatch_once(self) -> int:
-        now = utcnow()
-        pending = sorted(
-            [
-                event
-                for event in self.repository.outbox.values()
-                if event.status == "pending" and event.available_at <= now
-            ],
-            key=lambda event: (event.created_at, event.id),
-        )[: self.batch_size]
-        published = 0
-        for event in pending:
-            try:
-                payload = event.payload if isinstance(event.payload, dict) else {"payload": event.payload}
-                run_id = str(payload.get("run_id") or event.aggregate_id)
-                self.hub.publish(run_id, payload)
-                self.repository.outbox[event.id] = event.model_copy(
-                    update={
-                        "status": "published",
-                        "attempts": event.attempts + 1,
-                        "published_at": now,
-                        "updated_at": now,
-                    }
-                )
-                published += 1
-            except Exception as exc:  # pragma: no cover - exercised through injected hub failures.
-                self.repository.outbox[event.id] = self._retry_event(event, exc, now)
-        update_outbox_lag(self.repository)
-        return published
-
-    @staticmethod
-    def _retry_event(event: OutboxEvent, exc: Exception, now: datetime) -> OutboxEvent:
-        attempts = event.attempts + 1
-        return event.model_copy(
-            update={
-                "attempts": attempts,
-                "available_at": now + timedelta(seconds=min(60, 2**attempts)),
-                "last_error": str(exc),
-                "updated_at": now,
-            }
         )
 
 
