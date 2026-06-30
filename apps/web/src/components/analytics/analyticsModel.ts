@@ -2,7 +2,7 @@ import type { CostRollup, ProviderUsageReport, YieldFunnelEvent, YieldFunnelResp
 import type { OverviewStats } from "../overview/overviewModel";
 
 export type TimeRange = "24h" | "7d" | "30d";
-export type AnalyticsTab = "cost" | "yield" | "tasks" | "balances" | "apiUsage";
+export type AnalyticsTab = "cost" | "yield" | "tasks" | "balances" | "apiUsage" | "diagnostics";
 
 export const rangeOptions: Array<{ key: TimeRange; label: string; days: number; hours: number }> = [
   { key: "24h", label: "24 小时", days: 1, hours: 24 },
@@ -16,6 +16,7 @@ export const analyticsTabs: Array<{ key: AnalyticsTab; label: string }> = [
   { key: "tasks", label: "任务统计" },
   { key: "balances", label: "余额&配额" },
   { key: "apiUsage", label: "API 用量监控" },
+  { key: "diagnostics", label: "网络诊断" },
 ];
 
 export function rangeWindow(range: TimeRange) {

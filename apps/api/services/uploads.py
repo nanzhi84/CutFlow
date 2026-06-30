@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import timedelta
 
 from fastapi import Request
@@ -8,14 +9,12 @@ from apps.api.common import (
     media_repository,
     object_store,
     publishing_repository,
-    repository,
     request_id,
     settings,
     upload_repository,
 )
 from packages.core import contracts as c
 from packages.core.contracts.media import ALLOWED_UPLOAD_CONTENT_TYPES
-from packages.core.contracts.state_machines import assert_transition
 from packages.core.storage.object_store import ObjectStore, parse_object_uri, sha256_file
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
@@ -66,10 +65,7 @@ def prepare_upload(
         object_uri=staging_ref.uri,
         stabilize=payload.stabilize,
     )
-    if upload_repository(request) is not None:
-        upload = upload_repository(request).create_upload(upload)
-    else:
-        repository(request).uploads[upload.id] = upload
+    upload = upload_repository(request).create_upload(upload)
     return c.PrepareUploadResponse(
         upload_session=upload,
         put_url=signed.url,
@@ -79,23 +75,14 @@ def prepare_upload(
 
 
 def _load_upload(request: Request, upload_id: str) -> c.UploadSession:
-    upload = (
-        upload_repository(request).get_upload(upload_id)
-        if upload_repository(request) is not None
-        else repository(request).uploads.get(upload_id)
-    )
+    upload = upload_repository(request).get_upload(upload_id)
     if upload is None:
         raise NodeExecutionError(c.ErrorCode.upload_invalid_state, "Upload session not found.")
     return upload
 
 
 def _patch_upload(request: Request, upload_id: str, updates: dict) -> c.UploadSession:
-    if upload_repository(request) is not None:
-        return upload_repository(request).patch_upload(upload_id, updates)
-    if "status" in updates:
-        current = repository(request).uploads[upload_id]
-        assert_transition("upload_session", current.status, updates["status"])
-    return repository(request).patch(repository(request).uploads, upload_id, updates)
+    return upload_repository(request).patch_upload(upload_id, updates)
 
 
 def _final_uri_for(store: ObjectStore, staging_uri: str, kind: c.UploadKind) -> str:
@@ -113,8 +100,21 @@ def _safe_delete(store: ObjectStore, uri: str) -> None:
         pass
 
 
-def _fail_upload(request: Request, store: ObjectStore, upload_id: str, staging_uri: str) -> None:
+def _fail_upload(
+    request: Request,
+    store: ObjectStore,
+    upload_id: str,
+    staging_uri: str,
+    derived_uris: Iterable[str] = (),
+) -> None:
+    # Drop the browser-written staging object AND any server-written derived
+    # objects (normalize/stabilize each store_file a fresh object before a later
+    # step may fail). Best-effort, per-object: one delete failing must not block
+    # the others or mask the original error.
     _safe_delete(store, staging_uri)
+    for uri in derived_uris:
+        if uri and uri != staging_uri:
+            _safe_delete(store, uri)
     try:
         _patch_upload(request, upload_id, {"status": c.UploadStatus.failed})
     except Exception:  # noqa: BLE001 — never mask the original failure
@@ -129,6 +129,10 @@ def complete_upload(payload: c.CompleteUploadRequest, request: Request) -> c.Com
         raise NodeExecutionError(c.ErrorCode.upload_invalid_state, "Upload session has no object.")
     # First hop: the API never observed the browser's direct PUT.
     upload = _patch_upload(request, upload.id, {"status": c.UploadStatus.uploading})
+
+    # Server-written derived objects (normalize/stabilize outputs). A failure
+    # after one of these is written must clean them up too, not just staging.
+    derived_uris: set[str] = set()
 
     # Verify + post-process the uploaded object. ANY failure here drops the
     # staging object and fails the session — the API never held the bytes, so a
@@ -164,9 +168,13 @@ def complete_upload(payload: c.CompleteUploadRequest, request: Request) -> c.Com
         )
         if is_av_video and settings(request).upload.normalize_video:
             upload, media_info = _normalize_upload_video(request, upload)
+            if upload.object_uri:
+                derived_uris.add(upload.object_uri)
             was_normalized = True
         if upload.stabilize and upload.kind in {c.UploadKind.portrait, c.UploadKind.broll, c.UploadKind.video}:
             upload, media_info = _stabilize_upload_video(request, upload)
+            if upload.object_uri:
+                derived_uris.add(upload.object_uri)
 
         # Move the verified object from the browser-writable staging key to a
         # server-only final key (routed by kind), then drop staging. If
@@ -179,24 +187,13 @@ def complete_upload(payload: c.CompleteUploadRequest, request: Request) -> c.Com
         if upload.object_uri != staging_uri:
             _safe_delete(store, staging_uri)
     except Exception:
-        _fail_upload(request, store, upload.id, staging_uri)
+        _fail_upload(request, store, upload.id, staging_uri, derived_uris)
         raise
 
     # Second hop: uploading -> completed, then register the artifact.
     upload = _patch_upload(request, upload.id, {"status": c.UploadStatus.completed})
-    if upload_repository(request) is not None:
-        artifact = upload_repository(request).create_artifact_from_upload(upload, media_info=media_info)
-        artifact_ref = upload_repository(request).artifact_ref(artifact.id)
-    else:
-        artifact = repository(request).create_artifact(
-            kind=c.ArtifactKind.uploaded_file,
-            payload_schema="UploadedFileArtifact.v1",
-            payload=upload.model_dump(mode="json"),
-            uri=upload.object_uri,
-            sha256=upload.sha256,
-            media_info=media_info,
-        )
-        artifact_ref = repository(request).artifact_ref(artifact.id)
+    artifact = upload_repository(request).create_artifact_from_upload(upload, media_info=media_info)
+    artifact_ref = upload_repository(request).artifact_ref(artifact.id)
     _create_upload_thumbnails(request, artifact)
     media_asset = None
     publish_package = None
@@ -226,38 +223,14 @@ def complete_upload(payload: c.CompleteUploadRequest, request: Request) -> c.Com
         # field needed — rides the existing metadata dict).
         if payload.metadata.get("ai_material") == "1" and "ai_material" not in media_payload.tags:
             media_payload.tags.append("ai_material")
-        if media_repository(request) is not None:
-            media_asset = media_repository(request).create_asset_from_upload(media_payload)
-        else:
-            media_asset = c.MediaAssetRecord(
-                id=new_id("asset"),
-                case_id=media_payload.case_id,
-                title=media_payload.title,
-                kind=media_payload.kind,
-                source_artifact_id=artifact.id,
-                tags=media_payload.tags,
-            )
-            repository(request).media_assets[media_asset.id] = media_asset
+        media_asset = media_repository(request).create_asset_from_upload(media_payload)
     elif upload.kind == c.UploadKind.publish_video:
         package_payload = c.CreatePublishPackageRequest(
             upload_artifact_id=artifact.id,
             title=payload.metadata.get("title") or upload.filename,
             description=payload.metadata.get("description", ""),
         )
-        if publishing_repository(request) is not None:
-            publish_package = publishing_repository(request).create_package(package_payload)
-        else:
-            publish_package = c.PublishPackage(
-                id=new_id("pkg"),
-                case_id=upload.case_id,
-                upload_artifact_id=artifact.id,
-                video_artifact=artifact_ref,
-                platform_defaults=c.PublishDefaults(
-                    title=package_payload.title,
-                    description=package_payload.description,
-                ),
-            )
-            repository(request).publish_packages[publish_package.id] = publish_package
+        publish_package = publishing_repository(request).create_package(package_payload)
     return c.CompleteUploadResponse(
         upload_session=upload,
         artifact=artifact_ref,
@@ -298,10 +271,7 @@ def _stabilize_upload_video(
         "size_bytes": stored.size_bytes,
         "stabilized": True,
     }
-    if upload_repository(request) is not None:
-        upload = upload_repository(request).patch_upload(upload.id, updates)
-    else:
-        upload = repository(request).patch(repository(request).uploads, upload.id, updates)
+    upload = upload_repository(request).patch_upload(upload.id, updates)
     return upload, media_info
 
 
@@ -334,10 +304,7 @@ def _normalize_upload_video(
         "sha256": stored.sha256,
         "size_bytes": stored.size_bytes,
     }
-    if upload_repository(request) is not None:
-        upload = upload_repository(request).patch_upload(upload.id, updates)
-    else:
-        upload = repository(request).patch(repository(request).uploads, upload.id, updates)
+    upload = upload_repository(request).patch_upload(upload.id, updates)
     return upload.model_copy(update={"normalized": True}), result.media_info
 
 
@@ -356,24 +323,14 @@ def _create_upload_thumbnails(request: Request, artifact: c.Artifact) -> None:
             "source_artifact_id": artifact.id,
             "thumbnail_label": thumbnail.label,
         }
-        if upload_repository(request) is not None:
-            upload_repository(request).create_artifact(
-                kind=c.ArtifactKind.cover_image,
-                payload_schema="uri-only",
-                payload=payload,
-                uri=stored.ref.uri,
-                sha256=stored.sha256,
-                media_info=thumbnail.media_info,
-            )
-        else:
-            repository(request).create_artifact(
-                kind=c.ArtifactKind.cover_image,
-                payload_schema="uri-only",
-                payload=payload,
-                uri=stored.ref.uri,
-                sha256=stored.sha256,
-                media_info=thumbnail.media_info,
-            )
+        upload_repository(request).create_artifact(
+            kind=c.ArtifactKind.cover_image,
+            payload_schema="uri-only",
+            payload=payload,
+            uri=stored.ref.uri,
+            sha256=stored.sha256,
+            media_info=thumbnail.media_info,
+        )
 
 
 def cancel_upload(upload_session_id: str, request: Request) -> c.UploadSession:
@@ -385,9 +342,7 @@ def cancel_upload(upload_session_id: str, request: Request) -> c.UploadSession:
 
 
 def get_upload(upload_session_id: str, request: Request) -> c.UploadSession:
-    if upload_repository(request) is not None:
-        upload = upload_repository(request).get_upload(upload_session_id)
-        if upload is None:
-            raise NodeExecutionError(c.ErrorCode.upload_invalid_state, "Upload session not found.")
-        return upload
-    return repository(request).uploads[upload_session_id]
+    upload = upload_repository(request).get_upload(upload_session_id)
+    if upload is None:
+        raise NodeExecutionError(c.ErrorCode.upload_invalid_state, "Upload session not found.")
+    return upload

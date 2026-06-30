@@ -166,22 +166,14 @@ def _artifact_duration(request: Request, artifact: dict) -> float | None:
 
 def _annotation_canonical(request: Request, asset_id: str) -> dict | None:
     sql_repo = media_repository(request)
-    if sql_repo is not None:
-        with sql_repo.session_factory() as session:
-            row = session.scalar(
-                select(AnnotationRow)
-                .where(AnnotationRow.asset_id == asset_id)
-                .order_by(AnnotationRow.updated_at.desc())
-                .limit(1)
-            )
-            return dict(row.canonical) if row is not None and isinstance(row.canonical, dict) else None
-    editor = repository(request).annotations.get(asset_id)
-    if editor is None:
-        return None
-    canonical = editor.canonical
-    if isinstance(canonical, c.AnnotationV4):
-        return canonical.model_dump(mode="json")
-    return dict(canonical) if isinstance(canonical, dict) else None
+    with sql_repo.session_factory() as session:
+        row = session.scalar(
+            select(AnnotationRow)
+            .where(AnnotationRow.asset_id == asset_id)
+            .order_by(AnnotationRow.updated_at.desc())
+            .limit(1)
+        )
+        return dict(row.canonical) if row is not None and isinstance(row.canonical, dict) else None
 
 
 def _reconcile_annotation_duration(
@@ -201,36 +193,10 @@ def _reconcile_annotation_duration(
     sql_repo = media_repository(request)
     if reclipped is None:
         # Not a V4 canonical or it cannot be re-clipped safely -> force re-annotation.
-        if sql_repo is not None:
-            sql_repo.invalidate_annotation(asset_id)
-        else:
-            _invalidate_inmemory_annotation(request, asset_id)
+        sql_repo.invalidate_annotation(asset_id)
         return False
-    if sql_repo is not None:
-        sql_repo.set_annotation_canonical(asset_id, reclipped)
-    else:
-        _set_inmemory_annotation_canonical(request, asset_id, reclipped)
+    sql_repo.set_annotation_canonical(asset_id, reclipped)
     return True
-
-
-def _invalidate_inmemory_annotation(request: Request, asset_id: str) -> None:
-    repo = repository(request)
-    repo.annotations.pop(asset_id, None)
-    asset = repo.media_assets.get(asset_id)
-    if asset is not None:
-        repo.media_assets[asset_id] = asset.model_copy(
-            update={"annotation_status": "pending", "updated_at": c.utcnow()}
-        )
-
-
-def _set_inmemory_annotation_canonical(request: Request, asset_id: str, canonical: dict) -> None:
-    repo = repository(request)
-    editor = repo.annotations.get(asset_id)
-    if editor is None:
-        return
-    repo.annotations[asset_id] = editor.model_copy(
-        update={"etag": new_id("etag"), "canonical": canonical}
-    )
 
 
 def auto_match_replace(
@@ -284,72 +250,45 @@ def _stabilize_asset(asset_id: str, request: Request) -> str:
 
 def _upload_artifact(request: Request, upload_session_id: str) -> dict:
     sql_repo = media_repository(request)
-    if sql_repo is not None:
-        with sql_repo.session_factory() as session:
-            upload = session.get(UploadSessionRow, upload_session_id)
-            artifacts = session.scalars(
-                select(ArtifactRow).where(ArtifactRow.kind == c.ArtifactKind.uploaded_file.value)
-            )
-            artifact = next(
-                (
-                    item for item in artifacts
-                    if isinstance(item.payload, dict) and item.payload.get("id") == upload_session_id
-                ),
-                None,
-            )
-            if upload is None or artifact is None:
-                raise NodeExecutionError(c.ErrorCode.artifact_missing, "Replacement upload artifact missing.")
-            return {"artifact_id": artifact.id, "kind": artifact.kind, "uri": artifact.uri, "sha256": artifact.sha256, "filename": upload.filename}
-    upload = repository(request).uploads.get(upload_session_id)
-    artifact = next(
-        (
-            item for item in repository(request).artifacts.values()
-            if item.kind == c.ArtifactKind.uploaded_file and isinstance(item.payload, dict) and item.payload.get("id") == upload_session_id
-        ),
-        None,
-    )
-    if upload is None or artifact is None:
-        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Replacement upload artifact missing.")
-    return {"artifact_id": artifact.id, "kind": artifact.kind, "uri": artifact.uri, "sha256": artifact.sha256, "filename": upload.filename}
+    with sql_repo.session_factory() as session:
+        upload = session.get(UploadSessionRow, upload_session_id)
+        artifacts = session.scalars(
+            select(ArtifactRow).where(ArtifactRow.kind == c.ArtifactKind.uploaded_file.value)
+        )
+        artifact = next(
+            (
+                item for item in artifacts
+                if isinstance(item.payload, dict) and item.payload.get("id") == upload_session_id
+            ),
+            None,
+        )
+        if upload is None or artifact is None:
+            raise NodeExecutionError(c.ErrorCode.artifact_missing, "Replacement upload artifact missing.")
+        return {"artifact_id": artifact.id, "kind": artifact.kind, "uri": artifact.uri, "sha256": artifact.sha256, "filename": upload.filename}
 
 
 def _replace_with_existing_artifact(request: Request, asset_id: str, artifact_id: str, tag: str) -> c.MediaAssetRecord:
     sql_repo = media_repository(request)
-    if sql_repo is not None:
-        with sql_repo.session_factory() as session:
-            asset = session.get(MediaAssetRow, asset_id)
-            if asset is None:
-                raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
-            asset.source_artifact_id = artifact_id
-            tags = list(asset.tags or [])
-            if tag not in tags:
-                tags.append(tag)
-            asset.tags = tags
-            asset.updated_at = c.utcnow()
-            session.commit()
-        detail = sql_repo.get_asset_detail(asset_id)
-        if detail is None:
+    with sql_repo.session_factory() as session:
+        asset = session.get(MediaAssetRow, asset_id)
+        if asset is None:
             raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
-        return detail.asset
-    asset = repository(request).media_assets.get(asset_id)
-    if asset is None:
+        asset.source_artifact_id = artifact_id
+        tags = list(asset.tags or [])
+        if tag not in tags:
+            tags.append(tag)
+        asset.tags = tags
+        asset.updated_at = c.utcnow()
+        session.commit()
+    detail = sql_repo.get_asset_detail(asset_id)
+    if detail is None:
         raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
-    tags = list(asset.tags)
-    if tag not in tags:
-        tags.append(tag)
-    updated = asset.model_copy(update={"source_artifact_id": artifact_id, "tags": tags, "updated_at": c.utcnow()})
-    repository(request).media_assets[asset_id] = updated
-    return updated
+    return detail.asset
 
 
 def _list_assets_for_match(request: Request, case_id: str | None, kind: str) -> list[c.MediaAssetRecord]:
     sql_repo = media_repository(request)
-    if sql_repo is not None:
-        return [item.asset for item in sql_repo.list_assets(limit=200, case_id=case_id, kind=kind)]
-    return [
-        asset for asset in repository(request).media_assets.values()
-        if (case_id is None or asset.case_id == case_id) and asset.kind == kind
-    ]
+    return [item.asset for item in sql_repo.list_assets(limit=200, case_id=case_id, kind=kind)]
 
 
 def _artifact_ref(artifact: dict) -> c.ArtifactRef:
@@ -363,11 +302,9 @@ def _artifact_ref(artifact: dict) -> c.ArtifactRef:
 
 def _has_annotation(request: Request, asset_id: str) -> bool:
     sql_repo = media_repository(request)
-    if sql_repo is not None:
-        with sql_repo.session_factory() as session:
-            annotation_id = session.scalar(select(AnnotationRow.id).where(AnnotationRow.asset_id == asset_id).limit(1))
-            return annotation_id is not None
-    return asset_id in repository(request).annotations
+    with sql_repo.session_factory() as session:
+        annotation_id = session.scalar(select(AnnotationRow.id).where(AnnotationRow.asset_id == asset_id).limit(1))
+        return annotation_id is not None
 
 
 def _match_key(value: str) -> str:
@@ -377,14 +314,9 @@ def _match_key(value: str) -> str:
 
 def _asset_record(request: Request, asset_id: str) -> c.MediaAssetRecord:
     sql_repo = media_repository(request)
-    if sql_repo is not None:
-        detail = sql_repo.get_asset_detail(asset_id)
-        if detail is not None:
-            return detail.asset
-    else:
-        asset = repository(request).media_assets.get(asset_id)
-        if asset is not None:
-            return asset
+    detail = sql_repo.get_asset_detail(asset_id)
+    if detail is not None:
+        return detail.asset
     raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
 
 
@@ -408,13 +340,10 @@ def _annotation_editor(request: Request, asset: c.MediaAssetRecord) -> c.Annotat
 
 def _asset_source_ref(request: Request, asset_id: str):
     sql_repo = media_repository(request)
-    if sql_repo is not None:
-        source = sql_repo.artifact_ref_for_asset(asset_id)
-        if source is None:
-            _asset_record(request, asset_id)
-        return source
-    asset = _asset_record(request, asset_id)
-    return repository(request).artifacts.get(asset.source_artifact_id or "")
+    source = sql_repo.artifact_ref_for_asset(asset_id)
+    if source is None:
+        _asset_record(request, asset_id)
+    return source
 
 
 def _replace_asset_artifact(
@@ -431,26 +360,13 @@ def _replace_asset_artifact(
 ) -> c.ArtifactRef:
     sql_repo = media_repository(request)
     source_kind = c.ArtifactKind(source.kind)
-    if sql_repo is not None:
-        artifact_ref = sql_repo.replace_asset_source_artifact(
-            asset_id, kind=source_kind, uri=uri, size_bytes=size_bytes, sha256=sha256,
-            media_info=media_info, payload=payload, tag=tag
-        )
-        if artifact_ref is None:
-            raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
-        return artifact_ref
-    artifact = repository(request).create_artifact(
-        kind=source_kind, payload_schema="ProcessedMediaArtifact.v1", payload=payload,
-        uri=uri, sha256=sha256, media_info=media_info
+    artifact_ref = sql_repo.replace_asset_source_artifact(
+        asset_id, kind=source_kind, uri=uri, size_bytes=size_bytes, sha256=sha256,
+        media_info=media_info, payload=payload, tag=tag
     )
-    asset = repository(request).media_assets[asset_id]
-    tags = list(asset.tags)
-    if tag not in tags:
-        tags.append(tag)
-    repository(request).media_assets[asset_id] = asset.model_copy(
-        update={"source_artifact_id": artifact.id, "tags": tags, "updated_at": c.utcnow()}
-    )
-    return repository(request).artifact_ref(artifact.id)
+    if artifact_ref is None:
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
+    return artifact_ref
 
 
 def _valid_segments_from_annotation(editor: c.AnnotationEditorVm, duration: float) -> list[dict[str, float]]:

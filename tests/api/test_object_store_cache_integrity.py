@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import os
 import threading
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
 from packages.core.storage.object_store import (
+    LocalObjectStore,
     ObjectRef,
     S3ObjectStore,
     object_cache_status,
@@ -170,8 +173,46 @@ def test_health_network_reports_segment_hops():
         response = client.get("/api/health/network")  # public, unauthenticated
         assert response.status_code == 200, response.text
         hops = response.json()["hops"]
-        # memory-backend test app: PG/Redis not configured, OSS/Temporal echoed.
-        assert hops["postgres"]["status"] in {"ok", "not_configured", "failed"}
-        assert hops["oss"]["status"] == "configured"
-        assert hops["temporal"]["status"] == "configured"
-        assert "backend" in hops["oss"]
+        # OSS / Temporal are now LIVE-probed (no static "configured" echo): the
+        # local object store HEADs a non-existent probe key (cheap round-trip) and
+        # reports ok + latency; Temporal is skipped under the local runtime. The
+        # SQL session factory is always mounted (PR#72), so postgres is probed
+        # unconditionally — never "not_configured".
+        assert hops["postgres"]["status"] in {"ok", "failed"}
+        assert hops["oss"]["status"] in {"ok", "failed"}
+        assert "latency_ms" in hops["oss"]
+        assert hops["oss"]["backend"] == "local"
+        assert hops["temporal"]["status"] == "skipped"
+        assert hops["temporal"]["runtime"] == "local"
+
+
+def test_health_network_oss_probe_is_a_real_round_trip(tmp_path):
+    # The OSS hop is a live HEAD against the configured bucket, not a static echo.
+    # A LocalObjectStore reports a missing probe key as absent (exists() -> False)
+    # without raising, so the hop is ok with a measured latency.
+    store = LocalObjectStore(tmp_path / "oss")
+    probe = ObjectRef(
+        bucket=store.bucket,
+        key="_cutagent_healthcheck/network-probe",
+        uri=f"local://{store.bucket}/_cutagent_healthcheck/network-probe",
+    )
+    assert store.exists(probe) is False
+
+    app = create_app()
+    with TestClient(app) as client:
+        oss = client.get("/api/health/network").json()["hops"]["oss"]
+    assert oss["status"] == "ok"
+    assert isinstance(oss["latency_ms"], (int, float))
+    assert oss["backend"] == "local"
+
+
+def test_bounded_probe_times_out_without_blocking():
+    # The DoS guard: a hung synchronous probe must raise a timeout AND let the
+    # handler return promptly (it abandons the worker thread rather than waiting
+    # on shutdown), well before the 5s sleep would have finished.
+    from apps.api.services.core import _bounded_probe
+
+    started = time.monotonic()
+    with pytest.raises(concurrent.futures.TimeoutError):
+        _bounded_probe(lambda: time.sleep(5), 0.1)
+    assert time.monotonic() - started < 2

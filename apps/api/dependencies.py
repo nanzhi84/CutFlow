@@ -122,6 +122,18 @@ async def _read_response_body_capped(response, cap: int) -> tuple[bytes, bool]:
     return buffered, False
 
 
+async def _read_request_body_capped(request: Request, cap: int) -> tuple[bytes, bool]:
+    """Read a request body up to ``cap`` bytes, including chunked/no-length bodies."""
+    buffered = bytearray()
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        if len(buffered) + len(chunk) > cap:
+            return bytes(buffered), True
+        buffered.extend(chunk)
+    return bytes(buffered), False
+
+
 async def authenticate_api_request(request: Request, call_next):
     started_at = time.perf_counter()
     status_code = 500
@@ -170,17 +182,28 @@ async def authenticate_api_request(request: Request, call_next):
                 )
                 status_code = response.status_code
                 return response
-            body = await request.body()
+            body, body_overflow = await _read_request_body_capped(
+                request, api_settings.idempotency_max_body_bytes
+            )
+            if body_overflow:
+                response = node_error_response(
+                    NodeExecutionError(
+                        c.ErrorCode.upload_too_large,
+                        "Idempotency-Key is only supported on small control-plane JSON "
+                        "requests; this request body is too large or streamed.",
+                    )
+                )
+                status_code = response.status_code
+                return response
+            # Starlette marks the stream consumed after request.stream(); cache the
+            # bounded body so downstream request.body()/json() still sees it.
+            request._body = body  # noqa: SLF001
             request_hash = hashlib.sha256(body).hexdigest()
             record_key = f"{user.id}:{idempotency_key}"
             record_method = request.method
             record_path = request.url.path
             store = common.idempotency_repository(request)
-            existing = (
-                store.get(key=record_key, method=record_method, path=record_path, now=c.utcnow())
-                if store is not None
-                else common.repository(request).idempotency_records.get(f"{record_key}:{record_method}:{record_path}")
-            )
+            existing = store.get(key=record_key, method=record_method, path=record_path, now=c.utcnow())
             if existing is not None:
                 if existing["request_hash"] != request_hash:
                     response = node_error_response(
@@ -255,23 +278,15 @@ async def authenticate_api_request(request: Request, call_next):
                     status_code = passthrough.status_code
                     return passthrough
                 expires_at = c.utcnow() + timedelta(hours=24)
-                if store is not None:
-                    store.put(
-                        key=record_key,
-                        method=record_method,
-                        path=record_path,
-                        request_hash=request_hash,
-                        response_status=response.status_code,
-                        response_body=content,
-                        expires_at=expires_at,
-                    )
-                else:
-                    common.repository(request).idempotency_records[f"{record_key}:{record_method}:{record_path}"] = {
-                        "request_hash": request_hash,
-                        "content": content,
-                        "status_code": response.status_code,
-                        "expires_at": expires_at,
-                    }
+                store.put(
+                    key=record_key,
+                    method=record_method,
+                    path=record_path,
+                    request_hash=request_hash,
+                    response_status=response.status_code,
+                    response_body=content,
+                    expires_at=expires_at,
+                )
                 response.headers["X-Request-Id"] = request_id()
                 stored = Response(
                     content=response_body,

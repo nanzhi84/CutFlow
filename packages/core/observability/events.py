@@ -11,7 +11,7 @@ from queue import Empty, Queue
 from typing import Any, Callable
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from packages.core.contracts import utcnow
@@ -359,16 +359,36 @@ def replay_sqlalchemy_outbox(
     *,
     aggregate_type: str,
     aggregate_id: str,
+    after_event_id: str | None = None,
 ) -> list[dict[str, Any]]:
+    """Replay an aggregate's outbox events in (created_at, id) order.
+
+    When ``after_event_id`` is given (#87 D2 cursor resume), only events strictly
+    after that cursor are returned. The outbox row PK *is* the ``RunEvent.event_id``
+    carried in the payload, so the cursor row's (created_at, id) sort position is a
+    direct lookup. An unknown id (never persisted / pruned) falls back to a full
+    replay — harmless because the client dedups against its already-seen ids.
+    """
     with session_factory() as session:
-        rows = list(
-            session.scalars(
-                select(OutboxEventRow)
-                .where(OutboxEventRow.aggregate_type == aggregate_type)
-                .where(OutboxEventRow.aggregate_id == aggregate_id)
-                .order_by(OutboxEventRow.created_at, OutboxEventRow.id)
-            )
+        statement = (
+            select(OutboxEventRow)
+            .where(OutboxEventRow.aggregate_type == aggregate_type)
+            .where(OutboxEventRow.aggregate_id == aggregate_id)
+            .order_by(OutboxEventRow.created_at, OutboxEventRow.id)
         )
+        if after_event_id is not None:
+            cursor = session.get(OutboxEventRow, after_event_id)
+            if cursor is not None:
+                statement = statement.where(
+                    or_(
+                        OutboxEventRow.created_at > cursor.created_at,
+                        and_(
+                            OutboxEventRow.created_at == cursor.created_at,
+                            OutboxEventRow.id > cursor.id,
+                        ),
+                    )
+                )
+        rows = list(session.scalars(statement))
     return [row.payload for row in rows if isinstance(row.payload, dict)]
 
 

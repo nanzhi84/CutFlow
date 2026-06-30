@@ -6,7 +6,6 @@ from fastapi import Request
 from apps.api.common import (
     media_repository,
     object_store,
-    page,
     provider_repository,
     repository,
     request_id,
@@ -54,19 +53,10 @@ def list_voices(
     vendor: str | None = None,
     enabled: bool | None = None,
 ) -> c.PageResponse[c.VoiceProfile]:
-    if media_repository(request) is not None:
-        values = media_repository(request).list_voices(
-            source=source, vendor=vendor, enabled=enabled, limit=limit
-        )
-        return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
-    values = list(repository(request).voices.values())
-    if source:
-        values = [voice for voice in values if voice.source == source]
-    if vendor:
-        values = [voice for voice in values if voice.vendor == vendor]
-    if enabled is not None:
-        values = [voice for voice in values if voice.enabled == enabled]
-    return page(values, limit)
+    values = media_repository(request).list_voices(
+        source=source, vendor=vendor, enabled=enabled, limit=limit
+    )
+    return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
 
 
 def _resolve_sync_profiles(
@@ -88,14 +78,7 @@ def _resolve_sync_profiles(
             )
         return [profile]
     provider_repo = provider_repository(request)
-    if provider_repo is not None:
-        candidates = provider_repo.list_profiles(capability="tts.speech", limit=200)
-    else:
-        candidates = [
-            profile
-            for profile in repository(request).provider_profiles.values()
-            if profile.capability == "tts.speech"
-        ]
+    candidates = provider_repo.list_profiles(capability="tts.speech", limit=200)
     resolved: list[c.ProviderProfile] = []
     for profile in candidates:
         if not profile.enabled or profile.provider_id == "sandbox":
@@ -146,28 +129,14 @@ def sync_voices(payload: c.SyncVoicesRequest, request: Request) -> c.SyncVoicesR
             raw_status = str(item.get("status") or "ready")
             status = raw_status if raw_status in ("ready", "training", "failed") else "ready"
             display_name = str(item.get("display_name") or "").strip() or voice_id
-            if media_repo is not None:
-                voice, created = media_repo.upsert_voice(
-                    voice_id=voice_id,
-                    display_name=display_name,
-                    source=source,
-                    provider_profile_id=profile.id,
-                    vendor=vendor,
-                    status=status,
-                )
-            else:
-                repo = repository(request)
-                existing = repo.voices.get(voice_id)
-                created = existing is None
-                voice = c.VoiceProfile(
-                    id=voice_id,
-                    display_name=display_name,
-                    source=source,
-                    vendor=vendor,
-                    provider_profile_id=profile.id,
-                    status=status,
-                )
-                repo.voices[voice_id] = voice
+            voice, created = media_repo.upsert_voice(
+                voice_id=voice_id,
+                display_name=display_name,
+                source=source,
+                provider_profile_id=profile.id,
+                vendor=vendor,
+                status=status,
+            )
             saved.append(voice)
             if created:
                 imported += 1
@@ -184,22 +153,6 @@ def sync_voices(payload: c.SyncVoicesRequest, request: Request) -> c.SyncVoicesR
 
 def clone_voice(payload: c.CloneVoiceRequest, request: Request) -> c.VoiceProfile:
     media_repo = media_repository(request)
-    if media_repo is not None:
-        provider_voice = _provider_voice_build(
-            payload.provider_profile_id,
-            request,
-            operation="clone",
-            display_name=payload.display_name,
-            source="cloned",
-            input_payload={"reference_upload_session_id": payload.reference_upload_session_id},
-            before_invoke=lambda repo: hydrate_voice_reference_upload(
-                media_repo, repo, payload.reference_upload_session_id
-            ),
-        )
-        if provider_voice is not None:
-            return persist_provider_voice(media_repo, provider_voice)
-        resolved = _voice_tts_profile_id(payload.provider_profile_id)
-        return media_repo.clone_voice(payload.model_copy(update={"provider_profile_id": resolved}))
     provider_voice = _provider_voice_build(
         payload.provider_profile_id,
         request,
@@ -207,17 +160,14 @@ def clone_voice(payload: c.CloneVoiceRequest, request: Request) -> c.VoiceProfil
         display_name=payload.display_name,
         source="cloned",
         input_payload={"reference_upload_session_id": payload.reference_upload_session_id},
+        before_invoke=lambda repo: hydrate_voice_reference_upload(
+            media_repo, repo, payload.reference_upload_session_id
+        ),
     )
     if provider_voice is not None:
-        return provider_voice
-    voice = c.VoiceProfile(
-        id=new_id("voice"),
-        display_name=payload.display_name,
-        source="cloned",
-        provider_profile_id=_voice_tts_profile_id(payload.provider_profile_id),
-    )
-    repository(request).voices[voice.id] = voice
-    return voice
+        return persist_provider_voice(media_repo, provider_voice)
+    resolved = _voice_tts_profile_id(payload.provider_profile_id)
+    return media_repo.clone_voice(payload.model_copy(update={"provider_profile_id": resolved}))
 
 
 def _provider_voice_build(
@@ -291,48 +241,24 @@ def _sign_preview_audio(response: c.VoicePreviewResponse, request: Request) -> c
 
 def _resolve_voice_preview(voice_id: str, payload: c.VoicePreviewRequest, request: Request) -> c.VoicePreviewResponse:
     media_repo = media_repository(request)
-    if media_repo is not None:
-        voice = load_voice(media_repo, voice_id)
-        if voice is not None:
-            response = _provider_voice_preview(voice, payload, request)
-            if response is not None:
-                artifact = repository(request).artifacts.get(response.audio_artifact.artifact_id)
-                if artifact is not None:
-                    artifact_ref = persist_provider_preview(media_repo, voice_id, artifact)
-                    return response.model_copy(update={"audio_artifact": artifact_ref})
-                return response
-            if not sandbox_fallback_allowed():
-                raise NodeExecutionError(
-                    c.ErrorCode.provider_unsupported_option,
-                    "未配置真实 TTS 供应商，无法生成音色试听。请先在「设置」中配置并启用真实 TTS 供应商及密钥。",
-                )
-        response = media_repo.preview_voice(voice_id, payload)
-        if response is None:
-            raise NodeExecutionError(c.ErrorCode.validation_missing_voice, "Voice not found.")
-        return response
-    if voice_id not in repository(request).voices:
+    voice = load_voice(media_repo, voice_id)
+    if voice is not None:
+        response = _provider_voice_preview(voice, payload, request)
+        if response is not None:
+            artifact = repository(request).artifacts.get(response.audio_artifact.artifact_id)
+            if artifact is not None:
+                artifact_ref = persist_provider_preview(media_repo, voice_id, artifact)
+                return response.model_copy(update={"audio_artifact": artifact_ref})
+            return response
+        if not sandbox_fallback_allowed():
+            raise NodeExecutionError(
+                c.ErrorCode.provider_unsupported_option,
+                "未配置真实 TTS 供应商，无法生成音色试听。请先在「设置」中配置并启用真实 TTS 供应商及密钥。",
+            )
+    response = media_repo.preview_voice(voice_id, payload)
+    if response is None:
         raise NodeExecutionError(c.ErrorCode.validation_missing_voice, "Voice not found.")
-    repo = repository(request)
-    voice = repo.voices[voice_id]
-    response = _provider_voice_preview(voice, payload, request)
-    if response is not None:
-        return response
-    if not sandbox_fallback_allowed():
-        raise NodeExecutionError(
-            c.ErrorCode.provider_unsupported_option,
-            "未配置真实 TTS 供应商，无法生成音色试听。请先在「设置」中配置并启用真实 TTS 供应商及密钥。",
-        )
-    artifact = repository(request).create_artifact(
-        kind=c.ArtifactKind.audio_tts,
-        payload_schema="VoicePreviewArtifact.v1",
-        payload={"text": payload.text},
-        uri=f"sandbox://voice-preview/{voice_id}.wav",
-    )
-    return c.VoicePreviewResponse(
-        voice_id=voice_id,
-        audio_artifact=repository(request).artifact_ref(artifact.id),
-        duration_sec=max(1, len(payload.text) / 6),
-    )
+    return response
 
 
 def _provider_voice_preview(
@@ -409,10 +335,7 @@ def refresh_voice_status(voice_id: str, request: Request) -> c.VoiceProfile:
     failure to failed. Provider/transient errors leave it ``training`` to retry.
     """
     media_repo = media_repository(request)
-    if media_repo is not None:
-        voice = load_voice(media_repo, voice_id)
-    else:
-        voice = repository(request).voices.get(voice_id)
+    voice = load_voice(media_repo, voice_id)
     if voice is None:
         raise NodeExecutionError(c.ErrorCode.validation_missing_voice, "Voice not found.")
     if voice.status != "training":
@@ -432,33 +355,24 @@ def refresh_voice_status(voice_id: str, request: Request) -> c.VoiceProfile:
     new_status = str(result.output.get("status") or "training")
     if new_status == voice.status:
         return voice
-    if media_repo is not None:
-        updated, _ = media_repo.upsert_voice(
-            voice_id=voice.id,
-            display_name=voice.display_name,
-            source=voice.source,
-            provider_profile_id=voice.provider_profile_id or "",
-            vendor=voice.vendor,
-            status=new_status,
-        )
-        return updated
-    updated_voice = voice.model_copy(update={"status": new_status, "updated_at": c.utcnow()})
-    repository(request).voices[voice.id] = updated_voice
-    return updated_voice
+    updated, _ = media_repo.upsert_voice(
+        voice_id=voice.id,
+        display_name=voice.display_name,
+        source=voice.source,
+        provider_profile_id=voice.provider_profile_id or "",
+        vendor=voice.vendor,
+        status=new_status,
+    )
+    return updated
 
 
 def patch_voice(voice_id: str, payload: c.PatchVoiceRequest, request: Request) -> c.VoiceProfile:
-    if media_repository(request) is not None:
-        voice = media_repository(request).patch_voice(voice_id, payload)
-        if voice is None:
-            raise NodeExecutionError(c.ErrorCode.validation_missing_voice, "Voice not found.")
-        return voice
-    return repository(request).patch(repository(request).voices, voice_id, payload.model_dump(exclude_none=True))
+    voice = media_repository(request).patch_voice(voice_id, payload)
+    if voice is None:
+        raise NodeExecutionError(c.ErrorCode.validation_missing_voice, "Voice not found.")
+    return voice
 
 
 def delete_voice(voice_id: str, request: Request) -> c.OkResponse:
-    if media_repository(request) is not None:
-        media_repository(request).delete_voice(voice_id)
-        return c.OkResponse(request_id=request_id())
-    repository(request).voices.pop(voice_id, None)
+    media_repository(request).delete_voice(voice_id)
     return c.OkResponse(request_id=request_id())

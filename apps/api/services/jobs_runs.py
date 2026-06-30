@@ -22,7 +22,6 @@ from apps.api.services.auth import get_my_generation_defaults
 from packages.core import contracts as c
 from packages.core.observability.events import receive_from_subscriber
 from packages.core.observability import replay_sqlalchemy_outbox
-from packages.core.observability.outbox import OutboxWriter
 from packages.core.contracts.state_machines import (
     JOB_TRANSITIONS,
     RUN_TRANSITIONS,
@@ -71,12 +70,11 @@ EVENT_STREAM_HEARTBEAT_INTERVAL_SECONDS = 15.0
 
 
 def _sync_workflow_snapshot(request: Request, run: c.WorkflowRun) -> None:
-    if production_repository(request) is not None:
-        production_repository(request).sync_workflow_snapshot(
-            job=repository(request).jobs[run.job_id],
-            run=repository(request).runs[run.id],
-            repository=repository(request),
-        )
+    production_repository(request).sync_workflow_snapshot(
+        job=repository(request).jobs[run.job_id],
+        run=repository(request).runs[run.id],
+        repository=repository(request),
+    )
 
 
 def _admit_run(
@@ -315,8 +313,7 @@ def _compute_reuse_plan(
     if not reuse_valid_artifacts:
         return _empty_reuse_plan(source_run_id, template)
     repo = repository(request)
-    if production_repository(request) is not None:
-        production_repository(request).hydrate_workflow_runtime_snapshot(repo, source_run_id)
+    production_repository(request).hydrate_workflow_runtime_snapshot(repo, source_run_id)
     return compute_reuse_plan(
         ReuseSourceRun(
             run=repo.runs[source_run_id],
@@ -417,7 +414,7 @@ def _start_submitted_run(
 
 def _runtime_run(request: Request, run_id: str) -> c.WorkflowRun:
     repo = repository(request)
-    if run_id not in repo.runs and production_repository(request) is not None:
+    if run_id not in repo.runs:
         production_repository(request).hydrate_workflow_runtime_snapshot(repo, run_id)
     return repo.runs[run_id]
 
@@ -582,7 +579,7 @@ def _link_adopted_script(request: Request, payload: c.DigitalHumanVideoRequest) 
         return
     repo = repository(request)
     existing = repo.scripts.get(script_version_id)
-    if existing is None and production_repository(request) is not None:
+    if existing is None:
         existing = production_repository(request).hydrate_adopted_script(repo, script_version_id)
     if existing is not None and existing.case_id != payload.case_id:
         # Defensive: never relink a ScriptVersion across cases.
@@ -657,7 +654,7 @@ def cancel_run(run_id: str, payload: c.CancelRunRequest, request: Request) -> c.
 
 
 def delete_run_record(run_id: str, request: Request) -> c.OkResponse:
-    if run_id not in repository(request).runs and production_repository(request) is not None:
+    if run_id not in repository(request).runs:
         if not production_repository(request).run_exists(run_id):
             raise NodeExecutionError(c.ErrorCode.artifact_missing, f"Run {run_id} does not exist.")
         production_repository(request).hydrate_workflow_runtime_snapshot(repository(request), run_id)
@@ -669,8 +666,7 @@ def delete_run_record(run_id: str, request: Request) -> c.OkResponse:
             c.ErrorCode.validation_conflict,
             "Processing runs cannot be deleted. Cancel or wait until the run reaches a terminal status.",
         )
-    if production_repository(request) is not None:
-        production_repository(request).delete_run_record(run_id)
+    production_repository(request).delete_run_record(run_id)
     _delete_run_from_memory(repository(request), run)
     return c.OkResponse(request_id=request_id())
 
@@ -760,7 +756,7 @@ def run_artifacts(request: Request, run_id: str) -> c.RunArtifactsResponse:
 
 def run_events(request: Request, run_id: str) -> c.EventStreamTokenResponse:
     assert_owner_or_404(current_user(request), run_owner(request, run_id))
-    if production_repository(request) is not None and not production_repository(request).run_exists(run_id):
+    if not production_repository(request).run_exists(run_id):
         raise NodeExecutionError(c.ErrorCode.validation_invalid_options, f"Run {run_id} does not exist.")
     token = request.app.state.event_tokens.issue(run_id, timedelta(minutes=10))
     return c.EventStreamTokenResponse(
@@ -778,8 +774,10 @@ async def run_websocket(websocket: WebSocket, run_id: str) -> None:
         return
 
     await websocket.accept()
-    repo = websocket.app.state.repository
     sent_event_ids: set[str] = set()
+    # #87 D2: a reconnecting client passes ?after=<last event_id> so replay resumes
+    # just past what it already has, instead of re-sending the whole run history.
+    after_event_id = websocket.query_params.get("after")
     session_factory = getattr(websocket.app.state, "sqlalchemy_session_factory", None)
     hub = websocket.app.state.event_hub
     # Initialize before the try so the finally can pair the connected gauge with
@@ -789,19 +787,12 @@ async def run_websocket(websocket: WebSocket, run_id: str) -> None:
     subscriber = None
     record_event_stream_connected()
     try:
-        if session_factory is not None:
-            replay_payloads = replay_sqlalchemy_outbox(
-                session_factory,
-                aggregate_type="run",
-                aggregate_id=run_id,
-            )
-        else:
-            writer = OutboxWriter(repo)
-            replay_payloads = [
-                event.payload
-                for event in writer.replay(aggregate_type="run", aggregate_id=run_id)
-                if isinstance(event.payload, dict)
-            ]
+        replay_payloads = replay_sqlalchemy_outbox(
+            session_factory,
+            aggregate_type="run",
+            aggregate_id=run_id,
+            after_event_id=after_event_id,
+        )
         for payload in replay_payloads:
             if payload.get("event_id"):
                 sent_event_ids.add(str(payload["event_id"]))

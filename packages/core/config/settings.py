@@ -544,6 +544,12 @@ class Settings(BaseModel):
     # fallback (so a single request does not hard-fail), but readiness reports
     # not-ready so the LB stops routing until Redis recovers. See issue #67.
     redis_required: bool = False
+    # CUTAGENT_HEALTH_PROBE_TIMEOUT: per-hop wall-clock budget (seconds) for the
+    # public /api/health/network segment probes (issue #77 / #87 C3). The OSS and
+    # Temporal hops are synchronous round-trips run on a throwaway worker thread
+    # and abandoned past this budget, so a slow / hung dependency cannot turn this
+    # unauthenticated endpoint into a DoS amplifier. Default 2.0s.
+    health_probe_timeout_seconds: float = 2.0
 
 
 # Builder: read os.environ once and assemble a Settings snapshot.
@@ -789,6 +795,7 @@ def build_settings() -> Settings:
         redis_url=build_redis_url(),
         redis_required=_env_str("CUTAGENT_REDIS_REQUIRED", "").strip().lower()
         in {"1", "true", "yes", "on"},
+        health_probe_timeout_seconds=_env_float("CUTAGENT_HEALTH_PROBE_TIMEOUT", 2.0),
     )
 
 

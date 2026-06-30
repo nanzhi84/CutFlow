@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
@@ -49,6 +51,31 @@ def test_idempotency_key_rejects_oversized_declared_body(monkeypatch):
             },
         )
         assert response.status_code == 413, response.text
+
+
+def test_idempotency_key_rejects_chunked_oversized_body_without_content_length(monkeypatch):
+    monkeypatch.setenv("CUTAGENT_IDEMPOTENCY_MAX_BODY_BYTES", "128")
+    app = create_app()
+    with TestClient(app) as client:
+        _login(client)
+        payload = {
+            "case_id": "case_demo",
+            "title": "Chunked over cap",
+            "script": "x" * 512,
+            "voice": {"voice_id": "voice_sandbox"},
+            "strictness": {"strict_timestamps": False},
+        }
+        body = json.dumps(payload).encode()
+        response = client.post(
+            "/api/jobs/digital-human-video",
+            content=iter((body[:64], body[64:192], body[192:])),
+            headers={
+                "Idempotency-Key": "chunked-big-1",
+                "Content-Type": "application/json",
+            },
+        )
+        assert response.status_code == 413, response.text
+        assert response.json()["error"]["code"] == "upload.too_large"
 
 
 def test_small_json_write_with_idempotency_key_still_works():
@@ -135,6 +162,49 @@ def test_idempotency_response_capture_stops_at_cap():
     # Bounded: stops within one chunk of the cap, never accumulates the full body.
     assert len(buffered) <= 250 + 100
     assert len(pulled) < 10, f"buffered the whole body ({len(pulled)} chunks); cap not enforced"
+
+
+def test_idempotency_request_capture_stops_at_cap():
+    """Chunked/no-length request bodies must stop reading when they exceed cap."""
+    import asyncio
+
+    from apps.api.dependencies import _read_request_body_capped
+
+    pulled: list[int] = []
+
+    async def _run():
+        class _FakeReq:
+            async def stream(self):
+                for i in range(10):
+                    pulled.append(i)
+                    yield b"x" * 100
+
+        return await _read_request_body_capped(_FakeReq(), cap=250)
+
+    buffered, overflowed = asyncio.run(_run())
+    assert overflowed is True
+    assert len(buffered) <= 250
+    assert len(pulled) < 10, f"buffered the whole body ({len(pulled)} chunks); cap not enforced"
+
+
+def test_idempotency_request_capture_boundary_at_cap():
+    """A body exactly == cap passes through (no overflow); cap+1 overflows."""
+    import asyncio
+
+    from apps.api.dependencies import _read_request_body_capped
+
+    async def _read(total: int, cap: int) -> tuple[bytes, bool]:
+        class _FakeReq:
+            async def stream(self):
+                yield b"x" * total
+
+        return await _read_request_body_capped(_FakeReq(), cap=cap)
+
+    body, overflowed = asyncio.run(_read(128, 128))
+    assert overflowed is False
+    assert len(body) == 128
+    body, overflowed = asyncio.run(_read(129, 128))
+    assert overflowed is True
 
 
 def test_idempotency_oversized_passthrough_preserves_full_body():

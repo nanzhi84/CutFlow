@@ -8,6 +8,7 @@ import { AnalyticsTabs, RangeSegmentedControl } from "../components/analytics/An
 import { AnalyticsKpiCards } from "../components/analytics/AnalyticsKpiCards";
 import { BalanceQuotaTab } from "../components/analytics/BalanceQuotaTab";
 import { CostUsageTab } from "../components/analytics/CostUsageTab";
+import { NetworkDiagnosticsPanel } from "../components/analytics/NetworkDiagnosticsPanel";
 import { ProviderUsageMetricsTab } from "../components/analytics/ProviderUsageMetricsTab";
 import { TaskStatsTab } from "../components/analytics/TaskStatsTab";
 import { YieldFunnelTab } from "../components/analytics/YieldFunnelTab";
@@ -128,6 +129,7 @@ export default function AnalyticsPage() {
         />
       ) : null}
       {tab === "apiUsage" ? <ProviderUsageMetricsTab report={providerUsageMetrics.data} windowHours={timeWindow.hours} /> : null}
+      {tab === "diagnostics" ? <NetworkDiagnosticsPanel /> : null}
     </div>
   );
 }

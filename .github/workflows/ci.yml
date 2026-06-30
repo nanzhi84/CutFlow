@@ -241,3 +241,59 @@ jobs:
       - name: Build frontend
         working-directory: apps/web
         run: npm run build
+
+  redis-coordination:
+    # #87 B3 / #70: the cross-replica consistency regression in
+    # tests/observability/test_redis_coordination.py skips unless CUTAGENT_REDIS_URL
+    # is set, so without a Redis service in CI it silently never ran. This job runs
+    # it (plus the degrade/reconnect suite) against a real Redis so the multi-replica
+    # token issue/validate, fanout, and provider-limiter concurrency/QPS guarantees
+    # are actually enforced on every push.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: cutagent
+          POSTGRES_USER: cutagent
+          POSTGRES_PASSWORD: cutagent
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U cutagent -d cutagent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      CUTAGENT_DATABASE_URL: postgresql+psycopg://cutagent:cutagent@localhost:55432/cutagent
+      CUTAGENT_STORAGE_BACKEND: sqlalchemy
+      CUTAGENT_OBJECTSTORE_BACKEND: local
+      CUTAGENT_LOCAL_OBJECTSTORE_PATH: /tmp/cutagent-objstore
+      CUTAGENT_REDIS_URL: redis://localhost:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Ensure ffmpeg and ffprobe
+        # bootstrap_database.py seeds probe-able demo media (generate_seed_video /
+        # probe_media), which needs ffmpeg even though the Redis tests themselves don't.
+        uses: ./.github/actions/setup-ffmpeg-tools
+      - name: Install Python dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Bootstrap database
+        run: python scripts/bootstrap_database.py
+      - name: Run Redis cross-replica coordination + degrade/reconnect regression
+        run: >-
+          timeout -k 5 600 python -m pytest -q
+          tests/observability/test_redis_coordination.py
+          tests/observability/test_redis_reconnect.py

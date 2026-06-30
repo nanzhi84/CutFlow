@@ -6,10 +6,19 @@ from pydantic import ValidationError
 from packages.core.contracts import PrepareUploadRequest, PrepareUploadResponse
 from packages.core.contracts.media import ALLOWED_UPLOAD_CONTENT_TYPES, UploadKind
 
+# 100 MiB is a deliberate product hard cap, NOT a bug to "fix" by lifting it.
+# #87 C6 is wontfix-by-design: uploads are a single browser-direct presigned PUT
+# (no chunked/resumable transfer), so a single PUT must reliably complete within
+# this bound. Reviving multipart/resume would force a contract change (this `le`),
+# an object_store multipart protocol, complete()'s sha256 re-hash off the API
+# process, an alembic part/uploadId migration, and a frontend upload queue —
+# tracked as too-expensive in #87. This test pins the cap so it isn't quietly raised.
 _100_MIB = 100 * 1024 * 1024
 
 
 def test_size_cap_enforced():
+    """Pin the #87 C6 wontfix product cap: exactly 100 MiB is accepted, one byte
+    over is rejected. Do not relax this without re-opening the chunked-upload design."""
     PrepareUploadRequest(
         kind=UploadKind.publish_video, filename="v.mp4",
         content_type="video/mp4", size_bytes=_100_MIB,

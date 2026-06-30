@@ -823,7 +823,41 @@ export const api = {
         query,
       }),
   },
+  health: {
+    // /api/health/network is an operational-only endpoint (include_in_schema=False),
+    // so it has no generated OpenAPI type — the response shape is hand-written here.
+    // It returns 200 (ok) or 503 (degraded); BOTH carry the same diagnostics body,
+    // so a 503 is a valid result to render (which hop failed), not a transport error.
+    // Any other status falls back to the shared error handling.
+    network: async (): Promise<NetworkDiagnostics> => {
+      const response = await fetch("/api/health/network", {
+        credentials: "include",
+        headers: { Accept: JSON_TYPE },
+      });
+      if (response.ok || response.status === 503) {
+        return (await response.json()) as NetworkDiagnostics;
+      }
+      throw await parseError(response);
+    },
+  },
 } as const;
+
+/** One segment of the Web→VPS→Mac→OSS topology probe (`/api/health/network`). */
+export type NetworkHop = {
+  status: "ok" | "failed" | "skipped" | "not_configured" | string;
+  latency_ms?: number;
+  backend?: string;
+  runtime?: string;
+  address?: string;
+  endpoint?: string;
+  error?: string;
+};
+
+export type NetworkDiagnostics = {
+  status: "ok" | "degraded" | string;
+  hops: Record<string, NetworkHop>;
+  request_id: string;
+};
 
 export type AuthUser = components["schemas"]["AuthUser"];
 export type LoginRequest = components["schemas"]["LoginRequest"];

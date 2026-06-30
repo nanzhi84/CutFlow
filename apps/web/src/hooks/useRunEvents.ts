@@ -16,10 +16,11 @@ export type RunEventMessage = {
 
 export type RunEventState = "idle" | "connecting" | "live" | "reconnecting" | "closed" | "error";
 
-function streamUrl(path: string, token: string) {
+function streamUrl(path: string, token: string, after?: string) {
   const base = window.location.origin.replace(/^http/, "ws");
   const url = new URL(path, base);
   url.searchParams.set("token", token);
+  if (after) url.searchParams.set("after", after);
   return url.toString();
 }
 
@@ -36,15 +37,21 @@ export function useRunEvents(runId: string | null | undefined, enabled = true) {
   const [events, setEvents] = useState<RunEventMessage[]>([]);
   const [state, setState] = useState<RunEventState>("idle");
   const seen = useRef<Set<string>>(new Set());
+  // #87 D2: last real event_id seen, so a reconnect resumes via ?after= instead
+  // of replaying the whole run history. Persists across reconnects within a run.
+  const lastEventId = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     if (!runId || !enabled) {
       setState("idle");
       setEvents([]);
       seen.current.clear();
+      lastEventId.current = undefined;
       return;
     }
     const activeRunId = runId;
+    // Fresh run -> no cursor; the first connect does a full replay.
+    lastEventId.current = undefined;
 
     let stopped = false;
     let socket: WebSocket | null = null;
@@ -68,7 +75,7 @@ export function useRunEvents(runId: string | null | undefined, enabled = true) {
       try {
         const token = await api.runs.events(activeRunId);
         if (stopped) return;
-        socket = new WebSocket(streamUrl(token.stream_url, token.token));
+        socket = new WebSocket(streamUrl(token.stream_url, token.token, lastEventId.current));
         socket.onopen = () => {
           attempt = 0;
           setState("live");
@@ -82,6 +89,7 @@ export function useRunEvents(runId: string | null | undefined, enabled = true) {
           const key = event.event_id ?? `${event.event_type}:${event.node_id}:${event.status}:${event.created_at}`;
           if (key && seen.current.has(key)) return;
           if (key) seen.current.add(key);
+          if (event.event_id) lastEventId.current = event.event_id;
           setEvents((current) => [...current, event].slice(-80));
         };
         socket.onerror = () => {

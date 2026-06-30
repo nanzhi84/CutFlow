@@ -13,8 +13,6 @@ Behavior:
   标注' artifact) and reports ``material.annotation``; a failed VLM run reports
   ``material.annotation_failed`` (the asset is marked ``annotation_failed``, never
   entering the usable pool).
-- works on BOTH the in-memory and the production SQLAlchemy media-repo paths,
-  reusing the gated runner wiring in :mod:`apps.api.services.asset_annotation`.
 """
 
 from __future__ import annotations
@@ -92,7 +90,6 @@ def _annotate_one(
     sensor_deps: SensorDeps | None,
 ) -> c.AnnotationBatchResultItem:
     rerun_payload = c.RerunAnnotationRequest(provider_profile_id=provider_profile_id, force=force)
-    sql_repo = media_repository(request)
     try:
         asset = _asset_record(request, asset_id)
         if asset is None:
@@ -114,14 +111,9 @@ def _annotate_one(
             return c.AnnotationBatchResultItem(
                 asset_id=asset_id, status="skipped", annotation_status="annotated", message="已标注，跳过。"
             )
-        if sql_repo is not None:
-            response = asset_annotation.run_sqlalchemy_asset_annotation(
-                request, asset_id, rerun_payload, sensor_deps=sensor_deps
-            )
-        else:
-            response = asset_annotation.run_inmemory_asset_annotation(
-                request, asset_id, rerun_payload, sensor_deps=sensor_deps
-            )
+        response = asset_annotation.run_sqlalchemy_asset_annotation(
+            request, asset_id, rerun_payload, sensor_deps=sensor_deps
+        )
         if response is None:
             return c.AnnotationBatchResultItem(
                 asset_id=asset_id,
@@ -151,10 +143,7 @@ def _annotate_one(
 
 
 def _asset_record(request: Request, asset_id: str) -> c.MediaAssetRecord | None:
-    sql_repo = media_repository(request)
-    if sql_repo is not None:
-        return sql_repo.asset_record(asset_id)
-    return repository(request).media_assets.get(asset_id)
+    return media_repository(request).asset_record(asset_id)
 
 
 def _current_annotation_status(request: Request, asset_id: str) -> str | None:
@@ -164,9 +153,7 @@ def _current_annotation_status(request: Request, asset_id: str) -> str | None:
 
 def _persist_job(request: Request, job: c.Job) -> None:
     repository(request).jobs[job.id] = job
-    prod_repo = production_repository(request)
-    if prod_repo is not None:
-        prod_repo.persist_job(job)
+    production_repository(request).persist_job(job)
 
 
 def _finish_job(request: Request, job: c.Job, *, failed: int) -> None:

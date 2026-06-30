@@ -1,28 +1,21 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from decimal import Decimal
+from datetime import datetime
 
 import httpx
 from fastapi import Request
 
 from apps.api.common import (
     ops_repository,
-    page,
     provider_repository,
-    repository,
     request_id,
     secret_store,
 )
 from packages.ai.netpolicy import assert_options_hosts_allowed
 from packages.core import contracts as c
 from packages.core.provider_balance_accounts import coalesce_balance_items
-from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 from packages.ops.balance import BalancePollerService, refresh_balances
-
-
-DEFAULT_HEALTH_CHECK_LATENCY_MS = 100
 
 
 def _validate_outbound_hosts(default_options: dict | None) -> None:
@@ -66,24 +59,6 @@ def _snapshot_from_item(item: c.ProviderBalanceItem) -> c.ProviderBalanceSnapsho
     )
 
 
-def _recent_profile_p95_latency_ms(
-    invocations: list[c.ProviderInvocation],
-    *,
-    profile_id: str,
-    window_hours: int = 24,
-) -> int | None:
-    window_start = c.utcnow() - timedelta(hours=window_hours)
-    durations = sorted(
-        invocation.duration_ms
-        for invocation in invocations
-        if invocation.provider_profile_id == profile_id and invocation.started_at >= window_start
-    )
-    if not durations:
-        return None
-    index = max(0, ((len(durations) * 95 + 99) // 100) - 1)
-    return int(durations[index])
-
-
 def provider_profiles(
     request: Request,
     limit: int = 50,
@@ -91,31 +66,18 @@ def provider_profiles(
     capability: str | None = None,
     environment: str | None = None,
 ) -> c.PageResponse[c.ProviderProfile]:
-    if provider_repository(request) is not None:
-        values = provider_repository(request).list_profiles(
-            provider_id=provider_id,
-            capability=capability,
-            environment=environment,
-            limit=limit,
-        )
-        return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
-    values = list(repository(request).provider_profiles.values())
-    if provider_id:
-        values = [profile for profile in values if profile.provider_id == provider_id]
-    if capability:
-        values = [profile for profile in values if profile.capability == capability]
-    if environment:
-        values = [profile for profile in values if profile.environment == environment]
-    return page(values, limit)
+    values = provider_repository(request).list_profiles(
+        provider_id=provider_id,
+        capability=capability,
+        environment=environment,
+        limit=limit,
+    )
+    return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
 
 
 def create_provider_profile(payload: c.CreateProviderProfileRequest, request: Request) -> c.ProviderProfile:
     _validate_outbound_hosts(payload.default_options)
-    if provider_repository(request) is not None:
-        return provider_repository(request).create_profile(payload)
-    profile = c.ProviderProfile(id=new_id("provider_profile"), **payload.model_dump())
-    repository(request).provider_profiles[profile.id] = profile
-    return profile
+    return provider_repository(request).create_profile(payload)
 
 
 def patch_provider_profile(
@@ -123,34 +85,18 @@ def patch_provider_profile(
 ) -> c.ProviderProfile:
     # default_options is optional on patch; only validate when it is being set.
     _validate_outbound_hosts(payload.default_options)
-    if provider_repository(request) is not None:
-        return provider_repository(request).patch_profile(profile_id, payload)
-    return repository(request).patch(repository(request).provider_profiles, profile_id, payload.model_dump(exclude_none=True))
+    return provider_repository(request).patch_profile(profile_id, payload)
 
 
 def test_provider_profile(
     profile_id: str, payload: c.TestProviderProfileRequest, request: Request
 ) -> c.ProviderHealthCheckResponse:
-    if provider_repository(request) is not None:
-        return provider_repository(request).test_profile(profile_id, payload)
-    profile = repository(request).provider_profiles.get(profile_id)
-    ok = profile is not None and profile.enabled
-    latency_ms = None
-    if ok:
-        latency_ms = _recent_profile_p95_latency_ms(
-            list(repository(request).provider_invocations.values()),
-            profile_id=profile_id,
-        )
-        if latency_ms is None:
-            latency_ms = DEFAULT_HEALTH_CHECK_LATENCY_MS
-    return c.ProviderHealthCheckResponse(profile_id=profile_id, ok=ok, latency_ms=latency_ms)
+    return provider_repository(request).test_profile(profile_id, payload)
 
 
 def provider_capabilities(request: Request) -> list[c.ProviderCapability]:
 
-    if provider_repository(request) is not None:
-        return provider_repository(request).list_capabilities()
-    return list(repository(request).provider_capabilities.values())
+    return provider_repository(request).list_capabilities()
 
 
 def price_catalogs(
@@ -159,60 +105,39 @@ def price_catalogs(
     provider_id: str | None = None,
     active_only: bool = False,
 ) -> c.PageResponse[c.ProviderPriceCatalog]:
-    if provider_repository(request) is not None:
-        values = provider_repository(request).list_price_catalogs(
-            provider_id=provider_id,
-            active_only=active_only,
-            limit=limit,
-        )
-        return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
-    values = list(repository(request).price_catalogs.values())
-    if provider_id:
-        values = [catalog for catalog in values if catalog.provider_id == provider_id]
-    if active_only:
-        values = [catalog for catalog in values if catalog.status == "published"]
-    return page(values, limit)
+    values = provider_repository(request).list_price_catalogs(
+        provider_id=provider_id,
+        active_only=active_only,
+        limit=limit,
+    )
+    return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
 
 
 def price_catalog_items(request: Request, catalog_id: str, limit: int = 200) -> c.PageResponse[c.ProviderPriceItem]:
-    if provider_repository(request) is not None:
-        values = provider_repository(request).list_price_items(catalog_id=catalog_id, limit=limit)
-        return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
-    values = [item for item in repository(request).price_items.values() if item.catalog_id == catalog_id]
-    return page(values, limit)
+    values = provider_repository(request).list_price_items(catalog_id=catalog_id, limit=limit)
+    return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
 
 
 def upsert_price_catalog(payload: c.UpsertPriceCatalogRequest, request: Request) -> c.ProviderPriceCatalog:
-    if provider_repository(request) is not None:
-        return provider_repository(request).upsert_price_catalog(payload)
-    repository(request).price_catalogs[payload.catalog.id] = payload.catalog
-    for item in payload.items:
-        repository(request).price_items[item.id] = item
-    return payload.catalog
+    return provider_repository(request).upsert_price_catalog(payload)
 
 
 def approve_price_catalog(
     catalog_id: str, payload: c.GovernedActionRequest, request: Request
 ) -> c.ProviderPriceCatalog:
-    if provider_repository(request) is not None:
-        return provider_repository(request).patch_price_catalog_status(catalog_id, "approved", payload)
-    return repository(request).patch(repository(request).price_catalogs, catalog_id, {"status": "approved"})
+    return provider_repository(request).patch_price_catalog_status(catalog_id, "approved", payload)
 
 
 def publish_price_catalog(
     catalog_id: str, payload: c.GovernedActionRequest, request: Request
 ) -> c.ProviderPriceCatalog:
-    if provider_repository(request) is not None:
-        return provider_repository(request).patch_price_catalog_status(catalog_id, "published", payload)
-    return repository(request).patch(repository(request).price_catalogs, catalog_id, {"status": "published"})
+    return provider_repository(request).patch_price_catalog_status(catalog_id, "published", payload)
 
 
 def deprecate_price_catalog(
     catalog_id: str, payload: c.GovernedActionRequest, request: Request
 ) -> c.ProviderPriceCatalog:
-    if provider_repository(request) is not None:
-        return provider_repository(request).patch_price_catalog_status(catalog_id, "deprecated", payload)
-    return repository(request).patch(repository(request).price_catalogs, catalog_id, {"status": "deprecated"})
+    return provider_repository(request).patch_price_catalog_status(catalog_id, "deprecated", payload)
 
 
 def provider_usage(
@@ -222,23 +147,11 @@ def provider_usage(
     provider_id: str | None = None,
     case_id: str | None = None,
 ) -> c.ProviderUsageReport:
-    if ops_repository(request) is not None:
-        return ops_repository(request).provider_usage(
-            window_start=window_start,
-            window_end=window_end,
-            provider_id=provider_id,
-            case_id=case_id,
-        )
-    invocations = list(repository(request).provider_invocations.values())
-    if provider_id:
-        invocations = [item for item in invocations if item.provider_id == provider_id]
-    if case_id:
-        invocations = [item for item in invocations if item.case_id == case_id]
-    amount = sum((item.estimated_cost.amount for item in invocations if item.estimated_cost), Decimal("0"))
-    return c.ProviderUsageReport(
-        invocations=len(invocations),
-        estimated_cost=c.Money(amount=amount, currency="CNY"),
-        unpriced_invocation_count=len([item for item in invocations if item.billing_status == "unpriced"]),
+    return ops_repository(request).provider_usage(
+        window_start=window_start,
+        window_end=window_end,
+        provider_id=provider_id,
+        case_id=case_id,
     )
 
 
@@ -247,23 +160,10 @@ def provider_balances(
     provider_id: str | None = None,
     environment: str | None = None,
 ) -> c.ProviderBalanceReport:
-    if provider_repository(request) is not None:
-        snapshots = provider_repository(request).latest_balance_snapshots(
-            provider_id=provider_id,
-            environment=environment,
-        )
-    else:
-        repo = repository(request)
-        snapshots = list(repo.provider_balance_snapshots.values())
-        if provider_id:
-            snapshots = [item for item in snapshots if item.provider_id == provider_id]
-        if environment:
-            profile_ids = {
-                profile.id
-                for profile in repo.provider_profiles.values()
-                if profile.environment == environment and (provider_id is None or profile.provider_id == provider_id)
-            }
-            snapshots = [item for item in snapshots if item.account_group in profile_ids]
+    snapshots = provider_repository(request).latest_balance_snapshots(
+        provider_id=provider_id,
+        environment=environment,
+    )
     snapshots.sort(key=lambda item: (item.provider_id, item.account_group or ""))
     items = coalesce_balance_items(_balance_item_from_snapshot(item) for item in snapshots)
     return c.ProviderBalanceReport(
@@ -275,18 +175,13 @@ def provider_balances(
 
 def _list_provider_profiles(request: Request) -> list[c.ProviderProfile]:
     repo = provider_repository(request)
-    if repo is not None:
-        return repo.list_profiles(limit=200)
-    return list(repository(request).provider_profiles.values())
+    return repo.list_profiles(limit=200)
 
 
 def _persist_balance_snapshot(request: Request, item: c.ProviderBalanceItem) -> None:
     repo = provider_repository(request)
     snapshot = _snapshot_from_item(item)
-    if repo is not None:
-        repo.upsert_balance_snapshot(snapshot)
-    else:
-        repository(request).provider_balance_snapshots[snapshot.id] = snapshot
+    repo.upsert_balance_snapshot(snapshot)
 
 
 def refresh_all_balances(request: Request, http_client: httpx.Client | None = None) -> c.ProviderBalanceReport:
@@ -317,18 +212,13 @@ def build_balance_poller_service(app) -> BalancePollerService:
 
     def profiles_provider() -> list[c.ProviderProfile]:
         repo = getattr(app.state, "sqlalchemy_provider_repository", None)
-        if repo is not None:
-            return repo.list_profiles(limit=200)
-        return list(app.state.repository.provider_profiles.values())
+        return repo.list_profiles(limit=200)
 
     def on_results(items: list[c.ProviderBalanceItem]) -> None:
         repo = getattr(app.state, "sqlalchemy_provider_repository", None)
         for item in items:
             snapshot = _snapshot_from_item(item)
-            if repo is not None:
-                repo.upsert_balance_snapshot(snapshot)
-            else:
-                app.state.repository.provider_balance_snapshots[snapshot.id] = snapshot
+            repo.upsert_balance_snapshot(snapshot)
 
     return BalancePollerService(
         profiles_provider=profiles_provider,
@@ -339,13 +229,4 @@ def build_balance_poller_service(app) -> BalancePollerService:
 
 
 def reconcile_billing(payload: c.ReconcileBillingRequest, request: Request) -> c.ReconcileBillingResponse:
-    if ops_repository(request) is not None:
-        return ops_repository(request).reconcile_billing(payload, request_id())
-    return c.ReconcileBillingResponse(
-        reconciliation_run_id=new_id("recon"),
-        status="completed",
-        estimated_cost=c.zero_money(),
-        recorded_usage_cost=c.zero_money(),
-        variance=c.zero_money(),
-        request_id=request_id(),
-    )
+    return ops_repository(request).reconcile_billing(payload, request_id())

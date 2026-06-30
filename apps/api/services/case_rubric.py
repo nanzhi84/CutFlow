@@ -20,7 +20,6 @@ from fastapi import Request
 from apps.api.common import (
     case_rubric_repository,
     get_case,
-    repository,
     settings as app_settings,
 )
 from packages.core import contracts as c
@@ -75,12 +74,7 @@ def _load_script_version(
     if script_version_id is None:
         return None
     repo = case_rubric_repository(request)
-    if repo is not None:
-        return repo.get_script_version(case_id, script_version_id)
-    script = repository(request).scripts.get(script_version_id)
-    if script is None or script.case_id != case_id:
-        return None
-    return script
+    return repo.get_script_version(case_id, script_version_id)
 
 
 # Rubric read + cold start
@@ -88,28 +82,7 @@ def _load_script_version(
 def get_rubric(request: Request, case_id: str) -> c.CaseRubric:
     get_case(request, case_id)
     repo = case_rubric_repository(request)
-    if repo is not None:
-        return repo.ensure_active_rubric(case_id)
-    return _ensure_active_rubric_memory(request, case_id)
-
-
-def _ensure_active_rubric_memory(request: Request, case_id: str) -> c.CaseRubric:
-    repo = repository(request)
-    active = _active_rubric_memory(repo, case_id)
-    if active is not None:
-        return active
-    card = rubric_logic.cold_start_rubric(rubric_id=new_id("rubric"), case_id=case_id)
-    repo.case_rubrics[card.id] = card
-    return card
-
-
-def _active_rubric_memory(repo, case_id: str) -> c.CaseRubric | None:
-    candidates = [
-        r for r in repo.case_rubrics.values() if r.case_id == case_id and r.status == "active"
-    ]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda r: r.version)
+    return repo.ensure_active_rubric(case_id)
 
 
 # §6.2 blind scoring of freshly-created drafts
@@ -135,22 +108,13 @@ def score_drafts(
             case_id=case_id,
             script_draft_id=draft.id,
         )
-        if repo is not None:
-            predictions.append(repo.add_prediction(prediction))
-        else:
-            repository(request).score_predictions[prediction.id] = prediction
-            predictions.append(prediction)
+        predictions.append(repo.add_prediction(prediction))
     return predictions
 
 
 def list_predictions(request: Request, case_id: str) -> list[c.ScorePrediction]:
     repo = case_rubric_repository(request)
-    if repo is not None:
-        return repo.list_predictions(case_id)
-    predictions = [
-        p for p in repository(request).score_predictions.values() if p.case_id == case_id
-    ]
-    return sorted(predictions, key=lambda p: p.created_at, reverse=True)
+    return repo.list_predictions(case_id)
 
 
 # §5 reward collection (搭车既有动作)
@@ -171,22 +135,13 @@ def record_adopt_reward(
         evidence_ref=draft_id,
     )
     repo = case_rubric_repository(request)
-    if repo is not None:
-        repo.add_reward(reward)
-        prediction = repo.get_prediction_by_draft(draft_id)
-        if prediction is not None and prediction.script_version_id != script_version_id:
-            # Link the blind prediction to the adopted script (not a settlement;
-            # composite/band/dimension_scores stay locked).
-            repo.update_prediction(
-                prediction.model_copy(update={"script_version_id": script_version_id})
-            )
-        return
-    mem = repository(request)
-    mem.reward_signals[reward.id] = reward
-    prediction = _prediction_by_draft_memory(mem, draft_id)
-    if prediction is not None:
-        mem.score_predictions[prediction.id] = prediction.model_copy(
-            update={"script_version_id": script_version_id}
+    repo.add_reward(reward)
+    prediction = repo.get_prediction_by_draft(draft_id)
+    if prediction is not None and prediction.script_version_id != script_version_id:
+        # Link the blind prediction to the adopted script (not a settlement;
+        # composite/band/dimension_scores stay locked).
+        repo.update_prediction(
+            prediction.model_copy(update={"script_version_id": script_version_id})
         )
 
 
@@ -212,10 +167,7 @@ def record_discard_reward(
         reason=reason_value,
     )
     repo = case_rubric_repository(request)
-    if repo is not None:
-        repo.add_reward(reward)
-        return
-    repository(request).reward_signals[reward.id] = reward
+    repo.add_reward(reward)
 
 
 # §5.3 / §6.3 lazy reward derivation (idempotent by source_kind + evidence_ref)
@@ -225,10 +177,7 @@ def sync_rewards(request: Request, case_id: str) -> None:
     from existing finished videos / publish records / performance scores, and settle
     matching blind predictions. Lazy (read-time); never hooks the worker."""
     repo = case_rubric_repository(request)
-    if repo is not None:
-        _sync_rewards_db(request, case_id, repo)
-    else:
-        _sync_rewards_memory(request, case_id)
+    _sync_rewards_db(request, case_id, repo)
 
 
 def _sync_rewards_db(request: Request, case_id: str, repo) -> None:
@@ -311,93 +260,6 @@ def _sync_rewards_db(request: Request, case_id: str, repo) -> None:
             predictions = repo.list_predictions(case_id)
 
 
-def _sync_rewards_memory(request: Request, case_id: str) -> None:
-    repo = repository(request)
-    settings = _learning_settings(request)
-
-    def _reward_exists(source_kind: str, evidence_ref: str) -> bool:
-        return any(
-            r.case_id == case_id
-            and r.source_kind == source_kind
-            and r.evidence_ref == evidence_ref
-            for r in repo.reward_signals.values()
-        )
-
-    def _add(reward: c.RewardSignal) -> None:
-        repo.reward_signals[reward.id] = reward
-
-    for finished in [f for f in repo.finished_videos.values() if f.case_id == case_id]:
-        if _reward_exists("video_produced", finished.id):
-            continue
-        script_version_id = _resolve_script_version_for_finished_video(request, case_id, finished.id)
-        if script_version_id is None:
-            continue
-        value, confidence = rubric_logic.reward_value("video_produced", settings)
-        _add(
-            c.RewardSignal(
-                id=new_id("reward"),
-                case_id=case_id,
-                script_version_id=script_version_id,
-                source_kind="video_produced",
-                value=value,
-                confidence=confidence,
-                evidence_ref=finished.id,
-            )
-        )
-
-    for record in [r for r in repo.publish_records.values() if r.case_id == case_id]:
-        if record.status != "published" or _reward_exists("published", record.id):
-            continue
-        script_version_id = _script_version_for_video_version_memory(
-            repo, case_id, record.video_version_id
-        )
-        value, confidence = rubric_logic.reward_value("published", settings)
-        _add(
-            c.RewardSignal(
-                id=new_id("reward"),
-                case_id=case_id,
-                script_version_id=script_version_id,
-                source_kind="published",
-                value=value,
-                confidence=confidence,
-                evidence_ref=record.id,
-            )
-        )
-
-    scores = [s for s in repo.performance_scores.values() if s.case_id == case_id]
-    for score in scores:
-        if score.excluded_reason is not None:
-            continue
-        observation = repo.performance_observations.get(score.observation_id)
-        if not _reward_exists("performance_scored", score.observation_id):
-            if observation is None or observation.case_id != case_id:
-                continue
-            script_version_id = _script_version_for_video_version_memory(
-                repo, case_id, score.video_version_id
-            )
-            _add(
-                c.RewardSignal(
-                    id=new_id("reward"),
-                    case_id=case_id,
-                    script_version_id=script_version_id,
-                    source_kind="performance_scored",
-                    value=score.normalized_score,
-                    confidence=score.confidence,
-                    evidence_ref=score.observation_id,
-                    occurred_at=observation.observed_at,
-                )
-            )
-        predictions = [p for p in repo.score_predictions.values() if p.case_id == case_id]
-        target_script_version_id = _script_version_for_video_version_memory(
-            repo, case_id, score.video_version_id
-        )
-        settled = _settle_prediction_for_score(
-            predictions, score, observation, target_script_version_id
-        )
-        if settled is not None:
-            repo.score_predictions[settled.id] = settled
-
-
 def _settle_prediction_for_score(
     predictions: list[c.ScorePrediction],
     score: c.PerformanceScore,
@@ -471,12 +333,7 @@ def backfill_metrics(
     score = evolution.compute_performance_score(observation)
 
     repo = case_rubric_repository(request)
-    if repo is not None:
-        repo.add_performance(observation, score)
-    else:
-        mem = repository(request)
-        mem.performance_observations[observation.id] = observation
-        mem.performance_scores[score.id] = score
+    repo.add_performance(observation, score)
 
     sync_rewards(request, case_id)
     return observation
@@ -514,10 +371,7 @@ def bump_proposal(request: Request, case_id: str) -> c.RubricBumpProposal | None
     )
     if proposal is None:
         return None
-    if repo is not None:
-        return repo.add_bump_proposal(proposal)
-    repository(request).rubric_bump_proposals[proposal.id] = proposal
-    return proposal
+    return repo.add_bump_proposal(proposal)
 
 
 def accept_bump(request: Request, case_id: str, proposal_id: str) -> c.CaseRubric:
@@ -526,19 +380,7 @@ def accept_bump(request: Request, case_id: str, proposal_id: str) -> c.CaseRubri
         raise _missing("Rubric bump proposal is missing.")
     assert_transition("rubric_bump", proposal.status, "accepted")
     repo = case_rubric_repository(request)
-    new_active = proposal.candidate.model_copy(update={"status": "active"})
-    if repo is not None:
-        return repo.accept_bump(case_id, proposal_id)
-    mem = repository(request)
-    active = _active_rubric_memory(mem, case_id)
-    if active is not None:
-        assert_transition("case_rubric", active.status, "superseded")
-        mem.case_rubrics[active.id] = active.model_copy(
-            update={"status": "superseded", "updated_at": c.utcnow()}
-        )
-    mem.case_rubrics[new_active.id] = new_active
-    mem.rubric_bump_proposals[proposal.id] = proposal.model_copy(update={"status": "accepted"})
-    return new_active
+    return repo.accept_bump(case_id, proposal_id)
 
 
 def reject_bump(
@@ -550,10 +392,7 @@ def reject_bump(
     assert_transition("rubric_bump", proposal.status, "rejected")
     rejected = proposal.model_copy(update={"status": "rejected"})
     repo = case_rubric_repository(request)
-    if repo is not None:
-        return repo.update_bump_proposal(rejected)
-    repository(request).rubric_bump_proposals[proposal.id] = rejected
-    return rejected
+    return repo.update_bump_proposal(rejected)
 
 
 # §5.3 pending-retro list
@@ -568,35 +407,19 @@ def _pending_retro_items(request: Request, case_id: str) -> list[c.PendingRetroI
     window = _learning_settings(request).retro_window_days
     now = c.utcnow()
     repo = case_rubric_repository(request)
-    if repo is not None:
-        records = [r for r in repo.list_publish_records(case_id) if r.status == "published"]
-        observed_video_versions = {
-            obs.video_version_id
-            for obs in repo.list_performance_observations(case_id)
-            if obs.video_version_id is not None
-        }
-        finished_by_version = {
-            fv.id: fv
-            for fv in repo.list_finished_videos(case_id)
-        }
-        video_versions = {vv_id: repo.resolve_video_version(case_id, vv_id) for vv_id in {
-            r.video_version_id for r in records if r.video_version_id is not None
-        }}
-    else:
-        mem = repository(request)
-        records = [
-            r for r in mem.publish_records.values()
-            if r.case_id == case_id and r.status == "published"
-        ]
-        observed_video_versions = {
-            obs.video_version_id
-            for obs in mem.performance_observations.values()
-            if obs.case_id == case_id and obs.video_version_id is not None
-        }
-        finished_by_version = {fv.id: fv for fv in mem.finished_videos.values() if fv.case_id == case_id}
-        video_versions = {
-            vv.id: vv for vv in mem.video_versions.values() if vv.case_id == case_id
-        }
+    records = [r for r in repo.list_publish_records(case_id) if r.status == "published"]
+    observed_video_versions = {
+        obs.video_version_id
+        for obs in repo.list_performance_observations(case_id)
+        if obs.video_version_id is not None
+    }
+    finished_by_version = {
+        fv.id: fv
+        for fv in repo.list_finished_videos(case_id)
+    }
+    video_versions = {vv_id: repo.resolve_video_version(case_id, vv_id) for vv_id in {
+        r.video_version_id for r in records if r.video_version_id is not None
+    }}
 
     items: list[c.PendingRetroItem] = []
     for record in records:
@@ -672,13 +495,7 @@ def _latest_reward_for_prediction(
 
 def _reward_signals(request: Request, case_id: str) -> list[c.RewardSignal]:
     repo = case_rubric_repository(request)
-    if repo is not None:
-        return repo.list_rewards(case_id)
-    return [
-        reward
-        for reward in repository(request).reward_signals.values()
-        if reward.case_id == case_id
-    ]
+    return repo.list_rewards(case_id)
 
 
 def _calibration_samples(request: Request, case_id: str) -> list[RewardSample]:
@@ -693,36 +510,17 @@ def _calibration_samples(request: Request, case_id: str) -> list[RewardSample]:
 
 def _open_bump_proposal(request: Request, case_id: str) -> c.RubricBumpProposal | None:
     repo = case_rubric_repository(request)
-    if repo is not None:
-        return repo.get_open_bump_proposal(case_id)
-    candidates = [
-        p
-        for p in repository(request).rubric_bump_proposals.values()
-        if p.case_id == case_id and p.status == "proposed"
-    ]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda p: p.created_at)
+    return repo.get_open_bump_proposal(case_id)
 
 
 def _get_bump_proposal(
     request: Request, case_id: str, proposal_id: str
 ) -> c.RubricBumpProposal | None:
     repo = case_rubric_repository(request)
-    if repo is not None:
-        proposal = repo.get_bump_proposal(proposal_id)
-    else:
-        proposal = repository(request).rubric_bump_proposals.get(proposal_id)
+    proposal = repo.get_bump_proposal(proposal_id)
     if proposal is None or proposal.case_id != case_id:
         return None
     return proposal
-
-
-def _prediction_by_draft_memory(repo, draft_id: str) -> c.ScorePrediction | None:
-    candidates = [p for p in repo.score_predictions.values() if p.script_draft_id == draft_id]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda p: p.created_at)
 
 
 # -- lineage resolution -----------------------------------------------------
@@ -731,12 +529,7 @@ def _resolve_script_version_for_finished_video(
     request: Request, case_id: str, finished_video_id: str
 ) -> str | None:
     repo = case_rubric_repository(request)
-    if repo is not None:
-        return repo.resolve_script_version_for_finished_video(case_id, finished_video_id)
-    version = _video_version_for_finished_video_memory(
-        repository(request), case_id, finished_video_id
-    )
-    return version.script_version_id if version is not None else None
+    return repo.resolve_script_version_for_finished_video(case_id, finished_video_id)
 
 
 def _resolve_publish_lineage_for_finished_video(
@@ -746,44 +539,19 @@ def _resolve_publish_lineage_for_finished_video(
     to the finished_video_id as the publish_record_id when no publish record exists,
     so backfill works even before a record is created."""
     repo = case_rubric_repository(request)
-    if repo is not None:
-        if not any(fv.id == finished_video_id for fv in repo.list_finished_videos(case_id)):
-            raise _missing_finished_video()
-        for record in repo.list_publish_records(case_id):
-            resolved = (
-                repo.resolve_video_version(case_id, record.video_version_id)
-                if record.video_version_id
-                else None
-            )
-            if resolved is not None and resolved.finished_video_id == finished_video_id:
-                return record.id, record.video_version_id
-        version = repo.resolve_video_version_for_finished_video(case_id, finished_video_id)
-        video_version_id = version.id if version is not None else None
-        return finished_video_id, video_version_id
-    mem = repository(request)
-    finished = mem.finished_videos.get(finished_video_id)
-    if finished is None or finished.case_id != case_id:
+    if not any(fv.id == finished_video_id for fv in repo.list_finished_videos(case_id)):
         raise _missing_finished_video()
-    version = _video_version_for_finished_video_memory(mem, case_id, finished_video_id)
+    for record in repo.list_publish_records(case_id):
+        resolved = (
+            repo.resolve_video_version(case_id, record.video_version_id)
+            if record.video_version_id
+            else None
+        )
+        if resolved is not None and resolved.finished_video_id == finished_video_id:
+            return record.id, record.video_version_id
+    version = repo.resolve_video_version_for_finished_video(case_id, finished_video_id)
     video_version_id = version.id if version is not None else None
-    if version is not None:
-        for record in mem.publish_records.values():
-            if record.case_id == case_id and record.video_version_id == version.id:
-                return record.id, version.id
     return finished_video_id, video_version_id
-
-
-def _video_version_for_finished_video_memory(
-    repo, case_id: str, finished_video_id: str
-) -> c.VideoVersion | None:
-    return next(
-        (
-            vv
-            for vv in repo.video_versions.values()
-            if vv.case_id == case_id and vv.finished_video_id == finished_video_id
-        ),
-        None,
-    )
 
 
 def _script_version_for_video_version_db(
@@ -793,17 +561,6 @@ def _script_version_for_video_version_db(
         return None
     version = repo.resolve_video_version(case_id, video_version_id)
     return version.script_version_id if version is not None else None
-
-
-def _script_version_for_video_version_memory(
-    repo, case_id: str, video_version_id: str | None
-) -> str | None:
-    if video_version_id is None:
-        return None
-    version = repo.video_versions.get(video_version_id)
-    if version is None or version.case_id != case_id:
-        return None
-    return version.script_version_id
 
 
 def _observation_by_id_db(repo, case_id: str, observation_id: str) -> c.PerformanceObservation | None:

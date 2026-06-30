@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 
+from datetime import timedelta
+
 import anyio
 import pytest
 from sqlalchemy import select
@@ -96,3 +98,51 @@ def test_sqlalchemy_outbox_replay_and_dispatcher_are_stable_and_idempotent() -> 
         )
     assert [row.status for row in stored] == ["published", "published"]
     assert [row.attempts for row in stored] == [1, 1]
+
+
+def test_sqlalchemy_outbox_replay_resumes_after_cursor() -> None:
+    """#87 D2: replay(after_event_id=...) returns only events strictly after the
+    cursor row's (created_at, id) position; an unknown id falls back to a full
+    replay (the client dedups against its already-seen ids)."""
+    session_factory = sqlalchemy_session_factory()
+    run_id = "run_cursor_sql"
+    base = utcnow()
+    rows = [
+        OutboxEventRow(
+            id=f"evt_{suffix}",
+            topic="workflow.run.updated",
+            aggregate_type="run",
+            aggregate_id=run_id,
+            dedupe_key=f"cursor:{suffix}",
+            payload_schema="RunEvent.v1",
+            payload={"event_id": f"evt_{suffix}", "run_id": run_id, "event_type": "run_update"},
+            status="pending",
+            attempts=0,
+            available_at=base + timedelta(milliseconds=index),
+            created_at=base + timedelta(milliseconds=index),
+            updated_at=base + timedelta(milliseconds=index),
+        )
+        for index, suffix in enumerate(["c1", "c2", "c3"])
+    ]
+    with session_factory() as session:
+        for row in rows:
+            session.merge(row)
+        session.commit()
+
+    full = replay_sqlalchemy_outbox(session_factory, aggregate_type="run", aggregate_id=run_id)
+    assert [event["event_id"] for event in full] == ["evt_c1", "evt_c2", "evt_c3"]
+
+    after_first = replay_sqlalchemy_outbox(
+        session_factory, aggregate_type="run", aggregate_id=run_id, after_event_id="evt_c1"
+    )
+    assert [event["event_id"] for event in after_first] == ["evt_c2", "evt_c3"]
+
+    after_last = replay_sqlalchemy_outbox(
+        session_factory, aggregate_type="run", aggregate_id=run_id, after_event_id="evt_c3"
+    )
+    assert after_last == []
+
+    after_unknown = replay_sqlalchemy_outbox(
+        session_factory, aggregate_type="run", aggregate_id=run_id, after_event_id="evt_missing"
+    )
+    assert [event["event_id"] for event in after_unknown] == ["evt_c1", "evt_c2", "evt_c3"]
