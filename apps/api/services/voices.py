@@ -6,7 +6,6 @@ from fastapi import Request
 from apps.api.common import (
     media_repository,
     object_store,
-    page,
     provider_repository,
     repository,
     request_id,
@@ -54,19 +53,10 @@ def list_voices(
     vendor: str | None = None,
     enabled: bool | None = None,
 ) -> c.PageResponse[c.VoiceProfile]:
-    if media_repository(request) is not None:
-        values = media_repository(request).list_voices(
-            source=source, vendor=vendor, enabled=enabled, limit=limit
-        )
-        return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
-    values = list(repository(request).voices.values())
-    if source:
-        values = [voice for voice in values if voice.source == source]
-    if vendor:
-        values = [voice for voice in values if voice.vendor == vendor]
-    if enabled is not None:
-        values = [voice for voice in values if voice.enabled == enabled]
-    return page(values, limit)
+    values = media_repository(request).list_voices(
+        source=source, vendor=vendor, enabled=enabled, limit=limit
+    )
+    return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
 
 
 def _resolve_sync_profiles(
@@ -88,14 +78,7 @@ def _resolve_sync_profiles(
             )
         return [profile]
     provider_repo = provider_repository(request)
-    if provider_repo is not None:
-        candidates = provider_repo.list_profiles(capability="tts.speech", limit=200)
-    else:
-        candidates = [
-            profile
-            for profile in repository(request).provider_profiles.values()
-            if profile.capability == "tts.speech"
-        ]
+    candidates = provider_repo.list_profiles(capability="tts.speech", limit=200)
     resolved: list[c.ProviderProfile] = []
     for profile in candidates:
         if not profile.enabled or profile.provider_id == "sandbox":
@@ -448,17 +431,12 @@ def refresh_voice_status(voice_id: str, request: Request) -> c.VoiceProfile:
 
 
 def patch_voice(voice_id: str, payload: c.PatchVoiceRequest, request: Request) -> c.VoiceProfile:
-    if media_repository(request) is not None:
-        voice = media_repository(request).patch_voice(voice_id, payload)
-        if voice is None:
-            raise NodeExecutionError(c.ErrorCode.validation_missing_voice, "Voice not found.")
-        return voice
-    return repository(request).patch(repository(request).voices, voice_id, payload.model_dump(exclude_none=True))
+    voice = media_repository(request).patch_voice(voice_id, payload)
+    if voice is None:
+        raise NodeExecutionError(c.ErrorCode.validation_missing_voice, "Voice not found.")
+    return voice
 
 
 def delete_voice(voice_id: str, request: Request) -> c.OkResponse:
-    if media_repository(request) is not None:
-        media_repository(request).delete_voice(voice_id)
-        return c.OkResponse(request_id=request_id())
-    repository(request).voices.pop(voice_id, None)
+    media_repository(request).delete_voice(voice_id)
     return c.OkResponse(request_id=request_id())
