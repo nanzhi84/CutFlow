@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from apps.api.main import app
 from packages.ai.prompts import PromptRegistry
 from packages.ai.prompts.sqlalchemy_repository import SqlAlchemyPromptRuntimeRepository
-from packages.core.storage.bootstrap import get_sqlalchemy_session_factory_if_enabled
+from packages.core.storage.bootstrap import get_sqlalchemy_session_factory
 from packages.core.storage.database import (
     PromptBindingRow,
     PromptExperimentRow,
@@ -18,7 +18,7 @@ from packages.core.storage.repository import Repository
 
 
 def sqlalchemy_session_factory():
-    session_factory = get_sqlalchemy_session_factory_if_enabled()
+    session_factory = get_sqlalchemy_session_factory()
     if session_factory is None:
         pytest.skip("Set CUTAGENT_STORAGE_BACKEND=sqlalchemy to run database integration tests.")
     return session_factory

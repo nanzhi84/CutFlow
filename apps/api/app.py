@@ -52,8 +52,8 @@ from packages.core.storage import (
     object_store_from_settings,
 )
 from packages.core.storage.bootstrap import (
-    bootstrap_sqlalchemy_storage_if_enabled,
-    get_sqlalchemy_session_factory_if_enabled,
+    bootstrap_sqlalchemy_storage,
+    get_sqlalchemy_session_factory,
 )
 from packages.core.storage.secret_store import LocalSecretStore
 from packages.core.storage.sqlalchemy_idempotency import SqlAlchemyIdempotencyRepository
@@ -107,8 +107,8 @@ async def lifespan(app: FastAPI):
     _preflight_issues = validate_startup_settings(build_settings())
     if _preflight_issues:
         raise RuntimeError(format_preflight_report(_preflight_issues))
-    bootstrap_sqlalchemy_storage_if_enabled()
-    session_factory = get_sqlalchemy_session_factory_if_enabled()
+    bootstrap_sqlalchemy_storage()
+    session_factory = get_sqlalchemy_session_factory()
     configure_app_state(app, session_factory=session_factory)
     dispatcher_task = None
     if not app.state.settings.api.disable_background_dispatcher:
@@ -142,7 +142,7 @@ async def lifespan(app: FastAPI):
 def configure_app_state(app: FastAPI, *, session_factory=None) -> None:
     app.state.settings = build_settings()
     if session_factory is None:
-        session_factory = get_sqlalchemy_session_factory_if_enabled()
+        session_factory = get_sqlalchemy_session_factory()
     runtime_repository = Repository()
     app.state.repository = runtime_repository
     # Publishing-center QR login: 小V猫 CDP manager. Platform sessions live in

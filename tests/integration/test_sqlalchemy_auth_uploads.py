@@ -9,13 +9,13 @@ from fastapi.testclient import TestClient
 from apps.api.main import app
 from packages.core.auth.service import hash_registration_code
 from packages.core.auth.sqlalchemy_service import hash_session_token
-from packages.core.storage.bootstrap import get_sqlalchemy_session_factory_if_enabled
+from packages.core.storage.bootstrap import get_sqlalchemy_session_factory
 from packages.core.storage.database import ArtifactRow, RegistrationCodeRow, SessionRow, UploadSessionRow, UserRow
 from packages.core.storage.object_store import parse_local_uri
 
 
 def sqlalchemy_session_factory():
-    session_factory = get_sqlalchemy_session_factory_if_enabled()
+    session_factory = get_sqlalchemy_session_factory()
     if session_factory is None:
         pytest.skip("Set CUTAGENT_STORAGE_BACKEND=sqlalchemy to run database integration tests.")
     return session_factory

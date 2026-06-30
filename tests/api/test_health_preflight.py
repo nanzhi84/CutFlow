@@ -39,7 +39,7 @@ def test_preflight_fails_closed_before_seeding_admin(monkeypatch):
     """#66 regression: the fail-closed preflight must run BEFORE bootstrap seeds
     the local admin/viewer.
 
-    The original API lifespan called ``bootstrap_sqlalchemy_storage_if_enabled()``
+    The original API lifespan called ``bootstrap_sqlalchemy_storage()``
     (which seeds usr_admin/usr_viewer with dev-default credentials when
     ``seed_local_auth`` is on) *before* ``validate_startup_settings``. On an unsafe
     production deploy that meant the hardcoded admin was written into the prod DB
@@ -64,7 +64,7 @@ def test_preflight_fails_closed_before_seeding_admin(monkeypatch):
         calls.append("preflight")
         return real_preflight(settings)
 
-    monkeypatch.setattr(appmod, "bootstrap_sqlalchemy_storage_if_enabled", _spy_bootstrap)
+    monkeypatch.setattr(appmod, "bootstrap_sqlalchemy_storage", _spy_bootstrap)
     monkeypatch.setattr(appmod, "validate_startup_settings", _spy_preflight)
     monkeypatch.setenv("CUTAGENT_ENV", "production")  # conftest baseline is unsafe-for-prod
 

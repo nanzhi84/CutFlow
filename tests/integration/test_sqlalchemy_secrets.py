@@ -9,7 +9,7 @@ from packages.core.contracts import (
     DisableSecretRequest,
     RotateSecretRequest,
 )
-from packages.core.storage.bootstrap import get_sqlalchemy_session_factory_if_enabled
+from packages.core.storage.bootstrap import get_sqlalchemy_session_factory
 from packages.core.storage.database import AuditEventRow, SecretRow
 from packages.core.storage.secret_store import LocalSecretStore
 from packages.core.storage.sqlalchemy_secrets import SqlAlchemySecretRepository, SqlAlchemySecretStore
@@ -18,7 +18,7 @@ from packages.core.storage.sqlalchemy_secrets import SqlAlchemySecretRepository,
 def _secret_repo(tmp_path: Path) -> SqlAlchemySecretRepository:
     # Backed by the real Postgres test database. Per-test isolation (truncate +
     # reseed) is handled automatically by the autouse fixture in tests/conftest.py.
-    session_factory = get_sqlalchemy_session_factory_if_enabled()
+    session_factory = get_sqlalchemy_session_factory()
     store = LocalSecretStore(root=tmp_path / "secrets")
     return SqlAlchemySecretRepository(session_factory, store)
 
@@ -150,7 +150,7 @@ def test_db_read_secret_missing_returns_none_and_skips_audit(tmp_path):
 
 
 def sqlalchemy_session_factory():
-    return get_sqlalchemy_session_factory_if_enabled()
+    return get_sqlalchemy_session_factory()
 
 
 def test_sqlalchemy_secret_create_rotate_disable_flow_is_persisted_without_plaintext():
