@@ -7,12 +7,12 @@
 - 8 类 capability：`llm.chat` `vlm.annotation` `tts.speech` `asr.transcribe` `lipsync.video` `image.generate` `video.generate`（Seedance 文/图生视频）`audio.understanding`（DashScope Omni）。其中 `lipsync.video` 有两个 provider 共存：`runninghub.heygem` 与 `dashscope.videoretalk`。
 - providers/ 各厂商插件实现 `invoke_with_context`（异步任务用 `mark_polling` + external_job_id）。
 - prompts/ 管理 PromptTemplate/Version/Binding/Experiment 生命周期与渲染、输出校验。
-- 安全护栏：base_url SSRF 白名单（netpolicy）、secret 读审计、per-key 并发上限。
+- 安全护栏：base_url SSRF 白名单（netpolicy）、secret 读审计、per-key 并发/QPS 上限（有 Redis 时跨进程协调，无 Redis 或 Redis 退化时回到进程内并发闸）。
 
 ## 关键文件 / 子目录
 - `gateway/provider_gateway.py` — ProviderGateway/ProviderCall/ProviderResult；内置 SandboxProvider，`__post_init__` 经 `auto_register_real_plugins`（默认 True）自动注册真实插件
 - `gateway/provider_context.py` — ProviderInvocationContext：取 secret（含审计）、`mark_polling`、存媒体产物
-- `gateway/provider_limiter.py` — `provider_slot`：按 concurrency_key 的进程内 BoundedSemaphore（非 token bucket，非跨进程）
+- `gateway/provider_limiter.py` — `provider_slot`：按 `concurrency_key` 做 provider 调用限流；`CUTAGENT_REDIS_URL` 存在时用 Redis lease set + token bucket 做跨进程 max-inflight/QPS，退化时使用进程内 `BoundedSemaphore` fail-safe。
 - `providers/__init__.py` — `register_real_provider_plugins`（共注册 11 个：minimax.tts / volcengine.tts / dashscope.{asr,vlm,llm,omni,videoretalk} / runninghub.heygem / volcengine.seedance / volcengine.seedream / openai.image）
 - `providers/seedance.py` — ArkSeedanceProvider（火山方舟 Ark，`video.generate` 文/图生视频）
 - `providers/openai_image.py` — OpenAI-compatible 图片生成（`openai.image` 与火山方舟 `volcengine.seedream` 共用 REST adapter；Seedream 可复用 Ark AK/SK 通过 OpenAPI `GetApiKey` 换临时 Bearer key）
@@ -39,5 +39,5 @@
 ## 注意 / 坑
 - sandbox 回退的开关 `CUTAGENT_ALLOW_SANDBOX_FALLBACK` 不在本模块判定——gateway 始终注册 `sandbox` 插件；该 flag 由调用方经 `packages/core/config/settings.py` 的 `sandbox_fallback_allowed()` 控制（默认 OFF=按真实 profile 失败）。
 - gateway-level host 白名单复检默认关闭，需 `CUTAGENT_ENFORCE_PROVIDER_HOST_ALLOWLIST=1`；权威拦截在 provider-profile create/patch（`apps/api/services/providers.py`）。
-- 并发限流是进程内的；跨 worker/pod 不生效。
+- 未配置 Redis 时限流只在进程内生效；配置 Redis 后跨 worker/pod 协调，Redis 失败会记录 degraded 并回退本地 semaphore，`CUTAGENT_REDIS_REQUIRED=1` 的摘流判断在 API readiness 层。
 - secret.read 审计为 best-effort（log+swallow），不阻断热路径；只记访问元数据不记密文。
