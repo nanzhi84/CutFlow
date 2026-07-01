@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import tempfile
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,7 +28,7 @@ from packages.core.storage.database import (
     WorkflowRunRow,
 )
 from packages.core.storage.object_store import parse_object_uri
-from packages.core.storage.repository import Repository
+from packages.core.storage.repository import Repository, new_id
 from packages.creative.cases.sqlalchemy_learning_mappers import script_version_row_to_contract
 from packages.production.sqlalchemy_mappers import (
     case_row_to_contract,
@@ -112,39 +112,56 @@ def _build_publish_runner(
     scheduled_at = normalize_scheduled_at(payload.mode, payload.scheduled_at)
 
     def runner(item: object, package: object) -> PublishOutcome:
-        temp_dir: tempfile.TemporaryDirectory[str] | None = None
-        downloaded_path: Path | None = None
+        spool_dir: Path | None = None
+        materialized_paths: dict[str, str] = {}
 
-        def resolve_video() -> str | None:
-            nonlocal downloaded_path, temp_dir
-            if downloaded_path is not None:
-                return str(downloaded_path)
-            video_uri = _artifact_uri(_get_field(package, "video_artifact"))
-            if not video_uri:
+        def ensure_spool_dir() -> Path:
+            nonlocal spool_dir
+            if spool_dir is None:
+                spool_dir = (Path(".data/publish-spool") / new_id("pub_files")).resolve()
+                spool_dir.mkdir(parents=True, exist_ok=True)
+            return spool_dir
+
+        def materialize_file_uri(uri: str | None, stem: str) -> str | None:
+            if not uri:
                 return None
-            temp_dir = tempfile.TemporaryDirectory(prefix="cutagent-publish-")
-            downloaded_path = objects.download_file(parse_object_uri(video_uri), Path(temp_dir.name) / "video")
+            if uri in materialized_paths:
+                return materialized_paths[uri]
+            if uri.startswith("file://"):
+                path = uri.removeprefix("file://")
+                materialized_paths[uri] = path
+                return path
+            if uri.startswith(("/", "http://", "https://")):
+                materialized_paths[uri] = uri
+                return uri
+            ref = parse_object_uri(uri)
+            suffix = Path(ref.key).suffix
+            downloaded_path = objects.download_file(ref, ensure_spool_dir() / f"{stem}{suffix}")
+            materialized_paths[uri] = str(downloaded_path)
             return str(downloaded_path)
 
-        try:
-            case_id = _get_field(package, "case_id")
-            case = runtime_repo.cases.get(case_id) if case_id else None
-            outcome, _per_account_results = run_item_publish(
-                adapter,
-                _build_runner_payload(
-                    item,
-                    package,
-                    case_name=getattr(case, "name", None),
-                    scheduled_at=scheduled_at,
-                    simulate_failure=payload.simulate_publish_failure,
-                ),
-                targets=_active_publish_targets(target_repo, case_id, _get_field(item, "platform")),
-                resolve_video=resolve_video,
-            )
-            return outcome
-        finally:
-            if temp_dir is not None:
-                temp_dir.cleanup()
+        def resolve_video() -> str | None:
+            return materialize_file_uri(_artifact_uri(_get_field(package, "video_artifact")), "video")
+
+        case_id = _get_field(package, "case_id")
+        case = runtime_repo.cases.get(case_id) if case_id else None
+        base_payload = _build_runner_payload(
+            item,
+            package,
+            case_name=getattr(case, "name", None),
+            scheduled_at=scheduled_at,
+            simulate_failure=payload.simulate_publish_failure,
+        )
+        cover_path = materialize_file_uri(base_payload.cover_uri, "cover")
+        if cover_path:
+            base_payload = replace(base_payload, cover_uri=cover_path)
+        outcome, _per_account_results = run_item_publish(
+            adapter,
+            base_payload,
+            targets=_active_publish_targets(target_repo, case_id, _get_field(item, "platform")),
+            resolve_video=resolve_video,
+        )
+        return outcome
 
     return runner, adapter.adapter_id
 

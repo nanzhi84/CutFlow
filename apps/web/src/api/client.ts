@@ -688,6 +688,18 @@ export const api = {
       fetchJson<JsonResponse<operations["list_accounts_api_publish_accounts_get"]>>("/api/publish/accounts", {
         query,
       }),
+    listCaseTargets: (caseId: string) =>
+      fetchJson<JsonResponse<operations["list_case_targets_api_cases__case_id__publish_targets_get"]>>(
+        `/api/cases/${enc(caseId)}/publish-targets`,
+      ),
+    setCaseTargets: (
+      caseId: string,
+      payload: JsonRequest<operations["set_case_targets_api_cases__case_id__publish_targets_put"]>,
+    ) =>
+      fetchJson<JsonResponse<operations["set_case_targets_api_cases__case_id__publish_targets_put"]>>(
+        `/api/cases/${enc(caseId)}/publish-targets`,
+        { method: "PUT", body: payload, idempotencyKey: createIdempotencyKey("case_publish_targets") },
+      ),
     createAccount: (payload: JsonRequest<operations["create_account_api_publish_accounts_post"]>) =>
       fetchJson<JsonResponse<operations["create_account_api_publish_accounts_post"]>>("/api/publish/accounts", {
         method: "POST",

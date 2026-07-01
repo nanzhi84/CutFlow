@@ -1,16 +1,14 @@
-"""小V猫 CDP connector (M6c) — UNVERIFIED real-platform driver.
+"""小V猫 CDP connector (M6c) — CDP driver for the desktop app.
 
 Drives the 小V猫 Electron desktop app over its CDP (remote-debugging) endpoint to
 drive multi-platform publishing (抖音 / 快手 / 视频号 / 小红书).
 
-UNVERIFIED: this code has NOT been validated against the live 小V猫 app or real
-platform accounts in this repo. It requires the desktop app running with
-``--remote-debugging-port`` and logged-in accounts, plus the optional
-``websockets`` dependency. ``publish`` currently reads accounts + fills the publish
-form but does NOT click submit or verify on-page success (deferred to PR5
-real-machine work), so it never fabricates a published result. All automation is
-best-effort and raises ``XiaoVmaoUnavailableError`` when the app/accounts/deps/inputs
-are missing so callers degrade to an explicit failure instead of fabricating a publish.
+This requires the desktop app running with ``--remote-debugging-port`` and
+logged-in accounts, plus the optional ``websockets`` dependency. ``publish`` uses
+the app's own ``CatBridge`` APIs to create ``PublishLog`` tasks, calls
+``PublishController.startPublishTask``, and polls the real 小V猫 task status. It
+still never fabricates a published result: app/CDP/bridge failures, platform
+verification prompts, and failed task records are returned as explicit failures.
 
 The pure account-matching / scheduling logic lives in
 ``packages.publishing.account_matching`` and is unit-tested independently of this
@@ -27,6 +25,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -151,8 +150,15 @@ class XiaoVmaoDriver:
 
     async def close(self) -> None:
         if self.websocket:
-            await self.websocket.close()
-            self.websocket = None
+            try:
+                await self.websocket.close()
+            except Exception:
+                # The platform webview may navigate/close itself after a successful
+                # scan, which makes the CDP websocket close without a normal close
+                # frame. Cleanup must not mask the completed login/publish result.
+                pass
+            finally:
+                self.websocket = None
 
     async def send(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self.websocket:
@@ -205,36 +211,145 @@ class XiaoVmaoDriver:
 
 _LOGIN_QR_JS = r"""
 (() => {
-  const visible = (el) => {
+  const intersect = (a, b) => ({
+    left: Math.max(a.left, b.left),
+    top: Math.max(a.top, b.top),
+    right: Math.min(a.right, b.right),
+    bottom: Math.min(a.bottom, b.bottom),
+  });
+  const hasArea = (rect) => rect.right > rect.left && rect.bottom > rect.top;
+  const rectPayload = (rect) => ({
+    x: rect.left,
+    y: rect.top,
+    width: rect.right - rect.left,
+    height: rect.bottom - rect.top,
+  });
+  const absoluteRect = (el, offset) => {
     const rect = el.getBoundingClientRect();
-    const style = window.getComputedStyle(el);
-    return !!(
-      el.offsetParent !== null &&
-      rect.width >= 110 &&
-      rect.width <= 300 &&
-      rect.height >= 110 &&
-      rect.height <= 300 &&
-      Math.abs(rect.width - rect.height) <= 24 &&
-      style.visibility !== 'hidden' &&
-      style.display !== 'none'
-    );
+    return {
+      left: rect.left + offset.x,
+      top: rect.top + offset.y,
+      right: rect.right + offset.x,
+      bottom: rect.bottom + offset.y,
+    };
   };
-  const images = Array.from(document.querySelectorAll('img'))
-    .map((img) => ({ img, rect: img.getBoundingClientRect() }))
-    .filter(({ img }) => visible(img) && String(img.src || '').startsWith('data:image'))
-    .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
-  const bodyText = document.body ? document.body.innerText || '' : '';
-  const expired = /失效|过期/.test(bodyText);
-  const first = images[0];
+  const styleVisible = (el) => {
+    const view = el.ownerDocument.defaultView || window;
+    const style = view.getComputedStyle(el);
+    return style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+  };
+  const visibleInBounds = (el, offset, bounds) => {
+    if (!styleVisible(el)) return null;
+    const rect = absoluteRect(el, offset);
+    if (!hasArea(rect)) return null;
+    const clipped = intersect(rect, bounds);
+    return hasArea(clipped) ? rect : null;
+  };
+  const imageDataUrl = (img) => {
+    const src = String(img.currentSrc || img.src || '');
+    if (src.startsWith('data:image')) return src;
+    try {
+      const canvas = img.ownerDocument.createElement('canvas');
+      canvas.width = img.naturalWidth || img.width;
+      canvas.height = img.naturalHeight || img.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const dataUrl = canvas.toDataURL('image/png');
+      return dataUrl.startsWith('data:image') ? dataUrl : null;
+    } catch (_error) {
+      return null;
+    }
+  };
+  const canvasDataUrl = (canvas) => {
+    try {
+      const dataUrl = canvas.toDataURL('image/png');
+      return dataUrl.startsWith('data:image') ? dataUrl : null;
+    } catch (_error) {
+      return null;
+    }
+  };
+  const candidates = [];
+  const visibleTexts = [];
+  const refreshRects = [];
+  const scanDocument = (doc, offset, bounds, depth) => {
+    for (const img of Array.from(doc.querySelectorAll('img'))) {
+      const rect = visibleInBounds(img, offset, bounds);
+      const width = rect ? rect.right - rect.left : 0;
+      const height = rect ? rect.bottom - rect.top : 0;
+      const dataUrl = rect ? imageDataUrl(img) : null;
+      if (
+        dataUrl &&
+        width >= 110 &&
+        width <= 320 &&
+        height >= 110 &&
+        height <= 320 &&
+        Math.abs(width - height) <= 28
+      ) {
+        const className = String(img.className || '').toLowerCase();
+        const score = width * height + (className.includes('qr') ? 100000 : 0);
+        candidates.push({ qr_image: dataUrl, rect, score });
+      }
+    }
+    for (const canvas of Array.from(doc.querySelectorAll('canvas'))) {
+      const rect = visibleInBounds(canvas, offset, bounds);
+      const width = rect ? rect.right - rect.left : 0;
+      const height = rect ? rect.bottom - rect.top : 0;
+      const dataUrl = rect ? canvasDataUrl(canvas) : null;
+      if (
+        dataUrl &&
+        width >= 110 &&
+        width <= 320 &&
+        height >= 110 &&
+        height <= 320 &&
+        Math.abs(width - height) <= 28
+      ) {
+        candidates.push({ qr_image: dataUrl, rect, score: width * height + 50000 });
+      }
+    }
+    for (const el of Array.from(doc.querySelectorAll('body *'))) {
+      const directText = Array.from(el.childNodes || [])
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent || '')
+        .join('')
+        .trim();
+      const text = directText || (el.children.length === 0 ? String(el.innerText || el.textContent || '').trim() : '');
+      if (!text) continue;
+      const rect = visibleInBounds(el, offset, bounds);
+      if (!rect) continue;
+      visibleTexts.push(text);
+      if (/刷新|失效|过期|网络不可用/.test(text)) {
+        const target = el.closest('.refresh-wrap, .mask, .qrcode-wrap, button, a, [role="button"]') || el;
+        const targetRect = visibleInBounds(target, offset, bounds) || rect;
+        refreshRects.push(targetRect);
+      }
+    }
+    if (depth >= 2) return;
+    for (const frame of Array.from(doc.querySelectorAll('iframe'))) {
+      try {
+        const frameRect = visibleInBounds(frame, offset, bounds);
+        if (!frameRect) continue;
+        const childBounds = intersect(frameRect, bounds);
+        if (!hasArea(childBounds) || !frame.contentDocument) continue;
+        scanDocument(
+          frame.contentDocument,
+          { x: frameRect.left, y: frameRect.top },
+          childBounds,
+          depth + 1,
+        );
+      } catch (_error) {
+        // Cross-origin frames cannot be inspected from this context.
+      }
+    }
+  };
+  scanDocument(document, { x: 0, y: 0 }, { left: 0, top: 0, right: innerWidth, bottom: innerHeight }, 0);
+  const expired = visibleTexts.some((text) => /失效|过期/.test(text));
+  const first = candidates.sort((a, b) => b.score - a.score || a.rect.top - b.rect.top || a.rect.left - b.rect.left)[0];
+  const refresh = refreshRects.sort((a, b) => (b.right - b.left) * (b.bottom - b.top) - (a.right - a.left) * (a.bottom - a.top))[0];
   return {
-    qr_image: first ? first.img.src : null,
+    qr_image: first ? first.qr_image : null,
     expired,
-    qr_rect: first ? {
-      x: first.rect.x,
-      y: first.rect.y,
-      width: first.rect.width,
-      height: first.rect.height,
-    } : null,
+    qr_rect: first ? rectPayload(first.rect) : null,
+    refresh_rect: refresh ? rectPayload(refresh) : null,
   };
 })()
 """
@@ -246,6 +361,157 @@ _VERIFICATION_JS = r"""
     return { detail: '平台要求身份验证，请按页面提示完成短信验证码或安全验证' };
   }
   return { detail: null };
+})()
+"""
+
+_DISMISS_PLATFORM_LOGIN_PROMPT_JS = r"""
+(() => {
+  const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    return !!(
+      el.offsetParent !== null &&
+      rect.width > 0 &&
+      rect.height > 0 &&
+      style.visibility !== 'hidden' &&
+      style.display !== 'none' &&
+      style.opacity !== '0'
+    );
+  };
+  const bodyText = document.body ? document.body.innerText || '' : '';
+  const promptMarkers = [
+    '切换到管理员身份登录带货助手',
+    '带货助手已升级',
+    '切换到前台页面登录',
+    '前台页面可能触发限制',
+    '切换到快手小店登录',
+    '快手小店登录',
+    '创作中心登录困难',
+    '小店登录',
+  ];
+  const promptMatch = (text) => promptMarkers.some(
+    (marker) => String(text || '').includes(marker)
+  );
+  if (!promptMatch(bodyText)) {
+    return { ok: false };
+  }
+  const buttons = Array.from(document.querySelectorAll('button, [role="button"]'))
+    .filter((el) => visible(el) && normalize(el.innerText || el.textContent) === '关闭')
+    .map((el) => {
+      const container = el.closest('.ant-alert, .ant-modal, .ant-modal-root') || el;
+      const containerText = container.innerText || container.textContent || '';
+      const rect = el.getBoundingClientRect();
+      return {
+        ok: true,
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        score: (promptMatch(containerText) ? 0 : 1000) + rect.y,
+      };
+    })
+    .sort((a, b) => a.score - b.score || a.x - b.x);
+  const button = buttons[0];
+  return button || { ok: false };
+})()
+"""
+
+_SWITCH_XIAOHONGSHU_QR_LOGIN_JS = r"""
+(() => {
+  const text = document.body ? document.body.innerText || '' : '';
+  if (/APP扫一扫登录|扫码即同意/.test(text)) {
+    return { ok: false };
+  }
+  if (!/短信登录|手机号|发送验证码/.test(text)) {
+    return { ok: false };
+  }
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    return !!(
+      el.offsetParent !== null &&
+      rect.width >= 40 &&
+      rect.width <= 90 &&
+      rect.height >= 40 &&
+      rect.height <= 90 &&
+      style.visibility !== 'hidden' &&
+      style.display !== 'none' &&
+      style.opacity !== '0'
+    );
+  };
+  const icons = Array.from(document.querySelectorAll('img'))
+    .filter((img) => visible(img) && String(img.src || '').startsWith('data:image'))
+    .map((img) => {
+      const rect = img.getBoundingClientRect();
+      return {
+        ok: true,
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        score: -rect.x + rect.y,
+      };
+    })
+    .sort((a, b) => a.score - b.score);
+  return icons[0] || { ok: false };
+})()
+"""
+
+_SWITCH_KUAISHOU_QR_LOGIN_JS = r"""
+(() => {
+  const text = document.body ? document.body.innerText || '' : '';
+  if (/扫码后|请使用快手|打开快手|快手APP/.test(text)) {
+    return { ok: false };
+  }
+  if (!/扫码登录/.test(text)) {
+    return { ok: false };
+  }
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    return !!(
+      el.offsetParent !== null &&
+      rect.width > 0 &&
+      rect.height > 0 &&
+      style.visibility !== 'hidden' &&
+      style.display !== 'none' &&
+      style.opacity !== '0'
+    );
+  };
+  const switchSelector = [
+    '.platform-switch',
+    '[class*="platform-switch"]',
+    'button',
+    '[role="button"]',
+    'a',
+  ].join(', ');
+  const candidates = Array.from(
+    document.querySelectorAll(`${switchSelector}, div, span`)
+  )
+    .filter((el) => visible(el) && /扫码登录/.test(el.innerText || el.textContent || ''))
+    .map((el) => {
+      const clickable = el.closest(switchSelector) || el;
+      const rect = clickable.getBoundingClientRect();
+      const className = String(clickable.className || '');
+      const compact = (
+        rect.width >= 30 &&
+        rect.width <= 120 &&
+        rect.height >= 30 &&
+        rect.height <= 80
+      );
+      const switchScore = className.includes('platform-switch') ? 0 : 100;
+      return {
+        ok: true,
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        score: (compact ? 0 : 1000) + switchScore - rect.x + rect.y,
+      };
+    })
+    .sort((a, b) => a.score - b.score);
+  return candidates[0] || { ok: false };
 })()
 """
 
@@ -320,15 +586,42 @@ class XiaoVmaoLoginDriver:
                 if existing is not None:
                     return existing
 
-            await self.open_platform_login(main_driver, platform)
-            login_page = await self.wait_for_login_target(main_driver, platform, before_targets)
+            login_page = await self.connect_existing_login_target(main_driver, platform)
+            if login_page is None:
+                try:
+                    await self.open_platform_login(main_driver, platform)
+                except XiaoVmaoUnavailableError:
+                    login_page = await self.connect_existing_login_target(main_driver, platform)
+                    if login_page is None:
+                        raise
+            if login_page is None:
+                login_page = await self.wait_for_login_target(main_driver, platform, before_targets)
             deadline = time.time() + timeout_seconds
             last_qr: str | None = None
             while time.time() < deadline:
                 if stop():
                     raise XiaoVmaoUnavailableError("登录已取消")
-                await self.emit_verification_if_needed(login_page, emit)
-                qr_image = await self.capture_qr_image(login_page)
+                await self.dismiss_login_obstructions(main_driver, platform)
+                try:
+                    await self.prepare_platform_login_page(login_page, platform)
+                    await self.emit_verification_if_needed(login_page, emit)
+                    qr_image = await self.capture_qr_image(login_page)
+                except Exception as exc:
+                    completed = await self.find_completed_account(
+                        main_driver,
+                        platform=platform,
+                        known_uids=known_uids,
+                        target_uid=xiaovmao_uid,
+                    )
+                    if completed is not None:
+                        return completed
+                    reconnected = await self.connect_existing_login_target(main_driver, platform)
+                    if reconnected is None:
+                        raise XiaoVmaoUnavailableError(f"登录页面连接中断: {exc}") from exc
+                    await login_page.close()
+                    login_page = reconnected
+                    await asyncio.sleep(1)
+                    continue
                 if qr_image and qr_image != last_qr:
                     last_qr = qr_image
                     emit(c.LoginStreamEvent(type="qr", qr_image=qr_image))
@@ -367,23 +660,82 @@ class XiaoVmaoLoginDriver:
     ) -> XiaoVmaoDriver:
         deadline = time.time() + timeout_seconds
         hints = _PLATFORM_LOGIN_URL_HINTS.get(platform, ())
+        fallback_target: Target | None = None
         while time.time() < deadline:
             for target in driver.fetch_targets():
                 if not target.ws_url or target.ws_url in before_targets:
+                    if (
+                        target.ws_url
+                        and hints
+                        and any(hint in target.url for hint in hints)
+                        and target.target_type in {"page", "webview"}
+                    ):
+                        fallback_target = target
                     continue
                 if hints and not any(hint in target.url for hint in hints):
                     continue
                 page = self._new_driver()
                 await page.connect_to_target(target)
                 return page
+            if fallback_target is not None and time.time() > deadline - timeout_seconds + 1:
+                page = self._new_driver()
+                await page.connect_to_target(fallback_target)
+                return page
             await asyncio.sleep(0.5)
         raise XiaoVmaoUnavailableError(f"未找到 {platform} 平台登录 webview target")
+
+    async def connect_existing_login_target(
+        self,
+        driver: XiaoVmaoDriver,
+        platform: str,
+    ) -> XiaoVmaoDriver | None:
+        target = self._matching_login_target(driver.fetch_targets(), platform)
+        if target is None:
+            return None
+        page = self._new_driver()
+        await page.connect_to_target(target)
+        return page
+
+    def _matching_login_target(self, targets: list[Target], platform: str) -> Target | None:
+        hints = _PLATFORM_LOGIN_URL_HINTS.get(platform, ())
+        if not hints:
+            return None
+        for target in targets:
+            if (
+                target.ws_url
+                and target.target_type in {"page", "webview"}
+                and any(hint in target.url for hint in hints)
+            ):
+                return target
+        return None
 
     async def click_visible_text(self, driver: XiaoVmaoDriver, text: str) -> None:
         rect = await driver.evaluate(_visible_text_rect_js(text))
         if not isinstance(rect, dict) or not rect.get("ok"):
             raise XiaoVmaoUnavailableError(f"未找到可点击文本: {text}")
         await self._click_rect_center(driver, rect)
+
+    async def dismiss_login_obstructions(self, driver: XiaoVmaoDriver, platform: str) -> None:
+        if platform not in {"shipinhao", "xiaohongshu", "kuaishou"}:
+            return
+        payload = await driver.evaluate(_DISMISS_PLATFORM_LOGIN_PROMPT_JS)
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            return
+        await self._click_rect_center(driver, payload)
+        await asyncio.sleep(0.2)
+
+    async def prepare_platform_login_page(self, page_driver: XiaoVmaoDriver, platform: str) -> None:
+        script = {
+            "kuaishou": _SWITCH_KUAISHOU_QR_LOGIN_JS,
+            "xiaohongshu": _SWITCH_XIAOHONGSHU_QR_LOGIN_JS,
+        }.get(platform)
+        if script is None:
+            return
+        payload = await page_driver.evaluate(script)
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            return
+        await self._click_rect_center(page_driver, payload)
+        await asyncio.sleep(0.5)
 
     async def capture_qr_image(self, page_driver: XiaoVmaoDriver) -> str | None:
         payload = await page_driver.evaluate(_LOGIN_QR_JS)
@@ -430,9 +782,10 @@ class XiaoVmaoLoginDriver:
         return None
 
     async def _refresh_expired_qr(self, page_driver: XiaoVmaoDriver, payload: dict[str, Any]) -> None:
-        rect = payload.get("qr_rect")
+        rect = payload.get("refresh_rect") or payload.get("qr_rect")
         if isinstance(rect, dict):
             await self._click_rect_center(page_driver, rect)
+            await asyncio.sleep(0.5)
             return
         await page_driver.send("Page.reload", {"ignoreCache": True})
 
@@ -611,6 +964,7 @@ def _visible_text_rect_js(text: str) -> str:
     return f"""
     (() => {{
       const wanted = {json.dumps(text, ensure_ascii=False)};
+      const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
       const visible = (el) => {{
         const rect = el.getBoundingClientRect();
         const style = window.getComputedStyle(el);
@@ -626,9 +980,22 @@ def _visible_text_rect_js(text: str) -> str:
         .filter((el) => visible(el) && (el.innerText || el.textContent || '').trim().includes(wanted))
         .map((el) => {{
           const rect = el.getBoundingClientRect();
-          return {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }};
+          const text = normalize(el.innerText || el.textContent || '');
+          const tag = String(el.tagName || '').toLowerCase();
+          const role = el.getAttribute('role') || '';
+          const className = String(el.className || '');
+          const exact = text === wanted;
+          const interactive = tag === 'button' || tag === 'a' || role === 'button';
+          const tabLike = className.includes('ant-tabs-tab') || className.includes('ant-select-item');
+          const area = Math.max(1, rect.width * rect.height);
+          const score =
+            (exact ? 0 : 1000) +
+            (interactive || tabLike ? 0 : 100) +
+            Math.min(text.length, 500) +
+            Math.log(area);
+          return {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height, score }};
         }})
-        .sort((a, b) => a.x - b.x || a.y - b.y);
+        .sort((a, b) => a.score - b.score || a.y - b.y || a.x - b.x);
       const rect = elements[0];
       return rect ? {{ ok: true, ...rect }} : {{ ok: false }};
     }})()
@@ -686,56 +1053,343 @@ async def _read_accounts(driver: XiaoVmaoDriver) -> list[PlatformAccount]:
 
 
 # ---------------------------------------------------------------------------
-# Publish flow JS-driving snippets (origin _fill_text / _fill_tags / _apply_schedule)
+# Publish flow via 小V猫 CatBridge task APIs
 # ---------------------------------------------------------------------------
 
+PUBLISH_TASK_TIMEOUT_SECONDS = 15 * 60
+PUBLISH_TASK_POLL_INTERVAL_SECONDS = 3.0
+PUBLISH_LOG_SUCCESS_STATUS = 2
+PUBLISH_LOG_FAILED_STATUSES = {3, 4, 5}
+PUBLISH_LOG_STATUS_LABELS = {
+    0: "待发布",
+    1: "正在发布",
+    2: "已发布",
+    3: "已暂停",
+    4: "失败",
+    5: "已取消",
+    6: "本机定时等待",
+}
 
-def _fill_text_js(title: str, description: str) -> str:
+
+def _catbridge_call_js(name: str, args: list[Any]) -> str:
     return f"""
-    (() => {{
-      const setNativeValue = (element, value) => {{
-        const prototype = Object.getPrototypeOf(element);
-        const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-        if (setter) setter.call(element, value);
-        else element.value = value;
-        element.dispatchEvent(new Event('input', {{ bubbles: true }}));
-        element.dispatchEvent(new Event('change', {{ bubbles: true }}));
-      }};
-      const titleInput = document.getElementById('title');
-      const descInput = document.getElementById('desc');
-      if (!titleInput || !descInput) return {{ ok: false }};
-      setNativeValue(titleInput, {json.dumps(title, ensure_ascii=False)});
-      setNativeValue(descInput, {json.dumps(description, ensure_ascii=False)});
-      return {{ ok: true }};
-    }})()
-    """
-
-
-def _fill_tags_js(tags: list[str]) -> str:
-    return f"""
-    (() => {{
-      const tags = {json.dumps(tags, ensure_ascii=False)};
-      const setNativeValue = (element, value) => {{
-        const prototype = Object.getPrototypeOf(element);
-        const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-        if (setter) setter.call(element, value);
-        else element.value = value;
-        element.dispatchEvent(new Event('input', {{ bubbles: true }}));
-        element.dispatchEvent(new Event('change', {{ bubbles: true }}));
-      }};
-      const inputs = Array.from(document.querySelectorAll('input.ant-select-selection-search-input'));
-      const input = inputs[0];
-      if (!input || !tags.length) return {{ ok: false }};
-      for (const tag of tags) {{
-        setNativeValue(input, tag);
-        input.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', bubbles: true }}));
+    Promise.resolve().then(async () => {{
+      try {{
+        if (!(window.CatBridge && window.CatBridge.getCall)) {{
+          return {{ ok: false, error: 'CatBridge unavailable' }};
+        }}
+        const callName = {json.dumps(name)};
+        const args = {json.dumps(args, ensure_ascii=False, default=str)};
+        const value = await window.CatBridge.getCall.call(window.CatBridge, callName, ...args);
+        return {{ ok: true, value }};
+      }} catch (error) {{
+        return {{
+          ok: false,
+          error: String(error && (error.stack || error.message || error)),
+        }};
       }}
-      return {{ ok: true, count: tags.length }};
-    }})()
+    }})
     """
 
 
-async def _drive_publish(driver: XiaoVmaoDriver, payload: PublishPayload, accounts: list[PlatformAccount]) -> PublishOutcome:
+async def _catbridge_call(driver: XiaoVmaoDriver, name: str, *args: Any) -> Any:
+    payload = await driver.evaluate(_catbridge_call_js(name, list(args)), await_promise=True)
+    if not isinstance(payload, dict):
+        raise XiaoVmaoUnavailableError(f"小V猫 CatBridge {name} 返回格式异常")
+    if not payload.get("ok"):
+        raise XiaoVmaoUnavailableError(payload.get("error") or f"小V猫 CatBridge {name} 调用失败")
+    return payload.get("value")
+
+
+def _new_local_id() -> str:
+    return f"l_cutagent_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+
+
+def _publish_batch_source(payload: PublishPayload) -> str:
+    raw_name = (payload.case_name or payload.title or "任务分发").strip() or "任务分发"
+    name = raw_name.replace("\n", " ")[:32]
+    return f"Cutagent_{name}_{time.strftime('%m-%d %H:%M:%S')}"
+
+
+def _file_url(uri: str | None) -> str | None:
+    if not uri:
+        return None
+    if uri.startswith(("file://", "http://", "https://")):
+        return uri
+    if uri.startswith("/"):
+        return f"file://{uri}"
+    return uri
+
+
+def _publish_timing(payload: PublishPayload) -> dict[str, Any]:
+    if payload.scheduled_at is None:
+        return {"type": 1}
+    return {
+        "type": 2,
+        "time": payload.scheduled_at.isoformat(),
+        "autoReset": False,
+    }
+
+
+def _normalised_tags(payload: PublishPayload, limit: int = 10) -> list[str]:
+    return [tag.strip().lstrip("#") for tag in payload.tags if tag.strip()][:limit]
+
+
+def _platform_form_payload(
+    *,
+    platform_key: str,
+    title: str,
+    description: str,
+    tags: list[str],
+    cover: str | None,
+    timing: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    base: dict[str, Any] = {"CAT_timing": timing}
+    if cover:
+        base["CAT_cover"] = cover
+
+    if platform_key == "Douyin":
+        title_value = title[:30]
+        desc_value = description[:1000]
+        form_data = {
+            **base,
+            "title": title_value,
+            "item_title": title_value,
+            "text": desc_value,
+            "tags": [{"cid": tag, "cha_name": tag} for tag in tags[:5]],
+        }
+        return form_data, {
+            "title": title_value,
+            "desc": desc_value,
+            "timing": timing.get("time"),
+            "commentStatus": False,
+        }
+
+    if platform_key == "KuaiShou":
+        desc_value = description or title
+        form_data = {
+            **base,
+            "CAT_desc": desc_value,
+            "CAT_tags": tags[:10],
+        }
+        return form_data, {
+            "title": title,
+            "desc": desc_value,
+            "timing": timing.get("time"),
+        }
+
+    if platform_key == "Channels":
+        title_value = title[:64]
+        desc_value = description or title
+        form_data = {
+            **base,
+            "title": title_value,
+            "CAT_shortTitle": title[:16],
+            "CAT_desc": desc_value,
+            "topics": tags[:10],
+        }
+        return form_data, {
+            "title": title_value,
+            "shortTitle": title[:16],
+            "desc": desc_value,
+            "timing": timing.get("time"),
+        }
+
+    # 小红书：小V猫 UI 仍以 CAT_* common fields + title/desc 组织发布表单。
+    title_value = title[:20]
+    desc_value = description
+    form_data = {
+        **base,
+        "title": title_value,
+        "desc": desc_value,
+        "CAT_desc": desc_value,
+        "CAT_tags": tags[:10],
+    }
+    return form_data, {
+        "title": title_value,
+        "desc": desc_value,
+        "timing": timing.get("time"),
+    }
+
+
+def _build_publish_task(
+    *,
+    payload: PublishPayload,
+    platform: str,
+    account_uid: str,
+    batch_source: str,
+) -> dict[str, Any]:
+    platform_key = XIAOVMAO_PLATFORM_KEY_MAP[platform]
+    title = (payload.title or "未命名发布").strip() or "未命名发布"
+    description = payload.description or ""
+    tags = _normalised_tags(payload)
+    cover = _file_url(payload.cover_uri)
+    timing = _publish_timing(payload)
+    form_data, task_fields = _platform_form_payload(
+        platform_key=platform_key,
+        title=title,
+        description=description,
+        tags=tags,
+        cover=cover,
+        timing=timing,
+    )
+    local_id = _new_local_id()
+    return {
+        "uid": account_uid,
+        "videoPath": payload.video_uri,
+        "videoDuration": None,
+        "platform": platform_key,
+        "localId": local_id,
+        "status": 0,
+        "postType": 1,
+        "publishType": timing.get("type") or 1,
+        "resetTimeout": False,
+        "originCover": cover,
+        "isVertical": False,
+        "isCustomCover": bool(cover),
+        "images": [],
+        "batchSource": batch_source,
+        "formData": form_data,
+        **task_fields,
+    }
+
+
+async def _create_publish_task(driver: XiaoVmaoDriver, task: dict[str, Any]) -> None:
+    await _catbridge_call(driver, "Models.PublishLog.bulkCreateWithStat", [task])
+    await _catbridge_call(driver, "PublishController.startPublishTask")
+
+
+def _extract_publish_records(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if not isinstance(value, dict):
+        return []
+    for key in ("list", "records", "rows", "data"):
+        items = value.get(key)
+        if isinstance(items, list):
+            return [item for item in items if isinstance(item, dict)]
+        if isinstance(items, dict):
+            nested = _extract_publish_records(items)
+            if nested:
+                return nested
+    return []
+
+
+def _record_local_id(record: dict[str, Any]) -> str | None:
+    value = record.get("localId") or record.get("local_id")
+    return str(value) if value else None
+
+
+def _record_status(record: dict[str, Any]) -> int | None:
+    value = record.get("status")
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _record_error(record: dict[str, Any]) -> str | None:
+    for key in ("error", "errorMessage", "message", "reason", "failReason"):
+        value = record.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _record_url(record: dict[str, Any]) -> str | None:
+    for key in ("url", "postUrl", "shareUrl", "workUrl"):
+        value = record.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+async def _query_publish_record(driver: XiaoVmaoDriver, task: dict[str, Any]) -> dict[str, Any] | None:
+    queries = [
+        (
+            {"current": 1, "pageSize": 50},
+            {"kw": task["localId"]},
+        ),
+        (
+            {"current": 1, "pageSize": 50},
+            {
+                "uids": [task["uid"]],
+                "platform": task["platform"],
+                "batchSource": task["batchSource"],
+            },
+        ),
+    ]
+    for pager, filters in queries:
+        value = await _catbridge_call(driver, "Models.PublishLog.queryAll", pager, filters)
+        for record in _extract_publish_records(value):
+            if _record_local_id(record) == task["localId"]:
+                return record
+    return None
+
+
+def _status_label(status: int | None) -> str:
+    if status is None:
+        return "未知"
+    return PUBLISH_LOG_STATUS_LABELS.get(status, str(status))
+
+
+async def _wait_for_publish_record(
+    driver: XiaoVmaoDriver,
+    task: dict[str, Any],
+    *,
+    scheduled: bool,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + PUBLISH_TASK_TIMEOUT_SECONDS
+    last_record: dict[str, Any] | None = None
+    while True:
+        record = await _query_publish_record(driver, task)
+        if record:
+            last_record = record
+            status = _record_status(record)
+            if status == PUBLISH_LOG_SUCCESS_STATUS:
+                return record
+            if scheduled and status in {0, 6}:
+                return record
+            if status in PUBLISH_LOG_FAILED_STATUSES:
+                label = _status_label(status)
+                detail = _record_error(record)
+                raise XiaoVmaoUnavailableError(f"小V猫发布任务{label}: {detail or '未返回失败原因'}")
+        if time.monotonic() >= deadline:
+            status = _record_status(last_record or {}) if last_record else None
+            detail = f"，最后状态：{_status_label(status)}" if last_record else "，未查到 PublishLog 记录"
+            raise XiaoVmaoUnavailableError(f"小V猫发布任务超时{detail}")
+        await asyncio.sleep(PUBLISH_TASK_POLL_INTERVAL_SECONDS)
+
+
+def _success_result(
+    *,
+    platform: str,
+    account_uid: str,
+    task: dict[str, Any],
+    record: dict[str, Any],
+    scheduled: bool,
+) -> dict[str, Any]:
+    status = _record_status(record)
+    result: dict[str, Any] = {
+        "platform": platform,
+        "account": account_uid,
+        "success": True,
+        "scheduled": scheduled,
+        "external_task_id": task["localId"],
+        "xiaovmao_status": status,
+        "xiaovmao_status_label": _status_label(status),
+    }
+    url = _record_url(record)
+    if url:
+        result["url"] = url
+    return result
+
+
+async def _drive_publish(
+    driver: XiaoVmaoDriver, payload: PublishPayload, accounts: list[PlatformAccount]
+) -> PublishOutcome:
     if payload.account_id and not payload.account_uid:
         raise XiaoVmaoUnavailableError(
             f"发布账号 {payload.account_name or payload.account_id} 未绑定 xiaovmao_uid，无法精确路由小V猫账号"
@@ -764,37 +1418,58 @@ async def _drive_publish(driver: XiaoVmaoDriver, payload: PublishPayload, accoun
     if not payload.video_uri:
         raise XiaoVmaoUnavailableError("缺少成片文件路径（video_uri），无法发布")
 
-    # Best-effort drive 小V猫's publish form. Every DOM step is verified so a lost
-    # selector / CDP error raises instead of being silently treated as a publish.
-    await driver.set_files_by_index("input[type=file]", 0, [payload.video_uri])
-    text_result = await driver.evaluate(_fill_text_js(payload.title, payload.description))
-    if not (isinstance(text_result, dict) and text_result.get("ok")):
-        raise XiaoVmaoUnavailableError("填写小V猫标题/正文失败（DOM 选择器可能已变更）")
-    if payload.tags:
-        tags_result = await driver.evaluate(_fill_tags_js(list(payload.tags)))
-        if not (isinstance(tags_result, dict) and tags_result.get("ok")):
-            raise XiaoVmaoUnavailableError("填写小V猫标签失败（DOM 选择器可能已变更）")
+    batch_source = _publish_batch_source(payload)
+    task_results: list[dict[str, Any]] = []
+    error_messages: list[str] = []
+    external_task_ids: list[str] = []
+    scheduled = payload.scheduled_at is not None
+    for item in selected:
+        platform = item["platform"]
+        account_uid = item["account"]
+        task = _build_publish_task(
+            payload=payload,
+            platform=platform,
+            account_uid=account_uid,
+            batch_source=batch_source,
+        )
+        try:
+            await _create_publish_task(driver, task)
+            record = await _wait_for_publish_record(driver, task, scheduled=scheduled)
+            task_results.append(
+                _success_result(
+                    platform=platform,
+                    account_uid=account_uid,
+                    task=task,
+                    record=record,
+                    scheduled=scheduled,
+                )
+            )
+            external_task_ids.append(task["localId"])
+        except XiaoVmaoUnavailableError as exc:
+            message = str(exc)
+            error_messages.append(message)
+            task_results.append(
+                {
+                    "platform": platform,
+                    "account": account_uid,
+                    "success": False,
+                    "external_task_id": task["localId"],
+                    "error": message,
+                }
+            )
 
-    # 诚实失败铁律：驱动提交按钮 + 平台任务创建成功检测尚未对真小V猫实现/验证（待 PR5
-    # 真机联调）。表单已填充，但在未真正提交并验证成功前，绝不伪造发布成功。
-    pending = [
-        {
-            "platform": item["platform"],
-            "account": item["account"],
-            "success": False,
-            "error": "已填充小V猫发布表单，但提交与成功检测未实现（UNVERIFIED，待 PR5）；未发布",
-        }
-        for item in selected
-    ]
+    all_results = task_results + failures
+    for failure in failures:
+        if failure.get("error"):
+            error_messages.append(str(failure["error"]))
+    success = bool(task_results) and all(result.get("success") for result in all_results)
     return PublishOutcome(
-        success=False,
+        success=success,
         adapter_id=XIAOVMAO_ADAPTER_ID,
-        results=pending + failures,
-        error_message=(
-            "已填充小V猫发布表单，但提交与发布成功检测尚未实现"
-            "（UNVERIFIED，待 PR5 真机联调）；未真正发布，不伪造成功。"
-        ),
-        scheduled=payload.scheduled_at is not None,
+        external_task_id=",".join(external_task_ids) if external_task_ids else None,
+        results=all_results,
+        error_message="; ".join(error_messages) if error_messages else None,
+        scheduled=scheduled,
     )
 
 

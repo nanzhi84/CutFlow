@@ -13,10 +13,8 @@ import type { ReactNode } from "react";
 import {
   contentModeLabel,
   emotionOptions,
-  lipsyncPresets,
   subtitleLabel,
   type FormState,
-  type LipSyncPreset,
 } from "./studioCreateModel";
 import { SeedanceReferencePicker } from "./SeedanceReferencePicker";
 import { voiceDisplayLabel } from "../library/libraryModel";
@@ -31,6 +29,10 @@ type VoiceOption = {
 
 function seedanceReferenceSummary(count: number) {
   return count > 0 ? `${count} 张参考图` : "无参考图";
+}
+
+function lipsyncSummary(form: FormState) {
+  return form.lipsyncEnabled ? `开启 · ${form.lipsyncTimeoutMinutes} 分钟` : "关闭";
 }
 
 export function ScriptStep({
@@ -194,21 +196,6 @@ export function ProductionStep({
           <ToggleLine checked={form.lipsyncEnabled} onChange={(checked) => setField("lipsyncEnabled", checked)} label="启用口型同步" />
           {form.lipsyncEnabled ? (
             <div className="grid gap-3 border-t border-border/60 pt-4">
-              <div className="grid gap-3 md:grid-cols-2">
-                {(Object.keys(lipsyncPresets) as LipSyncPreset[]).map((preset) => (
-                  <button
-                    type="button"
-                    key={preset}
-                    onClick={() => setField("lipsyncPreset", preset)}
-                    className={`border-l-2 px-3 py-2 text-left transition-colors ${
-                      form.lipsyncPreset === preset ? "border-accent bg-accent/10" : "border-border/60 hover:bg-hover"
-                    }`}
-                  >
-                    <span className="font-medium text-text-primary">{lipsyncPresets[preset].label}</span>
-                    <span className="mt-1 block text-xs text-text-secondary">{lipsyncPresets[preset].description}</span>
-                  </button>
-                ))}
-              </div>
               <label>
                 <span>超时时间（分钟）</span>
                 <input
@@ -303,7 +290,7 @@ export function SubmitStep({ form, selectedVoiceLabel, scriptCount }: { form: Fo
           <ReviewItem label="声音" value={`${selectedVoiceLabel} · ${form.speed.toFixed(1)}x`} />
         )}
         {form.contentMode === "digital_human" ? (
-          <ReviewItem label="口型" value={form.lipsyncEnabled ? lipsyncPresets[form.lipsyncPreset].label : "关闭"} />
+          <ReviewItem label="口型" value={lipsyncSummary(form)} />
         ) : form.contentMode === "broll_only" ? (
           <ReviewItem label="画面" value="B_roll 铺满全片" />
         ) : null}
@@ -339,7 +326,7 @@ export function ConfigSummary({ form, selectedVoiceLabel, scriptCount }: { form:
           <SummaryRow icon={Mic2} label="声音" value={`${selectedVoiceLabel} · ${form.speed.toFixed(1)}x`} />
         )}
         {form.contentMode === "digital_human" ? (
-          <SummaryRow icon={Sparkles} label="口型" value={form.lipsyncEnabled ? lipsyncPresets[form.lipsyncPreset].label : "关闭"} />
+          <SummaryRow icon={Sparkles} label="口型" value={lipsyncSummary(form)} />
         ) : null}
         {form.contentMode === "seedance" ? null : (
           <>

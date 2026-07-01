@@ -279,17 +279,21 @@ class SqlAlchemyPublishingRepository(BaseRepository):
             is_scheduled = scheduled_at is not None
             uses_publish_runner = not payload.dry_run and publish_runner is not None
 
-            batch_status = (
-                "review_ready"
-                if payload.dry_run
-                else "publishing"
-                if uses_publish_runner
-                else "completed"
-            )
-            assert_transition("publish_batch", batch.status, "processing")
-            assert_transition("publish_batch", "processing", "review_ready" if payload.dry_run else "publishing")
-            if not payload.dry_run and not uses_publish_runner:
-                assert_transition("publish_batch", "publishing", "completed")
+            if payload.dry_run:
+                assert_transition("publish_batch", batch.status, "processing")
+                assert_transition("publish_batch", "processing", "review_ready")
+                batch_status = "review_ready"
+            elif batch.status in {"review_ready", "partial_failed"}:
+                assert_transition("publish_batch", batch.status, "publishing")
+                batch_status = "publishing" if uses_publish_runner else "completed"
+                if not uses_publish_runner:
+                    assert_transition("publish_batch", "publishing", "completed")
+            else:
+                assert_transition("publish_batch", batch.status, "processing")
+                assert_transition("publish_batch", "processing", "publishing")
+                batch_status = "publishing" if uses_publish_runner else "completed"
+                if not uses_publish_runner:
+                    assert_transition("publish_batch", "publishing", "completed")
             batch.status = batch_status
             batch.updated_at = utcnow()
             funnel_events: list[dict] = []
@@ -298,15 +302,23 @@ class SqlAlchemyPublishingRepository(BaseRepository):
                 outcome: PublishOutcome | None = None
                 package = session.get(PublishPackageRow, item.publish_package_id)
                 current_item_status = item.status
-                for next_status in ["normalizing", "asr_running", "copy_running", "cover_running"]:
-                    assert_transition("publish_item", current_item_status, next_status)
-                    current_item_status = next_status
+                if current_item_status not in {"review_ready", "manual_review_ready", "publish_failed"}:
+                    publish_pipeline = ["uploaded", "normalizing", "asr_running", "copy_running", "cover_running"]
+                    if current_item_status not in publish_pipeline:
+                        raise NodeExecutionError(
+                            ErrorCode.validation_invalid_options,
+                            f"Publish item cannot be submitted from status {current_item_status}.",
+                        )
+                    for next_status in publish_pipeline[publish_pipeline.index(current_item_status) + 1 :]:
+                        assert_transition("publish_item", current_item_status, next_status)
+                        current_item_status = next_status
                 if payload.dry_run:
                     assert_transition("publish_item", current_item_status, "review_ready")
                     current_item_status = "review_ready"
                 else:
-                    assert_transition("publish_item", current_item_status, "review_ready")
-                    current_item_status = "review_ready"
+                    if current_item_status not in {"review_ready", "manual_review_ready", "publish_failed"}:
+                        assert_transition("publish_item", current_item_status, "review_ready")
+                        current_item_status = "review_ready"
                     assert_transition("publish_item", current_item_status, "publishing")
                     current_item_status = "publishing"
                     if uses_publish_runner:

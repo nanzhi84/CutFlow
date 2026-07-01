@@ -28,7 +28,7 @@ python scripts/provision_oss_cors.py # S3/OSS 浏览器直传上传前配置 COR
 
 - **Contract-first**：改任何 API 形状 → 必须重生成 `apps/web/src/api/openapi.json` + `schema.d.ts`（CI 校验漂移）。`schema.d.ts` 是生成物，**禁止手改**。
 - 领域类型唯一来源 `packages/core/contracts`（Pydantic v2），跨包共享走它。
-- DB schema 迁移**只**在 `packages/core/storage/alembic/versions/`（当前 `0001…0027`，单一 head `0027_drop_portrait_options`；`0023`/`0024`/`0025` 是 contract 字段删除后的 JSONB 清理迁移，`0026` 把 visual asset kind 收敛为 `video`、`0027` 剥离已删的顶层 `portrait` 块；`0014` 合并过早期双 `0012` 分支，两个 `0018` 文件是线性顺接、非分叉）。
+- DB schema 迁移**只**在 `packages/core/storage/alembic/versions/`（当前 `0001…0028`，单一 head `0028_clean_user_defaults`；`0023`/`0024`/`0025` 是 contract 字段删除后的 JSONB 清理迁移，`0026` 把 visual asset kind 收敛为 `video`、`0027` 剥离已删的顶层 `portrait` 块，`0028` 清理用户默认配置里的遗留选项字段；`0014` 合并过早期双 `0012` 分支，两个 `0018` 文件是线性顺接、非分叉）。
 - 存储/运行时/对象存储后端由 `Settings`（`CUTAGENT_*` env）切换，清单见 `.env.example`。
 - 浏览器上传走 `/api/uploads/prepare` → object-store presigned PUT → `/api/uploads/complete`；API 不代理文件字节，complete 阶段验证 HEAD/sha256/content-type/媒体探测并登记产物。
 - 外部 AI/媒体调用一律经 `ProviderGateway` 按能力分发；prompt 不得硬编码，经 registry + binding，生产只解析 published 版本。

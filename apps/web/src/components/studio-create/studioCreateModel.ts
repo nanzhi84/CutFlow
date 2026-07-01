@@ -4,7 +4,6 @@ export type UserGenerationDefaults = components["schemas"]["UserGenerationDefaul
 
 export type StudioStep = 0 | 1 | 2 | 3 | 4;
 
-export type LipSyncPreset = "balanced" | "large_motion" | "strict_face" | "audio_priority";
 type ContentMode = "digital_human" | "broll_only" | "seedance" | "editing_agent";
 
 export type FormState = {
@@ -31,7 +30,6 @@ export type FormState = {
   bgmAutoMix: boolean;
   coverMode: "none" | "frame" | "ai";
   lipsyncEnabled: boolean;
-  lipsyncPreset: LipSyncPreset;
   lipsyncTimeoutMinutes: number;
   // Per-video extra editing instruction for the LLM editing-agent template
   // (contentMode === "editing_agent" -> digital_human_editing_agent_v1). Free text,
@@ -61,7 +59,6 @@ const defaultForm: FormState = {
   bgmAutoMix: true,
   coverMode: "frame",
   lipsyncEnabled: true,
-  lipsyncPreset: "balanced",
   lipsyncTimeoutMinutes: 30,
   editInstruction: "",
 };
@@ -74,13 +71,6 @@ export const emotionOptions = [
   { value: "serious", label: "沉稳" },
   { value: "energetic", label: "有力" },
 ] as const;
-
-export const lipsyncPresets: Record<LipSyncPreset, { label: string; description: string }> = {
-  balanced: { label: "标准均衡", description: "通用场景默认策略，兼顾锁脸稳定性与匹配成功率。" },
-  large_motion: { label: "大幅头动", description: "适合转头、抬头、位移较大场景，提高匹配宽容度。" },
-  strict_face: { label: "严格锁脸", description: "适合固定机位单人视频，减少误匹配。" },
-  audio_priority: { label: "时长优先", description: "音频较长时自动延长视频，避免尾部被截断。" },
-};
 
 function clampNumber(value: number, min: number, max: number, fallback: number) {
   if (Number.isNaN(value)) return fallback;

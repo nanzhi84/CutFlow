@@ -6,8 +6,10 @@ import {
   api,
   type ArtifactRef,
   type FinishedVideo,
+  type PublishAccount,
   type PublishBatch,
   type PublishBatchItem,
+  type PublishClient,
   type PublishPackage,
 } from "../../api/client";
 import { EmptyState, LoadingState } from "../../components/ui/State";
@@ -54,6 +56,8 @@ export default function PublishCenterPage() {
   const [defaults, setDefaults] = useState<BatchDefaults>(defaultBatchDefaults);
   const [drafts, setDrafts] = useState<Record<string, PublishDraft>>({});
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
+  const [selectedPublishClientId, setSelectedPublishClientId] = useState("");
+  const [selectedTargetAccountIds, setSelectedTargetAccountIds] = useState<string[]>([]);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const videosQuery = useQuery({
     queryKey: ["publish-center", "finished-videos", selectedCaseId],
@@ -84,6 +88,20 @@ export default function PublishCenterPage() {
     enabled: Boolean(activeBatchId),
     refetchInterval: pageVisible ? 8_000 : false,
   });
+  const clientsQuery = useQuery({
+    queryKey: ["publish-center", "clients"],
+    queryFn: () => api.publishOps.listClients({ limit: 200 }),
+  });
+  const accountsQuery = useQuery({
+    queryKey: ["publish-center", "accounts"],
+    queryFn: () => api.publishOps.listAccounts({ limit: 300 }),
+    refetchInterval: pageVisible ? 12_000 : false,
+  });
+  const targetsQuery = useQuery({
+    queryKey: ["publish-center", "case-targets", selectedCaseId],
+    queryFn: () => api.publishOps.listCaseTargets(selectedCaseId ?? ""),
+    enabled: Boolean(selectedCaseId),
+  });
 
   const batch = batchQuery.data;
   const batchItemIds = useMemo(() => (batch?.items ?? []).map((item) => item.id).join("|"), [batch?.items]);
@@ -106,6 +124,13 @@ export default function PublishCenterPage() {
     });
     return lookup;
   }, [finishedVideosById, packagesById]);
+  const publishClients = useMemo<PublishClient[]>(() => clientsQuery.data?.items ?? [], [clientsQuery.data?.items]);
+  const publishAccounts = useMemo<PublishAccount[]>(() => accountsQuery.data?.items ?? [], [accountsQuery.data?.items]);
+  const publishAccountById = useMemo(() => {
+    const lookup = new Map<string, PublishAccount>();
+    publishAccounts.forEach((account) => lookup.set(account.id, account));
+    return lookup;
+  }, [publishAccounts]);
 
   useEffect(() => {
     if (!batch) return;
@@ -120,6 +145,13 @@ export default function PublishCenterPage() {
     setActiveItemId((current) => (batch.items?.some((item) => item.id === current) ? current : (batch.items?.[0]?.id ?? null)));
     setActiveStep((step) => (step === 0 ? 1 : step));
   }, [batch, batchItemIds]);
+
+  useEffect(() => {
+    const targets = targetsQuery.data?.items ?? [];
+    setSelectedTargetAccountIds(targets.map((target) => target.account_id));
+    const targetClientIds = Array.from(new Set(targets.map((target) => target.client_id).filter(Boolean)));
+    setSelectedPublishClientId(targetClientIds.length === 1 ? String(targetClientIds[0]) : "");
+  }, [targetsQuery.data?.items]);
 
   function routeToBatch(id: string) {
     setSearchParams({ batchId: id });
@@ -218,53 +250,58 @@ export default function PublishCenterPage() {
     onError: (error) => toast.error("删除批次失败", error),
   });
 
-  async function syncDrafts() {
+  async function syncDrafts(targetPlatforms?: Set<string>) {
     for (const item of batch?.items ?? []) {
       const draft = drafts[item.id] ?? buildDraftFromItem(item);
-      await api.publishing.patchItem(item.id, itemPatchFromDraft(draft));
+      const patchedDraft = targetPlatforms
+        ? { ...draft, selected: draft.selected && targetPlatforms.has(item.platform) }
+        : draft;
+      await api.publishing.patchItem(item.id, itemPatchFromDraft(patchedDraft));
     }
   }
 
   const submitBatch = useMutation({
-    mutationFn: async (mode: "manual" | "auto") => {
+    mutationFn: async () => {
       if (!batch) throw new Error("缺少发布批次");
-      await syncDrafts();
-      // Resolve schedule from the batch's first selected draft (defaults carry it
-      // for the whole batch). Asia/Shanghai validation happens server-side.
+      if (!selectedCaseId) throw new Error("缺少案例，无法保存发布账号。");
+      const batchPlatforms = new Set((batch.items ?? []).map((item) => item.platform));
+      const targetPlatforms = new Set<string>();
+      const targetAccountIds = selectedTargetAccountIds.filter((accountId) => {
+        const account = publishAccountById.get(accountId);
+        if (!account || !batchPlatforms.has(account.platform)) return false;
+        targetPlatforms.add(account.platform);
+        return true;
+      });
+      if (targetAccountIds.length === 0 || targetPlatforms.size === 0) {
+        throw new Error("请选择至少一个可用于当前批次平台的发布账号。");
+      }
+      await api.publishOps.setCaseTargets(selectedCaseId, { account_ids: targetAccountIds });
+      await syncDrafts(targetPlatforms);
       const scheduled = (batch.items ?? [])
+        .filter((item) => targetPlatforms.has(item.platform))
         .map((item) => drafts[item.id] ?? buildDraftFromItem(item))
+        .filter((draft) => draft.selected)
         .find((draft) => draft.scheduleMode === "scheduled" && draft.scheduledAt);
       const scheduleFields =
         scheduled && scheduled.scheduledAt
           ? { mode: "scheduled" as const, scheduled_at: new Date(scheduled.scheduledAt).toISOString() }
           : { mode: "immediate" as const };
       return api.publishing.submitBatch(batch.id, {
-        dry_run: mode === "manual",
+        dry_run: false,
         simulate_publish_failure: false,
         ...scheduleFields,
       });
     },
-    onSuccess: async (_, mode) => {
-      toast.success(mode === "manual" ? "半自动准备已完成" : "全自动发布已完成", "结果已写入 PublishAttempt。");
+    onSuccess: async () => {
+      toast.success("自动发布已提交", "小V猫任务状态会写入发布结果。");
       setActiveStep(2);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["publish-center", "batch", activeBatchId] }),
         queryClient.invalidateQueries({ queryKey: ["publish-center", "attempts", activeBatchId] }),
+        queryClient.invalidateQueries({ queryKey: ["publish-center", "case-targets", selectedCaseId] }),
       ]);
     },
     onError: (error) => toast.error("发布提交失败", error),
-  });
-
-  const retryItem = useMutation({
-    mutationFn: (itemId: string) => api.publishing.retryItem(activeBatchId, itemId),
-    onSuccess: async () => {
-      toast.success("失败条目已重试");
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["publish-center", "batch", activeBatchId] }),
-        queryClient.invalidateQueries({ queryKey: ["publish-center", "attempts", activeBatchId] }),
-      ]);
-    },
-    onError: (error) => toast.error("重试失败", error),
   });
 
   function updateDraft(itemId: string, patch: Partial<PublishDraft>) {
@@ -276,21 +313,40 @@ export default function PublishCenterPage() {
     });
   }
 
+  function updatePublishClientFilter(clientId: string) {
+    setSelectedPublishClientId(clientId);
+    if (!clientId) return;
+    setSelectedTargetAccountIds((current) =>
+      current.filter((accountId) => publishAccountById.get(accountId)?.client_id === clientId),
+    );
+  }
+
+  function togglePublishAccount(account: PublishAccount) {
+    setSelectedPublishClientId(account.client_id);
+    setSelectedTargetAccountIds((current) => {
+      if (current.includes(account.id)) return current.filter((accountId) => accountId !== account.id);
+      const sameClientIds = current.filter(
+        (accountId) => publishAccountById.get(accountId)?.client_id === account.client_id,
+      );
+      return [...sameClientIds, account.id];
+    });
+  }
+
   return (
     <section className="pageStack">
       <header className="pageHeader">
         <div>
           <h1>发布</h1>
-          <p className="mt-2 text-sm text-text-secondary">选来源、编辑文案与封面，生成内部发布结果。</p>
+          <p className="mt-2 text-sm text-text-secondary">选来源、编辑文案与封面，通过小V猫发布到已绑定平台账号。</p>
         </div>
       </header>
       <StudioTabs caseId={caseId} />
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-status-warning/25 bg-status-warning/10 px-4 py-3 text-sm text-status-warning">
         <span className="inline-flex items-center gap-2">
           <RadioTower className="h-4 w-4" />
-          真实发布需在发布主机启用 CUTAGENT_PUBLISH_ADAPTER 适配器（未对真实平台验证）。
+          自动发布会调用小V猫 CDP，请保持小V猫开启调试端口并完成平台账号登录。
         </span>
-        <span>当前默认走沙盒适配器：发布文案、封面（截帧回退）与定时/标签/地点均已生效。</span>
+        <span>失败会带回小V猫任务状态、验证码或扫码提示；不会伪造发布成功。</span>
       </div>
       <FlowStepper steps={PUBLISH_STEPS} activeStep={activeStep} ariaLabel="发布流程" onStepClick={(step) => (step === 0 || batch ? setActiveStep(step) : undefined)} />
 
@@ -362,20 +418,36 @@ export default function PublishCenterPage() {
               batch={batch}
               drafts={drafts}
               attempts={attemptsQuery.data?.items ?? []}
+              clients={publishClients}
+              accounts={publishAccounts}
+              selectedClientId={selectedPublishClientId}
+              selectedAccountIds={selectedTargetAccountIds}
               isSubmitting={submitBatch.isPending}
-              isRetrying={retryItem.isPending}
+              isRetrying={submitBatch.isPending}
+              isAccountsLoading={clientsQuery.isLoading || accountsQuery.isLoading || targetsQuery.isLoading}
+              onClientChange={updatePublishClientFilter}
+              onAccountToggle={togglePublishAccount}
               onDraftChange={updateDraft}
-              onSubmit={(mode) =>
+              onSubmit={() =>
                 setConfirm({
-                  title: mode === "manual" ? "半自动发布" : "全自动发布",
-                  message: mode === "manual" ? "确认生成待人工发布结果吗？" : "确认执行全自动发布吗？",
-                  consequences: ["会先保存当前草稿标题、正文和选中状态。", "发布仅生成内部发布记录，不会触达真实外部平台。", "发布结果会写入 PublishAttempt 和发布记录。"],
-                  confirmText: mode === "manual" ? "半自动发布" : "全自动发布",
+                  title: "自动发布",
+                  message: "确认通过小V猫执行自动发布吗？",
+                  consequences: ["会先保存当前草稿标题、正文和选中状态。", "会把已选账号保存为当前案例的发布目标。", "失败会记录小V猫返回的状态，不会伪造成发布成功。"],
+                  confirmText: "自动发布",
                   type: "warning",
-                  onConfirm: () => submitBatch.mutate(mode),
+                  onConfirm: () => submitBatch.mutate(),
                 })
               }
-              onRetry={(itemId) => retryItem.mutate(itemId)}
+              onRetry={() =>
+                setConfirm({
+                  title: "重新自动发布",
+                  message: "确认重新通过小V猫提交当前选中的发布任务吗？",
+                  consequences: ["会重新保存草稿和发布账号。", "仅匹配已选账号的平台会被提交。", "小V猫返回的失败原因会写入发布结果。"],
+                  confirmText: "重新发布",
+                  type: "warning",
+                  onConfirm: () => submitBatch.mutate(),
+                })
+              }
               onBack={() => setActiveStep(1)}
             />
           ) : null}
