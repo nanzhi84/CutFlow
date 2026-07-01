@@ -2,21 +2,16 @@
 
 from __future__ import annotations
 
-from pydantic import ValidationError
-
 from packages.core.contracts import ArtifactKind, ErrorCode
-from packages.core.contracts.artifacts import NarrationUnit, PortraitPlanArtifact
-from packages.media.audio import detect_silence_windows
+from packages.core.contracts.artifacts import PortraitPlanArtifact
 from packages.planning.editing import (
     TIMELINE_FPS,
     BoundaryConstraints,
-    SpokenSegment,
-    build_narration_units,
-    build_narration_units_from_asr,
     plan_boundary_timeline,
 )
 from packages.planning.material import subtract_bad_spans
 from packages.core.workflow import NodeExecutionError, NodeOutput
+from packages.production.pipeline._narration_units import build_planner_narration_units
 from packages.production.pipeline._node_context import NodeContext
 
 
@@ -24,6 +19,7 @@ def run(ctx: NodeContext) -> NodeOutput:
     state = ctx.state
     material = state.require(ArtifactKind.plan_material_pack).payload or {}
     narration = state.require(ArtifactKind.narration_units).payload or {}
+    boundary = state.require(ArtifactKind.plan_narration_boundary).payload or {}
     raw_units = narration.get("units", []) or []
     duration = max([float(unit.get("end", 0)) for unit in raw_units] or [1.0])
 
@@ -49,16 +45,19 @@ def run(ctx: NodeContext) -> NodeOutput:
             "Portrait source window cannot cover the full audio.",
         )
 
-    planner_units = _planner_narration_units(
+    planner_units = build_planner_narration_units(
         raw_units=raw_units,
         source=str(narration.get("source") or ""),
         script=state.request.script,
         duration=duration,
     )
 
-    # Detect real audio pauses on the produced TTS audio (semantic-only fallback when
-    # the audio is the sandbox tone and has no reliable silences).
-    audio_pauses = _detect_audio_pauses(ctx)
+    # Real audio pauses were detected upstream by NarrationBoundaryPlanning (the single
+    # node that reads audio_tts + runs ffmpeg silencedetect). This node just fills portrait
+    # material into the boundary-locked windows those pauses produce; feeding the same
+    # pause windows back into the (unchanged) coverage planner keeps the frame boundaries
+    # identical to before the boundary-detection split (#135).
+    audio_pauses = boundary.get("pause_windows", []) or []
 
     plan, escalation = _plan_with_escalation(
         narration_units=planner_units,
@@ -232,54 +231,6 @@ def _plan_with_escalation(
     }
 
 
-def _planner_narration_units(
-    *,
-    raw_units: list[dict],
-    source: str = "",
-    script: str,
-    duration: float,
-) -> list[NarrationUnit]:
-    parsed: list[NarrationUnit] = []
-    has_boundary_signal = False
-    for raw in raw_units or []:
-        if not isinstance(raw, dict):
-            continue
-        try:
-            unit = NarrationUnit.model_validate(raw)
-        except ValidationError:
-            continue
-        if unit.end <= unit.start:
-            continue
-        if unit.duration is None:
-            unit = unit.model_copy(update={"duration": round(unit.end - unit.start, 3)})
-        parsed.append(unit)
-        has_boundary_signal = has_boundary_signal or bool(
-            unit.portrait_cut_allowed
-            or unit.hard_end
-            or unit.pause_after_ms > 0
-            or unit.boundary_score > 0
-            or str(unit.boundary_reason or "").strip()
-        )
-    if parsed and has_boundary_signal:
-        return parsed
-
-    # Artifacts without boundary fields are rebuilt on resume.
-    spoken = [
-        SpokenSegment(start=unit.start, end=unit.end, text=unit.text)
-        for unit in parsed
-        if str(unit.text or "").strip()
-    ]
-    if parsed and source in {"asr", "tts_subtitle"}:
-        units = build_narration_units_from_asr(spoken, duration)
-        if units:
-            return units
-    return build_narration_units(
-        script=script,
-        asr_segments=spoken or None,
-        video_duration=duration,
-    )
-
-
 def _portrait_window_candidates(ctx: NodeContext, items: list[dict]) -> list[dict]:
     """One clip source-window candidate per ranked material-pack portrait candidate.
 
@@ -352,14 +303,6 @@ def _portrait_window_candidates(ctx: NodeContext, items: list[dict]) -> list[dic
                 }
             )
     return candidates
-
-
-def _detect_audio_pauses(ctx: NodeContext) -> list[dict]:
-    audio = ctx.state.artifacts.get(ArtifactKind.audio_tts)
-    if audio is None or not audio.uri:
-        return []
-    audio_path = ctx.artifact_path(audio)
-    return detect_silence_windows(audio_path)
 
 
 def _segment_payload(index: int, seg, *, recent_template_ids: set[str]) -> dict:

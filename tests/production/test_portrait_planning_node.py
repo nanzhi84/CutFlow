@@ -26,12 +26,10 @@ from packages.core.contracts import (
 from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
 from packages.core.workflow import NodeExecutionError
-from packages.media.assets import store_file
 from packages.production.pipeline import nodes
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
-from tests.fixtures.media import generate_test_audio
 
 
 SCRIPT = "先讲解打磨工艺的细节非常重要。再展示补漆效果对比清晰可见。最后欢迎点击咨询预约下单。"
@@ -97,6 +95,7 @@ def _state(
     with_clip_metadata: bool = True,
     recent_usage: dict | None = None,
     source_window: tuple[float, float] = (0.0, 15.0),
+    pause_windows: list[dict] | None = None,
 ) -> RunState:
     _back_portrait_sources(adapter, candidate_ids)
     request = DigitalHumanVideoRequest(
@@ -149,11 +148,24 @@ def _state(
         payload=narration,
         payload_schema="NarrationUnitsArtifact.v1",
     )
+    # NarrationBoundaryPlanning runs upstream now and hands PortraitPlanning the detected
+    # pauses; the portrait node no longer detects them itself. Default is semantic-only
+    # (no real pauses), matching the sandbox tone.
+    boundary_artifact = Artifact(
+        id="art_narration_boundary",
+        case_id="case_demo",
+        run_id="run_1",
+        node_run_id="nr_narration_boundary",
+        kind=ArtifactKind.plan_narration_boundary,
+        payload={"pause_windows": pause_windows or []},
+        payload_schema="NarrationBoundaryPlan.v1",
+    )
     return RunState(
         request=request,
         artifacts={
             ArtifactKind.plan_material_pack: material_artifact,
             ArtifactKind.narration_units: narration_artifact,
+            ArtifactKind.plan_narration_boundary: boundary_artifact,
         },
     )
 
@@ -193,10 +205,6 @@ def test_semantic_only_when_no_real_pauses(monkeypatch, tmp_path):
     # Sandbox-shape: detection returns no pauses -> semantic-only boundaries.
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    monkeypatch.setattr(
-        "packages.production.pipeline.nodes.portrait_planning.detect_silence_windows",
-        lambda *a, **k: [],
-    )
     adapter = _adapter(object_store)
     # Asset-level uniqueness (issue #102): a multi-chunk 12s timeline needs several
     # DISTINCT portrait assets — one asset can no longer be reused across chunks.
@@ -213,11 +221,12 @@ def test_semantic_only_when_no_real_pauses(monkeypatch, tmp_path):
 
 
 def test_boundaries_land_on_detected_pauses(monkeypatch, tmp_path):
+    # NarrationBoundaryPlanning already detected the real pauses upstream and handed them
+    # to PortraitPlanning via plan.narration_boundary. Given pauses sitting right at each
+    # sentence end, the coverage planner snaps cuts into the pause windows.
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
     units = _units()
-    # Real silences sitting right at each sentence end -> the planner snaps cuts into
-    # the pause windows (semantic_audio_pause boundary source).
     pauses = [
         {
             "start": u["end"] - 0.02,
@@ -227,39 +236,15 @@ def test_boundaries_land_on_detected_pauses(monkeypatch, tmp_path):
         }
         for u in units[:-1]
     ]
-    seen: dict[str, object] = {}
-
-    def fake_detect(audio_path, *a, **k):
-        seen["audio_path"] = audio_path
-        return pauses
-
-    monkeypatch.setattr(
-        "packages.production.pipeline.nodes.portrait_planning.detect_silence_windows",
-        fake_detect,
-    )
-    # A real, resolvable TTS audio artifact must exist for detection to be attempted
-    # (the node resolves its local path before running detection on it).
     adapter = _adapter(object_store)
     # Several distinct assets so the multi-chunk timeline is coverable under
     # asset-level uniqueness (issue #102); the cuts still snap to the detected pauses.
     state = _state(
-        adapter, candidate_ids=["asset_portrait_demo", "asset_portrait_b", "asset_portrait_c"]
-    )
-    audio_path = generate_test_audio(tmp_path, duration_sec=12, frequency=440)
-    stored = store_file(object_store, audio_path, purpose="generated-audio")
-    state.artifacts[ArtifactKind.audio_tts] = Artifact(
-        id="art_tts",
-        case_id="case_demo",
-        run_id="run_1",
-        node_run_id="nr_tts",
-        kind=ArtifactKind.audio_tts,
-        uri=stored.ref.uri,
-        sha256=stored.sha256,
-        payload_schema="uri-only",
+        adapter,
+        candidate_ids=["asset_portrait_demo", "asset_portrait_b", "asset_portrait_c"],
+        pause_windows=pauses,
     )
     output = _run_node(adapter, state)
-
-    assert seen.get("audio_path") is not None, "detection must run on the resolved TTS path"
 
     payload = _portrait_payload(output)
     assert payload["diagnostics"]["used_audio_pauses"] is True
@@ -268,31 +253,10 @@ def test_boundaries_land_on_detected_pauses(monkeypatch, tmp_path):
     assert "semantic_audio_pause" in sources
 
 
-def test_unreadable_tts_audio_does_not_silently_disable_pause_detection(monkeypatch, tmp_path):
-    object_store = LocalObjectStore(tmp_path / "objects")
-    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    adapter = _adapter(object_store)
-    state = _state(adapter, candidate_ids=["asset_portrait_demo"])
-    state.artifacts[ArtifactKind.audio_tts] = Artifact(
-        id="art_tts",
-        case_id="case_demo",
-        run_id="run_1",
-        node_run_id="nr_tts",
-        kind=ArtifactKind.audio_tts,
-        uri="s3://foreign-bucket/generated-audio/missing.mp3",
-        payload_schema="uri-only",
-    )
-
-    with pytest.raises(NodeExecutionError) as exc:
-        _run_node(adapter, state)
-
-    assert exc.value.error.code == ErrorCode.artifact_missing
-
-
 def test_asr_narration_units_are_rehydrated_with_pause_boundaries():
-    from packages.production.pipeline.nodes import portrait_planning as pp
+    from packages.production.pipeline._narration_units import build_planner_narration_units
 
-    units = pp._planner_narration_units(
+    units = build_planner_narration_units(
         raw_units=[
             {
                 "unit_id": "unit_1",
@@ -406,10 +370,6 @@ def test_asset_uniqueness_hard_fails_when_only_window_reuse_could_cover():
 def test_plan_is_frame_contiguous_and_covers_full_audio(monkeypatch, tmp_path):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    monkeypatch.setattr(
-        "packages.production.pipeline.nodes.portrait_planning.detect_silence_windows",
-        lambda *a, **k: [],
-    )
     adapter = _adapter(object_store)
     output = _run_node(
         adapter,
@@ -441,10 +401,6 @@ def test_insufficient_material_soft_degrades(monkeypatch, tmp_path):
     # No portrait candidates at all -> honest hard-fail with the material code.
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    monkeypatch.setattr(
-        "packages.production.pipeline.nodes.portrait_planning.detect_silence_windows",
-        lambda *a, **k: [],
-    )
     adapter = _adapter(object_store)
     with pytest.raises(NodeExecutionError) as exc:
         _run_node(adapter, _state(adapter, candidate_ids=[]))
@@ -454,10 +410,6 @@ def test_insufficient_material_soft_degrades(monkeypatch, tmp_path):
 def test_portrait_candidate_without_clip_metadata_is_rejected(monkeypatch, tmp_path):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    monkeypatch.setattr(
-        "packages.production.pipeline.nodes.portrait_planning.detect_silence_windows",
-        lambda *a, **k: [],
-    )
     adapter = _adapter(object_store)
     state = _state(
         adapter,
@@ -476,10 +428,6 @@ def test_candidate_too_short_to_cover_returns_no_fabricated_plan(monkeypatch, tm
     # (full pool + capacity-controlled split retry) -> honest hard-fail.
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    monkeypatch.setattr(
-        "packages.production.pipeline.nodes.portrait_planning.detect_silence_windows",
-        lambda *a, **k: [],
-    )
     adapter = _adapter(object_store)
     with pytest.raises(NodeExecutionError) as exc:
         _run_node(adapter, _state(adapter, candidate_ids=["asset_portrait_demo"], duration=40.0))
@@ -491,10 +439,6 @@ def test_escalation_ladder_diagnostics_on_success(monkeypatch, tmp_path):
     # escalation stage + that no capacity-controlled split was needed.
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    monkeypatch.setattr(
-        "packages.production.pipeline.nodes.portrait_planning.detect_silence_windows",
-        lambda *a, **k: [],
-    )
     adapter = _adapter(object_store)
     output = _run_node(
         adapter,
@@ -516,10 +460,6 @@ def test_capacity_controlled_split_retry_drives_recovery(monkeypatch, tmp_path):
     # succeed, proving the node DRIVES max_chunk_duration on escalation (gap 1).
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    monkeypatch.setattr(
-        "packages.production.pipeline.nodes.portrait_planning.detect_silence_windows",
-        lambda *a, **k: [],
-    )
     from packages.planning.editing import BoundaryConstraints as _BC
     from packages.production.pipeline.nodes import portrait_planning as pp
 
@@ -574,10 +514,6 @@ def test_recency_context_demotes_recently_used_template_and_records_opening(monk
     # equivalent to the old self-read path — only the ledger read moved upstream.
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    monkeypatch.setattr(
-        "packages.production.pipeline.nodes.portrait_planning.detect_silence_windows",
-        lambda *a, **k: [],
-    )
     adapter = _adapter(object_store)
     from packages.core.contracts import SelectionLedgerEntry
     from packages.planning.selection.recency_context import (
@@ -676,10 +612,6 @@ def test_single_asset_cannot_cover_multiple_chunks_hard_fails_no_reuse(monkeypat
     """
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    monkeypatch.setattr(
-        "packages.production.pipeline.nodes.portrait_planning.detect_silence_windows",
-        lambda *a, **k: [],
-    )
     adapter = _adapter(object_store)
     with pytest.raises(NodeExecutionError) as exc:
         _run_node(adapter, _state(adapter, candidate_ids=["asset_portrait_demo"], duration=12.0))
@@ -703,10 +635,6 @@ def test_multi_asset_capacity_split_covers_each_asset_at_most_once(monkeypatch, 
     """
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    monkeypatch.setattr(
-        "packages.production.pipeline.nodes.portrait_planning.detect_silence_windows",
-        lambda *a, **k: [],
-    )
     adapter = _adapter(object_store)
     output = _run_node(
         adapter,
@@ -741,10 +669,6 @@ def test_sufficient_distinct_material_uses_fresh_unique_each_once(monkeypatch, t
     """
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    monkeypatch.setattr(
-        "packages.production.pipeline.nodes.portrait_planning.detect_silence_windows",
-        lambda *a, **k: [],
-    )
     adapter = _adapter(object_store)
     output = _run_node(
         adapter,

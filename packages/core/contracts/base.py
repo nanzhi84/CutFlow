@@ -155,6 +155,7 @@ class ArtifactKind(str, Enum):
     audio_alignment = "audio.alignment"
     narration_units = "narration.units"
     plan_material_pack = "plan.material_pack"
+    plan_narration_boundary = "plan.narration_boundary"
     plan_portrait = "plan.portrait"
     plan_broll = "plan.broll"
     plan_style = "plan.style"

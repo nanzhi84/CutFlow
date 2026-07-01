@@ -91,7 +91,7 @@ def test_digital_human_template_keeps_existing_sequence_edges_and_outputs():
 
     assert template.workflow_template_id == "digital_human_v2"
     assert [spec.node_id for spec in template.nodes] == NODE_SEQUENCE
-    assert len(template.nodes) == 16
+    assert len(template.nodes) == 17
     assert len(template.edges) == len(NODE_SEQUENCE) - 1
     assert [
         (edge.from_node_id, edge.to_node_id)
@@ -104,6 +104,7 @@ def test_digital_human_template_keeps_existing_sequence_edges_and_outputs():
         "TTS": [ArtifactKind.audio_tts],
         "MaterialPackPlanning": [ArtifactKind.plan_material_pack],
         "NarrationAlignment": [ArtifactKind.audio_alignment, ArtifactKind.narration_units],
+        "NarrationBoundaryPlanning": [ArtifactKind.plan_narration_boundary],
         "PortraitPlanning": [ArtifactKind.plan_portrait],
         "BrollPlanning": [ArtifactKind.plan_broll],
         "StylePlanning": [ArtifactKind.plan_style],
@@ -120,6 +121,7 @@ def test_digital_human_template_keeps_existing_sequence_edges_and_outputs():
         "FinalizeRunReport": [ArtifactKind.run_report_public, ArtifactKind.run_report_debug],
     }
     specs = {spec.node_id: spec for spec in template.nodes}
+    assert specs["NarrationBoundaryPlanning"].reuse_policy == "never"
     assert specs["PortraitPlanning"].reuse_policy == "never"
     assert specs["BrollPlanning"].reuse_policy == "never"
     assert specs["TimelinePlanning"].reuse_policy == "never"

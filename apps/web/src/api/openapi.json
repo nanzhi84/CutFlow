@@ -8621,6 +8621,7 @@
           "audio.alignment",
           "narration.units",
           "plan.material_pack",
+          "plan.narration_boundary",
           "plan.portrait",
           "plan.broll",
           "plan.style",

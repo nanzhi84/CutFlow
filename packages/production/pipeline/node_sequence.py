@@ -15,6 +15,7 @@ NODE_SEQUENCE = [
     "TTS",
     "MaterialPackPlanning",
     "NarrationAlignment",
+    "NarrationBoundaryPlanning",
     "PortraitPlanning",
     "BrollPlanning",
     "StylePlanning",

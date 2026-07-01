@@ -30,6 +30,9 @@ from packages.planning.editing.narration import (
     build_narration_units_from_script_sentences,
     build_narration_units_without_asr,
 )
+from packages.planning.editing.boundary import (
+    build_semantic_audio_boundary_entries,
+)
 from packages.planning.editing.chunks import (
     build_boundary_locked_chunks,
 )
@@ -57,6 +60,7 @@ __all__ = [
     "build_narration_units_from_script_sentences",
     "build_narration_units_without_asr",
     # boundary assembly + chunking
+    "build_semantic_audio_boundary_entries",
     "build_boundary_locked_chunks",
     # capacity packing
     "build_boundary_locked_portrait_plan",

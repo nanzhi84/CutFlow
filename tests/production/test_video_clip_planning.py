@@ -508,10 +508,6 @@ def test_material_pack_global_video_does_not_enter_case_scoped_broll(tmp_path, m
 def test_portrait_plan_cuts_only_the_talking_head_clip_window(tmp_path, monkeypatch):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    monkeypatch.setattr(
-        "packages.production.pipeline.nodes.portrait_planning.detect_silence_windows",
-        lambda *a, **k: [],
-    )
     adapter = _adapter(object_store)
     # The seeded demo portrait asset has a real ~15s source; pin a [3,12] clip window.
     win_start, win_end = 3.0, 12.0
@@ -546,6 +542,16 @@ def test_portrait_plan_cuts_only_the_talking_head_clip_window(tmp_path, monkeypa
         kind=ArtifactKind.narration_units,
         payload={"source": "estimated", "units": units, "strict": False},
         payload_schema="NarrationUnitsArtifact.v1",
+    )
+    # NarrationBoundaryPlanning runs upstream now; no real pauses -> semantic-only.
+    ctx.state.artifacts[ArtifactKind.plan_narration_boundary] = Artifact(
+        id="art_nb",
+        case_id="case_demo",
+        run_id="run_1",
+        node_run_id="nr_nb",
+        kind=ArtifactKind.plan_narration_boundary,
+        payload={"pause_windows": []},
+        payload_schema="NarrationBoundaryPlan.v1",
     )
 
     output = nodes.portrait_planning.run(ctx)

@@ -131,6 +131,34 @@ class NarrationUnitsArtifact(ContractModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class NarrationBoundaryPlan(ContractModel):
+    """Safe-cut boundary plan produced by NarrationBoundaryPlanning (#135).
+
+    Front-moves the editing-boundary responsibility out of PortraitPlanning: the ffmpeg
+    silence detection + semantic/audio safe-cut assembly now live in one node right after
+    NarrationAlignment. Downstream planning nodes read these frame-quantized windows
+    instead of re-detecting pauses (PortraitPlanning no longer calls ffmpeg).
+
+    ``pause_windows`` is the raw ``detect_silence_windows`` output
+    (``{start,end,duration,center}``); PortraitPlanning consumes it as the audio-pause
+    input to its unchanged coverage/escalation planner, so portrait main-track frame
+    boundaries stay identical to before the split. ``safe_cut_boundaries`` /
+    ``portrait_slots`` / ``broll_slots`` are the frame-quantized base boundary set (no
+    capacity split): the authoritative main-track plan is still emitted by
+    PortraitPlanning, while these windows describe where cuts may safely land for the
+    future comprehensive editing agent (see #136).
+    """
+
+    fps: int
+    total_frames: int
+    source: str
+    pause_windows: list[dict[str, float]] = Field(default_factory=list)
+    safe_cut_boundaries: list[dict[str, Any]] = Field(default_factory=list)
+    portrait_slots: list[dict[str, Any]] = Field(default_factory=list)
+    broll_slots: list[dict[str, Any]] = Field(default_factory=list)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
 class MaterialPackArtifact(ContractModel):
     case_id: str
     portrait_candidates: list[MaterialCandidate] = Field(default_factory=list)
