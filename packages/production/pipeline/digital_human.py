@@ -52,6 +52,10 @@ from packages.production.pipeline.node_sequence import (
     BROLL_ONLY_SEQUENCE,
     NODE_SEQUENCE,
     SEEDANCE_T2V_SEQUENCE,
+    _linear_edges,
+    topological_node_order,
+    validate_graph_structure,
+    workflow_graph,
 )
 from packages.media.assets import local_object_path, store_file
 from packages.media.rendering import generate_seed_audio, generate_seed_video
@@ -180,6 +184,20 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
 
 
 def _build_template(template_id: str, version: str, sequence: list[str]) -> WorkflowTemplate:
+    # Dependency edges come from the template's DAG graph (node_sequence.WORKFLOW_GRAPHS);
+    # the shipping templates are linear chains, so this is the same edge list as before.
+    # A template with no registered graph falls back to a linear chain of its sequence.
+    graph = workflow_graph(template_id)
+    node_ids = list(graph["nodes"]) if graph else list(sequence)
+    edge_pairs = list(graph["edges"]) if graph else _linear_edges(sequence)
+
+    # Store nodes in TOPOLOGICAL (dependency) order so every consumer that iterates
+    # template.nodes — the local runtime, the Temporal payload, and the reuse planner —
+    # agrees on execution order by construction, not just for the linear templates. For a
+    # linear template this is exactly the sequence, so nothing changes. topological_node_order
+    # raises on a cycle, so a malformed graph fails fast here at construction.
+    ordered_ids = topological_node_order(node_ids, edge_pairs)
+
     # ExportFinishedVideo makes a PAID image.generate call on the gated AI-cover
     # path, so it is declared here too: this gives it a non-None idempotency_key so
     # the reuse planner accounts for the side effect and can safely replay it,
@@ -200,17 +218,39 @@ def _build_template(template_id: str, version: str, sequence: list[str]) -> Work
             ),
             reuse_policy="never" if node_id in _TIMELINE_REUSE_BREAK_NODES else "strict",
         )
-        for node_id in sequence
+        for node_id in ordered_ids
     ]
-    return WorkflowTemplate(
+    template = WorkflowTemplate(
         workflow_template_id=template_id,
         version=version,
         nodes=node_specs,
-        edges=[
-            WorkflowEdge(from_node_id=sequence[index], to_node_id=sequence[index + 1])
-            for index in range(len(sequence) - 1)
-        ],
+        edges=[WorkflowEdge(from_node_id=a, to_node_id=b) for a, b in edge_pairs],
     )
+    _validate_workflow_template(template)
+    return template
+
+
+def _validate_workflow_template(template: WorkflowTemplate) -> None:
+    """Fail fast on a malformed template graph (#137 acceptance).
+
+    Detects a dependency cycle, an edge to/from an unknown node, a duplicate node,
+    a node with no registered handler, and a node with no declared output kinds — so a
+    broken graph is rejected at construction, never mid-run.
+    """
+    node_ids = [spec.node_id for spec in template.nodes]
+    edges = [(edge.from_node_id, edge.to_node_id) for edge in template.edges]
+    validate_graph_structure(node_ids, edges)
+    for node_id in node_ids:
+        if node_id not in NODE_HANDLERS:
+            raise ValueError(
+                f"workflow template {template.workflow_template_id!r} node {node_id!r} "
+                "has no registered handler"
+            )
+        if node_id not in _NODE_OUTPUT_KINDS:
+            raise ValueError(
+                f"workflow template {template.workflow_template_id!r} node {node_id!r} "
+                "declares no output artifact kinds"
+            )
 
 
 def digital_human_template() -> WorkflowTemplate:
@@ -491,7 +531,16 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         return template_for(run.workflow_template_id)
 
     def _sequence_for_run(self, run: WorkflowRun) -> list[str]:
-        return [spec.node_id for spec in self._template_for_run(run).nodes]
+        # A node runs only after its upstreams: a deterministic topological order derived
+        # from the template's dependency edges. _build_template already stores template.nodes
+        # in this order (so the Temporal payload and the reuse planner, which iterate
+        # template.nodes, agree with the local runtime); recomputing it here from the edges
+        # keeps the local scheduler correct for any template regardless of node-list order.
+        # For the linear shipping templates this is the exact same sequence as before (#137).
+        template = self._template_for_run(run)
+        node_ids = [spec.node_id for spec in template.nodes]
+        edges = [(edge.from_node_id, edge.to_node_id) for edge in template.edges]
+        return topological_node_order(node_ids, edges)
 
     def _next_unfinished_node_id(
         self, run: WorkflowRun, node_runs: list[NodeRun]
