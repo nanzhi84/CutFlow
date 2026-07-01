@@ -72,6 +72,21 @@ def run(ctx: NodeContext) -> NodeOutput:
     units = [NarrationUnit.model_validate(unit) for unit in narration.get("units", [])]
     segments = _narration_segments(units)
 
+    # PortraitPlanning (runs before this node) already laid the portrait main track on
+    # the fixed 30fps grid. Read its fps + the set of portrait cut frames so b-roll is
+    # frame-aligned to those cuts AT PLAN TIME (#105) — the timeline node no longer
+    # snaps. Cuts are the portrait segment boundary frames (contiguous track).
+    portrait = state.require(ArtifactKind.plan_portrait).payload or {}
+    fps = int(portrait.get("fps") or 30)
+    portrait_cut_frames = sorted(
+        {
+            int(frame)
+            for seg in portrait.get("segments", [])
+            for frame in (seg.get("timeline_start_frame"), seg.get("timeline_end_frame"))
+            if frame is not None
+        }
+    )
+
     # Re-rank the candidate assets against the *real* narration beats so matched
     # keywords and the anchor beat come from true narration timing. The ledger is NOT
     # read here (MaterialPackPlanning is the single ledger-reading node); recency is
@@ -98,6 +113,8 @@ def run(ctx: NodeContext) -> NodeOutput:
         units=units,
         max_inserts=state.request.broll.max_inserts,
         freshness_seed=ctx.run.id,
+        fps=fps,
+        portrait_cut_frames=portrait_cut_frames,
     )
 
     if not insertions:
@@ -131,6 +148,14 @@ def run(ctx: NodeContext) -> NodeOutput:
             timeline_end=ins.timeline_end,
             source_start=ins.source_start,
             source_end=ins.source_end,
+            # Authoritative frame-aligned boundaries (#105): downstream renders trust
+            # these verbatim; the timeline node fail-fasts if any are missing.
+            timeline_start_frame=ins.timeline_start_frame,
+            timeline_end_frame=ins.timeline_end_frame,
+            source_start_frame=ins.source_start_frame,
+            source_end_frame=ins.source_end_frame,
+            pad_start=ins.pad_start,
+            pad_end=ins.pad_end,
             reason=ins.reason,
             confidence=ins.confidence,
             matched_keywords=list(ins.matched_keywords),

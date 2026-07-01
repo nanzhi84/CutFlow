@@ -141,12 +141,45 @@ class MaterialPackArtifact(ContractModel):
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
+class PortraitSegment(ContractModel):
+    """One frame-aligned portrait main-track segment (#105).
+
+    Strongly-typed replacement for the former ``list[dict[str, Any]]`` portrait
+    plan segments. The four ``*_frame`` fields are the authoritative boundaries on
+    the fixed 30fps grid and are REQUIRED — a missing frame is an upstream contract
+    defect that must fail construction, not be silently re-derived from seconds. The
+    ``*_sec`` fields are derived display/debug values retained because the jianying
+    draft builder and the selection-ledger reader still read them. The field set
+    mirrors ``packages.production.pipeline.nodes.portrait_planning._segment_payload``
+    exactly; ``extra="forbid"`` makes any drift fail loudly at construction.
+    """
+
+    segment_id: str
+    asset_id: str | None = None
+    clip_id: str | None = None
+    start_sec: float
+    end_sec: float
+    source_start: float
+    source_end: float
+    role: str = "main"
+    source_mode: str
+    boundary_source: str | None = None
+    boundary_reason: str | None = None
+    unit_ids: list[str] = Field(default_factory=list)
+    slot_phase: str
+    recently_used_material: bool = False
+    timeline_start_frame: int
+    timeline_end_frame: int
+    source_start_frame: int
+    source_end_frame: int
+
+
 class PortraitPlanArtifact(ContractModel):
     fps: int = 30
     total_duration: float = 0
     asset_id: str | None = None
     duration_sec: float = 0
-    segments: list[dict[str, Any]] = Field(default_factory=list)
+    segments: list[PortraitSegment] = Field(default_factory=list)
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -158,6 +191,19 @@ class BrollOverlay(ContractModel):
     timeline_end: float
     source_start: float
     source_end: float
+    # Frame-aligned authoritative B-roll boundaries (#105). Optional on the contract
+    # because (a) the legacy reader ``broll_overlays_from_plan`` has no fps to derive
+    # them and (b) ``broll_only_v1`` shares ``BrollOverlay`` but has no portrait-cut
+    # grid. The "frame fields are required" semantics live at the digital_human_v2
+    # production boundary: BrollPlanning writes them, TimelinePlanning fail-fasts when
+    # they are missing. ``pad_start``/``pad_end`` carry the cut-snap residual that the
+    # renderer clone-pads (tpad) so a snapped overlay never flashes a sliver at a seam.
+    timeline_start_frame: int | None = None
+    timeline_end_frame: int | None = None
+    source_start_frame: int | None = None
+    source_end_frame: int | None = None
+    pad_start: float = 0.0
+    pad_end: float = 0.0
     reason: str
     confidence: float
     matched_keywords: list[str] = Field(default_factory=list)

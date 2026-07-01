@@ -5,7 +5,6 @@ from __future__ import annotations
 from packages.core.contracts import ArtifactKind, ErrorCode
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.production.pipeline._timeline_grid import (
-    align_broll_to_portrait_cuts,
     build_tracks,
     validate_timeline,
 )
@@ -53,6 +52,26 @@ def run(ctx: NodeContext) -> NodeOutput:
             }
         )
     for index, overlay in enumerate(broll_overlays_from_plan(broll)):
+        # B-roll boundaries are authoritative frame fields produced by BrollPlanning
+        # (#105). This node is verify-only: it never re-snaps to portrait cuts or
+        # re-derives frames from seconds. A missing frame is an upstream contract
+        # defect (BrollPlanning is the authority) -> fail fast, naming the gap.
+        missing = [
+            name
+            for name, value in (
+                ("timeline_start_frame", overlay.timeline_start_frame),
+                ("timeline_end_frame", overlay.timeline_end_frame),
+                ("source_start_frame", overlay.source_start_frame),
+                ("source_end_frame", overlay.source_end_frame),
+            )
+            if value is None
+        ]
+        if missing:
+            raise NodeExecutionError(
+                ErrorCode.render_invalid_timeline,
+                f"B-roll overlay {overlay.overlay_id} is missing authoritative frame "
+                f"boundaries: {', '.join(missing)}.",
+            )
         raw_segments.append(
             {
                 "track_id": "broll",
@@ -62,16 +81,15 @@ def run(ctx: NodeContext) -> NodeOutput:
                 "end_sec": overlay.timeline_end,
                 "source_start_sec": overlay.source_start,
                 "source_end_sec": overlay.source_end,
-                "timeline_start_frame": None,
-                "timeline_end_frame": None,
-                "source_start_frame": None,
-                "source_end_frame": None,
-                "pad_start": 0.0,
-                "pad_end": 0.0,
+                "timeline_start_frame": overlay.timeline_start_frame,
+                "timeline_end_frame": overlay.timeline_end_frame,
+                "source_start_frame": overlay.source_start_frame,
+                "source_end_frame": overlay.source_end_frame,
+                "pad_start": overlay.pad_start,
+                "pad_end": overlay.pad_end,
             }
         )
 
-    raw_segments = align_broll_to_portrait_cuts(raw_segments, fps)
     validation = validate_timeline(raw_segments, fps, total_frames)
     if not validation.valid:
         raise NodeExecutionError(ErrorCode.render_invalid_timeline, "Timeline validation failed.")

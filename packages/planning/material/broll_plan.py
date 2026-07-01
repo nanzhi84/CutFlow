@@ -9,14 +9,38 @@ windows and the source trim taken from the matched clip. Pure + deterministic.
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from packages.core.contracts.artifacts import NarrationUnit
 from packages.planning.material.broll_pack import BrollCandidate
 
 _MIN_INSERT_SECONDS = 1.5
 _MAX_INSERT_SECONDS = 4.0
+
+# Portrait-cut frame-grid alignment constants (#105). Moved here from the old
+# downstream production helper ``_timeline_grid.align_broll_to_portrait_cuts`` so the
+# frame-grid constraint is enforced at plan time, not patched after the fact:
+#  - SNAP_MAX_FRAMES: largest portrait sliver (in frames) a b-roll boundary may snap
+#    across to land on the cut;
+#  - MIN_VISIBLE_AROLL_SECONDS: a portrait sliver shorter than this is "too short to
+#    read" -> snap it away; longer -> leave the real portrait visible;
+#  - MAX_PAD_SECONDS: the snap may extend the timeline window by at most this much of
+#    clone-pad (the source window is never pulled past its clean span).
+BROLL_PORTRAIT_CUT_SNAP_MAX_FRAMES = 15
+BROLL_MIN_VISIBLE_AROLL_SECONDS = 2.0
+BROLL_MAX_PAD_SECONDS = 0.15
+
+
+def _seconds_to_frame(seconds: float, fps: int) -> int:
+    """Seconds -> frame index, round-half-up.
+
+    Mirrors ``planning.editing.frame_grid.frame_index`` (the canonical 30fps grid) and
+    the production ``_timeline_grid.to_frame`` so plan-time b-roll frames land on the
+    exact same grid the renderer slices on.
+    """
+    return max(0, int(math.floor(float(seconds) * int(fps) + 0.5)))
 
 
 @dataclass(frozen=True)
@@ -54,6 +78,17 @@ class BrollInsertion:
     scene_name: str
     reason: str
     diversity_key: str = ""
+    # Frame-aligned authoritative boundaries on the 30fps grid (#105). Set by
+    # ``plan_insertions`` when ``fps`` + ``portrait_cut_frames`` are supplied (the
+    # digital_human_v2 path); ``pad_start``/``pad_end`` carry the cut-snap residual the
+    # renderer clone-pads. Left None when no grid context is given (the seconds-only
+    # placement still stands and downstream derives frames from seconds).
+    timeline_start_frame: int | None = None
+    timeline_end_frame: int | None = None
+    source_start_frame: int | None = None
+    source_end_frame: int | None = None
+    pad_start: float = 0.0
+    pad_end: float = 0.0
 
 
 def _coverage_reason(candidate: BrollCandidate, units: Sequence[NarrationUnit]) -> str:
@@ -352,12 +387,121 @@ def _unit_for_time(units: Sequence[NarrationUnit], t: float) -> NarrationUnit | 
     return units[0] if units else None
 
 
+def align_insertions_to_portrait_cuts(
+    insertions: Sequence[BrollInsertion],
+    *,
+    fps: int,
+    portrait_cut_frames: Sequence[int],
+    min_visible_residual_frames: int | None = None,
+    max_gap_frames: int = BROLL_PORTRAIT_CUT_SNAP_MAX_FRAMES,
+) -> list[BrollInsertion]:
+    """Frame-align b-roll inserts to the portrait cut grid at PLAN time (#105).
+
+    Replaces the old downstream ``_timeline_grid.align_broll_to_portrait_cuts`` snap:
+    the frame-grid constraint is now enforced where placement is decided, so the
+    timeline node can stay verify-only. Each insert is quantized onto the fixed grid;
+    when a timeline boundary lands a few frames inside a portrait shot (leaving a
+    sliver of portrait too short to read), the boundary is snapped to the portrait cut
+    and the extension is recorded as ``pad`` — the SOURCE window is never pulled past
+    its clean span, so the renderer clone-pads the held frame instead of over-trimming.
+    A candidate snap is dropped (boundary kept at its quantized seconds position) when
+    it would invert the window, overlap a neighbouring insert, or need more clone-pad
+    than the cap allows. narration semantic placement decided upstream is preserved.
+
+    Always returns inserts with authoritative ``*_frame`` fields populated (snap or
+    not); ``portrait_cut_frames`` is the sorted set of portrait segment boundary frames
+    (contiguous, so consecutive pairs reconstruct each portrait shot window).
+    """
+    ordered = list(insertions)
+    if not ordered:
+        return ordered
+
+    residual_limit = (
+        max(0, int(min_visible_residual_frames))
+        if min_visible_residual_frames is not None
+        else _seconds_to_frame(BROLL_MIN_VISIBLE_AROLL_SECONDS, fps)
+    )
+    max_pad_seconds = max(0.0, BROLL_MAX_PAD_SECONDS)
+    cuts = sorted({int(frame) for frame in portrait_cut_frames})
+    windows = [(start, end) for start, end in zip(cuts, cuts[1:]) if end > start]
+    snapping_enabled = (
+        max_gap_frames > 0 and residual_limit > 0 and max_pad_seconds > 0 and bool(windows)
+    )
+
+    def _should_snap(residual_frames: int) -> bool:
+        if residual_frames <= 0:
+            return False
+        required_pad_seconds = residual_frames / fps
+        return (
+            residual_frames < residual_limit
+            and residual_frames <= max_gap_frames
+            and required_pad_seconds <= max_pad_seconds
+        )
+
+    # Quantize every insert to the grid up front so neighbour-overlap guards compare
+    # against ORIGINAL (pre-snap) positions, exactly like the old helper did.
+    quantized = [
+        (
+            _seconds_to_frame(ins.timeline_start, fps),
+            _seconds_to_frame(ins.timeline_end, fps),
+            _seconds_to_frame(ins.source_start, fps),
+            _seconds_to_frame(ins.source_end, fps),
+        )
+        for ins in ordered
+    ]
+
+    aligned: list[BrollInsertion] = []
+    for index, ins in enumerate(ordered):
+        start_frame, end_frame, source_start_frame, source_end_frame = quantized[index]
+        new_start, new_end = start_frame, end_frame
+        if snapping_enabled and end_frame > start_frame:
+            for portrait_start, portrait_end in windows:
+                if portrait_end <= new_start or portrait_start >= new_end:
+                    continue
+                if portrait_start < new_start < portrait_end and _should_snap(
+                    new_start - portrait_start
+                ):
+                    new_start = portrait_start
+                if portrait_start < new_end < portrait_end and _should_snap(
+                    portrait_end - new_end
+                ):
+                    new_end = portrait_end
+            preceding_end = quantized[index - 1][1] if index > 0 else None
+            following_start = quantized[index + 1][0] if index + 1 < len(quantized) else None
+            if (
+                new_end <= new_start
+                or (preceding_end is not None and new_start < preceding_end)
+                or (following_start is not None and new_end > following_start)
+            ):
+                new_start, new_end = start_frame, end_frame
+
+        pad_start = round((start_frame - new_start) / fps, 6) if new_start < start_frame else 0.0
+        pad_end = round((new_end - end_frame) / fps, 6) if new_end > end_frame else 0.0
+        aligned.append(
+            replace(
+                ins,
+                timeline_start=round(new_start / fps, 3),
+                timeline_end=round(new_end / fps, 3),
+                timeline_start_frame=new_start,
+                timeline_end_frame=new_end,
+                source_start_frame=source_start_frame,
+                source_end_frame=source_end_frame,
+                pad_start=round(ins.pad_start + pad_start, 6),
+                pad_end=round(ins.pad_end + pad_end, 6),
+            )
+        )
+    return aligned
+
+
 def plan_insertions(
     *,
     candidates: Sequence[BrollCandidate],
     units: Sequence[NarrationUnit],
     max_inserts: int,
     freshness_seed: str | None = None,
+    fps: int | None = None,
+    portrait_cut_frames: Sequence[int] | None = None,
+    min_visible_residual_frames: int | None = None,
 ) -> list[BrollInsertion]:
     """Plan up to ``max_inserts`` b-roll inserts across the narration windows.
 
@@ -370,6 +514,12 @@ def plan_insertions(
     Inserts never overlap (at most one per window) and never spill past their
     window. Returns an empty list when there are no candidates, no narration, or
     no room (honest: the caller soft-degrades rather than fabricating placements).
+
+    When ``fps`` and ``portrait_cut_frames`` are supplied (the digital_human_v2 path),
+    each insert is additionally frame-aligned to the portrait cut grid at plan time
+    (#105) via :func:`align_insertions_to_portrait_cuts`, so the returned inserts carry
+    authoritative ``*_frame`` boundaries (+ clone-pad residual) and the timeline node
+    only validates + assembles them.
     """
     unit_list = [u for u in units if u.end > u.start]
     if not unit_list or max_inserts <= 0:
@@ -456,6 +606,13 @@ def plan_insertions(
             used_clips.add((candidate.asset_id, candidate.clip_id))
 
     insertions.sort(key=lambda ins: ins.timeline_start)
+    if fps is not None and portrait_cut_frames is not None:
+        insertions = align_insertions_to_portrait_cuts(
+            insertions,
+            fps=fps,
+            portrait_cut_frames=portrait_cut_frames,
+            min_visible_residual_frames=min_visible_residual_frames,
+        )
     return insertions
 
 

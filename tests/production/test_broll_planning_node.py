@@ -39,6 +39,45 @@ def _artifact(kind: ArtifactKind, payload: dict) -> Artifact:
     )
 
 
+def _portrait_artifact(duration_sec: float = 4.0, *, cuts: tuple[float, ...] = ()) -> Artifact:
+    """A minimal frame-aligned portrait plan so BrollPlanning can read the cut grid.
+
+    BrollPlanning now reads ``plan.portrait`` for fps + portrait cut frames (#105). The
+    portrait main track is contiguous on the 30fps grid; ``cuts`` (in seconds) become
+    the interior shot boundaries, with 0 and ``duration_sec`` as the outer edges.
+    """
+    fps = 30
+    boundaries = [0.0, *cuts, duration_sec]
+    frames = sorted({round(b * fps) for b in boundaries})
+    segments = [
+        {
+            "segment_id": f"portrait_{i + 1}",
+            "asset_id": "asset_portrait_demo",
+            "clip_id": None,
+            "start_sec": start / fps,
+            "end_sec": end / fps,
+            "source_start": 0.0,
+            "source_end": (end - start) / fps,
+            "role": "main",
+            "source_mode": "lipsynced",
+            "boundary_source": "semantic",
+            "boundary_reason": "beat",
+            "unit_ids": [],
+            "slot_phase": "portrait_main",
+            "recently_used_material": False,
+            "timeline_start_frame": start,
+            "timeline_end_frame": end,
+            "source_start_frame": 0,
+            "source_end_frame": end - start,
+        }
+        for i, (start, end) in enumerate(zip(frames, frames[1:]))
+    ]
+    return _artifact(
+        ArtifactKind.plan_portrait,
+        {"fps": fps, "duration_sec": duration_sec, "segments": segments},
+    )
+
+
 def _run() -> WorkflowRun:
     return WorkflowRun(
         id="run_broll",
@@ -93,6 +132,7 @@ def test_broll_planning_outputs_clip_id_on_overlays(
                     ]
                 },
             ),
+            ArtifactKind.plan_portrait: _portrait_artifact(3.0),
         },
     )
     insertion = BrollInsertion(
@@ -187,6 +227,7 @@ def _state_with_clean_unrelated_clip(*, allow_generic_coverage: bool):
                     ]
                 },
             ),
+            ArtifactKind.plan_portrait: _portrait_artifact(4.0),
         },
     )
     return adapter, state
@@ -218,6 +259,100 @@ def test_generic_coverage_off_reverts_to_soft_degrade():
     payload = _broll_payload(output)
     assert payload["overlays"] == []
     assert output.status == NodeStatus.degraded
+
+
+def test_broll_planning_outputs_authoritative_frames_consumed_by_render(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # #105: BrollPlanning is the authority for B-roll frame boundaries. It reads the
+    # portrait cut grid (fps + cut frames) and frame-aligns each insert at plan time,
+    # so every overlay carries authoritative *_frame fields that the canonical render
+    # read boundary (broll_overlays_from_plan) surfaces verbatim.
+    from packages.production._broll_overlays import broll_overlays_from_plan
+
+    repository = Repository()
+    adapter = object.__new__(LocalRuntimeAdapter)
+    adapter.repository = repository
+    state = RunState(
+        request=DigitalHumanVideoRequest(
+            case_id="case_demo",
+            script="hello",
+            voice={"voice_id": "voice_sandbox"},
+            broll={"enabled": True, "max_inserts": 1},
+        ),
+        artifacts={
+            ArtifactKind.plan_material_pack: _artifact(
+                ArtifactKind.plan_material_pack,
+                {"broll_candidates": [{"asset_id": "asset_broll_demo"}]},
+            ),
+            ArtifactKind.narration_units: _artifact(
+                ArtifactKind.narration_units,
+                {
+                    "units": [
+                        {
+                            "unit_id": "unit_1",
+                            "text": "hello",
+                            "start": 0.0,
+                            "end": 5.0,
+                            "confidence": 0.9,
+                        }
+                    ]
+                },
+            ),
+            # Portrait cut 3 frames after the insert's natural end (4.9s -> frame 147,
+            # cut at 150) so the plan-time snap fires and records clone-pad.
+            ArtifactKind.plan_portrait: _portrait_artifact(5.0, cuts=(5.0,)),
+        },
+    )
+    insertion = BrollInsertion(
+        asset_id="asset_broll_demo",
+        clip_id="cover_a",
+        timeline_start=3.0,
+        timeline_end=4.9,
+        source_start=3.0,
+        source_end=4.9,
+        confidence=0.8,
+        matched_keywords=("hello",),
+        scene_name="demo",
+        reason="matched",
+        diversity_key="scene:demo",
+    )
+    monkeypatch.setattr(nodes.broll_planning, "rank_broll_candidates", lambda **_: [])
+    # Return the seconds-only insertion; the node's plan_insertions wrapper performs the
+    # real frame alignment against the portrait cut grid it read from plan.portrait.
+
+    def _fake_plan_insertions(*, fps, portrait_cut_frames, **_):
+        from packages.planning.material import align_insertions_to_portrait_cuts
+
+        return align_insertions_to_portrait_cuts(
+            [insertion], fps=fps, portrait_cut_frames=portrait_cut_frames
+        )
+
+    monkeypatch.setattr(nodes.broll_planning, "plan_insertions", _fake_plan_insertions)
+
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+    output = nodes.broll_planning.run(ctx)
+    payload = next(
+        a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_broll
+    )
+
+    overlay = payload["overlays"][0]
+    # Authoritative frames present on the persisted plan, tail snapped to the cut (150),
+    # source window untouched (147), and the 3-frame extension recorded as clone-pad.
+    assert overlay["timeline_start_frame"] == 90
+    assert overlay["timeline_end_frame"] == 150
+    assert overlay["source_start_frame"] == 90
+    assert overlay["source_end_frame"] == 147
+    assert round(overlay["pad_end"], 3) == 0.1
+
+    # The canonical render read boundary surfaces those frames verbatim (render chain
+    # consumes the authoritative frames, not re-derived seconds).
+    [typed] = broll_overlays_from_plan(payload)
+    assert typed.timeline_start_frame == 90
+    assert typed.timeline_end_frame == 150
+    assert typed.source_start_frame == 90
+    assert typed.source_end_frame == 147
+    assert round(typed.pad_end, 3) == 0.1
 
 
 def test_broll_planning_never_reads_selection_ledger(monkeypatch: pytest.MonkeyPatch):

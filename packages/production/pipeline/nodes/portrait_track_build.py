@@ -33,22 +33,29 @@ def run(ctx: NodeContext) -> NodeOutput:
             temp_dir = Path(directory)
             segment_paths: list[Path] = []
             for index, segment in enumerate(segments):
+                # PortraitPlanning unconditionally emits frame-aligned segments on the
+                # 30fps grid; a missing source frame is an upstream contract defect, not
+                # something to silently re-derive from seconds (#105). Fail fast naming
+                # the gap BEFORE any source resolution / ffmpeg work. (reuse_policy="never"
+                # means resume always re-runs the planner, so there is no frame-less
+                # legacy segment to support here.)
+                missing = [
+                    name
+                    for name in ("source_start_frame", "source_end_frame")
+                    if segment.get(name) is None
+                ]
+                if missing:
+                    raise NodeExecutionError(
+                        ErrorCode.render_invalid_timeline,
+                        f"Portrait segment {index + 1} is missing source frame "
+                        f"boundaries: {', '.join(missing)}.",
+                    )
+                source_start_frame = int(segment["source_start_frame"])
+                source_end_frame = int(segment["source_end_frame"])
                 source_artifact = ctx.source_artifact_for_asset(segment.get("asset_id"))
                 source_path = ctx.artifact_path(source_artifact)
                 source_info = source_artifact.media_info or probe_media(source_path)
                 source_duration = float(source_info.duration_sec or 0)
-                source_start = float(segment.get("source_start", 0) or 0)
-                source_end = float(segment.get("source_end", segment.get("end_sec", 0)) or 0)
-                source_start_frame = (
-                    int(segment["source_start_frame"])
-                    if segment.get("source_start_frame") is not None
-                    else to_frame(source_start, fps)
-                )
-                source_end_frame = (
-                    int(segment["source_end_frame"])
-                    if segment.get("source_end_frame") is not None
-                    else to_frame(source_end, fps)
-                )
                 source_duration_frames = to_frame(source_duration, fps)
                 if (
                     source_start_frame < 0
