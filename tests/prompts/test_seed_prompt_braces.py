@@ -30,10 +30,10 @@ EXPECTED_PROMPT_GROUPS = {
         "prompt_cover_reference_style": "prompt.cover.reference_style",
     },
     "editing": {
+        # MVP (issue #136): a single editing-agent prompt bound to
+        # EditingAgentPlanning; the steady/balanced/fast rhythm variants were
+        # dropped (no rhythm presets exposed).
         "prompt_editing_agent": "prompt.editing.agent",
-        "prompt_editing_agent_steady": "prompt.editing.steady",
-        "prompt_editing_agent_balanced": "prompt.editing.balanced",
-        "prompt_editing_agent_fast": "prompt.editing.fast",
     },
 }
 

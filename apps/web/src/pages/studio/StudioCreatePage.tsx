@@ -141,6 +141,7 @@ export default function StudioCreatePage() {
   ): VideoJobPayload {
     const isBrollOnly = form.contentMode === "broll_only";
     const isSeedance = form.contentMode === "seedance";
+    const isEditingAgent = form.contentMode === "editing_agent";
     return {
       schema_version: "digital_human_video_request.v1",
       case_id: caseId,
@@ -152,7 +153,9 @@ export default function StudioCreatePage() {
         ? "seedance_t2v_v1"
         : isBrollOnly
           ? "broll_only_v1"
-          : "digital_human_v2",
+          : isEditingAgent
+            ? "digital_human_editing_agent_v1"
+            : "digital_human_v2",
       reference_asset_ids: isSeedance ? form.seedanceReferenceAssetIds : [],
       voice: {
         voice_id: selectedVoice,
@@ -195,6 +198,13 @@ export default function StudioCreatePage() {
       strictness: {
         strict_timestamps: false,
         portrait_insufficient_policy: "hard_fail",
+      },
+      edit: {
+        // Only consumed by digital_human_editing_agent_v1's EditingAgentPlanning node;
+        // ignored by other templates. Free-text steering, empty unless the editing-agent
+        // template is selected.
+        instruction: isEditingAgent ? form.editInstruction.trim() : "",
+        max_repair_attempts: 1,
       },
     };
   }

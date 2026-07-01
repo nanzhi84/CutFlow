@@ -50,6 +50,7 @@ from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError, NodeOutput, WorkflowRuntimeAdapter, manifest_hash
 from packages.production.pipeline.node_sequence import (
     BROLL_ONLY_SEQUENCE,
+    EDITING_AGENT_SEQUENCE,
     NODE_SEQUENCE,
     SEEDANCE_T2V_SEQUENCE,
     _linear_edges,
@@ -89,6 +90,7 @@ __all__ = [
     "NODE_SEQUENCE",
     "BROLL_ONLY_SEQUENCE",
     "SEEDANCE_T2V_SEQUENCE",
+    "EDITING_AGENT_SEQUENCE",
     "broll_only_template",
     "digital_human_template",
     "seedance_t2v_template",
@@ -113,6 +115,7 @@ NODE_HANDLERS = {
     "BrollPlanning": nodes.broll_planning.run,
     "BrollCoveragePlanning": nodes.broll_coverage_planning.run,
     "StylePlanning": nodes.style_planning.run,
+    "EditingAgentPlanning": nodes.editing_agent_planning.run,
     "TimelinePlanning": nodes.timeline_planning.run,
     "BrollTimelinePlanning": nodes.broll_timeline_planning.run,
     "PortraitTrackBuild": nodes.portrait_track_build.run,
@@ -134,6 +137,7 @@ _PROVIDER_SIDE_EFFECT_NODES = {
     "LipSync",
     "ExportFinishedVideo",
     "SeedanceGenerateVideo",
+    "EditingAgentPlanning",
 }
 _TIMELINE_REUSE_BREAK_NODES = {
     "NarrationBoundaryPlanning",
@@ -142,6 +146,7 @@ _TIMELINE_REUSE_BREAK_NODES = {
     "BrollCoveragePlanning",
     "TimelinePlanning",
     "BrollTimelinePlanning",
+    "EditingAgentPlanning",
 }
 _MATERIAL_PACK_RETRY_POLICY = RetryPolicy(
     max_attempts=3,
@@ -161,6 +166,12 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
     "BrollPlanning": [ArtifactKind.plan_broll],
     "BrollCoveragePlanning": [ArtifactKind.plan_broll],
     "StylePlanning": [ArtifactKind.plan_style],
+    "EditingAgentPlanning": [
+        ArtifactKind.plan_portrait,
+        ArtifactKind.plan_broll,
+        ArtifactKind.plan_style,
+        ArtifactKind.plan_editing_diagnostics,
+    ],
     "TimelinePlanning": [ArtifactKind.plan_timeline, ArtifactKind.plan_render],
     "BrollTimelinePlanning": [ArtifactKind.plan_timeline, ArtifactKind.plan_render],
     "PortraitTrackBuild": [ArtifactKind.video_portrait_track],
@@ -265,10 +276,15 @@ def seedance_t2v_template() -> WorkflowTemplate:
     return _build_template("seedance_t2v_v1", "v1", SEEDANCE_T2V_SEQUENCE)
 
 
+def editing_agent_template() -> WorkflowTemplate:
+    return _build_template("digital_human_editing_agent_v1", "v1", EDITING_AGENT_SEQUENCE)
+
+
 _TEMPLATE_BUILDERS = {
     "digital_human_v2": digital_human_template,
     "broll_only_v1": broll_only_template,
     "seedance_t2v_v1": seedance_t2v_template,
+    "digital_human_editing_agent_v1": editing_agent_template,
 }
 
 

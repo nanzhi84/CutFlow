@@ -8627,6 +8627,7 @@
           "plan.style",
           "plan.timeline",
           "plan.render",
+          "plan.editing_diagnostics",
           "video.portrait_track",
           "video.lipsync",
           "lipsync.report",
@@ -12697,6 +12698,9 @@
           },
           "strictness": {
             "$ref": "#/components/schemas/StrictnessOptions"
+          },
+          "edit": {
+            "$ref": "#/components/schemas/EditPlanningOptions"
           }
         },
         "additionalProperties": false,
@@ -12720,6 +12724,26 @@
           "reason"
         ],
         "title": "DisableSecretRequest"
+      },
+      "EditPlanningOptions": {
+        "properties": {
+          "instruction": {
+            "type": "string",
+            "title": "Instruction",
+            "default": ""
+          },
+          "max_repair_attempts": {
+            "type": "integer",
+            "maximum": 3.0,
+            "minimum": 0.0,
+            "title": "Max Repair Attempts",
+            "default": 1
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "EditPlanningOptions",
+        "description": "Per-video extra editing steering for the LLM editing-agent template.\n\nConsumed only by ``digital_human_editing_agent_v1``'s ``EditingAgentPlanning``\nnode; ignored by every other template. ``instruction`` is a free-text hint the\nediting agent honours for this one video (e.g. \"尽量用穿搭相近的人像素材，B-roll\n只在讲施工细节时出现\")。``max_repair_attempts`` bounds how many times an invalid\nLLM selection is re-prompted before the node fail-fasts (0 = no repair)."
       },
       "EditorHandoffPackageArtifact": {
         "properties": {
@@ -23560,7 +23584,8 @@
           "lipsync.fallback_used",
           "bgm.loudness_probe_failed",
           "font.resolution_failed",
-          "subtitle.burn_skipped"
+          "subtitle.burn_skipped",
+          "editing_agent.deterministic_fallback"
         ],
         "title": "WarningCode"
       },

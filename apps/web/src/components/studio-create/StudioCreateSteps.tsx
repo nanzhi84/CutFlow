@@ -74,13 +74,15 @@ export function TemplateStep({ form, setField, caseId }: { form: FormState; setF
     { value: "digital_human", label: "数字人口播", detail: "使用数字人模板、口型同步和 B-roll 插入。" },
     { value: "broll_only", label: "仅 B_roll 画外音", detail: "不出现数字人，用画外音 + 素材画面铺满，保留字幕/BGM。" },
     { value: "seedance", label: "Seedance 文生视频", detail: "一次性生成 15s / 3:4 / 720p 短片，可纯文本出片，也可附参考图。" },
+    { value: "editing_agent", label: "AI 综合剪辑", detail: "在数字人基础上，由剪辑 Agent 按你的额外要求统一规划人像 / B-roll / 字体 / BGM。" },
   ];
   const isDigitalHuman = form.contentMode === "digital_human";
   const isSeedance = form.contentMode === "seedance";
+  const isEditingAgent = form.contentMode === "editing_agent";
   return (
     <div className="grid gap-4">
       <SectionTitle icon={Film} title="模板" description="选择内容模式；数字人口播由系统按脚本和案例素材自动选择人像模板。" />
-      <div className="divide-y divide-border/60 border-y border-border/60 md:grid md:grid-cols-3 md:divide-x md:divide-y-0">
+      <div className="divide-y divide-border/60 border-y border-border/60 md:grid md:grid-cols-2 md:divide-x lg:grid-cols-4">
         {contentModeOptions.map((option) => (
           <button
             type="button"
@@ -101,6 +103,19 @@ export function TemplateStep({ form, setField, caseId }: { form: FormState; setF
           selectedIds={form.seedanceReferenceAssetIds}
           onChange={(ids) => setField("seedanceReferenceAssetIds", ids)}
         />
+      ) : isEditingAgent ? (
+        <label className="grid gap-1.5">
+          <span className="text-sm font-medium text-text-primary">剪辑要求（可选）</span>
+          <textarea
+            className="input min-h-[80px]"
+            placeholder="例如：尽量使用穿搭相近的人像素材，B-roll 多展示施工细节。"
+            value={form.editInstruction}
+            onChange={(event) => setField("editInstruction", event.target.value)}
+          />
+          <span className="text-xs text-text-secondary">
+            剪辑 Agent 会在生成这条视频时参考它，统一规划人像 / B-roll / 字体 / BGM；留空则按通用最佳实践。
+          </span>
+        </label>
       ) : isDigitalHuman ? (
         <div className="stateBox muted">
           <span>数字人口播将由系统按脚本和案例素材自动选择人像模板。</span>

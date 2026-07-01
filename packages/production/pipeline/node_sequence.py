@@ -64,6 +64,28 @@ SEEDANCE_T2V_SEQUENCE = [
     "FinalizeRunReport",
 ]
 
+# Same digital-human chain as NODE_SEQUENCE, but the three deterministic planning
+# nodes (PortraitPlanning / BrollPlanning / StylePlanning) are replaced by the
+# single LLM EditingAgentPlanning node (issue #136). Upstream order matches v2 so
+# EditingAgentPlanning sees the same MaterialPack + NarrationBoundary inputs.
+EDITING_AGENT_SEQUENCE = [
+    "ValidateRequest",
+    "LoadCaseContext",
+    "ResolveCreativeIntent",
+    "TTS",
+    "MaterialPackPlanning",
+    "NarrationAlignment",
+    "NarrationBoundaryPlanning",
+    "EditingAgentPlanning",
+    "TimelinePlanning",
+    "PortraitTrackBuild",
+    "LipSync",
+    "RenderFinalTimeline",
+    "SubtitleAndBgmMix",
+    "ExportFinishedVideo",
+    "FinalizeRunReport",
+]
+
 # Expected total node count per workflow template id. Used to render run progress
 # as completed / total across the *whole* pipeline (node runs are created lazily,
 # so the count of existing node runs is not the denominator).
@@ -71,6 +93,7 @@ WORKFLOW_TEMPLATE_NODE_COUNTS = {
     "digital_human_v2": len(NODE_SEQUENCE),
     "broll_only_v1": len(BROLL_ONLY_SEQUENCE),
     "seedance_t2v_v1": len(SEEDANCE_T2V_SEQUENCE),
+    "digital_human_editing_agent_v1": len(EDITING_AGENT_SEQUENCE),
 }
 
 
@@ -92,6 +115,10 @@ WORKFLOW_GRAPHS: dict[str, dict[str, list]] = {
     "seedance_t2v_v1": {
         "nodes": list(SEEDANCE_T2V_SEQUENCE),
         "edges": _linear_edges(SEEDANCE_T2V_SEQUENCE),
+    },
+    "digital_human_editing_agent_v1": {
+        "nodes": list(EDITING_AGENT_SEQUENCE),
+        "edges": _linear_edges(EDITING_AGENT_SEQUENCE),
     },
 }
 

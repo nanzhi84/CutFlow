@@ -2711,7 +2711,7 @@ export interface components {
          * ArtifactKind
          * @enum {string}
          */
-        ArtifactKind: "uploaded.file" | "spec.validated_production" | "case.context" | "case.performance_analysis" | "script.strategy" | "creative.intent" | "audio.tts" | "audio.alignment.raw" | "audio.alignment" | "narration.units" | "plan.material_pack" | "plan.narration_boundary" | "plan.portrait" | "plan.broll" | "plan.style" | "plan.timeline" | "plan.render" | "video.portrait_track" | "video.lipsync" | "lipsync.report" | "video.rendered" | "video.final" | "video.finished" | "subtitle.ass" | "cover.image" | "publish.package" | "run.report.public" | "run.report.debug" | "editor.handoff_package" | "editor.jianying_draft_package" | "provider.raw_request" | "provider.raw_response" | "import.mapping" | "material.annotation";
+        ArtifactKind: "uploaded.file" | "spec.validated_production" | "case.context" | "case.performance_analysis" | "script.strategy" | "creative.intent" | "audio.tts" | "audio.alignment.raw" | "audio.alignment" | "narration.units" | "plan.material_pack" | "plan.narration_boundary" | "plan.portrait" | "plan.broll" | "plan.style" | "plan.timeline" | "plan.render" | "plan.editing_diagnostics" | "video.portrait_track" | "video.lipsync" | "lipsync.report" | "video.rendered" | "video.final" | "video.finished" | "subtitle.ass" | "cover.image" | "publish.package" | "run.report.public" | "run.report.debug" | "editor.handoff_package" | "editor.jianying_draft_package" | "provider.raw_request" | "provider.raw_response" | "import.mapping" | "material.annotation";
         /** ArtifactRef */
         ArtifactRef: {
             /** Artifact Id */
@@ -4416,11 +4416,34 @@ export interface components {
             cover?: components["schemas"]["CoverOptions"];
             output?: components["schemas"]["OutputOptions"];
             strictness?: components["schemas"]["StrictnessOptions"];
+            edit?: components["schemas"]["EditPlanningOptions"];
         };
         /** DisableSecretRequest */
         DisableSecretRequest: {
             /** Reason */
             reason: string;
+        };
+        /**
+         * EditPlanningOptions
+         * @description Per-video extra editing steering for the LLM editing-agent template.
+         *
+         *     Consumed only by ``digital_human_editing_agent_v1``'s ``EditingAgentPlanning``
+         *     node; ignored by every other template. ``instruction`` is a free-text hint the
+         *     editing agent honours for this one video (e.g. "尽量用穿搭相近的人像素材，B-roll
+         *     只在讲施工细节时出现")。``max_repair_attempts`` bounds how many times an invalid
+         *     LLM selection is re-prompted before the node fail-fasts (0 = no repair).
+         */
+        EditPlanningOptions: {
+            /**
+             * Instruction
+             * @default
+             */
+            instruction: string;
+            /**
+             * Max Repair Attempts
+             * @default 1
+             */
+            max_repair_attempts: number;
         };
         /** EditorHandoffPackageArtifact */
         EditorHandoffPackageArtifact: {
@@ -8456,7 +8479,7 @@ export interface components {
          * WarningCode
          * @enum {string}
          */
-        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced" | "budget.exceeded" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped";
+        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced" | "budget.exceeded" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "editing_agent.deterministic_fallback";
         /** WorkflowRun */
         WorkflowRun: {
             /** Id */

@@ -103,6 +103,20 @@ class StrictnessOptions(ContractModel):
     portrait_insufficient_policy: Literal["hard_fail"] = "hard_fail"
 
 
+class EditPlanningOptions(ContractModel):
+    """Per-video extra editing steering for the LLM editing-agent template.
+
+    Consumed only by ``digital_human_editing_agent_v1``'s ``EditingAgentPlanning``
+    node; ignored by every other template. ``instruction`` is a free-text hint the
+    editing agent honours for this one video (e.g. "尽量用穿搭相近的人像素材，B-roll
+    只在讲施工细节时出现")。``max_repair_attempts`` bounds how many times an invalid
+    LLM selection is re-prompted before the node fail-fasts (0 = no repair).
+    """
+
+    instruction: str = ""
+    max_repair_attempts: int = Field(1, ge=0, le=3)
+
+
 class DigitalHumanVideoRequest(ContractModel):
     schema_version: Literal["digital_human_video_request.v1"] = "digital_human_video_request.v1"
     case_id: str
@@ -124,6 +138,7 @@ class DigitalHumanVideoRequest(ContractModel):
     cover: CoverOptions = Field(default_factory=CoverOptions)
     output: OutputOptions = Field(default_factory=OutputOptions)
     strictness: StrictnessOptions = Field(default_factory=StrictnessOptions)
+    edit: EditPlanningOptions = Field(default_factory=EditPlanningOptions)
 
 
 class BatchItemOverrides(ContractModel):

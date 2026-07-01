@@ -1,0 +1,341 @@
+"""EditingAgentPlanning node integration (issue #136).
+
+Drives the node through a real ``NodeContext`` on the sandbox path (no real
+llm.chat provider is armed in tests, so ``first_available_provider_profile``
+returns None and the node takes the deterministic fallback) and asserts it emits
+the four downstream artifacts with complete frame fields — proving the new
+``digital_human_editing_agent_v1`` chain feeds the unchanged render pipeline.
+Also asserts the honest fail-fast when the sandbox gate is off.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from packages.ai.gateway import ProviderGateway
+from packages.ai.prompts import PromptRegistry
+from packages.core.contracts import (
+    Artifact,
+    ArtifactKind,
+    DigitalHumanVideoRequest,
+    ErrorCode,
+    NodeRun,
+    NodeStatus,
+    RunStatus,
+    WarningCode,
+    WorkflowRun,
+)
+from packages.core.storage.object_store import LocalObjectStore
+from packages.core.storage.repository import Repository
+from packages.core.workflow import NodeExecutionError
+from packages.production.pipeline import nodes
+from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline._run_state import RunState
+from packages.production.pipeline.digital_human import LocalRuntimeAdapter
+
+SCRIPT = "今天带你看一下这套案例。第一步先看施工前的样子。"
+
+
+def _adapter(tmp_path) -> LocalRuntimeAdapter:
+    repository = Repository()
+    object_store = LocalObjectStore(root=tmp_path)
+    return LocalRuntimeAdapter(
+        repository,
+        provider_gateway=ProviderGateway(repository, object_store=object_store),
+        prompt_registry=PromptRegistry(repository),
+    )
+
+
+def _material() -> dict:
+    return {
+        "portrait_candidates": [
+            {
+                "asset_id": "portrait_a",
+                "score": 90.0,
+                "reason": "白色上衣",
+                "metadata": {"clip_id": "clip_a", "source_start": 0.0, "source_end": 15.0},
+            },
+            {
+                "asset_id": "portrait_b",
+                "score": 70.0,
+                "reason": "黑色上衣",
+                "metadata": {"clip_id": "clip_b", "source_start": 0.0, "source_end": 15.0},
+            },
+        ],
+        "broll_candidates": [
+            {
+                "asset_id": "broll_x",
+                "score": 80.0,
+                "reason": "施工前",
+                "metadata": {
+                    "clip_id": "clip_x",
+                    "source_start": 0.0,
+                    "source_end": 6.0,
+                    "scene_name": "工地/施工前",
+                    "matched_keywords": ["施工前"],
+                },
+            },
+        ],
+        "font_candidates": [{"asset_id": "font_yst", "score": 50.0, "reason": "清晰字体"}],
+        "bgm_candidates": [
+            {
+                "asset_id": "bgm_001",
+                "score": 75.0,
+                "reason": "稳定",
+                "metadata": {
+                    "clip_id": "bgm_clip",
+                    "source_start": 0.0,
+                    "source_end": 60.0,
+                    "duration": 60.0,
+                    "section_type": "stable_bed",
+                    "mood": "励志",
+                    "energy_profile": "medium",
+                    "loopable": True,
+                },
+            },
+        ],
+    }
+
+
+def _boundary() -> dict:
+    return {
+        "fps": 30,
+        "total_frames": 360,
+        "safe_cut_boundaries": [
+            {"cut_id": "cut_000", "time": 0.0, "frame": 0, "source": "semantic_only"},
+            {"cut_id": "cut_001", "time": 6.0, "frame": 180, "source": "semantic_audio_pause"},
+            {"cut_id": "cut_002", "time": 12.0, "frame": 360, "source": "semantic_only"},
+        ],
+        "portrait_slots": [
+            {
+                "slot_id": "pslot_000",
+                "start_frame": 0,
+                "end_frame": 180,
+                "unit_ids": ["unit_1"],
+                "boundary_source": "semantic_audio_pause",
+            },
+            {
+                "slot_id": "pslot_001",
+                "start_frame": 180,
+                "end_frame": 360,
+                "unit_ids": ["unit_2"],
+                "boundary_source": "semantic_only",
+            },
+        ],
+        "broll_slots": [
+            {
+                "slot_id": "bslot_000",
+                "start_frame": 60,
+                "end_frame": 120,
+                "unit_ids": ["unit_1"],
+                "text": "施工前",
+            },
+        ],
+        "pause_windows": [],
+    }
+
+
+def _state() -> RunState:
+    request = DigitalHumanVideoRequest(
+        case_id="case_demo",
+        script=SCRIPT,
+        voice={"voice_id": "voice_sandbox"},
+        edit={"instruction": "尽量用穿搭相近的人像"},
+        strictness={"strict_timestamps": False},
+    )
+    narration = {
+        "source": "estimated",
+        "strict": False,
+        "units": [
+            {
+                "unit_id": "unit_1",
+                "text": "今天带你看一下这套案例。",
+                "start": 0.0,
+                "end": 6.0,
+                "confidence": 0.8,
+            },
+            {
+                "unit_id": "unit_2",
+                "text": "第一步先看施工前的样子。",
+                "start": 6.0,
+                "end": 12.0,
+                "confidence": 0.8,
+            },
+        ],
+    }
+
+    def _art(art_id: str, kind: ArtifactKind, payload: dict, schema: str) -> Artifact:
+        return Artifact(
+            id=art_id,
+            case_id="case_demo",
+            run_id="run_1",
+            node_run_id="nr_up",
+            kind=kind,
+            payload=payload,
+            payload_schema=schema,
+        )
+
+    return RunState(
+        request=request,
+        artifacts={
+            ArtifactKind.plan_material_pack: _art(
+                "art_material",
+                ArtifactKind.plan_material_pack,
+                _material(),
+                "MaterialPackArtifact.v1",
+            ),
+            ArtifactKind.narration_units: _art(
+                "art_narration",
+                ArtifactKind.narration_units,
+                narration,
+                "NarrationUnitsArtifact.v1",
+            ),
+            ArtifactKind.plan_narration_boundary: _art(
+                "art_boundary",
+                ArtifactKind.plan_narration_boundary,
+                _boundary(),
+                "NarrationBoundaryPlan.v1",
+            ),
+        },
+    )
+
+
+def _run() -> WorkflowRun:
+    return WorkflowRun(
+        id="run_1",
+        job_id="job_1",
+        case_id="case_demo",
+        workflow_template_id="digital_human_editing_agent_v1",
+        workflow_version="v1",
+        status=RunStatus.running,
+    )
+
+
+def _node_run() -> NodeRun:
+    return NodeRun(
+        id="nr_editing",
+        run_id="run_1",
+        node_id="EditingAgentPlanning",
+        node_version="v1",
+        status=NodeStatus.running,
+        input_manifest_hash="sha256:test",
+    )
+
+
+def _run_node(adapter: LocalRuntimeAdapter, state: RunState):
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+    return nodes.editing_agent_planning.run(ctx)
+
+
+def _payload(output, kind: ArtifactKind) -> dict:
+    return next(a.payload for a in output.artifacts if a.kind == kind)
+
+
+def test_fallback_path_emits_four_frame_exact_artifacts(tmp_path):
+    output = _run_node(_adapter(tmp_path), _state())
+
+    kinds = {a.kind for a in output.artifacts}
+    assert kinds == {
+        ArtifactKind.plan_portrait,
+        ArtifactKind.plan_broll,
+        ArtifactKind.plan_style,
+        ArtifactKind.plan_editing_diagnostics,
+    }
+    # deterministic fallback is an honest graded degradation, never silent
+    assert output.status == NodeStatus.degraded
+    assert WarningCode.editing_agent_deterministic_fallback in output.warnings
+    assert output.provider_invocation_ids == []
+
+    portrait = _payload(output, ArtifactKind.plan_portrait)
+    assert len(portrait["segments"]) == 2
+    for seg in portrait["segments"]:
+        for key in (
+            "timeline_start_frame",
+            "timeline_end_frame",
+            "source_start_frame",
+            "source_end_frame",
+        ):
+            assert isinstance(seg[key], int)
+    assert portrait["segments"][0]["timeline_start_frame"] == 0
+    assert portrait["segments"][-1]["timeline_end_frame"] == 360
+
+    broll = _payload(output, ArtifactKind.plan_broll)
+    assert broll["enabled"] is True
+    for ov in broll["overlays"]:
+        for key in (
+            "timeline_start_frame",
+            "timeline_end_frame",
+            "source_start_frame",
+            "source_end_frame",
+        ):
+            assert isinstance(ov[key], int)
+
+    style = _payload(output, ArtifactKind.plan_style)
+    assert style["font_asset_id"] == "font_yst"
+    assert style["bgm"]["asset_id"] == "bgm_001"
+
+    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
+    assert diagnostics["mode"] == "deterministic_fallback_no_provider"
+    assert diagnostics["instruction"] == "尽量用穿搭相近的人像"
+    assert {c["slot_id"] for c in diagnostics["portrait_choices"]} == {"pslot_000", "pslot_001"}
+
+
+def test_no_provider_without_sandbox_fallback_fails_fast(monkeypatch, tmp_path):
+    monkeypatch.setenv("CUTAGENT_ALLOW_SANDBOX_FALLBACK", "0")
+    with pytest.raises(NodeExecutionError) as exc:
+        _run_node(_adapter(tmp_path), _state())
+    assert exc.value.error.code == ErrorCode.provider_unsupported_option
+
+
+def test_llm_path_unwraps_intent_wrapped_output(monkeypatch, tmp_path):
+    """Real provider path: DashScope-style output nests the selection under
+    ``output['intent']``; the node must unwrap it, honour the LLM's ID choices, and
+    NOT burn repair attempts. Regression for the intent-unwrap blocker that the
+    sandbox-only tests could not catch."""
+    adapter = _adapter(tmp_path)
+    fake_profile = SimpleNamespace(id="dashscope.llm.prod")
+    monkeypatch.setattr(
+        adapter.provider_profiles,
+        "first_available",
+        lambda capability, *, include_sandbox=True: fake_profile,
+    )
+    selection = {
+        "portrait_plan": [
+            {"slot_id": "pslot_000", "window_id": "pc_001"},
+            {"slot_id": "pslot_001", "window_id": "pc_001"},
+        ],
+        "broll_plan": [
+            {
+                "slot_id": "bslot_000",
+                "candidate_id": "bc_000",
+                "reason": "施工前",
+                "confidence": 0.9,
+            }
+        ],
+        "font_plan": {"font_id": "font_yst"},
+        "bgm_plan": {"bgm_id": "bgm_001"},
+        "analysis": "统一穿搭",
+    }
+    calls = []
+
+    def fake_invoke(call):
+        calls.append(call)
+        return (
+            SimpleNamespace(id="inv_1", error=None),
+            SimpleNamespace(output={"content": "...", "intent": selection}),
+        )
+
+    monkeypatch.setattr(adapter.provider_gateway, "invoke", fake_invoke)
+
+    output = _run_node(adapter, _state())
+
+    assert output.status == NodeStatus.succeeded  # real LLM path, no fallback degradation
+    assert output.provider_invocation_ids == ["inv_1"]  # exactly one call — no repair burn
+    assert len(calls) == 1
+    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
+    assert diagnostics["mode"] == "llm"
+    # LLM chose pc_001 (portrait_b) for BOTH slots — honoured, asset-uniqueness relaxed.
+    portrait = _payload(output, ArtifactKind.plan_portrait)
+    assert [seg["asset_id"] for seg in portrait["segments"]] == ["portrait_b", "portrait_b"]

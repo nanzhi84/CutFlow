@@ -84,6 +84,7 @@ class WarningCode(str, Enum):
     bgm_loudness_probe_failed = "bgm.loudness_probe_failed"
     font_resolution_failed = "font.resolution_failed"
     subtitle_burn_skipped = "subtitle.burn_skipped"
+    editing_agent_deterministic_fallback = "editing_agent.deterministic_fallback"
 
 
 class DegradationCode(str, Enum):
@@ -161,6 +162,7 @@ class ArtifactKind(str, Enum):
     plan_style = "plan.style"
     plan_timeline = "plan.timeline"
     plan_render = "plan.render"
+    plan_editing_diagnostics = "plan.editing_diagnostics"
     video_portrait_track = "video.portrait_track"
     video_lipsync = "video.lipsync"
     lipsync_report = "lipsync.report"

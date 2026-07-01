@@ -5,7 +5,7 @@ export type UserGenerationDefaults = components["schemas"]["UserGenerationDefaul
 export type StudioStep = 0 | 1 | 2 | 3 | 4;
 
 export type LipSyncPreset = "balanced" | "large_motion" | "strict_face" | "audio_priority";
-type ContentMode = "digital_human" | "broll_only" | "seedance";
+type ContentMode = "digital_human" | "broll_only" | "seedance" | "editing_agent";
 
 export type FormState = {
   title: string;
@@ -33,6 +33,11 @@ export type FormState = {
   lipsyncEnabled: boolean;
   lipsyncPreset: LipSyncPreset;
   lipsyncTimeoutMinutes: number;
+  // Per-video extra editing instruction for the LLM editing-agent template
+  // (contentMode === "editing_agent" -> digital_human_editing_agent_v1). Free text,
+  // optional; submitted as DigitalHumanVideoRequest.edit.instruction. It is per-video
+  // content, not a saved preference, so it stays out of UserGenerationDefaults.
+  editInstruction: string;
 };
 
 export const STORAGE_KEY = "m6ar_studio_create_preferences_v1";
@@ -58,6 +63,7 @@ const defaultForm: FormState = {
   lipsyncEnabled: true,
   lipsyncPreset: "balanced",
   lipsyncTimeoutMinutes: 30,
+  editInstruction: "",
 };
 
 export const steps = ["脚本", "模板", "成片配置", "后处理", "提交"] as const;
@@ -88,7 +94,9 @@ export function loadStoredForm(): FormState {
     if (!saved) return defaultForm;
     const parsed = JSON.parse(saved) as Partial<FormState>;
     const contentMode =
-      parsed.contentMode === "broll_only" || parsed.contentMode === "seedance"
+      parsed.contentMode === "broll_only" ||
+      parsed.contentMode === "seedance" ||
+      parsed.contentMode === "editing_agent"
         ? parsed.contentMode
         : defaultForm.contentMode;
     const seedanceReferenceAssetIds = Array.isArray(parsed.seedanceReferenceAssetIds)
@@ -138,6 +146,7 @@ export function validateAll(form: FormState, selectedVoice: string) {
 export function contentModeLabel(value: FormState["contentMode"]) {
   if (value === "broll_only") return "仅 B_roll 画外音";
   if (value === "seedance") return "Seedance 文生视频";
+  if (value === "editing_agent") return "AI 综合剪辑";
   return "数字人口播";
 }
 
