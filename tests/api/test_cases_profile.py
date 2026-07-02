@@ -46,7 +46,7 @@ def test_material_count_includes_unified_video_assets():
     repo = SimpleNamespace(
         media_assets={
             "asset_video": SimpleNamespace(case_id="case_video_count", kind="video"),
-            "asset_portrait": SimpleNamespace(case_id="case_video_count", kind="portrait"),
+            "asset_video_b": SimpleNamespace(case_id="case_video_count", kind="video"),
             "asset_voice": SimpleNamespace(case_id="case_video_count", kind="voice"),
             "asset_other_case": SimpleNamespace(case_id="case_other", kind="video"),
         },

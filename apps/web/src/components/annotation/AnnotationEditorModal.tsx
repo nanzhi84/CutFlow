@@ -158,8 +158,12 @@ function formatWindow(start: number, end: number): string {
   return `${start.toFixed(1)}s – ${end.toFixed(1)}s`;
 }
 
+// Voice/voice-reference assets get the 口播-style annotation editor. Visual assets
+// are one unified ``video`` bucket now (#133) whose A-roll/B-roll role is a per-clip
+// decision, so they already fall through to the B-roll-style editor (as ``video``
+// always has); the legacy ``portrait`` asset kind no longer exists.
 function isPortraitKind(kind?: MediaAssetRecord["kind"]): boolean {
-  return kind === "portrait" || kind === "voice_reference" || kind === "voice";
+  return kind === "voice_reference" || kind === "voice";
 }
 
 export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEditorModalProps) {

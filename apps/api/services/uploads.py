@@ -31,30 +31,29 @@ from packages.media.video.ffmpeg import (
 # copies the verified object to its final, kind-routed key and drops staging.
 _STAGING_PURPOSE = "incoming/uploads"
 
-# Issue #99: visual asset kinds converge to the unified ``video`` bucket. New
-# ``portrait`` / ``broll`` uploads are still ACCEPTED — the ``UploadKind`` enum
-# members are retained this round (the hard enum removal is a follow-up gated on
-# the production data migration ``0026`` landing zero legacy rows) — but the
-# created media asset is normalized to ``kind="video"`` so AnnotationV4 does the
-# per-clip A-roll/B-roll classification. The original kind is preserved as a
-# ``legacy_kind:<x>`` tag for traceability. The object itself still routes to the
-# shared materials bucket either way (portrait/broll/video share that purpose).
+# Issue #99/#133: visual asset kinds converge to the unified ``video`` bucket and
+# the legacy ``portrait`` / ``broll`` ``UploadKind`` members have been removed (the
+# production data migration ``0026``/``0033`` landed zero legacy rows). The created
+# media asset kind is derived through the shared ``normalize_visual_asset_kind`` so
+# every ingestion path converges identically; the object routes to the shared
+# materials bucket regardless.
 # NOTE: this is the visual *asset kind*; the selection *medium* (A-roll/B-roll
 # track role in the selection ledger / usage ranking) is a separate concept and
 # is intentionally left untouched.
-_LEGACY_VISUAL_UPLOAD_KINDS = frozenset({c.UploadKind.portrait, c.UploadKind.broll})
 
 
 def _visual_asset_kind_and_tags(upload_kind: c.UploadKind) -> tuple[str, list[str]]:
     """Map an upload kind to the persisted media-asset kind + base tags.
 
-    Legacy visual kinds (portrait/broll) normalize to ``video`` with a
-    ``legacy_kind:<original>`` tag; every other kind is persisted unchanged.
+    Delegates to the shared ``normalize_visual_asset_kind`` so every ingestion path
+    converges legacy visual kinds identically; a converged kind carries a
+    ``legacy_kind:<original>`` provenance tag.
     """
-    if upload_kind in _LEGACY_VISUAL_UPLOAD_KINDS:
-        video_kind = c.UploadKind.video.value
-        return video_kind, [video_kind, "upload", f"legacy_kind:{upload_kind.value}"]
-    return upload_kind.value, [upload_kind.value, "upload"]
+    persisted_kind, legacy_tag = c.normalize_visual_asset_kind(upload_kind.value)
+    tags = [persisted_kind, "upload"]
+    if legacy_tag is not None:
+        tags.append(legacy_tag)
+    return persisted_kind, tags
 
 
 def prepare_upload(
@@ -189,14 +188,14 @@ def complete_upload(payload: c.CompleteUploadRequest, request: Request) -> c.Com
         is_av_video = (
             media_info is not None
             and media_info.media_type == "video"
-            and upload.kind in {c.UploadKind.portrait, c.UploadKind.broll, c.UploadKind.video}
+            and upload.kind == c.UploadKind.video
         )
         if is_av_video and settings(request).upload.normalize_video:
             upload, media_info = _normalize_upload_video(request, upload)
             if upload.object_uri:
                 derived_uris.add(upload.object_uri)
             was_normalized = True
-        if upload.stabilize and upload.kind in {c.UploadKind.portrait, c.UploadKind.broll, c.UploadKind.video}:
+        if upload.stabilize and upload.kind == c.UploadKind.video:
             upload, media_info = _stabilize_upload_video(request, upload)
             if upload.object_uri:
                 derived_uris.add(upload.object_uri)
@@ -224,8 +223,6 @@ def complete_upload(payload: c.CompleteUploadRequest, request: Request) -> c.Com
     publish_package = None
     replace_mode = payload.metadata.get("template_mode") == "replace"
     if upload.kind in {
-        c.UploadKind.portrait,
-        c.UploadKind.broll,
         c.UploadKind.video,
         c.UploadKind.image,
         c.UploadKind.bgm,

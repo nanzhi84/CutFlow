@@ -446,7 +446,7 @@ def test_hydrate_workflow_runtime_snapshot_loads_case_media_asset_source_artifac
             id="asset_portrait_demo",
             case_id="case_demo",
             title="Real portrait",
-            kind="portrait",
+            kind="video",
             source_artifact_id=source_artifact.id,
             tags=["portrait"],
             annotation_status="annotated",

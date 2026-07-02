@@ -397,7 +397,7 @@ def test_video_upload_probes_media_and_creates_real_thumbnail_artifacts(tmp_path
     digest = hashlib.sha256(content).hexdigest()
     prepared, completed = direct_upload(
         client,
-        kind="portrait",
+        kind="video",
         case_id="case_demo",
         filename="portrait.mp4",
         content_type="video/mp4",
@@ -444,17 +444,14 @@ def test_unified_video_kind_upload_creates_video_media_asset(tmp_path):
     assert artifact.media_info is not None and artifact.media_info.media_type == "video"
 
 
-def test_visual_asset_kind_and_tags_normalizes_legacy_kinds():
-    """Pure-function guard for the issue #99 normalization (no DB / ffmpeg)."""
+def test_visual_asset_kind_and_tags_passthrough_for_valid_kinds():
+    """Pure-function guard: the upload helper persists every remaining upload kind
+    unchanged with an ``upload`` tag. Legacy portrait/broll are no longer UploadKind
+    members (#133); the string-level normalizer that guards the non-upload ingestion
+    paths is covered by ``test_normalize_visual_asset_kind_converges_legacy``."""
     from packages.core.contracts import UploadKind
     from apps.api.services.uploads import _visual_asset_kind_and_tags
 
-    # Legacy visual kinds converge to ``video`` + carry a traceable legacy tag.
-    for legacy in (UploadKind.portrait, UploadKind.broll):
-        kind, tags = _visual_asset_kind_and_tags(legacy)
-        assert kind == "video"
-        assert tags == ["video", "upload", f"legacy_kind:{legacy.value}"]
-    # ``video`` and non-visual kinds pass through unchanged (no legacy tag).
     for passthrough in (
         UploadKind.video,
         UploadKind.bgm,
@@ -468,38 +465,38 @@ def test_visual_asset_kind_and_tags_normalizes_legacy_kinds():
 
 
 @pytest.mark.parametrize("legacy_kind", ["portrait", "broll"])
-def test_legacy_visual_upload_normalizes_asset_kind_to_video(tmp_path, legacy_kind):
-    """Issue #99: a legacy portrait/broll upload is still accepted, but the created
-    media asset is normalized to ``kind=video`` with a ``legacy_kind:<x>`` tag so
-    AnnotationV4 does the per-clip A/B-roll classification (the UploadKind enum
-    member stays this round; hard removal is a follow-up after the data migration)."""
+def test_normalize_visual_asset_kind_converges_legacy(legacy_kind):
+    """Issue #133: the shared normalizer converges a legacy visual asset-kind string
+    onto ``video`` with a ``legacy_kind:<x>`` provenance tag, so the import / create
+    ingestion paths can never re-introduce a legacy asset-kind row after the enum
+    removal. Non-legacy kinds pass through unchanged with no tag."""
+    from packages.core.contracts import normalize_visual_asset_kind
+
+    persisted, legacy_tag = normalize_visual_asset_kind(legacy_kind)
+    assert persisted == "video"
+    assert legacy_tag == f"legacy_kind:{legacy_kind}"
+    for passthrough in ("video", "bgm", "font", "image", "cover_template", "other"):
+        assert normalize_visual_asset_kind(passthrough) == (passthrough, None)
+
+
+@pytest.mark.parametrize("legacy_kind", ["portrait", "broll"])
+def test_legacy_visual_upload_kind_is_rejected(tmp_path, legacy_kind):
+    """Issue #133: the legacy ``portrait`` / ``broll`` upload kinds were removed from
+    ``UploadKind``, so ``prepare`` rejects them at request validation — they can no
+    longer create a legacy asset-kind row via upload."""
     login_admin()
     _seed_case("case_legacy_visual")
-    video = generate_test_video(tmp_path, duration_sec=1, width=320, height=568)
-    content = video.read_bytes()
-    prepared, completed = direct_upload(
-        client,
-        kind=legacy_kind,
-        case_id="case_legacy_visual",
-        filename=f"{legacy_kind}.mp4",
-        content_type="video/mp4",
-        body=content,
+    prepared = client.post(
+        "/api/uploads/prepare",
+        json={
+            "kind": legacy_kind,
+            "case_id": "case_legacy_visual",
+            "filename": f"{legacy_kind}.mp4",
+            "content_type": "video/mp4",
+            "size_bytes": 1024,
+        },
     )
-    # The legacy kind is still accepted at prepare/complete.
-    assert prepared.status_code == 201, prepared.text
-    assert prepared.json()["upload_session"]["kind"] == legacy_kind
-    assert completed.status_code == 200, completed.text
-    body = completed.json()
-    asset = body["media_asset"]
-    assert asset is not None
-    # ...but the persisted asset kind converges to the unified video bucket.
-    assert asset["kind"] == "video"
-    assert f"legacy_kind:{legacy_kind}" in asset["tags"]
-    assert "video" in asset["tags"]
-    assert legacy_kind not in asset["tags"]
-    # The original kind also survives in the DB row (source-of-truth check).
-    _source, tags = _media_asset_source_and_tags(asset["id"])
-    assert f"legacy_kind:{legacy_kind}" in tags
+    assert prepared.status_code == 422, prepared.text
 
 
 def test_video_upload_can_stabilize_before_creating_media_asset(tmp_path):
@@ -510,7 +507,7 @@ def test_video_upload_can_stabilize_before_creating_media_asset(tmp_path):
     digest = hashlib.sha256(content).hexdigest()
     prepared, completed = direct_upload(
         client,
-        kind="portrait",
+        kind="video",
         case_id="case_demo",
         filename="shaky.mp4",
         content_type="video/mp4",
@@ -539,7 +536,7 @@ def test_batch_stabilize_updates_media_assets_and_reports_results(tmp_path):
     content = video.read_bytes()
     prepared, completed = direct_upload(
         client,
-        kind="broll",
+        kind="video",
         case_id="case_batch_stabilize",
         filename="batch-shaky.mp4",
         content_type="video/mp4",
@@ -575,7 +572,7 @@ def test_annotation_trim_creates_trimmed_artifact_from_invalid_segments(tmp_path
     content = video.read_bytes()
     prepared, completed = direct_upload(
         client,
-        kind="broll",
+        kind="video",
         case_id="case_trim_annotation",
         filename="trim-source.mp4",
         content_type="video/mp4",
@@ -626,7 +623,7 @@ def test_annotation_trim_rejects_empty_valid_region(tmp_path):
     content = video.read_bytes()
     prepared, completed = direct_upload(
         client,
-        kind="broll",
+        kind="video",
         case_id="case_trim_empty",
         filename="all-invalid.mp4",
         content_type="video/mp4",

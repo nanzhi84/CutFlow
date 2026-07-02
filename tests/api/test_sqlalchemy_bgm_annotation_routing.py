@@ -197,7 +197,7 @@ def test_sqlalchemy_bgm_asset_routes_to_bgm_path(monkeypatch):
 
 
 def test_sqlalchemy_non_bgm_asset_still_uses_visual_path(monkeypatch):
-    _media_repo, calls = _wire(monkeypatch, _asset("broll"))
+    _media_repo, calls = _wire(monkeypatch, _asset("video"))
 
     response = asset_annotation.run_sqlalchemy_asset_annotation(
         _request(), "asset_x", c.RerunAnnotationRequest()

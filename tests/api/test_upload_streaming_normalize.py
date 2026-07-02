@@ -143,7 +143,7 @@ def test_complete_upload_normalizes_portrait_when_enabled(upload_settings_overri
     digest = hashlib.sha256(content).hexdigest()
     prepared, completed = direct_upload(
         client,
-        kind="portrait",
+        kind="video",
         filename="raw.mp4",
         content_type="video/mp4",
         body=content,
@@ -171,7 +171,7 @@ def test_complete_upload_skips_normalization_when_disabled(tmp_path):
     digest = hashlib.sha256(content).hexdigest()
     prepared, completed = direct_upload(
         client,
-        kind="portrait",
+        kind="video",
         filename="passthrough.mp4",
         content_type="video/mp4",
         body=content,
@@ -203,7 +203,7 @@ def test_complete_upload_normalizes_hdr_portrait_to_bt709_when_enabled(upload_se
     content = video.read_bytes()
     prepared, completed = direct_upload(
         client,
-        kind="portrait",
+        kind="video",
         filename="hdr.mp4",
         content_type="video/mp4",
         body=content,

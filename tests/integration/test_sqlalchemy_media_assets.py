@@ -42,7 +42,7 @@ def create_completed_media_asset(client: TestClient) -> dict:
             "upload_session_id": upload_session["id"],
             "case_id": "case_demo",
             "title": "SQLAlchemy media asset",
-            "kind": "broll",
+            "kind": "video",
             "tags": ["db", "media"],
         },
     )
@@ -66,7 +66,7 @@ def test_sqlalchemy_media_asset_flow_links_completed_upload_artifact():
 
         listed = client.get(
             "/api/media/assets",
-            params={"case_id": "case_demo", "kind": "broll", "annotation_status": "pending"},
+            params={"case_id": "case_demo", "kind": "video", "annotation_status": "pending"},
         )
         assert listed.status_code == 200, listed.text
         assert any(item["asset"]["id"] == asset["id"] for item in listed.json()["items"])

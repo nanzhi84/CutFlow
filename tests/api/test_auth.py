@@ -84,7 +84,7 @@ def test_viewer_cannot_use_operator_or_admin_routes():
     prepare_upload = client.post(
         "/api/uploads/prepare",
         json={
-            "kind": "broll",
+            "kind": "video",
             "filename": "viewer.txt",
             "content_type": "text/plain",
             "size_bytes": 1,

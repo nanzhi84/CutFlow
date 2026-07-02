@@ -32,12 +32,13 @@ UploadStatus = UploadSessionStatus
 
 
 class UploadKind(str, Enum):
-    portrait = "portrait"
-    broll = "broll"
     # Unified video bucket: the operator uploads talking-head / b-roll / mixed
     # footage as one kind and the annotation pipeline classifies each clip's
     # usability (lip-sync portrait vs cover b-roll) per-clip, so no human
-    # portrait/b-roll pre-classification is required at upload time.
+    # portrait/b-roll pre-classification is required at upload time. The legacy
+    # ``portrait`` / ``broll`` upload kinds were removed in #133 (converged onto
+    # ``video`` by data migration 0026); ``normalize_visual_asset_kind`` guards the
+    # remaining string-sourced ingestion paths from re-introducing a legacy row.
     video = "video"
     # Still image uploaded as an AI-generation reference (Seedance 「AI素材」).
     # Distinct from portrait/cover_template so it stays out of the digital-human
@@ -128,8 +129,6 @@ _FONT_CONTENT_TYPES = frozenset(
 # content_type against this and pins it into the presigned PUT signature.
 ALLOWED_UPLOAD_CONTENT_TYPES: dict[UploadKind, frozenset[str]] = {
     UploadKind.publish_video: _VIDEO_CONTENT_TYPES,
-    UploadKind.portrait: _VIDEO_CONTENT_TYPES,
-    UploadKind.broll: _VIDEO_CONTENT_TYPES,
     UploadKind.video: _VIDEO_CONTENT_TYPES,
     UploadKind.image: _IMAGE_CONTENT_TYPES,
     UploadKind.cover_template: _IMAGE_CONTENT_TYPES,
@@ -139,12 +138,32 @@ ALLOWED_UPLOAD_CONTENT_TYPES: dict[UploadKind, frozenset[str]] = {
 }
 
 
+_LEGACY_VISUAL_ASSET_KINDS = frozenset({"portrait", "broll"})
+
+
+def normalize_visual_asset_kind(kind: str) -> tuple[str, str | None]:
+    """Converge a legacy visual asset kind (``portrait`` / ``broll``) onto ``video``.
+
+    Issue #133: the ``portrait`` / ``broll`` visual asset kinds were unified onto a
+    single ``video`` bucket (#99/#129, data migration ``0026``) and their
+    ``UploadKind`` members removed. Several ingestion paths still persist
+    ``media_assets.kind`` as a free string sourced from import manifests / callers,
+    so this shared normalizer is the single guard that keeps any write path from
+    re-introducing a legacy visual-kind row after the enum removal.
+
+    Returns ``(persisted_kind, legacy_kind_tag)`` where ``legacy_kind_tag`` is a
+    ``legacy_kind:<original>`` provenance tag for a converged row, or ``None`` when
+    the kind is persisted unchanged.
+    """
+    if kind in _LEGACY_VISUAL_ASSET_KINDS:
+        return "video", f"legacy_kind:{kind}"
+    return kind, None
+
+
 class MediaAssetRecord(EntityMeta):
     case_id: str | None = None
     title: str
     kind: Literal[
-        "portrait",
-        "broll",
         "bgm",
         "font",
         "cover_template",
@@ -165,7 +184,9 @@ class MediaAssetRecord(EntityMeta):
 
 
 SelectionMedium = Literal["portrait", "broll", "bgm", "font"]
-CASE_MATERIAL_ASSET_KINDS = frozenset({"portrait", "broll", "video", "bgm", "font"})
+# Visual asset kinds converged onto ``video`` in #133; ``portrait``/``broll`` are no
+# longer valid asset kinds (they survive only as the selection *medium* above).
+CASE_MATERIAL_ASSET_KINDS = frozenset({"video", "bgm", "font"})
 
 
 class SelectionLedgerEntry(ContractModel):
@@ -247,9 +268,10 @@ class CreateMediaAssetFromUploadRequest(ContractModel):
     case_id: str | None = None
     title: str
     tags: list[str] = Field(default_factory=list)
+    # Visual asset kinds converged onto ``video`` (#133); ``portrait``/``broll`` are
+    # no longer accepted. ``create_asset_from_upload`` additionally normalizes any
+    # residual legacy string as defense-in-depth.
     kind: Literal[
-        "portrait",
-        "broll",
         "voice_reference",
         "bgm",
         "font",
@@ -324,7 +346,10 @@ class MediaAssetReplaceResponse(ContractModel):
 class AutoMatchReplaceRequest(ContractModel):
     upload_session_ids: list[str] = Field(min_length=1, max_length=100)
     case_id: str | None = None
-    kind: str = "broll"
+    # Asset-kind filter for the title-match index. Visual templates are one unified
+    # ``video`` bucket now (#133), so default to ``video`` — the legacy ``broll``
+    # default would match no assets after the migration.
+    kind: str = "video"
 
 
 class AutoMatchReplaceResult(ContractModel):

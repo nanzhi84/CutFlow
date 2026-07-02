@@ -37,7 +37,7 @@ def _seed_assets_with_annotations(session_factory, *, case_id: str, count: int) 
                     id=asset_id,
                     case_id=case_id,
                     title=f"hydrate-n1-{index}",
-                    kind="broll",
+                    kind="video",
                     annotation_status="annotated",
                 )
             )

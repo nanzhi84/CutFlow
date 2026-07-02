@@ -71,23 +71,13 @@ export function TemplatesTab() {
     setAssetLimit(50);
   }, [selectedCaseId]);
 
+  // Visual assets are one unified ``video`` bucket (#133): A-roll (口播) vs B-roll
+  // (空镜) is a per-clip annotation decision, not an asset kind, so a single
+  // ``kind="video"`` query covers the whole grid. The A-roll/B-roll split survives
+  // only as the usage-ranking *medium* below.
   const videoQuery = useQuery({
     queryKey: ["library", "media", selectedCaseId, "video", assetLimit],
     queryFn: () => api.mediaAssets.list({ limit: assetLimit, case_id: selectedCaseId, kind: "video" }),
-    enabled: Boolean(selectedCaseId),
-    refetchInterval: pageVisible ? 10_000 : false,
-  });
-
-  const portraitQuery = useQuery({
-    queryKey: ["library", "media", selectedCaseId, "portrait", assetLimit],
-    queryFn: () => api.mediaAssets.list({ limit: assetLimit, case_id: selectedCaseId, kind: "portrait" }),
-    enabled: Boolean(selectedCaseId),
-    refetchInterval: pageVisible ? 10_000 : false,
-  });
-
-  const brollQuery = useQuery({
-    queryKey: ["library", "media", selectedCaseId, "broll", assetLimit],
-    queryFn: () => api.mediaAssets.list({ limit: assetLimit, case_id: selectedCaseId, kind: "broll" }),
     enabled: Boolean(selectedCaseId),
     refetchInterval: pageVisible ? 10_000 : false,
   });
@@ -107,7 +97,7 @@ export function TemplatesTab() {
   });
 
   const activeItems = useMemo(() => {
-    const merged = [...(videoQuery.data?.items ?? []), ...(portraitQuery.data?.items ?? []), ...(brollQuery.data?.items ?? [])];
+    const merged = [...(videoQuery.data?.items ?? [])];
     const byId = new Map<string, { card: (typeof merged)[number]; index: number }>();
     merged.forEach((card, index) => {
       if (!byId.has(card.asset.id)) byId.set(card.asset.id, { card, index });
@@ -122,8 +112,8 @@ export function TemplatesTab() {
         return titleCompare || left.index - right.index;
       })
       .map((entry) => entry.card);
-  }, [videoQuery.data, portraitQuery.data, brollQuery.data]);
-  const assetQueries = [videoQuery, portraitQuery, brollQuery];
+  }, [videoQuery.data]);
+  const assetQueries = [videoQuery];
   const hasMoreAssets = assetQueries.some((query) => Boolean(query.data && query.data.items.length >= assetLimit));
   const isAssetsLoading = assetQueries.some((query) => query.isLoading);
   const isAssetsFetching = assetQueries.some((query) => query.isFetching);
@@ -135,9 +125,9 @@ export function TemplatesTab() {
   );
   const previewCard = useMemo(() => {
     if (!previewAssetId) return null;
-    const pool = [...(videoQuery.data?.items ?? []), ...(portraitQuery.data?.items ?? []), ...(brollQuery.data?.items ?? [])];
+    const pool = [...(videoQuery.data?.items ?? [])];
     return pool.find((card) => card.asset.id === previewAssetId) ?? null;
-  }, [previewAssetId, videoQuery.data, portraitQuery.data, brollQuery.data]);
+  }, [previewAssetId, videoQuery.data]);
   const scenes = useMemo(() => {
     const values = new Set<string>();
     activeItems.forEach((card) => card.asset.tags?.forEach((tag) => values.add(tag)));

@@ -71,7 +71,7 @@ def test_failed_upload_cleans_up_normalized_derived_object(
     content = video.read_bytes()
     prepared, completed = direct_upload(
         client,
-        kind="portrait",
+        kind="video",
         filename="fail-cleanup.mp4",
         content_type="video/mp4",
         body=content,

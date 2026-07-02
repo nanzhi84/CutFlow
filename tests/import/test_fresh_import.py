@@ -52,6 +52,11 @@ def test_media_import_with_uri_creates_uploaded_file_source_artifact():
         asset_id = report["results"][0]["internal_id"]
         with active_client.app.state.sqlalchemy_session_factory() as session:
             asset = session.get(MediaAssetRow, asset_id)
+            # Issue #133: a legacy ``broll`` import kind converges to the unified
+            # ``video`` bucket with a ``legacy_kind:<x>`` provenance tag, so the import
+            # path can never re-introduce a legacy asset-kind row.
+            assert asset.kind == "video"
+            assert "legacy_kind:broll" in (asset.tags or [])
             assert asset.source_artifact_id is not None
             artifact = session.get(ArtifactRow, asset.source_artifact_id)
             assert artifact.kind == "uploaded.file"
@@ -72,7 +77,7 @@ def test_media_import_with_uri_is_idempotent_by_sha256_or_uri():
             "external_id": "media_uri_idempotent",
             "case_id": "case_demo",
             "title": "Imported URI media",
-            "kind": "broll",
+            "kind": "video",
             "uri": "s3://cutagent-durable/imports/case_demo/reused.mp4",
             "mime": "video/mp4",
             "sha256": "dedupe-sha",
@@ -167,7 +172,7 @@ def test_spec_20_2_13_imported_case_script_and_media_are_frontend_visible():
                 "external_id": "media_ext",
                 "case_id": case_id,
                 "title": "Imported media",
-                "kind": "broll",
+                "kind": "video",
                 "uri": "s3://cutagent-durable/import-visible/media.mp4",
             },
         )
@@ -193,7 +198,7 @@ def test_spec_20_2_14_imported_media_can_rerun_annotation_open_editor_and_save_p
                 "external_id": "media_annotate",
                 "case_id": "case_demo",
                 "title": "Patch me",
-                "kind": "broll",
+                "kind": "video",
                 "uri": "s3://cutagent-durable/import-annotation/media.mp4",
             },
         )

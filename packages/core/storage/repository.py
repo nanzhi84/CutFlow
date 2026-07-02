@@ -294,13 +294,19 @@ class Repository:
             target_audience="operators",
         )
         self.cases[case.id] = case
+        # Visual assets are one unified ``video`` bucket (#99/#129/#133); the
+        # A-roll (portrait main-track) vs B-roll role is decided per-clip by the
+        # AnnotationV4 below, not by ``asset.kind``. These demo sources therefore
+        # persist as ``kind="video"`` — the same shape a real post-migration library
+        # has — and the seeded portrait annotation is what makes them lip-sync A-roll
+        # candidates in MaterialPackPlanning.
         portrait_asset_specs = [
-            (asset_id, f"Demo portrait main track {index + 1}", "portrait")
+            (asset_id, f"Demo portrait main track {index + 1}", "video")
             for index, asset_id in enumerate(SEED_PORTRAIT_ASSET_IDS)
         ]
         for asset_id, title, kind in [
             *portrait_asset_specs,
-            ("asset_broll_demo", "Demo b-roll clip", "broll"),
+            ("asset_broll_demo", "Demo b-roll clip", "video"),
             ("asset_bgm_demo", "Demo background music", "bgm"),
             ("asset_font_demo", "Demo subtitle font", "font"),
         ]:
