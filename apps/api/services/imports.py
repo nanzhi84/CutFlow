@@ -83,7 +83,11 @@ def import_batch(payload: c.CreateImportBatchRequest, request: Request) -> c.Imp
             elif payload.import_type == "media":
                 case_id = str(row.get("case_id", "case_demo"))
                 title = str(row.get("title", "Imported media"))
-                kind = str(row.get("kind", "other"))
+                # Converge legacy visual kinds (portrait/broll) onto ``video`` so an
+                # import manifest can never re-introduce a legacy asset-kind row.
+                kind, legacy_kind_tag = c.normalize_visual_asset_kind(
+                    str(row.get("kind", "other"))
+                )
                 uri = _optional_str(row.get("uri"))
                 sha256 = _optional_str(row.get("sha256"))
                 existing_asset = _find_existing_imported_media_asset(
@@ -119,6 +123,7 @@ def import_batch(payload: c.CreateImportBatchRequest, request: Request) -> c.Imp
                     title=title,
                     kind=kind,
                     source_artifact_id=artifact.id,
+                    tags=[legacy_kind_tag] if legacy_kind_tag else [],
                     annotation_status="pending",
                     thumbnail_url=_optional_str(row.get("thumbnail_uri"))
                     or _optional_str(row.get("thumbnail")),

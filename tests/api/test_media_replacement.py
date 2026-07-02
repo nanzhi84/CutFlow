@@ -40,7 +40,7 @@ def upload_video(
         metadata["template_mode"] = "replace"
     prepared, completed = direct_upload(
         client,
-        kind="broll",
+        kind="video",
         filename=filename,
         content_type="video/mp4",
         body=content,

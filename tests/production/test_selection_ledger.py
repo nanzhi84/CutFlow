@@ -322,7 +322,7 @@ def test_usage_ranking_aggregates_distinct_runs_and_recent_score():
         id="asset_broll_alt",
         case_id="case_demo",
         title="Alternate b-roll",
-        kind="broll",
+        kind="video",
         tags=["alt"],
         annotation_status="annotated",
         usable=True,

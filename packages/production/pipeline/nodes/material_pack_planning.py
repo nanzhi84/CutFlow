@@ -46,7 +46,10 @@ def run(ctx: NodeContext) -> NodeOutput:
     repo = ctx.repository
     assets = list(repo.media_assets.values())
 
-    visual_material_kinds = {"video", "portrait", "broll"}
+    # Visual assets are one unified ``video`` bucket (#99/#129/#133); A-roll vs
+    # B-roll is a per-clip AnnotationV4 decision, not an ``asset.kind`` split. The
+    # legacy ``portrait``/``broll`` kinds no longer exist (migration 0026/0033).
+    visual_material_kinds = {"video"}
 
     def _is_ai_reference(asset) -> bool:
         # AI素材 (Seedance reference uploads) are case-scoped media assets tagged

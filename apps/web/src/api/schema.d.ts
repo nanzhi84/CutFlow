@@ -2820,7 +2820,7 @@ export interface components {
             case_id?: string | null;
             /**
              * Kind
-             * @default broll
+             * @default video
              */
             kind: string;
         };
@@ -4067,7 +4067,7 @@ export interface components {
              * @default other
              * @enum {string}
              */
-            kind: "portrait" | "broll" | "voice_reference" | "bgm" | "font" | "cover_template" | "video" | "image" | "other";
+            kind: "voice_reference" | "bgm" | "font" | "cover_template" | "video" | "image" | "other";
         };
         /** CreatePromptBindingRequest */
         CreatePromptBindingRequest: {
@@ -5002,7 +5002,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "portrait" | "broll" | "bgm" | "font" | "cover_template" | "voice_reference" | "voice" | "video" | "image" | "other";
+            kind: "bgm" | "font" | "cover_template" | "voice_reference" | "voice" | "video" | "image" | "other";
             /** Source Artifact Id */
             source_artifact_id?: string | null;
             /** Tags */
@@ -8186,7 +8186,7 @@ export interface components {
          * UploadKind
          * @enum {string}
          */
-        UploadKind: "portrait" | "broll" | "video" | "image" | "voice_reference" | "bgm" | "font" | "cover_template" | "publish_video";
+        UploadKind: "video" | "image" | "voice_reference" | "bgm" | "font" | "cover_template" | "publish_video";
         /** UploadSession */
         UploadSession: {
             /** Id */

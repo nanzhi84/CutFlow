@@ -15,7 +15,7 @@ from packages.media.annotation.reclip import (
 
 def _asset() -> c.MediaAssetRecord:
     return c.MediaAssetRecord(
-        id="asset1", case_id="case1", title="T", kind="broll", source_artifact_id="art1", tags=["x"]
+        id="asset1", case_id="case1", title="T", kind="video", source_artifact_id="art1", tags=["x"]
     )
 
 

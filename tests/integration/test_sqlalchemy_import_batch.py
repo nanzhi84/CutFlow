@@ -67,7 +67,7 @@ def test_sqlalchemy_import_batch_remaining_types_are_persisted_and_listed():
             {
                 "case_id": "case_demo",
                 "title": f"Imported Media {suffix}",
-                "kind": "broll",
+                "kind": "video",
                 "uri": f"s3://cutagent-durable/imports/{suffix}/broll.mp4",
                 "tags": ["imported", "sqlalchemy"],
             },
@@ -98,7 +98,7 @@ def test_sqlalchemy_import_batch_remaining_types_are_persisted_and_listed():
         with session_factory() as session:
             assert session.get(ScriptVersionRow, script_id) is not None
 
-        media = client.get("/api/media/assets", params={"case_id": "case_demo", "kind": "broll"})
+        media = client.get("/api/media/assets", params={"case_id": "case_demo", "kind": "video"})
         assert media.status_code == 200, media.text
         assert any(item["asset"]["id"] == media_id for item in media.json()["items"])
 

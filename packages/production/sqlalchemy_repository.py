@@ -54,6 +54,7 @@ from packages.core.contracts import (
     WorkflowRun,
     YieldFunnelEvent,
     normalize_publish_record_status,
+    normalize_visual_asset_kind,
     utcnow,
 )
 from packages.core.observability.funnel import resolve_event_owner
@@ -1441,7 +1442,12 @@ class SqlAlchemyProductionRepository(BaseRepository):
             tags = row.get("tags", [])
             case_id = str(row.get("case_id")) if row.get("case_id") else None
             title = str(row.get("title", "Imported media"))
-            kind = str(row.get("kind", "other"))
+            # Converge legacy visual kinds (portrait/broll) onto ``video`` so an
+            # import manifest can never re-introduce a legacy asset-kind row into
+            # ``media_assets`` (a plain string column with no enum constraint).
+            kind, legacy_kind_tag = normalize_visual_asset_kind(
+                str(row.get("kind", "other"))
+            )
             uri = _optional_str(row.get("uri"))
             sha256 = _optional_str(row.get("sha256"))
             existing_asset = self._find_existing_imported_media_asset(
@@ -1470,7 +1476,10 @@ class SqlAlchemyProductionRepository(BaseRepository):
                     title=title,
                     kind=kind,
                     source_artifact_id=artifact.id,
-                    tags=[str(item) for item in tags] if isinstance(tags, list) else [],
+                    tags=(
+                        [str(item) for item in tags] if isinstance(tags, list) else []
+                    )
+                    + ([legacy_kind_tag] if legacy_kind_tag else []),
                     annotation_status=str(row.get("annotation_status", "pending")),
                     usable=bool(row.get("usable", True)),
                     thumbnail_uri=_optional_str(row.get("thumbnail_uri"))

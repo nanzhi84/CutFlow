@@ -8902,7 +8902,7 @@
           "kind": {
             "type": "string",
             "title": "Kind",
-            "default": "broll"
+            "default": "video"
           }
         },
         "additionalProperties": false,
@@ -11682,8 +11682,6 @@
           "kind": {
             "type": "string",
             "enum": [
-              "portrait",
-              "broll",
               "voice_reference",
               "bgm",
               "font",
@@ -14283,8 +14281,6 @@
           "kind": {
             "type": "string",
             "enum": [
-              "portrait",
-              "broll",
               "bgm",
               "font",
               "cover_template",
@@ -22890,8 +22886,6 @@
       "UploadKind": {
         "type": "string",
         "enum": [
-          "portrait",
-          "broll",
           "video",
           "image",
           "voice_reference",

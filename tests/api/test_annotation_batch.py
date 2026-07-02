@@ -30,7 +30,7 @@ def _upload_asset(tmp_path, *, filename: str, case_id: str) -> str:
     content = video.read_bytes()
     prepared, completed = direct_upload(
         client,
-        kind="broll",
+        kind="video",
         filename=filename,
         content_type="video/mp4",
         body=content,

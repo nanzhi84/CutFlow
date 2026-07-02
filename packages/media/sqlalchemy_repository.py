@@ -16,6 +16,7 @@ from packages.core.contracts import (
     MediaAssetDetail,
     MediaAssetRecord,
     MaterialUsageRankingReport,
+    normalize_visual_asset_kind,
     PatchAnnotationRequest,
     PatchVoiceRequest,
     RerunAnnotationRequest,
@@ -336,13 +337,21 @@ class SqlAlchemyMediaRepository(BaseRepository):
                 if isinstance(artifact.media_info, dict)
                 else None
             )
+            # Defense-in-depth: the upload flow already normalizes visual kinds
+            # (uploads.py), but a direct create-asset call could still pass a legacy
+            # ``portrait``/``broll`` kind — converge it onto ``video`` here too so no
+            # write path can seed a legacy asset-kind row.
+            persisted_kind, legacy_kind_tag = normalize_visual_asset_kind(payload.kind)
+            asset_tags = list(payload.tags)
+            if legacy_kind_tag and legacy_kind_tag not in asset_tags:
+                asset_tags.append(legacy_kind_tag)
             row = MediaAssetRow(
                 id=new_id("asset"),
                 case_id=payload.case_id,
                 title=payload.title,
-                kind=payload.kind,
+                kind=persisted_kind,
                 source_artifact_id=artifact.id,
-                tags=payload.tags,
+                tags=asset_tags,
                 annotation_status="pending",
                 usable=True,
                 thumbnail_uri=thumbnail.uri if thumbnail is not None else None,
