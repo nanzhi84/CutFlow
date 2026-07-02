@@ -23585,7 +23585,8 @@
           "bgm.loudness_probe_failed",
           "font.resolution_failed",
           "subtitle.burn_skipped",
-          "editing_agent.deterministic_fallback"
+          "editing_agent.deterministic_fallback",
+          "portrait.asset_reuse_relaxed"
         ],
         "title": "WarningCode"
       },
