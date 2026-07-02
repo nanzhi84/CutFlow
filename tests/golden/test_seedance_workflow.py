@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from apps.api.app import create_app
 from packages.core import contracts as c
 from packages.core.contracts import ArtifactKind
+from packages.core.storage.database import ArtifactRow, MediaAssetRow
 
 
 @contextmanager
@@ -106,6 +107,39 @@ def test_seedance_with_reference_image_creates_finished_video():
             source_artifact_id=artifact.id,
         )
         repo.media_assets[asset.id] = asset
+        session_factory = active_client.app.state.sqlalchemy_session_factory
+        with session_factory() as session:
+            session.add(
+                ArtifactRow(
+                    id=artifact.id,
+                    case_id=artifact.case_id,
+                    kind=artifact.kind.value,
+                    uri=artifact.uri,
+                    size_bytes=artifact.size_bytes,
+                    sha256=artifact.sha256,
+                    media_info=artifact.media_info.model_dump(mode="json")
+                    if artifact.media_info is not None
+                    else None,
+                    payload_schema=artifact.payload_schema,
+                    payload=artifact.payload,
+                )
+            )
+            session.add(
+                MediaAssetRow(
+                    id=asset.id,
+                    case_id=asset.case_id,
+                    title=asset.title,
+                    kind=asset.kind,
+                    source_artifact_id=asset.source_artifact_id,
+                    tags=asset.tags,
+                    annotation_status=asset.annotation_status,
+                    usable=asset.usable,
+                    duration_sec=asset.duration_sec,
+                    width=asset.width,
+                    height=asset.height,
+                )
+            )
+            session.commit()
 
         response = active_client.post(
             "/api/jobs/digital-human-video",

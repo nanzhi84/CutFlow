@@ -80,7 +80,7 @@ export function VoiceCard({ voice, isPreviewing, isPlaying, caseNames, onPreview
 
       <div className="mt-4 grid grid-cols-4 gap-2">
         <button
-          className="icon-button col-span-2 w-full"
+          className="icon-button col-span-2 w-full min-w-0"
           type="button"
           onClick={onPreview}
           disabled={isPreviewing || voice.status === "training"}
@@ -93,7 +93,7 @@ export function VoiceCard({ voice, isPreviewing, isPlaying, caseNames, onPreview
           }
         >
           {isPreviewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-          <span className="text-xs">
+          <span className="min-w-0 truncate text-xs">
             {voice.status === "training" ? "训练中" : isPreviewing ? "生成中" : isPlaying ? "已试听" : "试听"}
           </span>
         </button>
