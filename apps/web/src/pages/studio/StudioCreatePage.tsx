@@ -139,10 +139,12 @@ export default function StudioCreatePage() {
       return;
     }
     if (!voiceOptions.some((voice) => voice.id === form.voiceId)) {
+      // Voices are case-scoped (bound via case_ids), so a remembered default or a
+      // previous case's voice is expected to be invalid when opening another case.
+      // Silently adopt this case's voice instead of nagging a toast on every entry.
       setForm((current) => ({ ...current, voiceId: voiceOptions[0].id }));
-      toast.warning("已切换到当前案例音色", "原声音未绑定到此案例或已停用");
     }
-  }, [form.voiceId, toast, voiceOptions, voices.data]);
+  }, [form.voiceId, voiceOptions, voices.data]);
 
   function buildJobPayload(
     script: string,
