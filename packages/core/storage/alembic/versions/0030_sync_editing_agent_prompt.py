@@ -7,8 +7,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # Revision id kept <= 32 chars (alembic version_num column limit).
-revision = "0028_sync_editing_agent_prompt"
-down_revision = "0027_drop_portrait_options"
+revision = "0030_sync_editing_agent_prompt"
+down_revision = "0029_sync_editing_agent_prompt"
 branch_labels = None
 depends_on = None
 
@@ -26,7 +26,14 @@ def _current_editing_agent_prompt() -> str:
 
 
 def upgrade() -> None:
-    """Sync the built-in EditingAgentPlanning prompt with the current contract."""
+    """Re-sync the built-in EditingAgentPlanning prompt after 0029.
+
+    0029 only repaired DBs still holding the pre-#136 legacy prompt. This second
+    sync widens the stale-detection so DBs already on the #136 (or interim
+    hardened) prompt also pick up the scarce-asset uniqueness relaxation: any row
+    missing the ``{portrait_uniqueness_rule}`` placeholder (or the hardening
+    markers) is refreshed from prompt_group_defaults.json.
+    """
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
         return
