@@ -26,6 +26,15 @@ from packages.core.storage.repository import Repository
 
 LOCAL_AUTH_SEED_USER_IDS = {"usr_admin", "usr_viewer"}
 LOCAL_AUTH_SEED_REGISTRATION_CODE_IDS = {"reg_seed_local_admin"}
+_SYNCABLE_PROMPT_VERSION_IDS = {"prompt_editing_agent_v1"}
+_LEGACY_EDITING_AGENT_MARKERS = (
+    "{asr_segments}",
+    "{portrait_slot_plan}",
+    "{portrait_requirement_groups}",
+    "{portrait_draft_plan}",
+    '"broll_overrides"',
+    '"subtitle_style_plan"',
+)
 
 
 def seed_rows(
@@ -317,6 +326,8 @@ def seed_database(session: Session, rows: Iterable[object] | None = None) -> int
         if existing is None:
             session.add(row)
             inserted += 1
+        elif _sync_existing_seed_row(existing, row):
+            pass
         # NOTE: an EXISTING seed user's password is intentionally left untouched.
         # Re-seeding used to overwrite usr_admin/usr_viewer back to the hardcoded
         # "local-admin"/"local-viewer" hash on every bootstrap/startup, which
@@ -326,3 +337,25 @@ def seed_database(session: Session, rows: Iterable[object] | None = None) -> int
         # after that, the stored password is authoritative.
     session.commit()
     return inserted
+
+
+def _sync_existing_seed_row(existing: object, seed: object) -> bool:
+    if isinstance(existing, PromptVersionRow) and isinstance(seed, PromptVersionRow):
+        if existing.id not in _SYNCABLE_PROMPT_VERSION_IDS:
+            return False
+        if not _needs_prompt_version_sync(existing):
+            return False
+        existing.content = seed.content
+        existing.status = seed.status
+        existing.changelog = "Synced built-in EditingAgentPlanning prompt contract."
+        existing.approved_at = seed.approved_at
+        existing.published_at = seed.published_at
+        return True
+    return False
+
+
+def _needs_prompt_version_sync(existing: PromptVersionRow) -> bool:
+    if existing.id == "prompt_editing_agent_v1":
+        content = existing.content or ""
+        return any(marker in content for marker in _LEGACY_EDITING_AGENT_MARKERS)
+    return False

@@ -16,6 +16,7 @@ from packages.core.storage.database import (
     VoiceProfileRow,
 )
 from packages.core.storage.seed import seed_rows
+from packages.core.storage.seed import seed_database
 
 
 def test_seed_rows_cover_local_operational_baseline():
@@ -80,3 +81,39 @@ def test_seed_provider_profiles_and_prompt_binding_are_ready_for_workflow():
     assert any(row.node_id == "ResolveCreativeIntent" for row in bindings)
     assert any(row.node_id == "CaseAgentScriptGenerate" for row in bindings)
     assert any(row.node_id == "MediaAssetAnnotation" for row in bindings)
+
+
+class _FakeSeedSession:
+    def __init__(self, existing):
+        self.rows = {(type(row), row.id): row for row in existing}
+        self.committed = False
+
+    def get(self, row_type, row_id):
+        return self.rows.get((row_type, row_id))
+
+    def add(self, row):
+        self.rows[(type(row), row.id)] = row
+
+    def commit(self):
+        self.committed = True
+
+
+def test_seed_database_syncs_legacy_editing_agent_prompt_contract():
+    current = next(
+        row for row in seed_rows() if isinstance(row, PromptVersionRow) and row.id == "prompt_editing_agent_v1"
+    )
+    legacy = PromptVersionRow(
+        id="prompt_editing_agent_v1",
+        prompt_template_id="prompt_editing_agent",
+        content="{script}\n{asr_segments}\n{portrait_draft_plan}\n\"broll_overrides\"",
+        status="published",
+    )
+    session = _FakeSeedSession([legacy])
+
+    inserted = seed_database(session, rows=[current])
+
+    assert inserted == 0
+    assert session.committed is True
+    assert legacy.content == current.content
+    assert "{asr_segments}" not in legacy.content
+    assert "{narration_units}" in legacy.content
