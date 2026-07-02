@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+import shutil
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -40,6 +43,40 @@ from packages.core.observability import record_funnel_event
 from packages.publishing import normalize_publish_tags, normalize_scheduled_at, select_adapter
 from packages.publishing.platform_adapter import PublishOutcome, PublishPayload
 from packages.publishing.publish_executor import run_item_publish
+
+logger = logging.getLogger(__name__)
+
+# Root for locally-materialized publish media (video/cover downloaded for 小V猫 CDP).
+PUBLISH_SPOOL_DIR = Path(".data/publish-spool")
+# Scheduled publishes keep the local videoPath so 小V猫 can read it at the scheduled
+# moment (the desktop app opens the file then, not at submit time). We therefore must
+# NOT delete spool files right after a publish. 7 days comfortably covers the
+# scheduling window while bounding otherwise-unbounded growth of the spool.
+PUBLISH_SPOOL_RETENTION_SECONDS = 7 * 24 * 60 * 60
+
+
+def _sweep_publish_spool(root: Path = PUBLISH_SPOOL_DIR) -> None:
+    """Best-effort age-based cleanup of the publish spool.
+
+    Deletes entry directories whose mtime is older than
+    ``PUBLISH_SPOOL_RETENTION_SECONDS``. Runs once per submit and never raises — a
+    failed sweep is logged but must not block a publish."""
+    try:
+        entries = list(root.iterdir()) if root.exists() else []
+    except OSError as exc:
+        logger.warning("publish spool sweep could not list %s: %s", root, exc)
+        return
+    cutoff = time.time() - PUBLISH_SPOOL_RETENTION_SECONDS
+    for entry in entries:
+        try:
+            if entry.stat().st_mtime >= cutoff:
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("publish spool sweep could not remove %s: %s", entry, exc)
 
 
 def _publish_run_ids(repo, package_id: str | None) -> tuple[str | None, str | None]:
@@ -110,6 +147,8 @@ def _build_publish_runner(
     target_repo = accounts_repository(request)
     objects = object_store(request)
     scheduled_at = normalize_scheduled_at(payload.mode, payload.scheduled_at)
+    # Best-effort prune of stale spool entries on every submit/retry (see retention note).
+    _sweep_publish_spool()
 
     def runner(item: object, package: object) -> PublishOutcome:
         spool_dir: Path | None = None
@@ -118,7 +157,7 @@ def _build_publish_runner(
         def ensure_spool_dir() -> Path:
             nonlocal spool_dir
             if spool_dir is None:
-                spool_dir = (Path(".data/publish-spool") / new_id("pub_files")).resolve()
+                spool_dir = (PUBLISH_SPOOL_DIR / new_id("pub_files")).resolve()
                 spool_dir.mkdir(parents=True, exist_ok=True)
             return spool_dir
 
