@@ -7,6 +7,7 @@ import os
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -204,6 +205,59 @@ def test_health_network_oss_probe_is_a_real_round_trip(tmp_path):
     assert oss["status"] == "ok"
     assert isinstance(oss["latency_ms"], (int, float))
     assert oss["backend"] == "local"
+
+
+def test_health_network_returns_503_when_oss_probe_fails():
+    class BrokenStore:
+        def exists(self, _ref):
+            raise RuntimeError("oss head failed")
+
+    app = create_app()
+    with TestClient(app) as client:
+        client.app.state.object_store = BrokenStore()
+        response = client.get("/api/health/network")
+
+    assert response.status_code == 503, response.text
+    body = response.json()
+    assert body["status"] == "degraded"
+    assert body["hops"]["oss"]["status"] == "failed"
+    assert "oss head failed" in body["hops"]["oss"]["error"]
+
+
+def test_health_network_reports_oss_timeout(monkeypatch):
+    from apps.api.services import core as core_service
+
+    def _timeout(*_args, **_kwargs):
+        raise concurrent.futures.TimeoutError
+
+    monkeypatch.setattr(core_service, "_bounded_probe", _timeout)
+
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.get("/api/health/network")
+
+    assert response.status_code == 503, response.text
+    oss = response.json()["hops"]["oss"]
+    assert oss["status"] == "failed"
+    assert "timed out" in oss["error"]
+
+
+def test_temporal_probe_reports_connection_failure(monkeypatch):
+    from apps.api.services import core as core_service
+
+    def _fail(*_args, **_kwargs):
+        raise RuntimeError("temporal refused")
+
+    monkeypatch.setattr(core_service, "_bounded_probe", _fail)
+    settings = SimpleNamespace(
+        workflow=SimpleNamespace(runtime="temporal", temporal_address="127.0.0.1:7233")
+    )
+
+    result = core_service._probe_temporal(settings, 0.1)
+
+    assert result["status"] == "failed"
+    assert result["error"] == "temporal refused"
+    assert result["runtime"] == "temporal"
 
 
 def test_bounded_probe_times_out_without_blocking():

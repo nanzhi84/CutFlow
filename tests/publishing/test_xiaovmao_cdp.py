@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import re
 import sys
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -269,6 +270,187 @@ def test_cdp_close_does_not_mask_disconnected_webview():
     assert driver.websocket is None
 
 
+def test_driver_local_probe_launch_hint_and_no_websocket_edges(monkeypatch):
+    def broken_run(*_args, **_kwargs):
+        raise RuntimeError("process table unavailable")
+
+    monkeypatch.setattr(cdp.subprocess, "run", broken_run)
+    assert cdp.XiaoVmaoDriver().is_app_running() is False
+
+    monkeypatch.setattr(cdp.sys, "platform", "darwin")
+    auto_driver = cdp.XiaoVmaoDriver(auto_launch=True)
+    assert auto_driver.should_auto_launch() is True
+    assert auto_driver.try_launch_app() is False
+    assert "自动启动" in auto_driver.connect_hint(app_running=False)
+    assert "不会反复聚焦" in auto_driver.connect_hint(app_running=True)
+
+    fallback = cdp.Target("fallback", "page", "https://example.invalid", "")
+    assert cdp.XiaoVmaoDriver.choose_main_target([fallback]) == fallback
+
+    with pytest.raises(cdp.XiaoVmaoUnavailableError, match="no websocket URL"):
+        asyncio.run(cdp.XiaoVmaoDriver().connect_to_target(fallback))
+
+    with pytest.raises(cdp.XiaoVmaoUnavailableError, match="WebSocket 未连接"):
+        asyncio.run(cdp.XiaoVmaoDriver().send("Runtime.evaluate"))
+
+
+def test_cdp_send_protocol_error_and_empty_evaluate_result():
+    class ErrorWebSocket:
+        async def send(self, _payload):
+            return None
+
+        async def recv(self):
+            return '{"id": 1, "error": {"message": "node detached"}}'
+
+    driver = cdp.XiaoVmaoDriver()
+    driver.websocket = ErrorWebSocket()
+    with pytest.raises(cdp.XiaoVmaoUnavailableError, match="node detached"):
+        asyncio.run(driver.send("DOM.querySelector"))
+
+    async def empty_result_send(_method, _params=None):
+        return {"result": {"result": {}}}
+
+    driver.send = empty_result_send  # type: ignore[method-assign]
+    assert asyncio.run(driver.evaluate("void 0")) is None
+
+
+@pytest.mark.parametrize(
+    ("platform", "platform_key", "expected"),
+    [
+        ("douyin", "Douyin", {"tag_count": 5}),
+        ("kuaishou", "KuaiShou", {"desc_key": "CAT_desc", "tag_key": "CAT_tags"}),
+        ("shipinhao", "Channels", {}),
+        ("xiaohongshu", "XiaoHongShu", {}),
+    ],
+)
+def test_build_publish_task_maps_platform_specific_form_payloads(
+    monkeypatch, platform, platform_key, expected
+):
+    monkeypatch.setattr(cdp, "_new_local_id", lambda: "local-fixed")
+    payload = PublishPayload(
+        title="超长标题需要被截断到三十个字符以内但仍然可读",
+        description="正文",
+        platforms=(platform,),
+        tags=("#话题一", " 话题二 ", "", "#话题三", "#话题四", "#话题五", "#话题六"),
+        video_uri="/video.mp4",
+        cover_uri="/cover.jpg",
+        scheduled_at=datetime(2026, 7, 3, 10, 30, tzinfo=timezone.utc),
+    )
+
+    task = cdp._build_publish_task(
+        payload=payload,
+        platform=platform,
+        account_uid="uid-1",
+        batch_source="Cutagent_case",
+    )
+
+    assert task["localId"] == "local-fixed"
+    assert task["uid"] == "uid-1"
+    assert task["platform"] == platform_key
+    assert task["videoPath"] == "/video.mp4"
+    assert task["originCover"] == "file:///cover.jpg"
+    assert task["publishType"] == 2
+    assert task["formData"]["CAT_timing"]["time"] == payload.scheduled_at.isoformat()
+    assert task["isCustomCover"] is True
+    if platform == "douyin":
+        assert task["title"] == payload.title[:30]
+        assert len(task["title"]) <= 30
+        assert len(task["formData"]["tags"]) == expected["tag_count"]
+    elif platform == "kuaishou":
+        assert task["formData"][expected["desc_key"]] == "正文"
+        assert task["formData"][expected["tag_key"]] == [
+            "话题一",
+            "话题二",
+            "话题三",
+            "话题四",
+            "话题五",
+            "话题六",
+        ]
+    elif platform == "shipinhao":
+        assert task["shortTitle"] == payload.title[:16]
+        assert len(task["shortTitle"]) <= 16
+        assert task["formData"]["topics"][0] == "话题一"
+    else:
+        assert task["title"] == payload.title[:20]
+        assert len(task["title"]) <= 20
+        assert task["formData"]["CAT_tags"][0] == "话题一"
+
+
+def test_publish_record_helpers_accept_nested_shapes_and_alt_keys():
+    nested = {"data": {"rows": [{"local_id": "local-a", "status": "2", "shareUrl": "https://x"}]}}
+    records = cdp._extract_publish_records(nested)
+
+    assert cdp._extract_publish_records([{"localId": "l"}, "bad"]) == [{"localId": "l"}]
+    assert cdp._extract_publish_records("bad") == []
+    assert records == [{"local_id": "local-a", "status": "2", "shareUrl": "https://x"}]
+    assert cdp._record_local_id(records[0]) == "local-a"
+    assert cdp._record_status(records[0]) == 2
+    assert cdp._record_status({"status": "bad"}) is None
+    assert cdp._record_error({"failReason": "验证码"}) == "验证码"
+    assert cdp._record_url(records[0]) == "https://x"
+    assert cdp._status_label(None) == "未知"
+    assert cdp._status_label(99) == "99"
+
+
+def test_catbridge_call_rejects_bad_payloads():
+    class BadShapeDriver:
+        async def evaluate(self, *_args, **_kwargs):
+            return ["bad"]
+
+    class ErrorDriver:
+        async def evaluate(self, *_args, **_kwargs):
+            return {"ok": False, "error": "bridge down"}
+
+    with pytest.raises(cdp.XiaoVmaoUnavailableError, match="返回格式异常"):
+        asyncio.run(cdp._catbridge_call(BadShapeDriver(), "noop"))
+    with pytest.raises(cdp.XiaoVmaoUnavailableError, match="bridge down"):
+        asyncio.run(cdp._catbridge_call(ErrorDriver(), "noop"))
+
+
+def test_wait_for_publish_record_accepts_scheduled_pending(monkeypatch):
+    async def fake_query(_driver, task):
+        return {"localId": task["localId"], "status": 6}
+
+    monkeypatch.setattr(cdp, "_query_publish_record", fake_query)
+    record = asyncio.run(
+        cdp._wait_for_publish_record(
+            object(), {"localId": "local-scheduled"}, scheduled=True
+        )
+    )
+
+    assert record["status"] == 6
+
+
+def test_wait_for_publish_record_surfaces_failed_record(monkeypatch):
+    async def fake_query(_driver, task):
+        return {"localId": task["localId"], "status": 4, "errorMessage": "平台验证失败"}
+
+    monkeypatch.setattr(cdp, "_query_publish_record", fake_query)
+
+    with pytest.raises(cdp.XiaoVmaoUnavailableError, match="平台验证失败"):
+        asyncio.run(
+            cdp._wait_for_publish_record(
+                object(), {"localId": "local-failed"}, scheduled=False
+            )
+        )
+
+
+def test_wait_for_publish_record_times_out_without_record(monkeypatch):
+    async def fake_query(_driver, _task):
+        return None
+
+    monkeypatch.setattr(cdp, "_query_publish_record", fake_query)
+    monkeypatch.setattr(cdp, "PUBLISH_TASK_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr(cdp, "PUBLISH_TASK_POLL_INTERVAL_SECONDS", 0)
+
+    with pytest.raises(cdp.XiaoVmaoUnavailableError, match="未查到 PublishLog"):
+        asyncio.run(
+            cdp._wait_for_publish_record(
+                object(), {"localId": "local-timeout"}, scheduled=False
+            )
+        )
+
+
 def test_driver_auto_launches_local_macos_app(monkeypatch):
     calls: list[list[str]] = []
 
@@ -519,3 +701,312 @@ def test_login_manager_emits_error_event_on_driver_exception():
 
     assert manager.poll("login_1").status == "failed"
     assert any(event.type == "error" and "小V猫不可达" in (event.detail or "") for event in events)
+
+
+def test_driver_fetch_targets_parses_cdp_json_and_fallbacks(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"""[
+                {"title":"main","type":"page","url":"file:///Resources/app/index.html","webSocketDebuggerUrl":"ws://localhost/main"},
+                {"title":"devtools","type":"other","url":"about:blank","webSocketDebuggerUrl":"ws://localhost/dev"}
+            ]"""
+
+    monkeypatch.setattr(cdp.urllib.request, "urlopen", lambda *_args, **_kwargs: FakeResponse())
+    driver = cdp.XiaoVmaoDriver(host="127.0.0.1", port=9999)
+
+    targets = driver.fetch_targets()
+
+    assert targets[0].ws_url == "ws://127.0.0.1/main"
+    assert cdp.XiaoVmaoDriver.choose_main_target(targets) == targets[0]
+    assert cdp.XiaoVmaoDriver.choose_main_target([targets[1]]) is None
+
+    def fail_urlopen(*_args, **_kwargs):
+        raise cdp.urllib.error.URLError("down")
+
+    monkeypatch.setattr(cdp.urllib.request, "urlopen", fail_urlopen)
+    assert driver.fetch_targets() == []
+
+
+def test_driver_cdp_commands_surface_protocol_and_dom_errors(monkeypatch):
+    driver = cdp.XiaoVmaoDriver()
+
+    async def error_send(_method, _params=None):
+        return {"result": {"exceptionDetails": {"text": "js exploded"}}}
+
+    driver.send = error_send  # type: ignore[method-assign]
+    with pytest.raises(cdp.XiaoVmaoUnavailableError, match="js exploded"):
+        asyncio.run(driver.evaluate("throw new Error()"))
+
+    async def query_send(method, _params=None):
+        if method == "DOM.getDocument":
+            return {"result": {"root": {"nodeId": 1}}}
+        if method == "DOM.querySelectorAll":
+            return {"result": {"nodeIds": [10, 11]}}
+        if method == "DOM.setFileInputFiles":
+            return {"result": {}}
+        raise AssertionError(method)
+
+    driver.send = query_send  # type: ignore[method-assign]
+    assert asyncio.run(driver.query_selector_all("input[type=file]")) == [10, 11]
+    asyncio.run(driver.set_files_by_index("input[type=file]", 1, ["/tmp/a.mp4"]))
+    with pytest.raises(cdp.XiaoVmaoUnavailableError, match="未找到第 4 个文件输入框"):
+        asyncio.run(driver.set_files_by_index("input[type=file]", 3, ["/tmp/a.mp4"]))
+
+
+def test_driver_connect_success_uses_main_target(monkeypatch):
+    connected: list[str] = []
+
+    async def fake_connect(url, **_kwargs):
+        connected.append(url)
+        return SimpleNamespace(close=lambda: None)
+
+    monkeypatch.setitem(sys.modules, "websockets", SimpleNamespace(connect=fake_connect))
+    driver = cdp.XiaoVmaoDriver()
+    monkeypatch.setattr(
+        driver,
+        "fetch_targets",
+        lambda: [
+            cdp.Target(
+                title="main",
+                target_type="page",
+                url="file:///Resources/app/index.html",
+                ws_url="ws://127.0.0.1/main",
+            )
+        ],
+    )
+    monkeypatch.setattr(driver, "is_app_running", lambda: True)
+
+    asyncio.run(driver.connect(timeout_seconds=1))
+
+    assert connected == ["ws://127.0.0.1/main"]
+    assert driver.websocket is not None
+
+
+def test_read_accounts_maps_platform_keys_and_errors():
+    class GoodDriver:
+        async def evaluate(self, *_args, **_kwargs):
+            return {
+                "accounts": [
+                    {
+                        "uid": "uid-1",
+                        "platform": "Douyin",
+                        "nickname": "dy",
+                        "remark": "main",
+                        "subName": "sub",
+                        "isLogin": 1,
+                    },
+                    {"uid": "uid-2", "platform": "Custom", "isLogin": False},
+                ]
+            }
+
+    accounts = asyncio.run(cdp._read_accounts(GoodDriver()))
+    assert accounts[0].platform == "douyin"
+    assert accounts[0].sub_name == "sub"
+    assert accounts[0].is_login is True
+    assert accounts[1].platform == "Custom"
+
+    class ErrorDriver:
+        async def evaluate(self, *_args, **_kwargs):
+            return {"error": "CatBridge unavailable"}
+
+    with pytest.raises(cdp.XiaoVmaoUnavailableError, match="CatBridge unavailable"):
+        asyncio.run(cdp._read_accounts(ErrorDriver()))
+
+
+def test_login_driver_target_selection_and_click_failures(monkeypatch):
+    class MainDriver:
+        def fetch_targets(self):
+            return [
+                cdp.Target("old", "page", "https://creator.douyin.com/login", "ws://old"),
+                cdp.Target("new", "webview", "https://creator.douyin.com/login", "ws://new"),
+            ]
+
+    class PageDriver:
+        def __init__(self):
+            self.target: cdp.Target | None = None
+
+        async def connect_to_target(self, target):
+            self.target = target
+
+    pages: list[PageDriver] = []
+
+    def factory():
+        page = PageDriver()
+        pages.append(page)
+        return page
+
+    driver = cdp.XiaoVmaoLoginDriver(driver_factory=factory)
+    page = asyncio.run(
+        driver.wait_for_login_target(
+            MainDriver(),
+            "douyin",
+            before_targets={"ws://old"},
+            timeout_seconds=1,
+        )
+    )
+    assert page.target.ws_url == "ws://new"
+
+    existing = asyncio.run(driver.connect_existing_login_target(MainDriver(), "douyin"))
+    assert existing is not None
+    assert existing.target.ws_url == "ws://old"
+    assert driver._matching_login_target([], "unknown") is None
+
+    with pytest.raises(cdp.XiaoVmaoUnavailableError, match="未找到可点击文本"):
+        asyncio.run(cdp.XiaoVmaoLoginDriver().click_visible_text(_FakeLoginPage({"ok": False}), "添加账号"))
+
+
+def test_login_driver_capture_qr_reload_and_existing_uid(monkeypatch):
+    page = _FakeLoginPage({"expired": True}, {"qr_image": "data:image/png;base64,new"})
+    driver = cdp.XiaoVmaoLoginDriver()
+
+    assert asyncio.run(driver.capture_qr_image(page)) == "data:image/png;base64,new"
+    assert page.sent == [("Page.reload", {"ignoreCache": True})]
+
+    class MainDriver:
+        def __init__(self):
+            self.connected = False
+            self.closed = False
+
+        async def connect(self):
+            self.connected = True
+
+        def fetch_targets(self):
+            return []
+
+        async def close(self):
+            self.closed = True
+
+    main = MainDriver()
+
+    async def fake_read_accounts(_driver):
+        return [PlatformAccount(uid="target", platform="douyin", nickname="dy", is_login=True)]
+
+    monkeypatch.setattr(cdp, "_read_accounts", fake_read_accounts)
+    account = asyncio.run(
+        cdp.XiaoVmaoLoginDriver(driver_factory=lambda: main).run_login(
+            platform="douyin",
+            xiaovmao_uid="target",
+            emit=lambda _event: None,
+        )
+    )
+
+    assert account.uid == "target"
+    assert main.connected is True
+    assert main.closed is True
+
+
+def test_drive_publish_partial_failure_and_success(monkeypatch):
+    monkeypatch.setattr(cdp, "_new_local_id", lambda: "local-fixed")
+
+    async def fake_create(_driver, task):
+        if task["platform"] == "Douyin":
+            return None
+        raise cdp.XiaoVmaoUnavailableError("桥接失败")
+
+    async def fake_wait(_driver, task, *, scheduled):
+        assert scheduled is True
+        return {"localId": task["localId"], "status": 6, "shareUrl": "https://share"}
+
+    monkeypatch.setattr(cdp, "_create_publish_task", fake_create)
+    monkeypatch.setattr(cdp, "_wait_for_publish_record", fake_wait)
+
+    outcome = asyncio.run(
+        cdp._drive_publish(
+            object(),
+            PublishPayload(
+                title="t",
+                platforms=("douyin", "kuaishou", "xiaohongshu"),
+                video_uri="/v.mp4",
+                scheduled_at=datetime(2026, 7, 3, 10, tzinfo=timezone.utc),
+            ),
+            [
+                PlatformAccount(uid="dy", platform="douyin", is_login=True),
+                PlatformAccount(uid="ks", platform="kuaishou", is_login=True),
+            ],
+        )
+    )
+
+    assert outcome.success is False
+    assert outcome.scheduled is True
+    assert outcome.external_task_id == "local-fixed"
+    assert outcome.results[0]["success"] is True
+    assert outcome.results[0]["url"] == "https://share"
+    assert outcome.results[1]["error"] == "桥接失败"
+    assert "小红书未匹配到已登录账号" in (outcome.error_message or "")
+
+
+def test_login_manager_success_binding_failure_cancel_and_sweep(monkeypatch):
+    class SuccessfulLoginDriver:
+        async def run_login(self, **kwargs):
+            kwargs["emit"](c.LoginStreamEvent(type="status", status="verifying", detail="扫码"))
+            return PlatformAccount(uid="uid", platform="douyin", nickname="dy", is_login=True)
+
+    account = c.PublishAccount(
+        id="acct_1",
+        client_id="client_1",
+        platform="douyin",
+        account_name="dy",
+    )
+    updated = account.model_copy(update={"xiaovmao_uid": "uid", "login_state": "logged_in"})
+    manager = cdp.XiaoVmaoLoginManager(driver_factory=lambda: SuccessfulLoginDriver())
+
+    manager.begin("login_success", account, on_account=lambda _platform_account: updated)
+    events: list[c.LoginStreamEvent] = []
+    for _ in range(5):
+        event = manager.next_event("login_success", timeout=1)
+        if event is not None:
+            events.append(event)
+        if any(seen.type == "account" for seen in events):
+            break
+
+    assert manager.poll("login_success").status == "active"
+    assert [event.type for event in events][-2:] == ["status", "account"]
+
+    manager.begin("login_missing", account, on_account=lambda _platform_account: None)
+    for _ in range(5):
+        if manager.poll("login_missing").status == "failed":
+            break
+        manager.next_event("login_missing", timeout=1)
+    assert "未持久化" in (manager.poll("login_missing").detail or "")
+
+    assert manager.cancel("login_success") is True
+    assert manager.cancel("missing") is False
+    assert manager.next_event("login_success", timeout=0) is None
+
+    manager._sessions["stale"] = cdp.LoginSessionSnapshot(
+        login_id="stale",
+        account_id="acct_1",
+        platform="douyin",
+        status="pending",
+    )
+    manager._events["stale"] = cdp.queue.Queue()
+    manager._cancel["stale"] = cdp.threading.Event()
+    manager._started["stale"] = cdp.time.time() - manager._SESSION_TTL_SECONDS - 1
+    manager._sweep()
+    assert manager.poll("stale") is None
+
+
+def test_run_async_bridges_from_existing_event_loop():
+    async def inner():
+        return cdp._run_async(lambda: _async_value("ok"))
+
+    async def failing_inner():
+        return cdp._run_async(lambda: _async_failure())
+
+    assert asyncio.run(inner()) == "ok"
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(failing_inner())
+
+
+async def _async_value(value):
+    return value
+
+
+async def _async_failure():
+    raise RuntimeError("boom")

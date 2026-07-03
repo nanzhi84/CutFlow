@@ -8,7 +8,7 @@ from fastapi import Request
 from packages.ai.gateway import SqlAlchemyProviderRepository
 from packages.ai.prompts import SqlAlchemyPromptRepository
 from packages.core import contracts as c
-from packages.core.auth import AuthService, SqlAlchemyAuthService
+from packages.core.auth import SqlAlchemyAuthService
 from packages.core.storage import ObjectStore, Repository
 from packages.core.storage.secret_store import SecretStore
 from packages.core.storage.sqlalchemy_idempotency import SqlAlchemyIdempotencyRepository
@@ -52,7 +52,7 @@ def secret_store(request: Request) -> SecretStore:
     return request.app.state.secret_store
 
 
-def auth(request: Request) -> AuthService | SqlAlchemyAuthService:
+def auth(request: Request) -> SqlAlchemyAuthService:
     return request.app.state.auth_service
 
 

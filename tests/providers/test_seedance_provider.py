@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import httpx
+import pytest
 
-from packages.ai.gateway.provider_gateway import ProviderCall, ProviderGateway, SandboxProvider
+from packages.ai.gateway.provider_gateway import (
+    ProviderCall,
+    ProviderGateway,
+    ProviderRuntimeError,
+    SandboxProvider,
+)
+from packages.ai.providers import seedance as seedance_mod
 from packages.core.contracts import (
     ErrorCode,
     ProviderOptionsSchemaRef,
@@ -475,6 +483,198 @@ def test_seedance_failed_task_surfaces_error(tmp_path):
     assert result is None
     assert invocation.status == ProviderStatus.failed
     assert invocation.error and invocation.error.code == ErrorCode.provider_remote_failed
+
+
+def test_seedance_validation_submit_timeout_and_missing_result(tmp_path, monkeypatch):
+    monkeypatch.setattr(seedance_mod.time, "sleep", lambda _seconds: None)
+
+    def invoke(handler, *, default_options: dict | None = None, input_payload: dict | None = None):
+        repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+        secret_ref = gateway.secret_store.put("ark-key")  # type: ignore[union-attr]
+        profile = _profile(repository, secret_ref, default_options=default_options)
+        return gateway.invoke(
+            ProviderCall(
+                provider_profile_id=profile.id,
+                capability_id="video.generate",
+                input=input_payload if input_payload is not None else {"prompt": "门头特写"},
+            )
+        )
+
+    invocation, result = invoke(
+        lambda request: httpx.Response(500, text="should not call"),
+        input_payload={},
+    )
+    assert result is None
+    assert invocation.error and invocation.error.message == "Seedance generation requires a prompt."
+
+    invocation, result = invoke(lambda request: httpx.Response(200, json={}))
+    assert result is None
+    assert invocation.error and invocation.error.message == "Seedance submit response missing task id."
+
+    def running_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == _TASKS:
+            return httpx.Response(200, json={"id": "cgt-timeout"})
+        return httpx.Response(200, json={"id": "cgt-timeout", "status": "running"})
+
+    invocation, result = invoke(
+        running_handler,
+        default_options={"poll_interval": 0, "poll_max_attempts": 1},
+    )
+    assert result is None
+    assert invocation.status == ProviderStatus.timed_out
+    assert invocation.error and invocation.error.code == ErrorCode.provider_timeout
+
+    def no_video_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == _TASKS:
+            return httpx.Response(200, json={"id": "cgt-no-video"})
+        return httpx.Response(200, json={"id": "cgt-no-video", "status": "succeeded"})
+
+    invocation, result = invoke(no_video_handler)
+    assert result is None
+    assert invocation.error and invocation.error.message == (
+        "Seedance task succeeded but returned no video_url."
+    )
+
+
+def test_seedance_helper_edges_for_body_auth_resources_and_usage():
+    body = seedance_mod.ArkSeedanceProvider._build_body(
+        model_id="seedance-1",
+        prompt="广告片",
+        references=[{"type": "image_url", "image_url": {"url": "https://x/ref.png"}}],
+        ratio="9:16",
+        resolution="720p",
+        duration=5,
+        generate_audio=False,
+        param_style="prompt_suffix",
+    )
+    assert body == {
+        "model": "seedance-1",
+        "content": [
+            {"type": "text", "text": "广告片 --rt 9:16 --rs 720p --dur 5"},
+            {"type": "image_url", "image_url": {"url": "https://x/ref.png"}},
+        ],
+        "generate_audio": False,
+    }
+
+    provider = seedance_mod.ArkSeedanceProvider(httpx.Client())
+    call = ProviderCall(
+        provider_profile_id="p",
+        capability_id="video.generate",
+        input={"references": ["bad", {"uri": ""}, {"uri": "https://x/ref.mp4", "kind": "video"}]},
+    )
+    context = SimpleNamespace(profile=SimpleNamespace(default_options={}))
+    assert provider._reference_content(context, call) == [
+        {"type": "video_url", "video_url": {"url": "https://x/ref.mp4"}, "role": "reference_video"}
+    ]
+
+    assert seedance_mod.ArkSeedanceProvider._result_video_url(
+        {"data": {"content": {"videoUrl": "https://files.example/v.mp4"}}}
+    ) == "https://files.example/v.mp4"
+    assert seedance_mod.ArkSeedanceProvider._result_video_url({"content": {"url": "ftp://bad"}}) is None
+    assert seedance_mod.ArkSeedanceProvider._usage_tokens(
+        {"data": {"usage": {"totalTokens": 10, "outputTokens": 4}}}
+    ) == (6, 4)
+    assert seedance_mod.ArkSeedanceProvider._usage_tokens(
+        {"usage": {"promptTokens": "-1", "completionTokens": "bad"}}
+    ) == (0, 0)
+
+    auto_context = SimpleNamespace(profile=SimpleNamespace(default_options={}))
+    assert seedance_mod.ArkSeedanceProvider._use_access_key_auth("ak:sk", auto_context) is True
+    assert seedance_mod.ArkSeedanceProvider._use_access_key_auth("api-key", auto_context) is False
+    bearer_context = SimpleNamespace(profile=SimpleNamespace(default_options={"auth_type": "bearer"}))
+    assert seedance_mod.ArkSeedanceProvider._use_access_key_auth("ak:sk", bearer_context) is False
+    endpoint_context = SimpleNamespace(
+        profile=SimpleNamespace(default_options={"endpoint_id": "ep-configured"}, model_id="")
+    )
+    assert seedance_mod.ArkSeedanceProvider._api_key_resource(endpoint_context) == (
+        "endpoint",
+        "ep-configured",
+        None,
+    )
+    empty_context = SimpleNamespace(profile=SimpleNamespace(default_options={}, model_id=""))
+    with pytest.raises(ProviderRuntimeError) as exc_info:
+        seedance_mod.ArkSeedanceProvider._api_key_resource(empty_context)
+    assert exc_info.value.code == ErrorCode.provider_unsupported_option
+
+
+def test_seedance_openapi_error_mapping_and_api_key_cache(tmp_path, media_fixture_factory):
+    def invoke(handler, *, model_id: str = "ep-seedance", default_options: dict | None = None):
+        repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+        secret_ref = gateway.secret_store.put("AKLTxxx:sk-secret")  # type: ignore[union-attr]
+        profile = _profile(
+            repository,
+            secret_ref,
+            model_id=model_id,
+            default_options=default_options,
+        )
+        return gateway.invoke(
+            ProviderCall(
+                provider_profile_id=profile.id,
+                capability_id="video.generate",
+                input={"prompt": "门头特写"},
+            )
+        )
+
+    cases = [
+        ("InvalidParameter.ProjectName", ErrorCode.provider_unsupported_option),
+        ("AccessDenied", ErrorCode.provider_auth_failed),
+        ("InternalError", ErrorCode.provider_remote_failed),
+    ]
+    for error_code, expected in cases:
+        def handler(request: httpx.Request, error_code=error_code) -> httpx.Response:
+            if request.url.host == "ark.cn-beijing.volcengineapi.com":
+                return httpx.Response(
+                    200,
+                    json={"ResponseMetadata": {"Error": {"Code": error_code, "Message": "bad"}}},
+                )
+            return httpx.Response(404, text=str(request.url))
+
+        invocation, result = invoke(handler)
+        assert result is None
+        assert invocation.error and invocation.error.code == expected
+
+    def missing_api_key_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "ark.cn-beijing.volcengineapi.com":
+            return httpx.Response(200, json={"Result": {}})
+        return httpx.Response(404, text=str(request.url))
+
+    invocation, result = invoke(missing_api_key_handler)
+    assert result is None
+    assert invocation.error and invocation.error.code == ErrorCode.provider_auth_failed
+
+    calls = 0
+    result_video = media_fixture_factory.video(duration_sec=1.0, filename="seedance-cache.mp4")
+
+    def cached_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        if str(request.url) == "https://files.example/cache.mp4":
+            return httpx.Response(200, content=result_video.read_bytes())
+        if request.url.host == "ark.cn-beijing.volcengineapi.com":
+            calls += 1
+            return httpx.Response(200, json={"Result": {"ApiKey": "tmp-key", "ExpiredTime": 9999999999}})
+        if request.url.path == _TASKS:
+            return httpx.Response(200, json={"id": f"cgt-cache-{calls}"})
+        return httpx.Response(
+            200,
+            json={
+                "id": f"cgt-cache-{calls}",
+                "status": "succeeded",
+                "content": {"video_url": "https://files.example/cache.mp4"},
+            },
+        )
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(cached_handler))
+    secret_ref = gateway.secret_store.put("AKLTxxx:sk-secret")  # type: ignore[union-attr]
+    profile = _profile(repository, secret_ref, model_id="ep-seedance")
+    for index in range(2):
+        gateway.invoke(
+            ProviderCall(
+                provider_profile_id=profile.id,
+                capability_id="video.generate",
+                input={"prompt": f"门头特写 {index}"},
+            )
+        )
+    assert calls == 1
 
 
 def test_sandbox_supports_video_generate():

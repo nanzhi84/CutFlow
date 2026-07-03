@@ -80,6 +80,7 @@ class RecordingSqlAlchemyVoiceRepository:
         self.clone_called = False
         self.persisted_voices: list[str] = []
         self.preview_artifacts: list[str] = []
+        self.upserts: list[tuple[str, str]] = []
 
     def get_voice(self, voice_id: str) -> VoiceProfile | None:
         return self.voices.get(voice_id)
@@ -88,6 +89,29 @@ class RecordingSqlAlchemyVoiceRepository:
         self.persisted_voices.append(voice.id)
         self.voices[voice.id] = voice
         return voice
+
+    def upsert_voice(
+        self,
+        *,
+        voice_id: str,
+        display_name: str,
+        source: str,
+        provider_profile_id: str,
+        vendor: str,
+        status: str = "ready",
+    ) -> tuple[VoiceProfile, bool]:
+        created = voice_id not in self.voices
+        voice = VoiceProfile(
+            id=voice_id,
+            display_name=display_name,
+            source=source,
+            provider_profile_id=provider_profile_id,
+            vendor=vendor,
+            status=status,
+        )
+        self.voices[voice_id] = voice
+        self.upserts.append((voice_id, status))
+        return voice, created
 
     def update_provider_preview(self, voice_id: str, artifact: Artifact) -> ArtifactRef:
         self.preview_artifacts.append(artifact.id)
@@ -162,6 +186,41 @@ class RecordingVoiceBuildProvider:
         )
 
 
+class VoiceOperationsProvider:
+    provider_id = "fake.voiceops"
+
+    def __init__(self) -> None:
+        self.calls: list[ProviderCall] = []
+
+    def invoke(self, call: ProviderCall) -> ProviderResult:
+        self.calls.append(call)
+        operation = str(call.input.get("operation") or "")
+        if operation == "voice_list":
+            return ProviderResult(
+                output={
+                    "voices": [
+                        {
+                            "voice_id": "voice_remote_a",
+                            "display_name": "Remote A",
+                            "source": "designed",
+                            "status": "training",
+                        },
+                        {
+                            "voice_id": "voice_remote_b",
+                            "display_name": "",
+                            "source": "legacy-source",
+                            "status": "mystery",
+                        },
+                        {"voice_id": ""},
+                        "not a dict",
+                    ]
+                }
+            )
+        if operation == "train_status":
+            return ProviderResult(output={"status": "ready"})
+        raise AssertionError(f"unexpected voice operation: {operation}")
+
+
 def test_sqlalchemy_voice_preview_uses_gateway_and_persists_provider_artifact():
     with TestClient(create_app()) as client:
         _login_admin(client)
@@ -209,6 +268,85 @@ def test_sqlalchemy_voice_clone_uses_gateway_and_persist_provider_voice():
         assert media_repository.persisted_voices == ["voice_provider_clone"]
         assert "upl_voice_db" in repository.uploads
         assert [call.input["operation"] for call in provider.calls] == ["clone"]
+
+
+def test_sync_voices_normalizes_provider_voice_list():
+    with TestClient(create_app()) as client:
+        _login_admin(client)
+        repository = client.app.state.repository
+        media_repository = RecordingSqlAlchemyVoiceRepository()
+        provider = VoiceOperationsProvider()
+        client.app.state.sqlalchemy_media_repository = media_repository
+        client.app.state.provider_gateway.register(provider)
+        repository.provider_profiles["fake.voiceops.default"] = _profile(
+            "fake.voiceops", "tts.speech", "fake-voiceops"
+        )
+
+        response = client.post(
+            "/api/voices/sync",
+            json={"provider_profile_id": "fake.voiceops.default"},
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["imported"] == 2
+        assert body["updated"] == 0
+        assert body["total"] == 2
+        assert [call.input["operation"] for call in provider.calls] == ["voice_list"]
+        assert media_repository.voices["voice_remote_a"].source == "designed"
+        assert media_repository.voices["voice_remote_a"].status == "training"
+        assert media_repository.voices["voice_remote_b"].display_name == "voice_remote_b"
+        assert media_repository.voices["voice_remote_b"].source == "cloned"
+        assert media_repository.voices["voice_remote_b"].status == "ready"
+        assert media_repository.voices["voice_remote_b"].vendor == "fake"
+
+
+def test_refresh_training_voice_status_uses_provider_train_status():
+    with TestClient(create_app()) as client:
+        _login_admin(client)
+        repository = client.app.state.repository
+        media_repository = RecordingSqlAlchemyVoiceRepository()
+        media_repository.voices["voice_training"] = VoiceProfile(
+            id="voice_training",
+            display_name="Training voice",
+            source="cloned",
+            provider_profile_id="fake.voiceops.default",
+            vendor="fake",
+            status="training",
+        )
+        provider = VoiceOperationsProvider()
+        client.app.state.sqlalchemy_media_repository = media_repository
+        client.app.state.provider_gateway.register(provider)
+        repository.provider_profiles["fake.voiceops.default"] = _profile(
+            "fake.voiceops", "tts.speech", "fake-voiceops"
+        )
+
+        response = client.post("/api/voices/voice_training/refresh-status")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "ready"
+        assert [call.input["operation"] for call in provider.calls] == ["train_status"]
+        assert media_repository.upserts == [("voice_training", "ready")]
+
+
+def test_voice_preview_fails_fast_when_sandbox_fallback_is_disabled(monkeypatch):
+    monkeypatch.setenv("CUTAGENT_ALLOW_SANDBOX_FALLBACK", "0")
+    with TestClient(create_app()) as client:
+        _login_admin(client)
+        media_repository = RecordingSqlAlchemyVoiceRepository()
+        media_repository.voices["voice_no_provider"] = VoiceProfile(
+            id="voice_no_provider",
+            display_name="No provider",
+            source="cloned",
+            provider_profile_id="missing.tts.default",
+        )
+        client.app.state.sqlalchemy_media_repository = media_repository
+
+        response = client.post("/api/voices/voice_no_provider/preview", json={"text": "试听"})
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "provider.unsupported_option"
+        assert media_repository.preview_called is False
 
 
 class StaticHydrateSession:

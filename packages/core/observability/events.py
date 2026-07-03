@@ -406,6 +406,8 @@ def _update_sqlalchemy_outbox_lag(session: Session, now) -> None:
         return
     from packages.core.observability.telemetry import OUTBOX_LAG
 
+    if oldest.tzinfo is None and now.tzinfo is not None:
+        oldest = oldest.replace(tzinfo=now.tzinfo)
     OUTBOX_LAG.set(max(0, (now - oldest).total_seconds()))
 
 

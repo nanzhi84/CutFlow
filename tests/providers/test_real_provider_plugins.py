@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import base64
 import httpx
+import pytest
 
 from packages.ai.gateway.provider_gateway import ProviderCall, ProviderGateway
+from packages.ai.gateway.provider_gateway import ProviderRuntimeError
+from packages.ai.providers import dashscope as dashscope_mod
+from packages.ai.providers import minimax as minimax_mod
+from packages.ai.providers import openai_image as openai_image_mod
 from packages.core.contracts import (
     ErrorCode,
     ProviderOptionsSchemaRef,
@@ -549,6 +555,219 @@ def test_minimax_voice_clone_uploads_reference_and_generates_preview(tmp_path, m
     assert requests == ["/v1/files/upload", "/v1/voice_clone", "/v1/t2a_v2"]
 
 
+def test_minimax_voice_list_filters_account_voices(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/v1/get_voice"
+        assert request.headers["authorization"] == "Bearer minimax-key"
+        assert __import__("json").loads(request.content) == {"voice_type": "all"}
+        return httpx.Response(
+            200,
+            json={
+                "base_resp": {"status_code": 0},
+                "voice_cloning": [
+                    {"voice_id": "clone-1", "voice_name": "Boss"},
+                    {"voice_id": "clone-2"},
+                    {"voice_id": ""},
+                    "bad item",
+                ],
+                "voice_generation": [
+                    {"voice_id": "design-1", "voice_name": "Designed"},
+                ],
+            },
+        )
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+    secret_ref = gateway.secret_store.put("minimax-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="minimax.tts",
+        capability="tts.speech",
+        model_id="speech-02-hd",
+        secret_ref=secret_ref,
+        default_options={"base_url": "https://api.minimaxi.com/v1"},
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            provider_profile_id=profile.id,
+            capability_id="tts.speech",
+            input={"operation": "voice_list"},
+        )
+    )
+
+    assert invocation.status == ProviderStatus.succeeded
+    assert result is not None
+    assert result.output["voices"] == [
+        {"voice_id": "clone-1", "display_name": "Boss", "source": "cloned"},
+        {"voice_id": "clone-2", "display_name": "clone-2", "source": "cloned"},
+        {"voice_id": "design-1", "display_name": "Designed", "source": "designed"},
+    ]
+
+
+def test_minimax_validation_and_provider_base_resp_errors(tmp_path):
+    def profile_for(transport: httpx.MockTransport, *, default_options: dict | None = None):
+        repository, gateway = _gateway(tmp_path, transport)
+        secret_ref = gateway.secret_store.put("minimax-key")  # type: ignore[union-attr]
+        profile = _profile(
+            repository,
+            provider_id="minimax.tts",
+            capability="tts.speech",
+            model_id="speech-02-hd",
+            secret_ref=secret_ref,
+            default_options=default_options or {},
+        )
+        return gateway, profile
+
+    gateway, profile = profile_for(httpx.MockTransport(lambda request: httpx.Response(500)))
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            provider_profile_id=profile.id,
+            capability_id="tts.speech",
+            input={"operation": "unknown"},
+        )
+    )
+    assert result is None
+    assert invocation.error and invocation.error.code == ErrorCode.provider_unsupported_option
+
+    gateway, profile = profile_for(httpx.MockTransport(lambda request: httpx.Response(500)))
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            provider_profile_id=profile.id,
+            capability_id="tts.speech",
+            input={"text": "hello", "voice_id": "voice-1"},
+        )
+    )
+    assert result is None
+    assert invocation.error and invocation.error.message == "MiniMax group_id is required."
+
+    gateway, profile = profile_for(
+        httpx.MockTransport(lambda request: httpx.Response(500)),
+        default_options={"group_id": "group-1"},
+    )
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            provider_profile_id=profile.id,
+            capability_id="tts.speech",
+            input={"voice_id": "voice-1"},
+        )
+    )
+    assert result is None
+    assert invocation.error and invocation.error.message == "Text and voice_id are required."
+
+    cases = [
+        (1004, ErrorCode.provider_auth_failed),
+        ("1002", ErrorCode.provider_quota_exceeded),
+        (1008, ErrorCode.provider_quota_exceeded),
+        (7001, ErrorCode.provider_remote_failed),
+    ]
+    for status_code, expected in cases:
+        gateway, profile = profile_for(
+            httpx.MockTransport(
+                lambda request, status_code=status_code: httpx.Response(
+                    200,
+                    json={
+                        "base_resp": {
+                            "status_code": status_code,
+                            "status_msg": f"MiniMax {status_code}",
+                        }
+                    },
+                )
+            ),
+            default_options={"group_id": "group-1"},
+        )
+        invocation, result = gateway.invoke(
+            ProviderCall(
+                provider_profile_id=profile.id,
+                capability_id="tts.speech",
+                input={"text": "hello", "voice_id": "voice-1"},
+            )
+        )
+        assert result is None
+        assert invocation.error and invocation.error.code == expected
+        assert str(status_code) in invocation.error.message
+
+
+def test_minimax_audio_and_clone_validation_edges(tmp_path):
+    def invoke_with(handler, input_payload, *, default_options: dict | None = None):
+        repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+        secret_ref = gateway.secret_store.put("minimax-key")  # type: ignore[union-attr]
+        profile = _profile(
+            repository,
+            provider_id="minimax.tts",
+            capability="tts.speech",
+            model_id="speech-02-hd",
+            secret_ref=secret_ref,
+            default_options=default_options or {"group_id": "group-1"},
+        )
+        return gateway.invoke(
+            ProviderCall(
+                provider_profile_id=profile.id,
+                capability_id="tts.speech",
+                input=input_payload,
+            )
+        )
+
+    invocation, result = invoke_with(
+        lambda request: httpx.Response(200, json={"base_resp": {"status_code": 0}, "data": {}}),
+        {"text": "hello", "voice_id": "voice-1"},
+    )
+    assert result is None
+    assert invocation.error and invocation.error.message == "MiniMax TTS response missing audio."
+
+    invocation, result = invoke_with(
+        lambda request: httpx.Response(
+            200, json={"base_resp": {"status_code": 0}, "data": {"audio": "not-hex"}}
+        ),
+        {"text": "hello", "voice_id": "voice-1"},
+    )
+    assert result is None
+    assert invocation.error and invocation.error.message == "MiniMax TTS audio is invalid."
+
+    invocation, result = invoke_with(
+        lambda request: httpx.Response(500),
+        {"operation": "clone"},
+    )
+    assert result is None
+    assert invocation.error and invocation.error.message == "Reference audio is required."
+
+    reference_path = tmp_path / "too-large.wav"
+    reference_path.write_bytes(b"larger than one byte")
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(lambda request: httpx.Response(500)))
+    stored_ref = store_file(gateway.object_store, reference_path, purpose="voice-reference")  # type: ignore[arg-type]
+    secret_ref = gateway.secret_store.put("minimax-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="minimax.tts",
+        capability="tts.speech",
+        model_id="speech-02-hd",
+        secret_ref=secret_ref,
+        default_options={"group_id": "group-1", "clone_max_bytes": 1},
+    )
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            provider_profile_id=profile.id,
+            capability_id="tts.speech",
+            input={"operation": "clone", "reference_audio_uri": stored_ref.ref.uri},
+        )
+    )
+    assert result is None
+    assert invocation.error and invocation.error.message == "Reference audio file is too large."
+
+
+def test_minimax_helpers_strip_audio_and_generate_safe_voice_ids(monkeypatch):
+    monkeypatch.setattr(minimax_mod.time, "time", lambda: 1234567890)
+
+    assert minimax_mod._usage_safe({"data": {"audio": "hex-secret", "duration": 1000}}) == {
+        "duration": 1000
+    }
+    assert minimax_mod._usage_safe({"data": "not a dict"}) == {}
+    assert minimax_mod._generate_voice_id("123 bad name", prefix="clone") == "clone_v123badnam_1234567890"
+    generated = minimax_mod._generate_voice_id("中文名", prefix="voice")
+    assert generated.startswith("voice_")
+    assert generated.endswith("_1234567890")
+
+
 def test_dashscope_asr_uses_async_transcription_task_and_downloads_alignment(tmp_path):
     requests: list[str] = []
     poll_count = 0
@@ -649,12 +868,15 @@ def test_dashscope_asr_uses_async_transcription_task_and_downloads_alignment(tmp
     ]
 
 
-def test_dashscope_llm_uses_compatible_chat_base_url_and_options(tmp_path):
+def test_dashscope_llm_uses_compatible_chat_base_url_and_ignores_legacy_max_tokens(tmp_path):
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
         assert request.url.path == "/compatible-mode/v1/chat/completions"
         assert request.headers["authorization"] == "Bearer dashscope-key"
         body = __import__("json").loads(request.content)
+        # ``max_tokens`` used to be pinned on seeded DashScope profiles; the
+        # unbounded qwen3.7 path must not forward that stale limiter.
+        assert "max_tokens" not in body
         assert body == {
             "model": "qwen3.7-plus",
             "messages": [{"role": "user", "content": "Return JSON."}],
@@ -702,12 +924,51 @@ def test_dashscope_llm_uses_compatible_chat_base_url_and_options(tmp_path):
     assert result.output_tokens == 7
 
 
+def test_dashscope_llm_invalid_json_returns_text_intent(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "plain non-json answer"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 4},
+            },
+        )
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+    secret_ref = gateway.secret_store.put("dashscope-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="dashscope.llm",
+        capability="llm.chat",
+        model_id="qwen3.7-plus",
+        secret_ref=secret_ref,
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            provider_profile_id=profile.id,
+            capability_id="llm.chat",
+            input={"messages": [{"role": "user", "content": "Return JSON."}]},
+        )
+    )
+
+    assert invocation.status == ProviderStatus.succeeded
+    assert result is not None
+    assert result.output == {
+        "content": "plain non-json answer",
+        "intent": {"text": "plain non-json answer"},
+    }
+    assert result.input_tokens == 5
+    assert result.output_tokens == 4
+
+
 def test_dashscope_vlm_uses_openai_compatible_multimodal_payload(tmp_path):
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
         assert request.url.path == "/compatible-mode/v1/chat/completions"
         assert request.headers["authorization"] == "Bearer dashscope-key"
         body = __import__("json").loads(request.content)
+        assert "max_tokens" not in body
         assert body == {
             "model": "qwen-vl-max-latest",
             "messages": [
@@ -802,6 +1063,165 @@ def test_dashscope_vlm_preserves_unparseable_content(tmp_path):
     assert result is not None
     assert result.output["canonical"] == {}
     assert result.output["content"] == '{"segments": [{"start": 0.0}'
+
+
+def test_dashscope_asr_rejects_missing_audio_uri(tmp_path):
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(lambda request: httpx.Response(500)))
+    secret_ref = gateway.secret_store.put("dashscope-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="dashscope.asr",
+        capability="asr.transcribe",
+        model_id="paraformer-v2",
+        secret_ref=secret_ref,
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(provider_profile_id=profile.id, capability_id="asr.transcribe", input={})
+    )
+
+    assert result is None
+    assert invocation.error
+    assert invocation.error.code == ErrorCode.provider_unsupported_option
+    assert "audio_uri is required" in invocation.error.message
+
+
+def test_dashscope_asr_submit_and_task_output_must_include_required_urls(tmp_path):
+    cases = [
+        (
+            lambda request: httpx.Response(200, json={"output": {"task_status": "PENDING"}}),
+            "missing task ID",
+        ),
+        (
+            lambda request: httpx.Response(
+                200,
+                json=(
+                    {"output": {"task_id": "asr-1", "task_status": "PENDING"}}
+                    if request.url.path == "/api/v1/services/audio/asr/transcription"
+                    else {"output": {"task_id": "asr-1", "task_status": "SUCCEEDED"}}
+                ),
+            ),
+            "missing transcription_url",
+        ),
+    ]
+
+    for handler, expected_message in cases:
+        repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+        secret_ref = gateway.secret_store.put("dashscope-key")  # type: ignore[union-attr]
+        profile = _profile(
+            repository,
+            provider_id="dashscope.asr",
+            capability="asr.transcribe",
+            model_id="paraformer-v2",
+            secret_ref=secret_ref,
+            default_options={"poll_interval": 0, "poll_max_attempts": 1},
+        )
+
+        invocation, result = gateway.invoke(
+            ProviderCall(
+                provider_profile_id=profile.id,
+                capability_id="asr.transcribe",
+                input={"audio_uri": "https://media.example/speech.wav"},
+            )
+        )
+
+        assert result is None
+        assert invocation.error
+        assert invocation.error.code == ErrorCode.provider_remote_failed
+        assert expected_message in invocation.error.message
+
+
+def test_dashscope_task_polling_failure_timeout_and_helper_parsing(monkeypatch):
+    monkeypatch.setattr(dashscope_mod.time, "sleep", lambda _seconds: None)
+    failed_client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                json={"output": {"task_status": "FAILED", "message": "policy"}},
+            )
+        )
+    )
+    with pytest.raises(ProviderRuntimeError) as failed_exc:
+        dashscope_mod.poll_dashscope_task(
+            client=failed_client,
+            base_url="https://dashscope.aliyuncs.com/api/v1",
+            api_key="key",
+            task_id="task-1",
+            options={"poll_interval": 0, "poll_max_attempts": 1},
+            timeout_sec=30,
+        )
+    assert failed_exc.value.code == ErrorCode.provider_remote_failed
+    assert "policy" in failed_exc.value.message
+
+    timeout_client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json={"output": {"taskStatus": "RUNNING"}})
+        )
+    )
+    with pytest.raises(ProviderRuntimeError) as timeout_exc:
+        dashscope_mod.poll_dashscope_task(
+            client=timeout_client,
+            base_url="https://dashscope.aliyuncs.com/api/v1",
+            api_key="key",
+            task_id="task-2",
+            options={"poll_interval": 0, "poll_max_attempts": 1},
+            timeout_sec=30,
+        )
+    assert timeout_exc.value.code == ErrorCode.provider_timeout
+
+    assert dashscope_mod.task_id_from_payload({"id": "root-id"}) == "root-id"
+    assert dashscope_mod._task_status({"state": "FINISH"}) == "finish"
+    assert (
+        dashscope_mod._find_transcription_url({"nested": [{"transcriptionUrl": "https://x/asr.json"}]})
+        == "https://x/asr.json"
+    )
+    assert dashscope_mod._find_transcription_url("local/path.json") is None
+    assert dashscope_mod._duration_from_task_payload({"usage": {"duration": 1200}}) == 1.2
+    assert dashscope_mod._duration_from_task_payload({"usage": {"duration": 12}}) == 12
+    assert dashscope_mod._duration_from_task_payload({"usage": {"duration": ""}}) == 0
+    assert dashscope_mod._chat_url({"chat_completions_url": "https://x/chat"}) == "https://x/chat"
+    assert (
+        dashscope_mod._chat_url({"base_url": "https://x/compatible-mode/v1/chat/completions"})
+        == "https://x/compatible-mode/v1/chat/completions"
+    )
+    assert dashscope_mod._parse_json_object("```json\n{\"ok\": true}\n```") == {"ok": True}
+    assert dashscope_mod._parse_json_object("[1, 2]") == {}
+    assert dashscope_mod._message_content({"content": "fallback"}) == "fallback"
+    assert dashscope_mod._message_content({"text": "text fallback"}) == "text fallback"
+    assert dashscope_mod._usage({"usage": None}, "prompt_tokens") == 0
+
+
+def test_dashscope_transcription_payloads_cover_words_and_fallbacks():
+    text, segments = dashscope_mod._parse_transcription_payload(
+        {
+            "transcripts": {
+                "sentences": [
+                    {
+                        "words": [
+                            {"text": "你", "begin_time": 0, "end_time": 200},
+                            {"text": "好", "begin_time": 200, "end_time": 400, "punctuation": "。"},
+                            {"text": "", "punctuation": ""},
+                            "bad",
+                        ]
+                    },
+                    {"text": "尾句", "start": 0.4, "end": 0.3},
+                ],
+                "content": "你好。尾句",
+            }
+        }
+    )
+
+    assert text == "你好。尾句"
+    assert segments[0] == {"start": 0.0, "end": 0.4, "text": "你好。"}
+    assert segments[1]["text"] == "尾句"
+    assert segments[1]["end"] > segments[1]["start"]
+
+    fallback_text, fallback_segments = dashscope_mod._parse_transcription_payload(
+        {"content": "只有全文"}
+    )
+    assert fallback_text == "只有全文"
+    assert fallback_segments == [{"start": 0.0, "end": 0.0, "text": "只有全文"}]
+    assert dashscope_mod._transcripts_from_payload(["bad", {"sentence": []}]) == [{"sentence": []}]
 
 
 def test_runninghub_heygem_records_external_job_and_stores_polled_video(
@@ -2029,3 +2449,172 @@ def test_openai_image_requires_active_secret(tmp_path):
     # No active secret -> gateway rejects before any network call (no spend).
     assert result is None
     assert invocation.error and invocation.error.code == ErrorCode.provider_auth_failed
+
+
+def test_openai_image_rejects_missing_prompt_bad_payloads_and_invalid_cover(tmp_path):
+    def profile_for(handler):
+        repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+        secret_ref = gateway.secret_store.put("image-key")  # type: ignore[union-attr]
+        profile = _profile(
+            repository,
+            provider_id="openai.image",
+            capability="image.generate",
+            model_id="gpt-image-1",
+            secret_ref=secret_ref,
+            default_options={"base_url": "https://example.invalid/v1"},
+        )
+        return gateway, profile
+
+    gateway, profile = profile_for(lambda request: httpx.Response(500, text="should not call"))
+    invocation, result = gateway.invoke(
+        ProviderCall(provider_profile_id=profile.id, capability_id="image.generate", input={})
+    )
+    assert result is None
+    assert invocation.error and invocation.error.message == "Image prompt is required."
+
+    cases = [
+        ({"data": [{}]}, "Image provider returned no image data."),
+        ({"data": [{"b64_json": "x"}]}, "Image provider returned invalid base64."),
+        (
+            {"data": [{"b64_json": base64.b64encode(b"not an image").decode("ascii")}]},
+            "Image provider returned a cover that could not be normalized to 9:16.",
+        ),
+    ]
+    for payload, expected_message in cases:
+        gateway, profile = profile_for(lambda request, payload=payload: httpx.Response(200, json=payload))
+        invocation, result = gateway.invoke(
+            ProviderCall(
+                provider_profile_id=profile.id,
+                capability_id="image.generate",
+                input={"prompt": "cover"},
+            )
+        )
+        assert result is None
+        assert invocation.error and invocation.error.message == expected_message
+
+
+def test_openai_image_invalid_reference_falls_back_without_request_artifact(tmp_path):
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/v1/images/generations":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [{"b64_json": base64.b64encode(_PNG_1x1).decode("ascii")}],
+                },
+            )
+        raise AssertionError(f"bad reference should not be sent to {request.url.path}")
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+    secret_ref = gateway.secret_store.put("image-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="openai.image",
+        capability="image.generate",
+        model_id="gpt-image-1",
+        secret_ref=secret_ref,
+        default_options={"base_url": "https://example.invalid/v1"},
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            provider_profile_id=profile.id,
+            capability_id="image.generate",
+            input={
+                "prompt": "cover",
+                "reference_image_b64": "data:image/png,not-base64",
+                "reference_filename": "bad.png",
+            },
+        )
+    )
+
+    assert invocation.status == ProviderStatus.succeeded
+    assert invocation.request_artifact_id is None
+    assert result is not None
+    assert result.output["reference_image_requested"] is True
+    assert result.output["reference_image_used"] is False
+    assert paths == ["/v1/images/generations"]
+
+
+def test_openai_image_helper_edges():
+    encoded = base64.b64encode(_PNG_1x1).decode("ascii")
+
+    assert openai_image_mod.OpenAIImageProvider._b64_to_bytes(
+        f"data:image/png;base64,{encoded}"
+    ) == _PNG_1x1
+    with pytest.raises(ProviderRuntimeError) as exc_info:
+        openai_image_mod.OpenAIImageProvider._b64_to_bytes("x")
+    assert exc_info.value.code == ErrorCode.provider_remote_failed
+
+    provider = openai_image_mod.OpenAIImageProvider(httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500))))
+    assert provider._url_to_bytes(f"data:image/png;base64,{encoded}", "key", None) == _PNG_1x1  # type: ignore[arg-type]
+
+    assert openai_image_mod._bool_option(" YES ") is True
+    assert openai_image_mod._bool_option("off") is False
+    assert openai_image_mod._bool_option(1) is True
+    assert openai_image_mod._reference_image_bytes(f"  {encoded}\n") == _PNG_1x1
+    assert openai_image_mod._reference_image_bytes(f"data:image/png;base64,{encoded}") == _PNG_1x1
+    assert openai_image_mod._reference_image_bytes("") is None
+    assert openai_image_mod._reference_image_bytes("data:image/png,not-base64") is None
+    assert openai_image_mod._reference_image_bytes("bad-base64") is None
+    assert openai_image_mod._image_data_uri("", "ref.png") is None
+    assert openai_image_mod._image_data_uri("data:image/jpeg;base64,abc", "ref.jpg") == "data:image/jpeg;base64,abc"
+    assert openai_image_mod._image_data_uri("bad-base64", "ref.png") is None
+    assert openai_image_mod._image_data_uri(encoded, "ref.jpg") == f"data:image/jpeg;base64,{encoded}"
+    assert openai_image_mod._clean_filename("https://cdn.example/path/ref.png?x=1", "fallback.png") == "ref.png"
+    assert openai_image_mod._clean_filename("", "fallback.png") == "fallback.png"
+
+
+def test_volcengine_seedream_access_key_validation_and_openapi_errors(tmp_path):
+    def invoke_seedream(handler, *, model_id: str = "doubao-seedream"):
+        repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+        secret_ref = gateway.secret_store.put("AKLTxxx:sk-secret")  # type: ignore[union-attr]
+        profile = _profile(
+            repository,
+            provider_id="volcengine.seedream",
+            capability="image.generate",
+            model_id=model_id,
+            secret_ref=secret_ref,
+            default_options={"base_url": "https://ark.cn-beijing.volces.com/api/v3"},
+        )
+        return gateway.invoke(
+            ProviderCall(
+                provider_profile_id=profile.id,
+                capability_id="image.generate",
+                input={"prompt": "cover"},
+            )
+        )
+
+    invocation, result = invoke_seedream(
+        lambda request: httpx.Response(500, text="should not call"),
+        model_id="",
+    )
+    assert result is None
+    assert invocation.error and invocation.error.code == ErrorCode.provider_unsupported_option
+
+    cases = [
+        ("InvalidParameter.ProjectName", ErrorCode.provider_unsupported_option),
+        ("AccessDenied", ErrorCode.provider_auth_failed),
+        ("InternalError", ErrorCode.provider_remote_failed),
+    ]
+    for error_code, expected in cases:
+        def handler(request: httpx.Request, error_code=error_code) -> httpx.Response:
+            if request.url.host == "ark.cn-beijing.volcengineapi.com":
+                return httpx.Response(
+                    200,
+                    json={"ResponseMetadata": {"Error": {"Code": error_code, "Message": "bad"}}},
+                )
+            return httpx.Response(404, text=str(request.url))
+
+        invocation, result = invoke_seedream(handler)
+        assert result is None
+        assert invocation.error and invocation.error.code == expected
+
+    def timeout_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.TimeoutException("slow", request=request)
+
+    invocation, result = invoke_seedream(timeout_handler)
+    assert result is None
+    assert invocation.error and invocation.error.code == ErrorCode.provider_timeout

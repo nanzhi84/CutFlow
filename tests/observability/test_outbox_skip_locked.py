@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import timedelta
 
 import anyio
 from sqlalchemy import create_engine, select
@@ -13,6 +14,7 @@ from packages.core.contracts import utcnow
 from packages.core.observability.events import (
     InProcessFanoutHub,
     SqlAlchemyOutboxDispatcher,
+    replay_sqlalchemy_outbox,
 )
 from packages.core.storage.database import OutboxEventRow
 
@@ -85,3 +87,97 @@ def test_claim_runs_under_sqlite_without_skip_locked_error() -> None:
             )
         )
     assert statuses == ["published", "published"]
+
+
+def test_dispatch_failure_keeps_row_pending_for_retry() -> None:
+    session_factory = _sqlite_session_factory()
+    run_id = "run_retry_outbox"
+    created_at = utcnow()
+    with session_factory() as session:
+        session.add(_make_row("evt_retry", run_id, created_at))
+        session.commit()
+
+    class FailingHub:
+        def publish(self, _run_id, _payload):
+            raise RuntimeError("fanout offline")
+
+    dispatcher = SqlAlchemyOutboxDispatcher(session_factory=session_factory, hub=FailingHub())
+
+    published = anyio.run(dispatcher.dispatch_once)
+
+    assert published == 0
+    with session_factory() as session:
+        row = session.get(OutboxEventRow, "evt_retry")
+        assert row.status == "pending"
+        assert row.attempts == 1
+        assert row.last_error == "fanout offline"
+        assert row.available_at >= row.created_at
+
+
+def test_replay_sqlalchemy_outbox_respects_cursor_and_ignores_non_dict_payloads() -> None:
+    session_factory = _sqlite_session_factory()
+    run_id = "run_replay_cursor"
+    created_at = utcnow()
+    with session_factory() as session:
+        first = _make_row("evt_replay_a", run_id, created_at)
+        second = _make_row("evt_replay_b", run_id, created_at + timedelta(seconds=1))
+        raw = _make_row("evt_replay_raw", run_id, created_at + timedelta(seconds=2))
+        raw.payload = "raw payload"
+        session.add_all([second, raw, first])
+        session.commit()
+
+    full = replay_sqlalchemy_outbox(
+        session_factory,
+        aggregate_type="run",
+        aggregate_id=run_id,
+        after_event_id="unknown_cursor",
+    )
+    after_first = replay_sqlalchemy_outbox(
+        session_factory,
+        aggregate_type="run",
+        aggregate_id=run_id,
+        after_event_id="evt_replay_a",
+    )
+
+    assert [event["event_id"] for event in full] == ["evt_replay_a", "evt_replay_b"]
+    assert [event["event_id"] for event in after_first] == ["evt_replay_b"]
+
+
+def test_dispatcher_run_loop_stops_cleanly_after_empty_poll() -> None:
+    session_factory = _sqlite_session_factory()
+    dispatcher = SqlAlchemyOutboxDispatcher(
+        session_factory=session_factory,
+        hub=InProcessFanoutHub(),
+        poll_interval_seconds=0.001,
+    )
+
+    async def run_and_stop() -> None:
+        async def stop_soon() -> None:
+            await anyio.sleep(0.002)
+            dispatcher.stop()
+
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(dispatcher.run)
+            task_group.start_soon(stop_soon)
+
+    anyio.run(run_and_stop)
+
+
+def test_replay_sqlalchemy_outbox_cursor_same_timestamp_uses_id_tiebreaker() -> None:
+    session_factory = _sqlite_session_factory()
+    run_id = "run_replay_same_timestamp"
+    created_at = utcnow()
+    with session_factory() as session:
+        session.add(_make_row("evt_same_a", run_id, created_at))
+        session.add(_make_row("evt_same_b", run_id, created_at))
+        session.add(_make_row("evt_same_c", run_id, created_at))
+        session.commit()
+
+    after_middle = replay_sqlalchemy_outbox(
+        session_factory,
+        aggregate_type="run",
+        aggregate_id=run_id,
+        after_event_id="evt_same_b",
+    )
+
+    assert [event["event_id"] for event in after_middle] == ["evt_same_c"]

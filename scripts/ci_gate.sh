@@ -23,6 +23,9 @@ OBJECTSTORE_BUCKET="${CUTAGENT_OBJECTSTORE_BUCKET:-cutagent-local}"
 EPHEMERAL_OBJECTSTORE_BUCKET="${CUTAGENT_EPHEMERAL_OBJECTSTORE_BUCKET:-cutagent-ephemeral}"
 # Node-local object store root for the default suite (no MinIO needed there).
 LOCAL_OBJECTSTORE_PATH="${CUTAGENT_LOCAL_OBJECTSTORE_PATH:-/tmp/cutagent-ci-objstore}"
+REPORT_DIR="${CUTAGENT_CI_REPORT_DIR:-.reports}"
+COVERAGE_MIN_LINE="${COVERAGE_MIN_LINE:-90}"
+COVERAGE_MIN_BRANCH="${COVERAGE_MIN_BRANCH:-74}"
 
 TIMEOUT_BIN=""
 if command -v timeout >/dev/null 2>&1; then
@@ -81,8 +84,17 @@ export CUTAGENT_DATABASE_URL="$DATABASE_URL"
 export CUTAGENT_OBJECTSTORE_BACKEND=local
 export CUTAGENT_LOCAL_OBJECTSTORE_PATH="$LOCAL_OBJECTSTORE_PATH"
 export CUTAGENT_DISABLE_BACKGROUND_DISPATCHER=1
+mkdir -p "$REPORT_DIR"
 "$PYTHON_BIN" scripts/bootstrap_database.py
-run_pytest
+run_pytest \
+  --cov=apps \
+  --cov=packages \
+  --cov-branch \
+  --cov-report=term-missing \
+  --cov-report=xml:"$REPORT_DIR/coverage.xml"
+COVERAGE_MIN_LINE="$COVERAGE_MIN_LINE" \
+COVERAGE_MIN_BRANCH="$COVERAGE_MIN_BRANCH" \
+"$PYTHON_BIN" scripts/check_coverage_thresholds.py "$REPORT_DIR/coverage.xml"
 
 # Production startup preflight gate (#70). Shared with the CI production-preflight
 # job via scripts/ci_preflight_gate.sh so the local and remote gates never drift.
@@ -96,6 +108,7 @@ git diff --exit-code apps/web/src/api/openapi.json
   npm ci
   npm run generate:api
   git diff --exit-code src/api/schema.d.ts
+  npm run test:ci
   npm run build
 )
 
@@ -156,4 +169,5 @@ CUTAGENT_EPHEMERAL_OBJECTSTORE_BUCKET="$EPHEMERAL_OBJECTSTORE_BUCKET" \
 CUTAGENT_EPHEMERAL_OBJECTSTORE_ACCESS_KEY="$OBJECTSTORE_ACCESS_KEY" \
 CUTAGENT_EPHEMERAL_OBJECTSTORE_SECRET_KEY="$OBJECTSTORE_SECRET_KEY" \
 CUTAGENT_EPHEMERAL_OBJECTSTORE_ADDRESSING_STYLE=path \
-run_pytest tests/temporal
+run_pytest --junitxml="$REPORT_DIR/temporal-pytest.xml" tests/temporal
+"$PYTHON_BIN" scripts/assert_no_pytest_skips.py "$REPORT_DIR/temporal-pytest.xml"

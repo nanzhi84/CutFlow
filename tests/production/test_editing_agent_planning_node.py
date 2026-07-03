@@ -238,11 +238,11 @@ def _run() -> WorkflowRun:
     )
 
 
-def _node_run() -> NodeRun:
+def _node_run(node_id: str = "EditingAgentPlanning") -> NodeRun:
     return NodeRun(
-        id="nr_editing",
+        id=f"nr_{node_id.lower()}",
         run_id="run_1",
-        node_id="EditingAgentPlanning",
+        node_id=node_id,
         node_version="v1",
         status=NodeStatus.running,
         input_manifest_hash="sha256:test",
@@ -305,6 +305,31 @@ def test_fallback_path_emits_four_frame_exact_artifacts(tmp_path):
     assert diagnostics["mode"] == "deterministic_fallback_no_provider"
     assert diagnostics["instruction"] == "尽量用穿搭相近的人像"
     assert {c["slot_id"] for c in diagnostics["portrait_choices"]} == {"pslot_000", "pslot_001"}
+
+
+def test_editing_agent_artifacts_feed_timeline_planning(tmp_path):
+    adapter = _adapter(tmp_path)
+    state = _state()
+
+    editing_output = _run_node(adapter, state)
+    for artifact in editing_output.artifacts:
+        state.artifacts[artifact.kind] = artifact
+
+    timeline_ctx = NodeContext(
+        adapter=adapter,
+        run=_run(),
+        node_run=_node_run("TimelinePlanning"),
+        state=state,
+    )
+    timeline_output = nodes.timeline_planning.run(timeline_ctx)
+
+    assert timeline_output.status == NodeStatus.succeeded
+    assert {artifact.kind for artifact in timeline_output.artifacts} == {
+        ArtifactKind.plan_timeline,
+        ArtifactKind.plan_render,
+    }
+    timeline = _payload(timeline_output, ArtifactKind.plan_timeline)
+    assert {track["track_id"] for track in timeline["tracks"]} == {"portrait", "broll"}
 
 
 def test_no_provider_without_sandbox_fallback_fails_fast(monkeypatch, tmp_path):

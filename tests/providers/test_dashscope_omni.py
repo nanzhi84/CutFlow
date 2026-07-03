@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from packages.ai.gateway.provider_context import ProviderInvocationContext
-from packages.ai.gateway.provider_gateway import ProviderCall
+from packages.ai.gateway.provider_gateway import ProviderCall, ProviderRuntimeError
 from packages.ai.providers.dashscope import DashScopeOmniProvider
 from packages.core.contracts import ProviderOptionsSchemaRef, ProviderProfile
 from packages.core.storage.object_store import LocalObjectStore
@@ -105,3 +105,49 @@ def test_omni_rejects_wrong_capability(tmp_path):
 
     with pytest.raises(Exception):
         provider.invoke_with_context(call, ctx)
+
+
+def test_omni_requires_audio_uri_when_messages_are_not_supplied(tmp_path):
+    provider = DashScopeOmniProvider(httpx.Client())
+    ctx = _context(tmp_path)
+    call = ProviderCall(
+        case_id="c",
+        provider_profile_id=ctx.profile.id,
+        capability_id="audio.understanding",
+        input={"prompt": "标注"},
+        idempotency_key="k",
+    )
+
+    with pytest.raises(ProviderRuntimeError) as exc:
+        provider.invoke_with_context(call, ctx)
+
+    assert exc.value.code.value == "provider.unsupported_option"
+    assert "audio_uri" in exc.value.message
+
+
+def test_omni_http_error_surfaces_remote_failure(tmp_path):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="bad gateway")
+
+    provider = DashScopeOmniProvider(httpx.Client(transport=httpx.MockTransport(handler)))
+    ctx = _context(tmp_path)
+    call = ProviderCall(
+        case_id="c",
+        provider_profile_id=ctx.profile.id,
+        capability_id="audio.understanding",
+        input={
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_audio", "input_audio": {"data": "https://x/a.wav"}}],
+                }
+            ]
+        },
+        idempotency_key="k",
+    )
+
+    with pytest.raises(ProviderRuntimeError) as exc:
+        provider.invoke_with_context(call, ctx)
+
+    assert exc.value.code.value == "provider.remote_failed"
+    assert "DashScope Omni HTTP 500" in exc.value.message

@@ -369,6 +369,55 @@ def test_style_planning_carries_selected_bgm_segment_into_style_plan(tmp_path, m
     assert payload["bgm"]["avoid_script"] == ["沉浸睡眠"]
 
 
+def test_style_planning_consumes_subtitle_preset_defaults(tmp_path, monkeypatch):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    ctx = _ctx(
+        adapter,
+        _request(subtitle={"enabled": True, "style_preset": "movie"}),
+        "StylePlanning",
+    )
+    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
+        ArtifactKind.plan_material_pack,
+        {"bgm_candidates": [], "font_candidates": []},
+    )
+
+    output = nodes.style_planning.run(ctx)
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
+
+    assert payload["subtitle"]["font_size"] == 44
+    assert payload["subtitle"]["position"] == {"x": 0.5, "y": 0.82}
+
+
+def test_style_planning_preserves_explicit_subtitle_overrides(tmp_path, monkeypatch):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    ctx = _ctx(
+        adapter,
+        _request(
+            subtitle={
+                "enabled": True,
+                "style_preset": "movie",
+                "font_size": 72,
+                "position": {"x": 0.25, "y": 0.7},
+            }
+        ),
+        "StylePlanning",
+    )
+    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
+        ArtifactKind.plan_material_pack,
+        {"bgm_candidates": [], "font_candidates": []},
+    )
+
+    output = nodes.style_planning.run(ctx)
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
+
+    assert payload["subtitle"]["font_size"] == 72
+    assert payload["subtitle"]["position"] == {"x": 0.25, "y": 0.7}
+
+
 def test_style_planning_requires_segmented_bgm_candidate(tmp_path, monkeypatch):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)

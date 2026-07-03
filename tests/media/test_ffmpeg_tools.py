@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import subprocess
+from types import SimpleNamespace
 
 import pytest
 
 from packages.core.contracts import MediaInfo
+from packages.media.video import ffmpeg as ffmpeg_mod
 from packages.media.video.ffmpeg import (
     FfmpegCommandError,
     compress_video_to_budget,
@@ -208,3 +212,412 @@ def test_session_media_fixture_factory_caches_generated_assets(media_fixture_fac
     assert first == second
     assert first.exists()
     assert audio.exists()
+
+
+def test_ffmpeg_runner_maps_timeout_and_exit_errors(monkeypatch):
+    def timeout_run(*_args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=kwargs.get("args") or ["ffmpeg"], timeout=2, stderr="slow")
+
+    monkeypatch.setattr(ffmpeg_mod.subprocess, "run", timeout_run)
+    with pytest.raises(FfmpegCommandError) as timeout_exc:
+        ffmpeg_mod.FfmpegRunner(timeout_sec=3).run(["ffmpeg", "-version"], timeout_sec=2)
+    assert timeout_exc.value.error_code.value == "provider.timeout"
+    assert timeout_exc.value.stderr == "slow"
+
+    def failed_run(args, **_kwargs):
+        raise subprocess.CalledProcessError(7, args, stderr="bad codec")
+
+    monkeypatch.setattr(ffmpeg_mod.subprocess, "run", failed_run)
+    with pytest.raises(FfmpegCommandError) as failed_exc:
+        ffmpeg_mod.FfmpegRunner().run(["ffmpeg", "-i", "in.mp4"])
+    assert failed_exc.value.error_code.value == "render.failed"
+    assert failed_exc.value.command == ["ffmpeg", "-i", "in.mp4"]
+    assert failed_exc.value.stderr == "bad codec"
+
+
+def test_probe_media_parses_subtitle_image_and_bad_payloads(tmp_path, monkeypatch):
+    media = tmp_path / "clip.srt"
+    media.write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8")
+
+    def install_payload(payload):
+        class FakeRunner:
+            def run(self, args, **_kwargs):
+                return subprocess.CompletedProcess(args, 0, stdout=json.dumps(payload), stderr="")
+
+        monkeypatch.setattr(ffmpeg_mod, "FfmpegRunner", lambda *a, **k: FakeRunner())
+
+    install_payload(
+        {
+            "streams": [{"codec_type": "subtitle", "codec_name": "subrip", "duration": "1.5"}],
+            "format": {"format_name": "srt"},
+        }
+    )
+    subtitle = probe_media(media)
+    assert subtitle.media_type == "subtitle"
+    assert subtitle.duration_sec == 1.5
+
+    image = tmp_path / "cover.png"
+    image.write_bytes(b"png")
+    install_payload(
+        {
+            "streams": [{"codec_type": "video", "codec_name": "png", "width": "640", "height": "360"}],
+            "format": {"format_name": "image2", "duration": "0"},
+        }
+    )
+    image_info = probe_media(image)
+    assert image_info.media_type == "image"
+    assert image_info.duration_sec is None
+    assert image_info.fps is None
+
+    class BadJsonRunner:
+        def run(self, args, **_kwargs):
+            return subprocess.CompletedProcess(args, 0, stdout="{not-json", stderr="")
+
+    monkeypatch.setattr(ffmpeg_mod, "FfmpegRunner", lambda *a, **k: BadJsonRunner())
+    with pytest.raises(FfmpegCommandError, match="invalid JSON"):
+        probe_media(image)
+
+    install_payload({"streams": [], "format": {}})
+    with pytest.raises(FfmpegCommandError, match="No media streams"):
+        probe_media(image)
+
+
+def test_extract_thumbnails_tonemaps_hdr_sources(tmp_path, monkeypatch):
+    video = tmp_path / "hdr.mov"
+    video.write_bytes(b"video")
+    calls: list[list[str]] = []
+    returned_infos = iter(
+        [
+            MediaInfo(media_type="video", codec="hevc", format="mov", duration_sec=4.0, is_hdr=True),
+            MediaInfo(media_type="image", codec="png", format="png", width=320, height=568),
+            MediaInfo(media_type="image", codec="png", format="png", width=320, height=568),
+        ]
+    )
+    monkeypatch.setattr(ffmpeg_mod, "probe_media", lambda _path: next(returned_infos))
+
+    class FakeRunner:
+        def run(self, args, **_kwargs):
+            calls.append(list(args))
+            output = ffmpeg_mod.Path(args[-1])
+            output.write_bytes(b"frame")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ffmpeg_mod, "FfmpegRunner", lambda *a, **k: FakeRunner())
+
+    thumbs = extract_thumbnails(video, tmp_path / "thumbs")
+
+    assert [thumb.label for thumb in thumbs] == ["first", "mid"]
+    assert all(ffmpeg_mod.HDR_TONEMAP_VF in call for call in calls)
+    assert all("-color_trc" in call for call in calls)
+
+
+def test_stabilize_video_builds_hdr_vidstab_chain(tmp_path, monkeypatch):
+    source = tmp_path / "portrait.mov"
+    source.write_bytes(b"video")
+    commands: list[list[str]] = []
+
+    def fake_probe(path):
+        if path == source:
+            return MediaInfo(
+                media_type="video",
+                codec="hevc",
+                format="mov",
+                duration_sec=2.0,
+                width=1080,
+                height=1920,
+                is_hdr=True,
+            )
+        return MediaInfo(media_type="video", codec="h264", format="mp4", width=1080, height=1920)
+
+    monkeypatch.setattr(ffmpeg_mod, "probe_media", fake_probe)
+
+    class FakeRunner:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run(self, args, **_kwargs):
+            commands.append(list(args))
+            joined = " ".join(str(part) for part in args)
+            if "vidstabdetect" in joined:
+                result_token = joined.split("result='", 1)[1].split("'", 1)[0]
+                ffmpeg_mod.Path(result_token).write_text("transforms", encoding="utf-8")
+            elif "vidstabtransform" in joined:
+                ffmpeg_mod.Path(args[-1]).write_bytes(b"stabilized")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ffmpeg_mod, "FfmpegRunner", lambda *a, **k: FakeRunner())
+
+    output = stabilize_video(source, tmp_path / "out.mp4")
+
+    assert output == tmp_path / "out.mp4"
+    assert len(commands) == 2
+    assert "vidstabdetect" in " ".join(commands[0])
+    second = " ".join(commands[1])
+    assert ffmpeg_mod.HDR_TONEMAP_VF in second
+    assert "vidstabtransform" in second
+    assert "-color_trc bt709" in second
+
+
+def test_compress_video_to_budget_retries_ladder_and_portrait_sizes(tmp_path, monkeypatch):
+    source = tmp_path / "portrait.mp4"
+    source.write_bytes(b"video")
+    output = tmp_path / "compressed.mp4"
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(
+        ffmpeg_mod,
+        "probe_media",
+        lambda _path: MediaInfo(
+            media_type="video",
+            codec="h264",
+            format="mp4",
+            duration_sec=10.0,
+            width=1080,
+            height=1920,
+        ),
+    )
+
+    class FakeRunner:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run(self, args, **_kwargs):
+            commands.append(list(args))
+            attempt = len(commands)
+            if attempt == 1:
+                raise FfmpegCommandError("encoder failed")
+            if attempt == 2:
+                output.write_bytes(b"x" * (1024 * 1024 + 1))
+            else:
+                output.write_bytes(b"x" * 1024)
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ffmpeg_mod, "FfmpegRunner", lambda *a, **k: FakeRunner())
+
+    result = compress_video_to_budget(source, max_size_mb=1.0, output_path=output)
+
+    assert result.strategy == "480p"
+    assert len(commands) == 3
+    assert "-s" not in commands[0]
+    assert "720x1280" in commands[1]
+    assert "480x854" in commands[2]
+
+
+def test_trim_to_valid_segments_single_window_copies_segment(tmp_path, monkeypatch):
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        ffmpeg_mod,
+        "probe_media",
+        lambda _path: MediaInfo(media_type="video", codec="h264", format="mp4", duration_sec=3.0),
+    )
+
+    class FakeRunner:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run(self, args, **_kwargs):
+            commands.append(list(args))
+            ffmpeg_mod.Path(args[-1]).write_bytes(b"segment")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ffmpeg_mod, "FfmpegRunner", lambda *a, **k: FakeRunner())
+
+    output = trim_to_valid_segments(source, [{"start": 0.2, "end": 0.8}], tmp_path / "trimmed.mp4")
+
+    assert output.read_bytes() == b"segment"
+    assert len(commands) == 1
+    assert "-f" not in commands[0]
+
+
+def test_normalize_for_upload_builds_crop_hdr_filter_and_target(tmp_path, monkeypatch):
+    source = tmp_path / "wide_hdr.mov"
+    source.write_bytes(b"video")
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        ffmpeg_mod,
+        "probe_media",
+        lambda _path: MediaInfo(
+            media_type="video",
+            codec="hevc",
+            format="mov",
+            duration_sec=6.0,
+            is_hdr=True,
+        ),
+    )
+    monkeypatch.setattr(
+        ffmpeg_mod,
+        "_probe_video_stream_raw",
+        lambda _path: {"width": "1920", "height": "1080", "tags": {"rotate": "0"}},
+    )
+    monkeypatch.setattr(
+        ffmpeg_mod,
+        "_detect_embedded_portrait_crop",
+        lambda *_args, **_kwargs: {"width": 608, "height": 1080, "x": 656, "y": 0},
+    )
+    monkeypatch.setattr(
+        ffmpeg_mod,
+        "_validate_normalized_video",
+        lambda path, width, height: MediaInfo(
+            media_type="video",
+            codec="h264",
+            format="mp4",
+            width=width,
+            height=height,
+        ),
+    )
+
+    class FakeRunner:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run(self, args, **_kwargs):
+            commands.append(list(args))
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ffmpeg_mod, "FfmpegRunner", lambda *a, **k: FakeRunner())
+
+    result = normalize_for_upload(source, tmp_path / "normalized.mp4")
+
+    assert (result.target_width, result.target_height) == (1080, 1920)
+    vf = commands[0][commands[0].index("-vf") + 1]
+    assert vf.startswith("crop=608:1080:656:0,")
+    assert ffmpeg_mod.HDR_TONEMAP_VF in vf
+    assert "scale=1080:1920" in vf
+
+
+def test_validate_normalized_video_rejects_empty_and_bad_profile(tmp_path, monkeypatch):
+    missing = tmp_path / "missing.mp4"
+    with pytest.raises(FfmpegCommandError) as empty_exc:
+        ffmpeg_mod._validate_normalized_video(missing, 1080, 1920)
+    assert empty_exc.value.error_code.value == "upload.normalization_failed"
+
+    output = tmp_path / "bad.mp4"
+    output.write_bytes(b"x" * 2048)
+    monkeypatch.setattr(
+        ffmpeg_mod,
+        "_probe_video_stream_raw",
+        lambda _path: {
+            "codec_name": "hevc",
+            "pix_fmt": "yuv422p",
+            "width": 720,
+            "height": 1280,
+            "color_space": "bt2020nc",
+            "color_transfer": "smpte2084",
+            "color_primaries": "bt2020",
+        },
+    )
+    with pytest.raises(FfmpegCommandError) as bad_exc:
+        ffmpeg_mod._validate_normalized_video(output, 1080, 1920)
+    assert "编码=hevc" in str(bad_exc.value)
+    assert "像素格式=yuv422p" in str(bad_exc.value)
+    assert "分辨率=720x1280" in str(bad_exc.value)
+
+    monkeypatch.setattr(
+        ffmpeg_mod,
+        "_probe_video_stream_raw",
+        lambda _path: {
+            "codec_name": "h264",
+            "pix_fmt": "yuv420p",
+            "width": 1080,
+            "height": 1920,
+            "color_space": "bt709",
+            "color_transfer": "bt709",
+            "color_primaries": "bt709",
+        },
+    )
+    monkeypatch.setattr(
+        ffmpeg_mod,
+        "probe_media",
+        lambda _path: MediaInfo(media_type="video", codec="h264", format="mp4", width=1080, height=1920),
+    )
+    assert ffmpeg_mod._validate_normalized_video(output, 1080, 1920).codec == "h264"
+
+
+def test_probe_count_stream_types_and_upload_helpers(tmp_path, monkeypatch):
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"video")
+    payloads = iter(
+        [
+            {"streams": [{"nb_read_frames": "", "nb_frames": "42"}]},
+            {"streams": [{"codec_type": "video"}, {"codec_type": "audio"}, {"codec_type": ""}]},
+            {"streams": [{"codec_type": "video"}]},
+            {"streams": [{"nb_read_frames": "", "nb_frames": ""}]},
+        ]
+    )
+
+    class FakeRunner:
+        def run(self, args, **_kwargs):
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(next(payloads)), stderr="")
+
+    monkeypatch.setattr(ffmpeg_mod, "FfmpegRunner", lambda *a, **k: FakeRunner())
+    assert ffmpeg_mod.probe_video_frame_count(media) == 42
+    assert ffmpeg_mod.probe_stream_types(media) == {"video", "audio"}
+    with pytest.raises(FfmpegCommandError, match="Could not count frames"):
+        ffmpeg_mod.probe_video_frame_count(media)
+
+    monkeypatch.setattr(ffmpeg_mod, "probe_media", lambda _path: (_ for _ in ()).throw(FfmpegCommandError("bad")))
+    assert needs_normalize_for_upload(media) is True
+    monkeypatch.setattr(
+        ffmpeg_mod,
+        "probe_media",
+        lambda _path: MediaInfo(media_type="audio", codec="aac", format="mp4"),
+    )
+    assert needs_normalize_for_upload(media) is False
+
+
+def test_cropdetect_and_embedded_portrait_detection(monkeypatch, tmp_path):
+    source = tmp_path / "wide.mp4"
+    source.write_bytes(b"video")
+
+    monkeypatch.setattr(
+        ffmpeg_mod.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stderr="crop=600:1080:660:0\ncrop=608:1078:656:2",
+        ),
+    )
+    assert ffmpeg_mod._run_cropdetect(source, 0.5) == {
+        "width": 608,
+        "height": 1078,
+        "x": 656,
+        "y": 2,
+    }
+
+    monkeypatch.setattr(
+        ffmpeg_mod,
+        "_run_cropdetect",
+        lambda _source, _time: {"width": 607, "height": 1079, "x": 657, "y": 1},
+    )
+    assert ffmpeg_mod._detect_embedded_portrait_crop(source, 1920, 1080, 4.0) == {
+        "width": 608,
+        "height": 1080,
+        "x": 656,
+        "y": 0,
+    }
+
+    monkeypatch.setattr(
+        ffmpeg_mod,
+        "_run_cropdetect",
+        lambda _source, time: {"width": 300 if time < 1 else 900, "height": 1080, "x": 100, "y": 0},
+    )
+    assert ffmpeg_mod._detect_embedded_portrait_crop(source, 1920, 1080, 4.0) is None
+    assert ffmpeg_mod._detect_embedded_portrait_crop(source, 1080, 1920, 4.0) is None
+
+
+def test_rotation_dimension_and_string_helpers(tmp_path):
+    assert ffmpeg_mod._normalized_rotation("449") == 90
+    assert ffmpeg_mod._normalized_rotation("bad") == 0
+    assert ffmpeg_mod._stream_rotation({"side_data_list": [{"rotation": -91}], "tags": {"rotate": "0"}}) == -90
+    assert ffmpeg_mod._stream_rotation({"tags": {"rotate": "181"}}) == -180
+    assert ffmpeg_mod._display_dimensions({"width": "1080", "height": "1920"}, 90) == (1920, 1080)
+    assert ffmpeg_mod._target_resolution(1080, 1920) == (1080, 1920)
+    assert ffmpeg_mod._target_resolution(1920, 1080) == (1920, 1080)
+    assert ffmpeg_mod._color_value(" unknown ") is None
+    assert ffmpeg_mod._color_value("BT2020") == "bt2020"
+    assert ffmpeg_mod._is_hdr_color("smpte2084", None) is True
+    assert ffmpeg_mod._is_hdr_color(None, "bt709") is False
+    assert ffmpeg_mod._ffmpeg_filter_arg(tmp_path / "a'b\\c.trf").startswith("'")
+    assert ffmpeg_mod._concat_file_line(tmp_path / "a'b.mp4").startswith("file '")
