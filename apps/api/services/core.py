@@ -191,9 +191,19 @@ def _probe_temporal(settings, probe_timeout: float) -> dict:
     try:
         _bounded_probe(lambda: _tcp_connect(address, probe_timeout), probe_timeout)
     except FuturesTimeout:
-        return {"status": "failed", "error": f"probe timed out after {probe_timeout}s"}
+        return {
+            "status": "failed",
+            "error": f"probe timed out after {probe_timeout}s",
+            "runtime": "temporal",
+            "address": address,
+        }
     except Exception as exc:  # noqa: BLE001 — diagnostics must not raise.
-        return {"status": "failed", "error": str(exc)}
+        return {
+            "status": "failed",
+            "error": str(exc),
+            "runtime": "temporal",
+            "address": address,
+        }
     return {
         "status": "ok",
         "latency_ms": round((time.monotonic() - started) * 1000, 2),

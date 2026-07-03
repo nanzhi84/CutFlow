@@ -15,11 +15,18 @@ Covers:
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import httpx
 
 from packages.ai.gateway import ProviderCall, ProviderGateway, ProviderResult
 from packages.core.contracts import (
     AnnotationStatus,
+    BgmEnergyProfile,
+    BgmSegmentRole,
+    BgmSegmentV4,
+    BgmSectionType,
     ProviderOptionsSchemaRef,
     ProviderProfile,
 )
@@ -380,3 +387,198 @@ def test_extract_audio_features_without_librosa_omits_objective(monkeypatch, tmp
     monkeypatch.setattr(bgm_mod, "_extract_librosa_features", lambda _p: None)
     features = bgm_mod.extract_audio_features(tmp_path / "missing.mp3")
     assert features == {"librosa_available": False}
+
+
+def test_extract_librosa_features_builds_segments_and_handles_failures(monkeypatch, tmp_path):
+    audio = tmp_path / "track.wav"
+    audio.write_bytes(b"fake")
+
+    fake_librosa = SimpleNamespace(
+        load=lambda *_args, **_kwargs: ([0.1] * 1000, 100),
+        beat=SimpleNamespace(beat_track=lambda **_kwargs: (128.0, [0, 100, 200, 400, 600, 800])),
+        frames_to_time=lambda values, **_kwargs: [round(float(value) / 100.0, 3) for value in values],
+        feature=SimpleNamespace(rms=lambda **_kwargs: [[0.1, 0.12, 0.65, 0.7, 0.3, 0.28, 0.62, 0.66]]),
+    )
+    fake_numpy = SimpleNamespace(
+        atleast_1d=lambda value: [value],
+        mean=lambda values: sum(values) / len(values),
+    )
+    monkeypatch.setitem(sys.modules, "librosa", fake_librosa)
+    monkeypatch.setitem(sys.modules, "numpy", fake_numpy)
+
+    features = bgm_mod._extract_librosa_features(audio)
+
+    assert features is not None
+    assert features["bpm"] == 128.0
+    assert features["tempo_bucket"] == "mid"
+    assert features["duration"] == 10.0
+    assert features["beats"][:3] == [0.0, 1.0, 2.0]
+    assert features["rhythm_markers"]
+    assert features["segments"][0]["section_type"] == "stable_bed"
+
+    assert bgm_mod._extract_librosa_features(tmp_path / "missing.wav") is None
+
+    fake_librosa.load = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("bad file"))
+    assert bgm_mod._extract_librosa_features(audio) is None
+
+
+def test_bgm_feature_segmentation_and_marker_helpers():
+    assert bgm_mod._tempo_bucket(80) == "slow"
+    assert bgm_mod._tempo_bucket(110) == "mid"
+    assert bgm_mod._tempo_bucket(140) == "fast"
+    assert bgm_mod.snap_to_beats(10.4, []) == 10.4
+    assert bgm_mod.snap_to_beats(10.4, [0, 10, 20]) == 10
+    assert bgm_mod.detect_drops([0.1, 0.1], [0, 1]) == []
+    assert bgm_mod.detect_drops([0.2, 0.2, 0.2], [0, 1, 2]) == []
+    assert bgm_mod.detect_drops([0.1, 0.12, 0.8, 0.82], [0, 1, 2, 3])
+    assert bgm_mod.rhythm_markers(beats=[1, "bad", -1], drops=[0.5, None, -2]) == [
+        {"time": 0.5, "kind": "accent", "strength": 0.5},
+        {"time": 1.0, "kind": "beat", "strength": 0.35},
+    ]
+
+    segments = bgm_mod.segment_audio_track(
+        96.0,
+        [0.1] * 8 + [0.7] * 8 + [0.2] * 8,
+        [float(i * 4) for i in range(24)],
+        [0.0, 32.0, 64.0, 96.0],
+        [34.0],
+        min_len=24.0,
+    )
+    assert segments[0]["role_hint"] == "hook"
+    assert any(segment["section_type"] in {"drop", "chorus"} for segment in segments)
+    assert bgm_mod._merge_short_segments([0.0, 3.0, 30.0], min_len=10.0) == [0.0, 30.0]
+    assert bgm_mod._section_label(26) == "S27"
+    assert bgm_mod._upper_quartile([]) == 0.0
+    assert bgm_mod._first_between(["bad", 2.0], 1.0, 3.0) == 2.0
+
+
+def test_bgm_sensor_and_semantic_helper_edges(tmp_path):
+    segment = BgmSegmentV4(
+        segment_id="seg1",
+        start=0,
+        end=10,
+        duration=10,
+        role=BgmSegmentRole.hook,
+        section_type=BgmSectionType.intro,
+        energy_profile=BgmEnergyProfile.stable,
+        loopable=False,
+        confidence=0.25,
+        source="sensor",
+    )
+    semantics = bgm_mod._normalize_segment_semantics(
+        {
+            "mood": "  热血 ",
+            "role": "climax",
+            "section_type": "drop",
+            "energy_profile": "peak",
+            "script_fit": ["a", "", "b", "c", "d", "e", "f", "g"],
+            "avoid_script": ["x", "y", "z", "w", "extra"],
+            "scene_fit": ["场景"],
+            "avoid_scene": "bad",
+            "loopable": "yes",
+            "confidence": 1.7,
+            "reason": "  reason ",
+        },
+        role_hint=segment.role,
+        section_type_hint=segment.section_type,
+        energy_profile_hint=segment.energy_profile,
+        loopable_hint=segment.loopable,
+        confidence_hint=segment.confidence,
+    )
+    assert semantics["mood"] == "热血"
+    assert semantics["role"] == BgmSegmentRole.climax
+    assert semantics["section_type"] == BgmSectionType.drop
+    assert semantics["energy_profile"] == BgmEnergyProfile.peak
+    assert semantics["script_fit"] == ["a", "b", "c", "d", "e", "f"]
+    assert semantics["avoid_script"] == ["x", "y", "z", "w"]
+    assert semantics["avoid_scene"] == []
+    assert semantics["loopable"] is True
+    assert semantics["confidence"] == 1.0
+
+    fallback = bgm_mod._normalize_segment_semantics(
+        {"loopable": "no", "confidence": "nan"},
+        role_hint=segment.role,
+        section_type_hint=segment.section_type,
+        energy_profile_hint=segment.energy_profile,
+        loopable_hint=True,
+        confidence_hint=0.4,
+    )
+    assert fallback["loopable"] is False
+    assert fallback["confidence"] == 0.4
+
+    raw_segments = bgm_mod._sensor_segments(
+        [
+            "bad",
+            {
+                "start": 2,
+                "end": 5,
+                "role_hint": "outro",
+                "section_type": "outro",
+                "loopable": "false",
+                "energy_profile": "falling",
+                "drop_anchor": 2.5,
+                "energy": 0.2,
+            },
+        ]
+    )
+    assert len(raw_segments) == 1
+    assert raw_segments[0].role == BgmSegmentRole.outro
+    assert raw_segments[0].loopable is False
+    assert raw_segments[0].drop_anchor_sec == 2.5
+
+    repository, gateway = _gateway(tmp_path)
+    profile = _real_audio_profile(repository, gateway)
+    unchanged, invocation_id = bgm_mod._listen_to_segment(
+        gateway=gateway,
+        profile=profile,
+        asset_id="bgm_url_fail",
+        case_id="case1",
+        asset_title="title",
+        features={},
+        segment=segment,
+        index=0,
+        audio_url_for_window=lambda *_args: (_ for _ in ()).throw(RuntimeError("no url")),
+    )
+    assert unchanged == segment
+    assert invocation_id is None
+
+    unchanged, invocation_id = bgm_mod._listen_to_segment(
+        gateway=gateway,
+        profile=profile,
+        asset_id="bgm_no_url",
+        case_id="case1",
+        asset_title="title",
+        features={},
+        segment=segment,
+        index=0,
+        audio_url_for_window=lambda *_args: "",
+    )
+    assert unchanged == segment
+    assert invocation_id is None
+
+
+def test_bgm_json_content_and_quality_report_edges():
+    assert bgm_mod._intent_from_output({"intent": {"mood": "calm"}}) == {"mood": "calm"}
+    assert bgm_mod._intent_from_output({"content": "prefix {\"mood\": \"calm\"} suffix"}) == {
+        "mood": "calm"
+    }
+    assert bgm_mod._content_from_output({"intent": {"mood": "calm"}}) == '{"mood": "calm"}'
+    assert bgm_mod._content_from_output("bad") == ""
+    assert bgm_mod._extract_json_object("```json\n{\"ok\": true}\n```") == {"ok": True}
+    assert bgm_mod._extract_json_object("```\n{\"ok\": true}\n```") == {"ok": True}
+    assert bgm_mod._extract_json_object("[1,2]") is None
+    assert bgm_mod._extract_json_object("no json") is None
+    assert bgm_mod._positive_float("bad") is None
+    assert bgm_mod._positive_float(float("inf")) is None
+
+    report = bgm_mod._bgm_quality_report(
+        features={"librosa_available": True, "beats": [1], "drops": [2]},
+        status="failed",
+        segments=[],
+        error="boom",
+    )["bgm"]
+    assert report["segment_count"] == 0
+    assert report["annotated_coverage_ratio"] == 0.0
+    assert report["recommended_segment_ids"] == []
+    assert report["source"] == "sensor"
+    assert report["error"] == "boom"

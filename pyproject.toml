@@ -32,6 +32,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=9",
+  "pytest-cov>=7",
+  "coverage[toml]>=7.15",
   # Required by the OceanEngine offline-import connector tests (xlsx fixtures).
   # The connector treats openpyxl as optional at runtime, but CI must install it
   # so tests/connectors/test_oceanengine_import.py actually runs instead of being
@@ -43,7 +45,35 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
-addopts = "-q -p no:xdist"
+addopts = "-q -ra -p no:xdist"
+
+[tool.coverage.run]
+branch = true
+source = ["apps", "packages"]
+omit = [
+  # Long-running process entrypoints are exercised by startup/preflight and
+  # Temporal integration jobs; default unit coverage should focus on importable
+  # runtime logic.
+  "apps/worker/__main__.py",
+  "apps/worker/main.py",
+  # Offline CLIs and historical Alembic revisions are validated by smoke/schema
+  # checks, not by the default importable runtime coverage gate.
+  "connectors/oceanengine/cli.py",
+  "*/connectors/oceanengine/cli.py",
+  "core/storage/alembic/versions/*.py",
+  "*/core/storage/alembic/versions/*.py",
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = true
+omit = [
+  "connectors/oceanengine/cli.py",
+  "*/connectors/oceanengine/cli.py",
+  "core/storage/alembic/versions/*.py",
+  "*/core/storage/alembic/versions/*.py",
+]
 
 [tool.ruff]
 line-length = 100

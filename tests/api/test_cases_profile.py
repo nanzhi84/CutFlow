@@ -1,10 +1,8 @@
-"""G4/R6/F-#2 in-memory coverage: case profile fields, list counts, import brief.
+"""G4/R6/F-#2 SQLAlchemy coverage: case profile fields, list counts, import brief.
 
-These exercise the in-memory backend (CUTAGENT_STORAGE_BACKEND=memory, set by
-tests/conftest.py) through the public API so the contract field names and the
-service mappings are validated end-to-end. The SQLAlchemy path is covered by the
-gated integration tests in tests/integration/test_sqlalchemy_cases.py and
-test_sqlalchemy_case_learning.py.
+These exercise the SQLAlchemy-backed public API so the contract field names and
+the service mappings are validated end-to-end. tests/conftest.py points storage
+tests at real Postgres; pure helper checks in this file remain DB-free.
 """
 
 from __future__ import annotations

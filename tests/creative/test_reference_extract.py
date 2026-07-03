@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import importlib
 import inspect
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -395,3 +397,171 @@ def test_ytdlp_unreachable_and_asr_failure_have_distinct_codes(monkeypatch: pyte
             )
         )
     assert asr_failed.value.code == c.ErrorCode.reference_asr_failed
+
+
+def test_douyin_sniffer_runtime_error_maps_to_structured_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    _patch_to_thread(module, monkeypatch)
+
+    async def blocked_info(_url: str, *, headers: dict[str, str]) -> dict:
+        raise module.ReferenceExtractError(c.ErrorCode.reference_unreachable, "blocked")
+
+    async def blocked_share(_url: str, _secret_store: FakeSecretStore):
+        raise module.ReferenceExtractError(c.ErrorCode.reference_unreachable, "blocked")
+
+    async def broken_sniffer(_url: str, *, cookie_header: str | None = None):
+        raise RuntimeError("browser missing")
+
+    monkeypatch.setattr(module, "_extract_info", blocked_info)
+    monkeypatch.setattr(module, "_extract_douyin_share", blocked_share)
+
+    with pytest.raises(module.ReferenceExtractError) as exc:
+        _run(
+            module.extract_reference(
+                "https://v.douyin.com/abc/",
+                asr_invoke=lambda _audio_url, _language: "unused",
+                object_store=FakeObjectStore(),
+                secret_store=FakeSecretStore(),
+                sniffer=broken_sniffer,
+            )
+        )
+
+    assert exc.value.code == c.ErrorCode.reference_unreachable
+    assert "Headless browser" in exc.value.message
+    assert exc.value.details["reason"] == "browser missing"
+
+
+def test_reference_public_url_resolver_and_platform_helpers() -> None:
+    module = _module()
+
+    assert module._platform_from_host("WWW.YOUTUBE.COM.") == "youtube"
+    assert module._platform_from_host("douyin.attacker.com") == "generic"
+    assert module._is_douyin_host("sub.iesdouyin.com") is True
+    assert module._platform_from_key("unknown", "fallback") == "fallback"
+    assert module._is_blocked_address(module.ipaddress.ip_address("198.18.1.1")) is False
+
+    parsed = module._assert_public_url(
+        "https://example.com/video",
+        resolve=lambda *_args: [(None, None, None, None, ("93.184.216.34", 0))],
+    )
+    assert parsed.hostname == "example.com"
+
+    with pytest.raises(module.ReferenceExtractError) as resolve_failed:
+        module._assert_public_url(
+            "https://missing.example/video",
+            resolve=lambda *_args: (_ for _ in ()).throw(OSError("dns")),
+        )
+    assert resolve_failed.value.code == c.ErrorCode.reference_unreachable
+
+    with pytest.raises(module.ReferenceExtractError) as blocked:
+        module._assert_public_url(
+            "https://internal.example/video",
+            resolve=lambda *_args: [(None, None, None, None, ("127.0.0.1", 0))],
+        )
+    assert blocked.value.code == c.ErrorCode.reference_unsupported_platform
+
+    # Non-IP resolver answers are ignored rather than crashing the guard.
+    module._assert_public_url(
+        "https://cname.example/video",
+        resolve=lambda *_args: [(None, None, None, None, ("not-an-ip", 0))],
+    )
+
+
+def test_fetch_metadata_playlist_uses_first_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _module()
+    _patch_to_thread(module, monkeypatch)
+    FakeYDL.info = {
+        "_type": "playlist",
+        "entries": [
+            {
+                "title": "第一条",
+                "duration": "12000",
+                "extractor_key": "BiliBili",
+                "webpage_url": "https://www.bilibili.com/video/BV1",
+            }
+        ],
+    }
+    monkeypatch.setattr(module, "_load_youtube_dl", lambda: FakeYDL)
+
+    metadata = _run(module.fetch_metadata("https://www.bilibili.com/video/BV0", cookie_header="SESS=x"))
+
+    assert metadata == {
+        "title": "第一条",
+        "platform": "bilibili",
+        "resolved_url": "https://www.bilibili.com/video/BV1",
+        "duration_sec": 12.0,
+    }
+
+
+def test_subtitle_json3_language_priority_and_dedupe(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _module()
+
+    info = {
+        "subtitles": {"zh": [{"ext": "srv3", "data": "bad"}, {"ext": "json3", "data": "{}"}]},
+        "automatic_captions": {"en": [{"ext": "vtt", "data": "WEBVTT\n\n00:00 --> 00:01\nEnglish"}]},
+    }
+    tracks = module._subtitle_tracks(info, "zh-Hans")
+    assert [track["ext"] for track in tracks] == ["vtt", "json3", "srv3"]
+    assert module._language_candidates("zh-Hans")[:3] == ["zh-Hans", "zh-hans", "zh"]
+    assert module._parse_subtitle_text("", "vtt") is None
+    assert module._parse_subtitle_text("WEBVTT\nNOTE x\nSTYLE y\n\n00:00 --> 00:01\n同一句\n同一句", "vtt") == "同一句"
+    assert module._parse_json3_subtitle("{bad") is None
+    assert (
+        module._parse_json3_subtitle(
+            '{"events":[{"segs":[{"utf8":"第一句"}]},{"bad":true},{"segs":[{"utf8":"第一句"}]},{"segs":[{"utf8":"第二句"}]}]}'
+        )
+        == "第一句\n第二句"
+    )
+
+    async def fake_get_text(url: str, headers: dict[str, str] | None = None) -> str:
+        assert url == "https://caption.example/sub.json"
+        return '{"events":[{"segs":[{"utf8":"远端字幕"}]}]}'
+
+    monkeypatch.setattr(module, "_http_get_text", fake_get_text)
+    subtitle = _run(
+        module._subtitle_from_info(
+            {"subtitles": {"zh": [{"ext": "json3", "url": "https://caption.example/sub.json"}]}},
+            language="zh",
+            headers={},
+        )
+    )
+    assert subtitle == "远端字幕"
+
+
+def test_download_audio_no_file_and_asr_result_shapes(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    module = _module()
+    _patch_to_thread(module, monkeypatch)
+
+    class NoFileYDL(FakeYDL):
+        def download(self, urls: list[str]) -> int:
+            return 0
+
+    monkeypatch.setattr(module, "_load_youtube_dl", lambda: NoFileYDL)
+
+    with pytest.raises(module.ReferenceExtractError) as no_file:
+        _run(module._download_audio("https://youtu.be/no-file", headers={}, directory=tmp_path))
+    assert no_file.value.code == c.ErrorCode.reference_unreachable
+
+    async def async_asr(_audio_url: str, _language: str) -> dict:
+        return {"output": {"text": "异步 ASR"}}
+
+    assert _run(module._invoke_asr(async_asr, "https://signed/audio.m4a", "zh")) == "异步 ASR"
+    assert module._asr_text(SimpleNamespace(output={"text": "对象 ASR"})) == "对象 ASR"
+    assert module._asr_text({"output": {"text": "嵌套 ASR"}}) == "嵌套 ASR"
+    assert module._asr_text("   ") is None
+    assert module._asr_text(123) is None
+
+    with pytest.raises(module.ReferenceExtractError):
+        _run(module._invoke_asr(lambda _url, _lang: {"output": {}}, "https://signed/audio.m4a", "zh"))
+
+
+def test_load_youtube_dl_missing_dependency_maps_to_reference_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _module()
+    monkeypatch.setitem(sys.modules, "yt_dlp", None)
+
+    with pytest.raises(module.ReferenceExtractError) as exc:
+        module._load_youtube_dl()
+
+    assert exc.value.code == c.ErrorCode.reference_unsupported_platform

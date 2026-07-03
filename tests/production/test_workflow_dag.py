@@ -1,6 +1,6 @@
 """Workflow templates are dependency DAGs, scheduled by a topological ready-set (#137).
 
-These tests prove the Phase-1/2 slice: the three shipping templates keep their exact
+These tests prove the Phase-1/2 slice: the registered shipping templates keep their exact
 linear behaviour when expressed as a graph, the pure scheduler orders nodes by their
 edges (not by list position) and exposes the ready-set of independent nodes, graph
 validation rejects cycles / unknown nodes / duplicates, template validation rejects a
@@ -23,6 +23,7 @@ from packages.production.pipeline import digital_human as dh
 from packages.production.pipeline import node_sequence as ns
 from packages.production.pipeline.node_sequence import (
     BROLL_ONLY_SEQUENCE,
+    EDITING_AGENT_SEQUENCE,
     NODE_SEQUENCE,
     SEEDANCE_T2V_SEQUENCE,
     ready_nodes,
@@ -32,22 +33,22 @@ from packages.production.pipeline.node_sequence import (
 )
 
 
-# --- The three shipping templates stay linear (behaviour-preserving) -------------------
+REGISTERED_TEMPLATE_IDS = tuple(ns.WORKFLOW_GRAPHS.keys())
+
+
+# --- Registered shipping templates stay linear (behaviour-preserving) ------------------
 
 
 @pytest.mark.parametrize(
     "sequence",
-    [NODE_SEQUENCE, BROLL_ONLY_SEQUENCE, SEEDANCE_T2V_SEQUENCE],
+    [NODE_SEQUENCE, BROLL_ONLY_SEQUENCE, SEEDANCE_T2V_SEQUENCE, EDITING_AGENT_SEQUENCE],
 )
 def test_linear_template_topological_order_equals_its_sequence(sequence):
     edges = ns._linear_edges(sequence)
     assert topological_node_order(sequence, edges) == list(sequence)
 
 
-@pytest.mark.parametrize(
-    "template_id",
-    ["digital_human_v2", "broll_only_v1", "seedance_t2v_v1"],
-)
+@pytest.mark.parametrize("template_id", REGISTERED_TEMPLATE_IDS)
 def test_registered_graph_edges_form_a_linear_chain(template_id):
     # Independent oracle (not `== _linear_edges(...)`, which would just recompute the
     # definition): the edges must be exactly a chain node[i] -> node[i+1].
@@ -59,6 +60,11 @@ def test_registered_graph_edges_form_a_linear_chain(template_id):
     assert [to_node for _, to_node in edges] == nodes[1:]
     for (_, prev_to), (next_from, _) in zip(edges, edges[1:]):
         assert prev_to == next_from
+
+
+def test_template_registries_are_in_sync():
+    assert set(ns.WORKFLOW_GRAPHS) == set(ns.WORKFLOW_TEMPLATE_NODE_COUNTS)
+    assert set(ns.WORKFLOW_GRAPHS) == set(dh._TEMPLATE_BUILDERS)
 
 
 def test_workflow_graph_unknown_template_is_none():
@@ -165,14 +171,11 @@ def _spec(node_id: str) -> NodeSpec:
 
 def test_shipping_templates_pass_validation():
     # template_for() builds + validates; unchanged templates must not raise.
-    for template_id in ("digital_human_v2", "broll_only_v1", "seedance_t2v_v1"):
+    for template_id in REGISTERED_TEMPLATE_IDS:
         dh.template_for(template_id)  # no raise
 
 
-@pytest.mark.parametrize(
-    "template_id",
-    ["digital_human_v2", "broll_only_v1", "seedance_t2v_v1"],
-)
+@pytest.mark.parametrize("template_id", REGISTERED_TEMPLATE_IDS)
 def test_build_template_stores_nodes_in_topological_order(template_id):
     # _build_template must emit template.nodes already in dependency order, so the Temporal
     # payload and the reuse planner (which iterate template.nodes, NOT the local runtime's
@@ -181,6 +184,50 @@ def test_build_template_stores_nodes_in_topological_order(template_id):
     node_ids = [spec.node_id for spec in template.nodes]
     edges = [(edge.from_node_id, edge.to_node_id) for edge in template.edges]
     assert node_ids == topological_node_order(node_ids, edges)
+
+
+@pytest.mark.parametrize("template_id", REGISTERED_TEMPLATE_IDS)
+def test_template_node_count_matches_graph_registry(template_id):
+    template = dh.template_for(template_id)
+    assert len(template.nodes) == ns.expected_node_count(template_id)
+    assert len(template.nodes) == len(ns.WORKFLOW_GRAPHS[template_id]["nodes"])
+
+
+@pytest.mark.parametrize("template_id", REGISTERED_TEMPLATE_IDS)
+def test_all_template_nodes_have_handlers_and_declared_outputs(template_id):
+    template = dh.template_for(template_id)
+    for spec in template.nodes:
+        assert spec.node_id in dh.NODE_HANDLERS
+        assert spec.node_id in dh._NODE_OUTPUT_KINDS
+        assert spec.output_artifact_kinds == dh._NODE_OUTPUT_KINDS[spec.node_id]
+        assert spec.output_artifact_kinds
+
+
+@pytest.mark.parametrize("template_id", REGISTERED_TEMPLATE_IDS)
+def test_provider_side_effect_nodes_have_idempotency_keys(template_id):
+    template = dh.template_for(template_id)
+    for spec in template.nodes:
+        if spec.node_id in dh._PROVIDER_SIDE_EFFECT_NODES:
+            assert "provider_call" in spec.side_effects
+            assert spec.idempotency_key == f"{template_id}:{spec.node_id}:{{input_manifest_hash}}"
+
+
+@pytest.mark.parametrize("template_id", REGISTERED_TEMPLATE_IDS)
+def test_timeline_replanning_break_nodes_never_reuse(template_id):
+    template = dh.template_for(template_id)
+    for spec in template.nodes:
+        if spec.node_id in dh._TIMELINE_REUSE_BREAK_NODES:
+            assert spec.reuse_policy == "never"
+
+
+def test_editing_agent_template_replaces_legacy_planning_nodes():
+    template = dh.template_for("digital_human_editing_agent_v1")
+    node_ids = [spec.node_id for spec in template.nodes]
+    assert node_ids == EDITING_AGENT_SEQUENCE
+    assert "EditingAgentPlanning" in node_ids
+    assert "PortraitPlanning" not in node_ids
+    assert "BrollPlanning" not in node_ids
+    assert "StylePlanning" not in node_ids
 
 
 def test_validate_template_rejects_node_without_handler():

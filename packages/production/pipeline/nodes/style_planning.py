@@ -16,6 +16,15 @@ from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
 from packages.production.pipeline.nodes._creative_intent import load_creative_intent
 
+_SUBTITLE_PRESET_DEFAULTS = {
+    "douyin": {"font_size": 64, "position": {"x": 0.5, "y": 0.88}},
+    "clean": {"font_size": 52, "position": {"x": 0.5, "y": 0.86}},
+    "variety": {"font_size": 68, "position": {"x": 0.5, "y": 0.84}},
+    "news": {"font_size": 48, "position": {"x": 0.5, "y": 0.90}},
+    "movie": {"font_size": 44, "position": {"x": 0.5, "y": 0.82}},
+    "youshe_title_black": {"font_size": 66, "position": {"x": 0.5, "y": 0.86}},
+}
+
 
 def run(ctx: NodeContext) -> NodeOutput:
     state = ctx.state
@@ -70,8 +79,8 @@ def run(ctx: NodeContext) -> NodeOutput:
         StylePlanArtifact(
             subtitle=SubtitleStylePlan(
                 font_id=state.request.subtitle.font_id,
-                font_size=state.request.subtitle.font_size,
-                position=state.request.subtitle.position,
+                font_size=_subtitle_font_size(state.request.subtitle.style_preset, state.request.subtitle.font_size),
+                position=_subtitle_position(state.request.subtitle.style_preset, state.request.subtitle.position),
             ),
             bgm=BgmPlan(
                 enabled=state.request.bgm.enabled,
@@ -108,6 +117,22 @@ def run(ctx: NodeContext) -> NodeOutput:
         warnings=warnings,
         degradations=degradations,
     )
+
+
+def _subtitle_preset(style_preset: str) -> dict:
+    return _SUBTITLE_PRESET_DEFAULTS.get(style_preset, _SUBTITLE_PRESET_DEFAULTS["douyin"])
+
+
+def _subtitle_font_size(style_preset: str, explicit_size: int | None) -> int:
+    if explicit_size is not None:
+        return explicit_size
+    return int(_subtitle_preset(style_preset)["font_size"])
+
+
+def _subtitle_position(style_preset: str, explicit_position: dict[str, float] | None):
+    if explicit_position is not None:
+        return explicit_position
+    return dict(_subtitle_preset(style_preset)["position"])
 
 
 def _derive_overlay_events(emphasis: list[EmphasisHint], units: list[dict]) -> list[OverlayEvent]:

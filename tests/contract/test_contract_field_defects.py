@@ -20,7 +20,18 @@ import pytest
 from pydantic import ValidationError
 
 import packages.core.contracts as contracts_pkg
-from packages.core.contracts import LipSyncOptions, OutboxEvent, OutputOptions, StrictnessOptions
+from packages.core.contracts import (
+    BgmOptions,
+    BrollOptions,
+    CoverOptions,
+    EditPlanningOptions,
+    LipSyncOptions,
+    OutboxEvent,
+    OutputOptions,
+    StrictnessOptions,
+    SubtitleOptions,
+    VoiceOptions,
+)
 from packages.core.contracts.artifacts import (
     CaseContextArtifact,
     FontPlan,
@@ -32,6 +43,7 @@ from packages.core.contracts.artifacts import (
 
 _CONTRACTS_DIR = pathlib.Path(contracts_pkg.__file__).parent
 _CONTRACT_FILES = sorted(_CONTRACTS_DIR.glob("*.py"))
+_REPO_ROOT = _CONTRACTS_DIR.parents[2]
 
 # Advanced LipSync request-layer fields removed in issue #115: they were exposed
 # on the contract / OpenAPI / frontend but never wired into the digital_human_v2
@@ -133,6 +145,147 @@ def test_strictness_options_still_accepts_supported_fields():
     options = StrictnessOptions(strict_timestamps=False, portrait_insufficient_policy="hard_fail")
     assert options.strict_timestamps is False
     assert options.portrait_insufficient_policy == "hard_fail"
+
+
+# Request-option fields are allowed on the public job contract only when a production
+# path consumes them (or the field is deliberately listed here with the consuming file).
+# This keeps future knobs from repeating the historical "OpenAPI field exists but no
+# node/provider/repository ever reads it" failures guarded above.
+_REQUEST_OPTION_FIELD_CONSUMERS = {
+    VoiceOptions: {
+        "voice_id": (("packages/production/pipeline/nodes/tts.py", "request.voice.voice_id"),),
+        "provider_profile_id": (
+            ("packages/production/pipeline/_provider_profiles.py", "request.voice.provider_profile_id"),
+        ),
+        "speed": (("packages/production/pipeline/nodes/tts.py", "request.voice.speed"),),
+        "emotion": (("packages/production/pipeline/nodes/tts.py", "request.voice.emotion"),),
+        "volume": (("packages/production/pipeline/nodes/tts.py", "request.voice.volume"),),
+    },
+    BrollOptions: {
+        "enabled": (("packages/production/pipeline/nodes/broll_planning.py", "request.broll.enabled"),),
+        "case_id": (
+            ("packages/production/pipeline/nodes/material_pack_planning.py", "request.broll.case_id"),
+        ),
+        "max_inserts": (
+            ("packages/production/pipeline/nodes/broll_planning.py", "request.broll.max_inserts"),
+        ),
+        "min_segment_duration": (
+            (
+                "packages/production/pipeline/nodes/broll_coverage_planning.py",
+                "request.broll.min_segment_duration",
+            ),
+        ),
+        "allow_generic_coverage": (
+            (
+                "packages/production/pipeline/nodes/_broll_policy.py",
+                "request.broll.allow_generic_coverage",
+            ),
+        ),
+    },
+    LipSyncOptions: {
+        "enabled": (("packages/production/pipeline/nodes/lipsync.py", "request.lipsync.enabled"),),
+        "provider_profile_id": (
+            (
+                "packages/production/pipeline/nodes/lipsync.py",
+                "request.lipsync.provider_profile_id",
+            ),
+        ),
+        "timeout_minutes": (
+            ("packages/production/pipeline/nodes/lipsync.py", "request.lipsync.timeout_minutes"),
+        ),
+    },
+    SubtitleOptions: {
+        "enabled": (
+            ("packages/production/pipeline/nodes/subtitle_and_bgm_mix.py", "request.subtitle.enabled"),
+        ),
+        "style_preset": (
+            ("packages/production/pipeline/nodes/style_planning.py", "request.subtitle.style_preset"),
+        ),
+        "font_id": (("packages/production/pipeline/nodes/style_planning.py", "request.subtitle.font_id"),),
+        "font_size": (
+            ("packages/production/pipeline/nodes/style_planning.py", "request.subtitle.font_size"),
+        ),
+        "position": (
+            ("packages/production/pipeline/nodes/style_planning.py", "request.subtitle.position"),
+        ),
+    },
+    BgmOptions: {
+        "enabled": (("packages/production/pipeline/nodes/style_planning.py", "request.bgm.enabled"),),
+        "bgm_id": (
+            ("packages/production/pipeline/nodes/material_pack_planning.py", "request.bgm.bgm_id"),
+        ),
+        "volume": (("packages/production/pipeline/nodes/style_planning.py", "request.bgm.volume"),),
+        "auto_mix": (("packages/production/pipeline/nodes/style_planning.py", "request.bgm.auto_mix"),),
+    },
+    CoverOptions: {
+        "mode": (("packages/production/pipeline/nodes/export_finished_video.py", "request.cover.mode"),),
+        "template_id": (
+            ("packages/production/pipeline/_provider_profiles.py", "request.cover.template_id"),
+        ),
+        "reference_asset_id": (
+            (
+                "packages/production/pipeline/nodes/export_finished_video.py",
+                "request.cover.reference_asset_id",
+            ),
+        ),
+    },
+    OutputOptions: {
+        "width": (
+            ("packages/production/pipeline/nodes/subtitle_and_bgm_mix.py", "request.output.width"),
+        ),
+        "height": (
+            ("packages/production/pipeline/nodes/subtitle_and_bgm_mix.py", "request.output.height"),
+        ),
+        "fps": (("packages/production/pipeline/nodes/render_final_timeline.py", "request.output.fps"),),
+    },
+    StrictnessOptions: {
+        "strict_timestamps": (
+            (
+                "packages/production/pipeline/nodes/narration_alignment.py",
+                "request.strictness.strict_timestamps",
+            ),
+        ),
+        "portrait_insufficient_policy": (
+            (
+                "packages/production/pipeline/nodes/portrait_planning.py",
+                "request.strictness.portrait_insufficient_policy",
+            ),
+        ),
+    },
+    EditPlanningOptions: {
+        "instruction": (
+            ("packages/production/pipeline/_editing_agent.py", "request.edit.instruction"),
+        ),
+        "max_repair_attempts": (
+            (
+                "packages/production/pipeline/nodes/editing_agent_planning.py",
+                "request.edit.max_repair_attempts",
+            ),
+        ),
+    },
+}
+
+
+def test_request_option_fields_have_consumers_or_explicit_trace():
+    problems: list[str] = []
+    for model, consumers in _REQUEST_OPTION_FIELD_CONSUMERS.items():
+        model_fields = set(model.model_fields)
+        traced_fields = set(consumers)
+        if model_fields != traced_fields:
+            problems.append(
+                f"{model.__name__}: missing={sorted(model_fields - traced_fields)} "
+                f"extra={sorted(traced_fields - model_fields)}"
+            )
+            continue
+        for field, checks in consumers.items():
+            for relative_path, token in checks:
+                path = _REPO_ROOT / relative_path
+                if not path.exists():
+                    problems.append(f"{model.__name__}.{field}: missing file {relative_path}")
+                    continue
+                if token not in path.read_text(encoding="utf-8"):
+                    problems.append(f"{model.__name__}.{field}: token {token!r} missing in {relative_path}")
+    assert not problems, "request option consumer trace is stale:\n" + "\n".join(problems)
 
 
 # Artifact-layer dead fields removed in issue #118: each was written by an upstream

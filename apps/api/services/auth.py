@@ -1,23 +1,17 @@
 from __future__ import annotations
 
-
 from fastapi import Request, Response
 from sqlalchemy import select
 
 from apps.api.common import (
     auth,
-    page,
-    repository,
     request_id,
 )
 from apps.api.dependencies import SESSION_COOKIE, current_user
 from apps.api.services.auth_cookies import clear_session_cookie, set_session_cookie
 from packages.core import contracts as c
-from packages.core.auth import SqlAlchemyAuthService
 from packages.core.auth import rate_limit
-from packages.core.auth.password_policy import validate_password
 from packages.core.config import build_settings
-from packages.core.registration_codes import hash_registration_code
 from packages.core.storage.database import UserGenerationDefaultsRow
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
@@ -84,147 +78,58 @@ def me(request: Request) -> c.AuthUser:
 
 
 def update_me(payload: c.UpdateMeRequest, request: Request) -> c.AuthUser:
-    current_user = auth(request).authenticate_token(request.cookies.get(SESSION_COOKIE))
-    if isinstance(auth(request), SqlAlchemyAuthService):
-        user = auth(request).update_me(current_user.id, payload)
-        if user is None:
-            raise NodeExecutionError(c.ErrorCode.auth_unauthorized, "User not found.")
-        return user
-    updates = payload.model_dump(exclude_none=True)
-    if not updates:
-        return current_user
-    return repository(request).patch(repository(request).users, current_user.id, updates)
+    auth_service = auth(request)
+    current_user = auth_service.authenticate_token(request.cookies.get(SESSION_COOKIE))
+    user = auth_service.update_me(current_user.id, payload)
+    if user is None:
+        raise NodeExecutionError(c.ErrorCode.auth_unauthorized, "User not found.")
+    return user
 
 
 def change_password(payload: c.ChangePasswordRequest, request: Request) -> c.OkResponse:
     token = request.cookies.get(SESSION_COOKIE)
-    current_user = auth(request).authenticate_token(token)
-    if isinstance(auth(request), SqlAlchemyAuthService):
-        # R5: the DB service validates strength + revokes OTHER sessions, keeping
-        # the caller's session identified by its raw cookie token.
-        auth(request).change_password(current_user.id, payload, keep_token=token)
-        return c.OkResponse(request_id=request_id())
-    if not auth(request).verify_password(current_user.id, payload.old_password):
-        raise NodeExecutionError(c.ErrorCode.auth_invalid_credentials, "Invalid credentials.")
-    # R5: strength policy + revoke OTHER sessions on the in-memory backend too.
-    validate_password(
-        payload.new_password,
-        email=current_user.email,
-        display_name=current_user.display_name,
-    )
-    auth(request).repository.password_hashes[current_user.id] = auth(request).hash_password(payload.new_password)
-    sessions = auth(request).repository.sessions
-    for session_id in [
-        sid
-        for sid, session in sessions.items()
-        if session["user_id"] == current_user.id and sid != token
-    ]:
-        sessions.pop(session_id, None)
+    auth_service = auth(request)
+    current_user = auth_service.authenticate_token(token)
+    # R5: the DB service validates strength + revokes OTHER sessions, keeping
+    # the caller's session identified by its raw cookie token.
+    auth_service.change_password(current_user.id, payload, keep_token=token)
     return c.OkResponse(request_id=request_id())
 
 
 def list_users(request: Request, limit: int = 50) -> c.PageResponse[c.AuthUser]:
-    if isinstance(auth(request), SqlAlchemyAuthService):
-        values = auth(request).list_users(limit=limit)
-        return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
-    return page(repository(request).users.values(), limit)
+    values = auth(request).list_users(limit=limit)
+    return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
 
 
 def create_user(payload: c.AdminCreateUserRequest, request: Request) -> c.AuthUser:
-    if isinstance(auth(request), SqlAlchemyAuthService):
-        return auth(request).create_user(payload)
-    user = c.AuthUser(
-        id=new_id("usr"),
-        email=payload.email,
-        display_name=payload.display_name,
-        role=payload.role,
-    )
-    repository(request).users[user.id] = user
-    repository(request).password_hashes[user.id] = auth(request).hash_password(payload.password or new_id("pwd"))
-    return user
+    return auth(request).create_user(payload)
 
 
 def patch_user(user_id: str, payload: c.AdminUpdateUserRequest, request: Request) -> c.AuthUser:
-    if isinstance(auth(request), SqlAlchemyAuthService):
-        user = auth(request).patch_user(user_id, payload)
-        if user is None:
-            raise NodeExecutionError(c.ErrorCode.auth_unauthorized, "User not found.")
-        return user
-    users = repository(request).users
-    if user_id not in users:
+    user = auth(request).patch_user(user_id, payload)
+    if user is None:
         raise NodeExecutionError(c.ErrorCode.auth_unauthorized, "User not found.")
-    updates = payload.model_dump(exclude_none=True)
-    # R4: never let the last active admin be demoted or disabled (in-memory twin).
-    _guard_last_admin_in_memory(users, user_id, updates)
-    return repository(request).patch(users, user_id, updates)
-
-
-def _guard_last_admin_in_memory(
-    users: dict[str, c.AuthUser], user_id: str, updates: dict
-) -> None:
-    """Reject a patch that would leave zero active admins (in-memory R4 twin)."""
-    row = users[user_id]
-    if row.role != c.UserRole.admin or row.status != "active":
-        return
-    new_role = updates.get("role")
-    demoting = "role" in updates and new_role != c.UserRole.admin
-    disabling = updates.get("status") == "disabled"
-    if not (demoting or disabling):
-        return
-    other_active_admins = sum(
-        1
-        for uid, user in users.items()
-        if uid != user_id and user.role == c.UserRole.admin and user.status == "active"
-    )
-    if not other_active_admins:
-        raise NodeExecutionError(
-            c.ErrorCode.validation_conflict,
-            "Cannot demote or disable the last active admin.",
-        )
+    return user
 
 
 def registration_codes(request: Request, limit: int = 50) -> c.PageResponse[c.RegistrationCodePreview]:
-    if isinstance(auth(request), SqlAlchemyAuthService):
-        values = auth(request).list_registration_codes(limit=limit)
-        return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
-    return page(repository(request).registration_codes.values(), limit)
+    values = auth(request).list_registration_codes(limit=limit)
+    return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
 
 
 def create_registration_code(
     payload: c.CreateRegistrationCodeRequest, request: Request
 ) -> c.CreatedRegistrationCode:
-    if isinstance(auth(request), SqlAlchemyAuthService):
-        return auth(request).create_registration_code(payload)
-    plaintext_code = payload.custom_code.strip() if payload.custom_code else new_id("reg_code")
-    if not plaintext_code:
-        raise NodeExecutionError(c.ErrorCode.validation_invalid_options, "Registration code cannot be empty.")
-    code_hash = hash_registration_code(plaintext_code)
-    if code_hash in repository(request).registration_code_hashes:
-        raise NodeExecutionError(c.ErrorCode.validation_conflict, "Registration code already exists.")
-    code = c.RegistrationCodePreview(
-        id=new_id("reg"),
-        role=payload.role,
-        status="active",
-        max_uses=payload.max_uses,
-        used_count=0,
-        purpose=payload.purpose,
-        expires_at=payload.expires_at,
-        created_at=c.utcnow(),
-    )
-    repository(request).registration_codes[code.id] = code
-    repository(request).registration_code_hashes[code_hash] = code.id
-    return c.CreatedRegistrationCode(**code.model_dump(), plaintext_code=plaintext_code)
+    return auth(request).create_registration_code(payload)
 
 
 def patch_registration_code(
     code_id: str, payload: c.UpdateRegistrationCodeRequest, request: Request
 ) -> c.RegistrationCodePreview:
-    if isinstance(auth(request), SqlAlchemyAuthService):
-        code = auth(request).patch_registration_code(code_id, payload)
-        if code is None:
-            raise NodeExecutionError(c.ErrorCode.auth_registration_closed, "Registration code not found.")
-        return code
-    return repository(request).patch(repository(request).registration_codes, code_id, payload.model_dump(exclude_none=True))
+    code = auth(request).patch_registration_code(code_id, payload)
+    if code is None:
+        raise NodeExecutionError(c.ErrorCode.auth_registration_closed, "Registration code not found.")
+    return code
 
 
 def get_my_generation_defaults(request: Request) -> c.UserGenerationDefaults:
@@ -232,8 +137,7 @@ def get_my_generation_defaults(request: Request) -> c.UserGenerationDefaults:
 
     No saved record yet -> an all-``None`` ``UserGenerationDefaults`` (the caller
     falls back to the per-block system defaults). Backed by the SQL
-    ``user_generation_defaults`` table when running on the SQLAlchemy backend, and
-    by the in-memory repository otherwise."""
+    ``user_generation_defaults`` table."""
     user = auth(request).authenticate_token(request.cookies.get(SESSION_COOKIE))
     session_factory = request.app.state.sqlalchemy_session_factory
     with session_factory() as session:

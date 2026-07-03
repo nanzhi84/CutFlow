@@ -33,6 +33,8 @@ jobs:
       CUTAGENT_STORAGE_BACKEND: sqlalchemy
       CUTAGENT_OBJECTSTORE_BACKEND: local
       CUTAGENT_LOCAL_OBJECTSTORE_PATH: /tmp/cutagent-objstore
+      COVERAGE_MIN_LINE: "90"
+      COVERAGE_MIN_BRANCH: "74"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -54,8 +56,23 @@ jobs:
         # The suite assumes a migrated + seeded database: tests/conftest.py only
         # truncates and reseeds between tests, it does not run migrations.
         run: python scripts/bootstrap_database.py
-      - name: Run default pytest suite
-        run: timeout -k 5 1200 python -m pytest -q
+      - name: Run default pytest suite with coverage
+        run: |
+          mkdir -p .reports
+          timeout -k 5 1200 python -m pytest -q -ra \
+            --cov=apps \
+            --cov=packages \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-report=xml:.reports/coverage.xml
+          python scripts/check_coverage_thresholds.py .reports/coverage.xml
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          path: .reports/coverage.xml
+          if-no-files-found: ignore
       - name: Verify OpenAPI export is committed
         run: |
           python scripts/export_openapi.py
@@ -219,7 +236,12 @@ jobs:
           CUTAGENT_EPHEMERAL_OBJECTSTORE_ACCESS_KEY: minioadmin
           CUTAGENT_EPHEMERAL_OBJECTSTORE_SECRET_KEY: minioadmin
           CUTAGENT_EPHEMERAL_OBJECTSTORE_ADDRESSING_STYLE: path
-        run: timeout -k 5 600 python -m pytest -q tests/temporal
+        run: |
+          mkdir -p .reports
+          timeout -k 5 600 python -m pytest -q -ra \
+            --junitxml=.reports/temporal-pytest.xml \
+            tests/temporal
+          python scripts/assert_no_pytest_skips.py .reports/temporal-pytest.xml
 
   frontend:
     runs-on: ubuntu-latest
@@ -238,6 +260,9 @@ jobs:
         run: |
           npm run generate:api
           git diff --exit-code src/api/schema.d.ts
+      - name: Run frontend tests
+        working-directory: apps/web
+        run: npm run test:ci
       - name: Build frontend
         working-directory: apps/web
         run: npm run build
@@ -293,7 +318,10 @@ jobs:
       - name: Bootstrap database
         run: python scripts/bootstrap_database.py
       - name: Run Redis cross-replica coordination + degrade/reconnect regression
-        run: >-
-          timeout -k 5 600 python -m pytest -q
-          tests/observability/test_redis_coordination.py
-          tests/observability/test_redis_reconnect.py
+        run: |
+          mkdir -p .reports
+          timeout -k 5 600 python -m pytest -q -ra \
+            --junitxml=.reports/redis-pytest.xml \
+            tests/observability/test_redis_coordination.py \
+            tests/observability/test_redis_reconnect.py
+          python scripts/assert_no_pytest_skips.py .reports/redis-pytest.xml
