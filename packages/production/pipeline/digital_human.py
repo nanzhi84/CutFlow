@@ -111,6 +111,7 @@ NODE_HANDLERS = {
     "MaterialPackPlanning": nodes.material_pack_planning.run,
     "NarrationAlignment": nodes.narration_alignment.run,
     "NarrationBoundaryPlanning": nodes.narration_boundary_planning.run,
+    "TimelineWindowPlanning": nodes.timeline_window_planning.run,
     "PortraitPlanning": nodes.portrait_planning.run,
     "BrollPlanning": nodes.broll_planning.run,
     "BrollCoveragePlanning": nodes.broll_coverage_planning.run,
@@ -141,6 +142,7 @@ _PROVIDER_SIDE_EFFECT_NODES = {
 }
 _TIMELINE_REUSE_BREAK_NODES = {
     "NarrationBoundaryPlanning",
+    "TimelineWindowPlanning",
     "PortraitPlanning",
     "BrollPlanning",
     "BrollCoveragePlanning",
@@ -162,6 +164,7 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
     "MaterialPackPlanning": [ArtifactKind.plan_material_pack],
     "NarrationAlignment": [ArtifactKind.audio_alignment, ArtifactKind.narration_units],
     "NarrationBoundaryPlanning": [ArtifactKind.plan_narration_boundary],
+    "TimelineWindowPlanning": [ArtifactKind.plan_timeline_windows],
     "PortraitPlanning": [ArtifactKind.plan_portrait],
     "BrollPlanning": [ArtifactKind.plan_broll],
     "BrollCoveragePlanning": [ArtifactKind.plan_broll],

@@ -554,6 +554,11 @@ def test_portrait_plan_cuts_only_the_talking_head_clip_window(tmp_path, monkeypa
         payload_schema="NarrationBoundaryPlan.v1",
     )
 
+    ctx.node_run = ctx.node_run.model_copy(update={"node_id": "TimelineWindowPlanning"})
+    timeline_output = nodes.timeline_window_planning.run(ctx)
+    for artifact in timeline_output.artifacts:
+        ctx.state.artifacts[artifact.kind] = artifact
+    ctx.node_run = ctx.node_run.model_copy(update={"node_id": "PortraitPlanning"})
     output = nodes.portrait_planning.run(ctx)
     payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_portrait)
     assert payload["segments"]

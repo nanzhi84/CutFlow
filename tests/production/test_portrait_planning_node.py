@@ -181,11 +181,11 @@ def _run() -> WorkflowRun:
     )
 
 
-def _node_run() -> NodeRun:
+def _node_run(node_id: str = "PortraitPlanning") -> NodeRun:
     return NodeRun(
-        id="nr_portrait",
+        id=f"nr_{node_id.lower()}",
         run_id="run_1",
-        node_id="PortraitPlanning",
+        node_id=node_id,
         node_version="v1",
         status=NodeStatus.running,
         input_manifest_hash="sha256:test",
@@ -193,8 +193,17 @@ def _node_run() -> NodeRun:
 
 
 def _run_node(adapter: LocalRuntimeAdapter, state: RunState):
-    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
-    return nodes.portrait_planning.run(ctx)
+    timeline_ctx = NodeContext(
+        adapter=adapter,
+        run=_run(),
+        node_run=_node_run("TimelineWindowPlanning"),
+        state=state,
+    )
+    timeline_output = nodes.timeline_window_planning.run(timeline_ctx)
+    for artifact in timeline_output.artifacts:
+        state.artifacts[artifact.kind] = artifact
+    portrait_ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+    return nodes.portrait_planning.run(portrait_ctx)
 
 
 def _portrait_payload(output) -> dict:
@@ -293,7 +302,7 @@ def test_asset_uniqueness_hard_fails_when_only_window_reuse_could_cover():
     # never silently reuses an asset to pad coverage. This is the intended behavior
     # change (lower unified-video yield, honest hard-fail on thin material).
     from packages.planning.editing import SpokenSegment, build_narration_units_from_asr
-    from packages.production.pipeline.nodes import portrait_planning as pp
+    from packages.production.pipeline.nodes import timeline_window_planning as twp
 
     spoken = [
         SpokenSegment(start=0.20, end=4.07, text="你还在超市门口犹豫要不要进去，别纠结了。"),
@@ -353,7 +362,7 @@ def test_asset_uniqueness_hard_fails_when_only_window_reuse_could_cover():
 
     assert len({c["template_id"] for c in candidates}) == 3  # only 3 distinct assets
 
-    plan, escalation = pp._plan_with_escalation(
+    plan, escalation = twp._plan_with_escalation(
         narration_units=units,
         candidates=candidates,
         duration=34.74,
@@ -461,9 +470,9 @@ def test_capacity_controlled_split_retry_drives_recovery(monkeypatch, tmp_path):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
     from packages.planning.editing import BoundaryConstraints as _BC
-    from packages.production.pipeline.nodes import portrait_planning as pp
+    from packages.production.pipeline.nodes import timeline_window_planning as twp
 
-    real_plan = pp.plan_boundary_timeline
+    real_plan = twp.plan_boundary_timeline
     calls: list[dict] = []
 
     class _Empty:
@@ -486,7 +495,7 @@ def test_capacity_controlled_split_retry_drives_recovery(monkeypatch, tmp_path):
             fps=fps,
         )
 
-    monkeypatch.setattr(pp, "plan_boundary_timeline", fake_plan)
+    monkeypatch.setattr(twp, "plan_boundary_timeline", fake_plan)
     adapter = _adapter(object_store)
     output = _run_node(
         adapter,
@@ -587,7 +596,7 @@ def test_segment_payload_derives_clip_id_from_window_id():
         unit_ids=["unit_1"],
     )
 
-    payload = nodes.portrait_planning._segment_payload(
+    payload = nodes.timeline_window_planning._segment_payload(
         1,
         segment,
         recent_template_ids=set(),

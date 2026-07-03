@@ -162,6 +162,39 @@ def _boundary() -> dict:
     }
 
 
+def _timeline_windows(boundary: dict) -> dict:
+    return {
+        "fps": int(boundary.get("fps") or 30),
+        "total_frames": int(boundary.get("total_frames") or 0),
+        "geometry_policy": {},
+        "portrait_windows": [
+            {
+                "window_id": slot["slot_id"],
+                "start_frame": slot["start_frame"],
+                "end_frame": slot["end_frame"],
+                "unit_ids": list(slot.get("unit_ids") or []),
+                "boundary_source": slot.get("boundary_source"),
+                "phase": "opening" if index == 0 else "main",
+            }
+            for index, slot in enumerate(boundary.get("portrait_slots") or [])
+        ],
+        "broll_windows": [
+            {
+                "window_id": slot["slot_id"],
+                "start_frame": slot["start_frame"],
+                "end_frame": slot["end_frame"],
+                "host_unit_ids": list(slot.get("unit_ids") or []),
+                "host_portrait_window_ids": [],
+                "text": slot.get("text") or "",
+                "boundary_source": slot.get("boundary_source") or "narration_unit",
+            }
+            for slot in boundary.get("broll_slots") or []
+        ],
+        "default_assignment": {},
+        "compile_diagnostics": {},
+    }
+
+
 def _state() -> RunState:
     request = DigitalHumanVideoRequest(
         case_id="case_demo",
@@ -202,6 +235,7 @@ def _state() -> RunState:
             payload_schema=schema,
         )
 
+    boundary = _boundary()
     return RunState(
         request=request,
         artifacts={
@@ -220,8 +254,14 @@ def _state() -> RunState:
             ArtifactKind.plan_narration_boundary: _art(
                 "art_boundary",
                 ArtifactKind.plan_narration_boundary,
-                _boundary(),
+                boundary,
                 "NarrationBoundaryPlan.v1",
+            ),
+            ArtifactKind.plan_timeline_windows: _art(
+                "art_windows",
+                ArtifactKind.plan_timeline_windows,
+                _timeline_windows(boundary),
+                "TimelineWindowsPlan.v1",
             ),
         },
     )
@@ -435,6 +475,7 @@ def test_llm_path_records_broll_geometry_drops(tmp_path):
             "text": "问题细节",
         }
     ]
+    state.artifacts[ArtifactKind.plan_timeline_windows].payload = _timeline_windows(boundary)
 
     output = _run_node(adapter, state)
 
@@ -452,6 +493,108 @@ def test_llm_path_records_broll_geometry_drops(tmp_path):
     assert diagnostics["broll_drops"] == [
         {"slot_id": "bslot_000", "candidate_id": "bc_000", "reason": "geometry_rejected"}
     ]
+
+
+def test_agent_slots_come_from_compiled_windows_not_base_slots(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    adapter.provider_gateway.register(
+        _FakeEditingLlmProvider(
+            [
+                {
+                    "intent": {
+                        "portrait_plan": [
+                            {"slot_id": "pwin_000", "window_id": "pc_000"},
+                            {"slot_id": "pwin_001", "window_id": "pc_001"},
+                        ],
+                        "broll_plan": [],
+                        "font_plan": {"font_id": "font_yst"},
+                        "bgm_plan": {"bgm_id": "bgm_001"},
+                    }
+                }
+            ]
+        )
+    )
+    state = _state()
+    boundary = state.artifacts[ArtifactKind.plan_narration_boundary].payload
+    boundary["portrait_slots"] = [
+        {"slot_id": "pslot_000", "start_frame": 0, "end_frame": 120, "unit_ids": ["unit_1"]},
+        {"slot_id": "pslot_001", "start_frame": 120, "end_frame": 240, "unit_ids": ["unit_1"]},
+        {"slot_id": "pslot_002", "start_frame": 240, "end_frame": 360, "unit_ids": ["unit_2"]},
+    ]
+    state.artifacts[ArtifactKind.plan_timeline_windows].payload["portrait_windows"] = [
+        {
+            "window_id": "pwin_000",
+            "start_frame": 0,
+            "end_frame": 180,
+            "unit_ids": ["unit_1"],
+            "boundary_source": "semantic_audio_pause",
+            "phase": "opening",
+        },
+        {
+            "window_id": "pwin_001",
+            "start_frame": 180,
+            "end_frame": 360,
+            "unit_ids": ["unit_2"],
+            "boundary_source": "semantic_only",
+            "phase": "main",
+        },
+    ]
+
+    output = _run_node(adapter, state)
+
+    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
+    assert len(boundary["portrait_slots"]) == 3
+    assert [choice["slot_id"] for choice in diagnostics["portrait_choices"]] == [
+        "pwin_000",
+        "pwin_001",
+    ]
+    raw_requests = [
+        artifact
+        for artifact in adapter.repository.artifacts.values()
+        if artifact.kind == ArtifactKind.provider_raw_request
+    ]
+    assert "pwin_000" in raw_requests[0].payload["prompt"]
+    assert '"slot_id": "pslot_000", "start_frame": 0' not in raw_requests[0].payload["prompt"]
+
+
+def test_shortlist_applies_budget_and_reports_counts(tmp_path):
+    state = _state()
+    material = state.artifacts[ArtifactKind.plan_material_pack].payload
+    material["portrait_candidates"] = [
+        {
+            "asset_id": f"portrait_{index:02d}",
+            "score": 100 - index,
+            "metadata": {
+                "clip_id": f"clip_{index:02d}",
+                "source_start": 0.0,
+                "source_end": 20.0,
+            },
+        }
+        for index in range(14)
+    ]
+    material["broll_candidates"] = [
+        {
+            "asset_id": f"broll_{index:02d}",
+            "score": 100 - index,
+            "metadata": {
+                "clip_id": f"bclip_{index:02d}",
+                "source_start": 0.0,
+                "source_end": 6.0,
+            },
+        }
+        for index in range(8)
+    ]
+
+    output = _run_node(_adapter(tmp_path), state)
+
+    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
+    assert diagnostics["shortlist_counts"] == {
+        "portrait": {"raw": 14, "eligible": 14, "exposed": 12, "dropped": 2},
+        "broll": {"raw": 8, "eligible": 8, "exposed": 6, "dropped": 2},
+    }
+    assert diagnostics["candidate_counts"]["portrait"] == 12
+    assert diagnostics["candidate_counts"]["broll"] == 6
 
 
 def test_llm_path_repairs_reused_portrait_asset(monkeypatch, tmp_path):
@@ -626,4 +769,5 @@ def test_llm_invalid_selection_records_raw_artifacts_before_fail_fast(tmp_path):
     assert len(raw_requests) == 2
     assert len(raw_responses) == 2
     assert "legal_window_ids" in raw_requests[0].payload["prompt"]
-    assert raw_responses[-1].payload["output"]["intent"]["portrait_plan"][0]["window_id"] == "pc_999"
+    portrait_plan = raw_responses[-1].payload["output"]["intent"]["portrait_plan"]
+    assert portrait_plan[0]["window_id"] == "pc_999"

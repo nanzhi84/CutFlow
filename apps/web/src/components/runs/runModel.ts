@@ -10,9 +10,12 @@ const NODE_LABELS: Record<string, string> = {
   TTS: "生成配音",
   MaterialPackPlanning: "规划素材包",
   NarrationAlignment: "对齐旁白时间轴",
+  NarrationBoundaryPlanning: "规划旁白边界",
+  TimelineWindowPlanning: "编译时间线窗口",
   PortraitPlanning: "规划数字人镜头",
   BrollPlanning: "规划 B-roll 插入",
   StylePlanning: "规划字幕与包装",
+  EditingAgentPlanning: "剪辑 Agent 规划",
   TimelinePlanning: "规划时间线",
   PortraitTrackBuild: "生成数字人轨道",
   LipSync: "口型同步",
@@ -26,12 +29,12 @@ export function nodeLabel(id: string): string {
   return NODE_LABELS[id] ?? id;
 }
 
-// 把 16 个原始节点聚合成 5 个用户可理解的生产阶段。
+// 把原始节点聚合成 5 个用户可理解的生产阶段。
 type StageDef = { key: string; label: string; detail: string; nodes: string[] };
 const STAGE_DEFS: StageDef[] = [
   { key: "script", label: "脚本与意图", detail: "校验请求、加载案例、解析创作意图", nodes: ["ValidateRequest", "LoadCaseContext", "ResolveCreativeIntent"] },
   { key: "voice", label: "配音合成", detail: "生成数字人配音并对齐时间轴", nodes: ["TTS", "NarrationAlignment"] },
-  { key: "material", label: "素材匹配与编排", detail: "匹配 B-roll、数字人镜头、字幕样式与时间线", nodes: ["MaterialPackPlanning", "PortraitPlanning", "BrollPlanning", "StylePlanning", "TimelinePlanning"] },
+  { key: "material", label: "素材匹配与编排", detail: "匹配 B-roll、数字人镜头、字幕样式与时间线", nodes: ["MaterialPackPlanning", "NarrationBoundaryPlanning", "TimelineWindowPlanning", "PortraitPlanning", "BrollPlanning", "StylePlanning", "EditingAgentPlanning", "TimelinePlanning"] },
   { key: "lipsync", label: "口型同步", detail: "生成数字人轨道并做唇形同步", nodes: ["PortraitTrackBuild", "LipSync"] },
   { key: "compose", label: "合成出片", detail: "渲染时间线、混合字幕配乐、导出成片", nodes: ["RenderFinalTimeline", "SubtitleAndBgmMix", "ExportFinishedVideo", "FinalizeRunReport"] },
 ];

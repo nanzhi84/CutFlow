@@ -32,6 +32,7 @@ from packages.planning.material.portrait_pack import (
     rank_portrait_clip_candidates,
     score_simple_candidate,
 )
+from packages.planning.material.shortlist import shortlist_for_windows
 
 __all__ = [
     "avoid_intervals",
@@ -53,4 +54,5 @@ __all__ = [
     "clip_is_lip_sync_usable",
     "rank_portrait_clip_candidates",
     "score_simple_candidate",
+    "shortlist_for_windows",
 ]

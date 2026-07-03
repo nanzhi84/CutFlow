@@ -33,6 +33,8 @@ from packages.core.contracts import (
     utcnow,
 )
 from packages.core.workflow import NodeExecutionError, NodeOutput
+from packages.planning.editing.frame_grid import frame_index
+from packages.planning.material import shortlist_for_windows
 from packages.production.pipeline._editing_agent import (
     build_agent_input,
     deterministic_selection,
@@ -108,6 +110,69 @@ def _portrait_feasibility_failure(agent_input: dict) -> dict | None:
         "required_frames_by_slot": required_frames_by_slot,
         "longest_available_source_frames": longest_available_source_frames,
         "portrait_candidate_count": len(portrait_candidates),
+    }
+
+
+def _boundary_with_compiled_windows(boundary: dict, windows: dict) -> dict:
+    compiled = dict(boundary)
+    compiled["portrait_slots"] = [
+        _portrait_slot_from_window(window)
+        for window in (windows.get("portrait_windows") or [])
+        if isinstance(window, dict)
+    ]
+    compiled["broll_slots"] = [
+        _broll_slot_from_window(window)
+        for window in (windows.get("broll_windows") or [])
+        if isinstance(window, dict)
+    ]
+    return compiled
+
+
+def _raw_portrait_candidate_diagnostics(material: dict) -> dict:
+    candidates = [
+        item
+        for item in (material.get("portrait_candidates") or [])
+        if isinstance(item, dict) and item.get("asset_id")
+    ]
+    return {
+        "longest_available_source_frames": max(
+            [_source_frames_available(candidate) for candidate in candidates] or [0]
+        ),
+        "portrait_candidate_count": len(candidates),
+    }
+
+
+def _source_frames_available(candidate: dict) -> int:
+    meta = candidate.get("metadata")
+    meta = meta if isinstance(meta, dict) else {}
+    try:
+        start = float(meta.get("source_start") or 0.0)
+        end = float(meta.get("source_end") or 0.0)
+    except (TypeError, ValueError):
+        return 0
+    if end <= start:
+        return 0
+    return frame_index(end) - frame_index(start)
+
+
+def _portrait_slot_from_window(window: dict) -> dict:
+    return {
+        "slot_id": str(window.get("window_id") or ""),
+        "start_frame": int(window.get("start_frame", 0) or 0),
+        "end_frame": int(window.get("end_frame", 0) or 0),
+        "unit_ids": list(window.get("unit_ids") or []),
+        "boundary_source": window.get("boundary_source"),
+    }
+
+
+def _broll_slot_from_window(window: dict) -> dict:
+    return {
+        "slot_id": str(window.get("window_id") or ""),
+        "start_frame": int(window.get("start_frame", 0) or 0),
+        "end_frame": int(window.get("end_frame", 0) or 0),
+        "unit_ids": list(window.get("host_unit_ids") or window.get("unit_ids") or []),
+        "boundary_source": window.get("boundary_source"),
+        "text": str(window.get("text") or ""),
     }
 
 
@@ -189,20 +254,28 @@ def run(ctx: NodeContext) -> NodeOutput:
     material = state.require(ArtifactKind.plan_material_pack).payload or {}
     narration = state.require(ArtifactKind.narration_units).payload or {}
     boundary = state.require(ArtifactKind.plan_narration_boundary).payload or {}
+    windows = state.require(ArtifactKind.plan_timeline_windows).payload or {}
     raw_units = narration.get("units", []) or []
     duration = max([float(unit.get("end", 0) or 0) for unit in raw_units] or [1.0])
 
-    candidates = index_candidates(material)
+    agent_boundary = _boundary_with_compiled_windows(boundary, windows)
+    shortlisted_material, shortlist_counts = shortlist_for_windows(
+        windows.get("portrait_windows", []) or [],
+        windows.get("broll_windows", []) or [],
+        material,
+    )
+    candidates = index_candidates(shortlisted_material)
     agent_input = build_agent_input(
         request=state.request,
-        boundary=boundary,
+        boundary=agent_boundary,
         candidates=candidates,
         narration_units=raw_units,
         duration=duration,
     )
-    reuse_cap = portrait_asset_reuse_cap(boundary=boundary, candidates=candidates)
+    reuse_cap = portrait_asset_reuse_cap(boundary=agent_boundary, candidates=candidates)
     portrait_feasibility_failure = _portrait_feasibility_failure(agent_input)
     if portrait_feasibility_failure is not None:
+        portrait_feasibility_failure.update(_raw_portrait_candidate_diagnostics(material))
         raise NodeExecutionError(
             ErrorCode.material_insufficient_portrait,
             "人像素材不足：portrait slot 没有可覆盖的源窗口。",
@@ -219,10 +292,11 @@ def run(ctx: NodeContext) -> NodeOutput:
         if not sandbox_fallback_allowed():
             raise NodeExecutionError(
                 ErrorCode.provider_unsupported_option,
-                "未配置可用的真实 LLM 供应商（llm.chat）。请在「设置」中配置并启用真实 LLM 供应商及密钥。",
+                "未配置可用的真实 LLM 供应商（llm.chat）。"
+                "请在「设置」中配置并启用真实 LLM 供应商及密钥。",
             )
         selection = deterministic_selection(
-            boundary=boundary,
+            boundary=agent_boundary,
             candidates=candidates,
             bgm_enabled=state.request.bgm.enabled,
             max_inserts=state.request.broll.max_inserts,
@@ -304,7 +378,7 @@ def run(ctx: NodeContext) -> NodeOutput:
 
         selection, repair_trace, errors = select_with_repair(
             invoke=_invoke,
-            boundary=boundary,
+            boundary=agent_boundary,
             candidates=candidates,
             bgm_enabled=state.request.bgm.enabled,
             max_repair_attempts=state.request.edit.max_repair_attempts,
@@ -312,7 +386,8 @@ def run(ctx: NodeContext) -> NodeOutput:
         if errors:
             raise NodeExecutionError(
                 ErrorCode.prompt_output_invalid,
-                f"剪辑 Agent 的选择在 {state.request.edit.max_repair_attempts} 次修复后仍不合法："
+                f"剪辑 Agent 的选择在 {state.request.edit.max_repair_attempts} "
+                "次修复后仍不合法："
                 + "；".join(errors[:5]),
             )
 
@@ -324,7 +399,8 @@ def run(ctx: NodeContext) -> NodeOutput:
         degradations.append(
             degradation_notice(
                 WarningCode.portrait_asset_reuse_relaxed,
-                f"人像可用素材数少于人像插槽数，已放松唯一性约束：同一素材最多复用 {reuse_cap} 个片段。",
+                "人像可用素材数少于人像插槽数，已放松唯一性约束："
+                f"同一素材最多复用 {reuse_cap} 个片段。",
                 node_id=node_run.node_id,
                 affects_true_yield=False,
             )
@@ -333,11 +409,11 @@ def run(ctx: NodeContext) -> NodeOutput:
 
     overlay_events = _derive_overlay_events(load_creative_intent(state).emphasis, raw_units)
     portrait_payload = materialize_portrait(
-        selection=selection, boundary=boundary, candidates=candidates
+        selection=selection, boundary=agent_boundary, candidates=candidates
     )
     broll_payload, broll_drops = materialize_broll(
         selection=selection,
-        boundary=boundary,
+        boundary=agent_boundary,
         candidates=candidates,
         cut_frames=portrait_cut_frames(portrait_payload),
         enabled=state.request.broll.enabled,
@@ -379,6 +455,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         "font_id": selection.font_id,
         "bgm_id": selection.bgm_id,
         "portrait_asset_reuse_cap": reuse_cap,
+        "shortlist_counts": shortlist_counts,
         "candidate_counts": {
             "portrait": len(candidates.portrait_by_id),
             "broll": len(candidates.broll_by_id),

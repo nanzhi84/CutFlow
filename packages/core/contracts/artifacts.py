@@ -165,6 +165,16 @@ class NarrationBoundaryPlan(ContractModel):
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
+class TimelineWindowsPlan(ContractModel):
+    fps: int
+    total_frames: int
+    geometry_policy: dict[str, Any] = Field(default_factory=dict)
+    portrait_windows: list[dict[str, Any]] = Field(default_factory=list)
+    broll_windows: list[dict[str, Any]] = Field(default_factory=list)
+    default_assignment: dict[str, Any] = Field(default_factory=dict)
+    compile_diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
 class MaterialPackArtifact(ContractModel):
     case_id: str
     portrait_candidates: list[MaterialCandidate] = Field(default_factory=list)
@@ -184,7 +194,7 @@ class PortraitSegment(ContractModel):
     defect that must fail construction, not be silently re-derived from seconds. The
     ``*_sec`` fields are derived display/debug values retained because the jianying
     draft builder and the selection-ledger reader still read them. The field set
-    mirrors ``packages.production.pipeline.nodes.portrait_planning._segment_payload``
+    mirrors ``packages.production.pipeline.nodes.timeline_window_planning._segment_payload``
     exactly; ``extra="forbid"`` makes any drift fail loudly at construction.
     """
 

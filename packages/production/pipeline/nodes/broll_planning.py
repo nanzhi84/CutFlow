@@ -72,17 +72,16 @@ def run(ctx: NodeContext) -> NodeOutput:
     units = [NarrationUnit.model_validate(unit) for unit in narration.get("units", [])]
     segments = _narration_segments(units)
 
-    # PortraitPlanning (runs before this node) already laid the portrait main track on
-    # the fixed 30fps grid. Read its fps + the set of portrait cut frames so b-roll is
-    # frame-aligned to those cuts AT PLAN TIME (#105) — the timeline node no longer
-    # snaps. Cuts are the portrait segment boundary frames (contiguous track).
-    portrait = state.require(ArtifactKind.plan_portrait).payload or {}
-    fps = int(portrait.get("fps") or 30)
+    # TimelineWindowPlanning owns the portrait cut grid. Read its fps + the set of
+    # compiled portrait window boundaries so B-roll is frame-aligned at plan time.
+    windows = state.require(ArtifactKind.plan_timeline_windows).payload or {}
+    fps = int(windows.get("fps") or 30)
     portrait_cut_frames = sorted(
         {
             int(frame)
-            for seg in portrait.get("segments", [])
-            for frame in (seg.get("timeline_start_frame"), seg.get("timeline_end_frame"))
+            for window in windows.get("portrait_windows", [])
+            if isinstance(window, dict)
+            for frame in (window.get("start_frame"), window.get("end_frame"))
             if frame is not None
         }
     )

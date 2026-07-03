@@ -39,42 +39,34 @@ def _artifact(kind: ArtifactKind, payload: dict) -> Artifact:
     )
 
 
-def _portrait_artifact(duration_sec: float = 4.0, *, cuts: tuple[float, ...] = ()) -> Artifact:
-    """A minimal frame-aligned portrait plan so BrollPlanning can read the cut grid.
-
-    BrollPlanning now reads ``plan.portrait`` for fps + portrait cut frames (#105). The
-    portrait main track is contiguous on the 30fps grid; ``cuts`` (in seconds) become
-    the interior shot boundaries, with 0 and ``duration_sec`` as the outer edges.
-    """
+def _timeline_windows_artifact(
+    duration_sec: float = 4.0, *, cuts: tuple[float, ...] = ()
+) -> Artifact:
+    """A minimal compiled window plan so BrollPlanning can read the cut grid."""
     fps = 30
     boundaries = [0.0, *cuts, duration_sec]
     frames = sorted({round(b * fps) for b in boundaries})
-    segments = [
+    portrait_windows = [
         {
-            "segment_id": f"portrait_{i + 1}",
-            "asset_id": "asset_portrait_demo",
-            "clip_id": None,
-            "start_sec": start / fps,
-            "end_sec": end / fps,
-            "source_start": 0.0,
-            "source_end": (end - start) / fps,
-            "role": "main",
-            "source_mode": "lipsynced",
-            "boundary_source": "semantic",
-            "boundary_reason": "beat",
+            "window_id": f"pwin_{i:03d}",
+            "start_frame": start,
+            "end_frame": end,
             "unit_ids": [],
-            "slot_phase": "portrait_main",
-            "recently_used_material": False,
-            "timeline_start_frame": start,
-            "timeline_end_frame": end,
-            "source_start_frame": 0,
-            "source_end_frame": end - start,
+            "boundary_source": "semantic",
+            "phase": "main",
         }
         for i, (start, end) in enumerate(zip(frames, frames[1:]))
     ]
     return _artifact(
-        ArtifactKind.plan_portrait,
-        {"fps": fps, "duration_sec": duration_sec, "segments": segments},
+        ArtifactKind.plan_timeline_windows,
+        {
+            "fps": fps,
+            "total_frames": frames[-1] if frames else 0,
+            "portrait_windows": portrait_windows,
+            "broll_windows": [],
+            "default_assignment": {},
+            "compile_diagnostics": {},
+        },
     )
 
 
@@ -132,7 +124,7 @@ def test_broll_planning_outputs_clip_id_on_overlays(
                     ]
                 },
             ),
-            ArtifactKind.plan_portrait: _portrait_artifact(3.0),
+            ArtifactKind.plan_timeline_windows: _timeline_windows_artifact(3.0),
         },
     )
     insertion = BrollInsertion(
@@ -227,7 +219,7 @@ def _state_with_clean_unrelated_clip(*, allow_generic_coverage: bool):
                     ]
                 },
             ),
-            ArtifactKind.plan_portrait: _portrait_artifact(4.0),
+            ArtifactKind.plan_timeline_windows: _timeline_windows_artifact(4.0),
         },
     )
     return adapter, state
@@ -301,7 +293,7 @@ def test_broll_planning_outputs_authoritative_frames_consumed_by_render(
             ),
             # Portrait cut 3 frames after the insert's natural end (4.9s -> frame 147,
             # cut at 150) so the plan-time snap fires and records clone-pad.
-            ArtifactKind.plan_portrait: _portrait_artifact(5.0, cuts=(5.0,)),
+            ArtifactKind.plan_timeline_windows: _timeline_windows_artifact(5.0, cuts=(5.0,)),
         },
     )
     insertion = BrollInsertion(
@@ -319,7 +311,7 @@ def test_broll_planning_outputs_authoritative_frames_consumed_by_render(
     )
     monkeypatch.setattr(nodes.broll_planning, "rank_broll_candidates", lambda **_: [])
     # Return the seconds-only insertion; the node's plan_insertions wrapper performs the
-    # real frame alignment against the portrait cut grid it read from plan.portrait.
+    # real frame alignment against the portrait cut grid it read from plan.timeline_windows.
 
     def _fake_plan_insertions(*, fps, portrait_cut_frames, **_):
         from packages.planning.material import align_insertions_to_portrait_cuts
