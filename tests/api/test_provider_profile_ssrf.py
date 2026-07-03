@@ -35,7 +35,7 @@ def _admin_client() -> TestClient:
 def _profile_payload(base_url: str) -> dict:
     return {
         "provider_id": "dashscope.llm",
-        "model_id": "qwen-plus",
+        "model_id": "qwen3.7-plus",
         "capability": "llm.chat",
         "display_name": "Test profile",
         "environment": "prod",

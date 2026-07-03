@@ -59,9 +59,6 @@ _RUNTIME_ERROR_CODES = {
     ErrorCode.provider_quota_exceeded,
 }
 
-_ANNOTATION_VLM_MAX_TOKENS = 4096
-
-
 @dataclass
 class GatedAnnotationResult:
     """Result of a gated run: the AnnotationV4 plus whether the real VLM path ran."""
@@ -202,8 +199,6 @@ def _gateway_vlm_call(
         content = _build_multimodal_content(prompt, frames)
         idem = _idempotency_key(asset_id, prompt, frames)
         input_payload: dict[str, Any] = {"messages": content}
-        if "max_tokens" not in (profile.default_options or {}):
-            input_payload["max_tokens"] = _ANNOTATION_VLM_MAX_TOKENS
         invocation, result = gateway.invoke(
             ProviderCall(
                 case_id=case_id,

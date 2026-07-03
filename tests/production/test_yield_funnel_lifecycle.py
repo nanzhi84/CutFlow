@@ -194,7 +194,7 @@ def test_node_failure_persists_provider_invocations_and_debug_artifacts():
             run_id=run_arg.id,
             node_run_id=node_run.id,
             provider_id="dashscope.llm",
-            model_id="qwen-plus",
+            model_id="qwen3.7-plus",
             provider_profile_id="dashscope.llm.prod",
             capability_id="llm.chat",
             status=ProviderStatus.succeeded,

@@ -244,9 +244,9 @@ SubtitleAndBgmMix, ExportFinishedVideo, FinalizeRunReport
 ## 11. Provider 升级
 
 `packages/core/storage/provider_seed.py`：`dashscope.llm.prod`（line ~89-91）的
-`model_id` `qwen-plus → qwen3.7-plus`（用户决策：共享升级，`ResolveCreativeIntent`
-一并升级）。核查 line 377/386 两处 `qwen-plus` 是否同 profile 的其他引用（如 prompt
-binding 默认 model），一并对齐。base_url compatible-mode 不变。
+`model_id` 已统一为 `qwen3.7-plus`（用户决策：共享升级，`ResolveCreativeIntent`
+一并升级）。核查同 profile 的价格项或 prompt binding 默认 model 等其他引用时，
+一并对齐。base_url compatible-mode 不变。
 
 ## 12. 前端（本 PR 一起做）
 

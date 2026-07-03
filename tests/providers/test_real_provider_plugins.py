@@ -656,10 +656,9 @@ def test_dashscope_llm_uses_compatible_chat_base_url_and_options(tmp_path):
         assert request.headers["authorization"] == "Bearer dashscope-key"
         body = __import__("json").loads(request.content)
         assert body == {
-            "model": "qwen-plus",
+            "model": "qwen3.7-plus",
             "messages": [{"role": "user", "content": "Return JSON."}],
             "temperature": 0.7,
-            "max_tokens": 2000,
             "response_format": {"type": "json_object"},
         }
         return httpx.Response(
@@ -676,7 +675,7 @@ def test_dashscope_llm_uses_compatible_chat_base_url_and_options(tmp_path):
         repository,
         provider_id="dashscope.llm",
         capability="llm.chat",
-        model_id="qwen-plus",
+        model_id="qwen3.7-plus",
         secret_ref=secret_ref,
         default_options={
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -721,7 +720,6 @@ def test_dashscope_vlm_uses_openai_compatible_multimodal_payload(tmp_path):
                 }
             ],
             "temperature": 0.2,
-            "max_tokens": 1200,
         }
         return httpx.Response(
             200,

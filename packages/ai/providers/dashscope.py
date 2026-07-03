@@ -297,7 +297,7 @@ def _chat_url(options: dict[str, Any]) -> str:
 def _chat_parameters(call: ProviderCall, context: ProviderInvocationContext) -> dict[str, Any]:
     defaults = _chat_defaults(call.capability_id)
     parameters: dict[str, Any] = {}
-    for key in ("temperature", "max_tokens", "top_p", "response_format", "enable_thinking", "thinking_budget"):
+    for key in ("temperature", "top_p", "response_format", "enable_thinking", "thinking_budget"):
         value = call.input.get(key, context.profile.default_options.get(key, defaults.get(key)))
         if value is not None:
             parameters[key] = value
@@ -306,9 +306,9 @@ def _chat_parameters(call: ProviderCall, context: ProviderInvocationContext) -> 
 
 def _chat_defaults(capability_id: str) -> dict[str, Any]:
     if capability_id == "llm.chat":
-        return {"temperature": 0.7, "max_tokens": 2000}
+        return {"temperature": 0.7}
     if capability_id == "vlm.annotation":
-        return {"temperature": 0.2, "max_tokens": 1200}
+        return {"temperature": 0.2}
     return {}
 
 

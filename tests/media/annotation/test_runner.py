@@ -154,10 +154,10 @@ def test_real_vlm_completed_with_semantics(tmp_path):
     # The paid call went through the gateway and was recorded.
     assert result.provider_invocation_ids
     assert plugin.calls and plugin.calls[0].idempotency_key  # idempotency set
-    assert plugin.calls[0].input["max_tokens"] == 4096
+    assert "max_tokens" not in plugin.calls[0].input
 
 
-def test_vlm_profile_max_tokens_override_is_preserved(tmp_path):
+def test_vlm_profile_max_tokens_override_is_not_forwarded(tmp_path):
     repository, gateway = _gateway(tmp_path)
     profile = _real_vlm_profile(repository, gateway)
     profile = profile.model_copy(update={"default_options": {"max_tokens": 2048}})

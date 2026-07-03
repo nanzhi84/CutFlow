@@ -65,7 +65,7 @@ def _seed_fake_llm_profile(adapter: LocalRuntimeAdapter) -> None:
     adapter.repository.provider_profiles["fake.llm.prod"] = ProviderProfile(
         id="fake.llm.prod",
         provider_id="fake.llm",
-        model_id="qwen-plus",
+        model_id="qwen3.7-plus",
         capability="llm.chat",
         display_name="Fake LLM",
         environment="prod",
