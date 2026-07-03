@@ -120,7 +120,8 @@ def test_mark_run_failed_synthesizes_next_node_when_none_running():
     prefix = [
         "ValidateRequest", "LoadCaseContext", "ResolveCreativeIntent", "TTS",
         "MaterialPackPlanning", "NarrationAlignment", "NarrationBoundaryPlanning",
-        "PortraitPlanning", "BrollPlanning", "StylePlanning", "TimelinePlanning",
+        "TimelineWindowPlanning", "PortraitPlanning", "BrollPlanning", "StylePlanning",
+        "TimelinePlanning",
     ]
     for nid in prefix:
         adapter.repository.node_runs[run.id].append(

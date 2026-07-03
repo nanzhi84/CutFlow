@@ -199,23 +199,35 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
             ("packages/production/pipeline/nodes/subtitle_and_bgm_mix.py", "request.subtitle.enabled"),
         ),
         "style_preset": (
-            ("packages/production/pipeline/nodes/style_planning.py", "request.subtitle.style_preset"),
+            ("packages/production/pipeline/_materialize.py", "request.subtitle.style_preset"),
         ),
-        "font_id": (("packages/production/pipeline/nodes/style_planning.py", "request.subtitle.font_id"),),
+        "font_id": (
+            ("packages/production/pipeline/_materialize.py", "request.subtitle.font_id"),
+        ),
         "font_size": (
-            ("packages/production/pipeline/nodes/style_planning.py", "request.subtitle.font_size"),
+            ("packages/production/pipeline/_materialize.py", "request.subtitle.font_size"),
         ),
         "position": (
-            ("packages/production/pipeline/nodes/style_planning.py", "request.subtitle.position"),
+            ("packages/production/pipeline/_materialize.py", "request.subtitle.position"),
         ),
     },
     BgmOptions: {
-        "enabled": (("packages/production/pipeline/nodes/style_planning.py", "request.bgm.enabled"),),
+        "enabled": (
+            ("packages/production/pipeline/_materialize.py", "request.bgm.enabled"),
+            ("packages/production/pipeline/nodes/material_pack_planning.py", "request.bgm.enabled"),
+            ("packages/production/pipeline/nodes/editing_agent_planning.py", "request.bgm.enabled"),
+        ),
         "bgm_id": (
             ("packages/production/pipeline/nodes/material_pack_planning.py", "request.bgm.bgm_id"),
         ),
-        "volume": (("packages/production/pipeline/nodes/style_planning.py", "request.bgm.volume"),),
-        "auto_mix": (("packages/production/pipeline/nodes/style_planning.py", "request.bgm.auto_mix"),),
+        "volume": (
+            ("packages/production/pipeline/_materialize.py", "request.bgm.volume"),
+            ("packages/production/pipeline/nodes/subtitle_and_bgm_mix.py", "request.bgm.volume"),
+        ),
+        "auto_mix": (
+            ("packages/production/pipeline/_materialize.py", "request.bgm.auto_mix"),
+            ("packages/production/pipeline/nodes/subtitle_and_bgm_mix.py", "request.bgm.auto_mix"),
+        ),
     },
     CoverOptions: {
         "mode": (("packages/production/pipeline/nodes/export_finished_video.py", "request.cover.mode"),),
@@ -247,7 +259,7 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
         ),
         "portrait_insufficient_policy": (
             (
-                "packages/production/pipeline/nodes/portrait_planning.py",
+                "packages/production/pipeline/nodes/timeline_window_planning.py",
                 "request.strictness.portrait_insufficient_policy",
             ),
         ),

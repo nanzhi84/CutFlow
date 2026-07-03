@@ -9,7 +9,12 @@ non-overlapping frame fields.
 
 from __future__ import annotations
 
-from packages.core.contracts import DigitalHumanVideoRequest
+from pathlib import Path
+
+from packages.core.contracts import DigitalHumanVideoRequest, WarningCode
+from packages.planning.material import shortlist_for_windows
+from packages.planning.material.broll_plan import BROLL_GEOMETRY_POLICY
+from packages.production.pipeline import _editing_agent
 from packages.production.pipeline._editing_agent import (
     BrollChoice,
     EditingSelection,
@@ -17,15 +22,17 @@ from packages.production.pipeline._editing_agent import (
     build_agent_input,
     deterministic_selection,
     index_candidates,
-    materialize_broll,
-    materialize_portrait,
-    materialize_style,
     parse_selection,
     portrait_asset_reuse_cap,
-    portrait_cut_frames,
     portrait_uniqueness_rule_text,
     select_with_repair,
     validate_selection,
+)
+from packages.production.pipeline._materialize import (
+    materialize_broll_from_assignment,
+    materialize_portrait_from_assignment,
+    materialize_style_from_selection,
+    portrait_cut_frames,
 )
 
 
@@ -74,8 +81,8 @@ def _boundary() -> dict:
             },
             {
                 "slot_id": "bslot_001",
-                "start_frame": 210,
-                "end_frame": 270,
+                "start_frame": 240,
+                "end_frame": 300,
                 "unit_ids": ["unit_002"],
                 "text": "施工过程",
             },
@@ -127,7 +134,11 @@ def _material(*, with_font=True, with_bgm=True, short_portrait=False) -> dict:
             },
         },
     ]
-    font = [{"asset_id": "font_yst", "score": 50.0, "reason": "清晰标题字体"}] if with_font else []
+    font = (
+        [{"asset_id": "font_yst", "score": 50.0, "reason": "清晰标题字体"}]
+        if with_font
+        else []
+    )
     bgm = (
         [
             {
@@ -183,6 +194,60 @@ def _valid_selection() -> EditingSelection:
     )
 
 
+def _windows(boundary: dict) -> dict:
+    return {
+        "fps": int(boundary.get("fps") or 30),
+        "total_frames": int(boundary.get("total_frames") or 0),
+        "portrait_windows": [
+            {
+                "window_id": slot["slot_id"],
+                "start_frame": slot["start_frame"],
+                "end_frame": slot["end_frame"],
+                "unit_ids": list(slot.get("unit_ids") or []),
+                "boundary_source": slot.get("boundary_source"),
+                "phase": "opening" if index == 0 else "main",
+            }
+            for index, slot in enumerate(boundary.get("portrait_slots") or [])
+        ],
+        "broll_windows": [
+            {
+                "window_id": slot["slot_id"],
+                "start_frame": slot["start_frame"],
+                "end_frame": slot["end_frame"],
+                "host_unit_ids": list(slot.get("unit_ids") or []),
+                "host_portrait_window_ids": [],
+                "text": slot.get("text") or "",
+                "boundary_source": slot.get("boundary_source") or "narration_unit",
+            }
+            for slot in boundary.get("broll_slots") or []
+        ],
+    }
+
+
+def _assignment(selection: EditingSelection) -> dict:
+    return {
+        "portrait": [
+            {
+                "window_id": choice.slot_id,
+                "candidate_id": choice.window_id,
+                "source_mode": choice.source_mode,
+                "reason": choice.reason,
+            }
+            for choice in selection.portrait
+        ],
+        "broll": [
+            {
+                "window_id": choice.slot_id,
+                "candidate_id": choice.candidate_id,
+                "reason": choice.reason,
+                "confidence": choice.confidence,
+                "matched_keywords": list(choice.matched_keywords),
+            }
+            for choice in selection.broll
+        ],
+    }
+
+
 # --------------------------------------------------------------------------- #
 def test_index_and_build_agent_input_number_candidates():
     material = _material()
@@ -197,7 +262,12 @@ def test_index_and_build_agent_input_number_candidates():
         boundary=_boundary(),
         candidates=candidates,
         narration_units=[
-            {"unit_id": "unit_001", "text": "今天带你看一下这套案例", "start": 0.0, "end": 6.0}
+            {
+                "unit_id": "unit_001",
+                "text": "今天带你看一下这套案例",
+                "start": 0.0,
+                "end": 6.0,
+            }
         ],
         duration=12.0,
     )
@@ -225,6 +295,58 @@ def test_agent_input_marks_short_portraits_illegal_per_slot():
     assert payload["portrait_slots"][0]["required_frames"] == 180
     assert payload["portrait_slots"][0]["legal_window_ids"] == ["pc_000"]
     assert payload["portrait_slots"][1]["legal_window_ids"] == ["pc_000"]
+
+
+def test_agent_portrait_avoid_spans_trim_legal_windows_and_shortlist():
+    material = _material()
+    material["portrait_candidates"] = [
+        {
+            "asset_id": "portrait_bad",
+            "score": 90.0,
+            "metadata": {
+                "clip_id": "bad",
+                "source_start": 0.0,
+                "source_end": 8.0,
+                "avoid_spans": [[2.0, 8.0]],
+            },
+        },
+        {
+            "asset_id": "portrait_clean",
+            "score": 80.0,
+            "metadata": {
+                "clip_id": "clean",
+                "source_start": 0.0,
+                "source_end": 8.0,
+                "avoid_spans": [[0.0, 1.0]],
+            },
+        },
+    ]
+    material["broll_candidates"] = []
+
+    payload = build_agent_input(
+        request=_request(),
+        boundary=_boundary(),
+        candidates=index_candidates(material),
+        narration_units=[],
+        duration=12.0,
+    )
+
+    assert payload["portrait_slots"][0]["legal_window_ids"] == ["pc_001"]
+    assert payload["portrait_slots"][1]["legal_window_ids"] == ["pc_001"]
+    assert payload["portrait_candidates"][0]["source_start"] == 0.0
+    assert payload["portrait_candidates"][0]["source_end"] == 2.0
+    assert payload["portrait_candidates"][0]["available_frames"] == 60
+    assert payload["portrait_candidates"][1]["source_start"] == 1.0
+    assert payload["portrait_candidates"][1]["source_end"] == 8.0
+    assert payload["portrait_candidates"][1]["available_frames"] == 210
+
+    shortlisted, counts = shortlist_for_windows(
+        _windows(_boundary())["portrait_windows"],
+        [],
+        material,
+    )
+    assert [c["asset_id"] for c in shortlisted["portrait_candidates"]] == ["portrait_clean"]
+    assert counts["portrait"] == {"raw": 2, "eligible": 1, "exposed": 1, "dropped": 1}
 
 
 def test_valid_selection_passes_validation():
@@ -326,7 +448,11 @@ def _three_slot_boundary() -> dict:
 
 def test_portrait_reuse_cap_is_strict_when_assets_are_plentiful():
     assert (
-        portrait_asset_reuse_cap(boundary=_boundary(), candidates=index_candidates(_material())) == 1
+        portrait_asset_reuse_cap(
+            boundary=_boundary(),
+            candidates=index_candidates(_material()),
+        )
+        == 1
     )
 
 
@@ -421,7 +547,11 @@ def test_deterministic_scarce_materializes_gap_free_portrait_track():
     selection = deterministic_selection(
         boundary=boundary, candidates=candidates, bgm_enabled=False, max_inserts=0
     )
-    payload = materialize_portrait(selection=selection, boundary=boundary, candidates=candidates)
+    payload = materialize_portrait_from_assignment(
+        windows=_windows(boundary),
+        assignment=_assignment(selection),
+        candidates=candidates,
+    )
     segments = payload["segments"]
     assert len(segments) == 3
     # Contiguous, gap-free coverage across the whole [0, 360) grid.
@@ -432,8 +562,11 @@ def test_deterministic_scarce_materializes_gap_free_portrait_track():
 
 
 def test_materialize_portrait_frames_are_complete_and_contiguous():
-    payload = materialize_portrait(
-        selection=_valid_selection(), boundary=_boundary(), candidates=index_candidates(_material())
+    selection = _valid_selection()
+    payload = materialize_portrait_from_assignment(
+        windows=_windows(_boundary()),
+        assignment=_assignment(selection),
+        candidates=index_candidates(_material()),
     )
     segments = payload["segments"]
     assert len(segments) == 2
@@ -453,20 +586,60 @@ def test_materialize_portrait_frames_are_complete_and_contiguous():
     assert segments[1]["timeline_end_frame"] == 360
 
 
+def test_materialize_portrait_uses_clean_span_for_source_slice():
+    material = _material()
+    material["portrait_candidates"] = [
+        {
+            "asset_id": "portrait_clean",
+            "score": 90.0,
+            "metadata": {
+                "clip_id": "clean",
+                "source_start": 0.0,
+                "source_end": 8.0,
+                "avoid_spans": [[0.0, 1.0], [7.0, 8.0]],
+            },
+        }
+    ]
+    boundary = _boundary()
+    boundary["portrait_slots"] = [
+        {"slot_id": "pslot_000", "start_frame": 0, "end_frame": 180, "unit_ids": ["unit_001"]}
+    ]
+    selection = EditingSelection(
+        portrait=[PortraitChoice(slot_id="pslot_000", window_id="pc_000")]
+    )
+
+    payload = materialize_portrait_from_assignment(
+        windows=_windows(boundary),
+        assignment=_assignment(selection),
+        candidates=index_candidates(material),
+    )
+
+    [segment] = payload["segments"]
+    assert segment["source_start_frame"] == 30
+    assert segment["source_end_frame"] == 210
+    assert round(segment["source_start"], 3) == 1.0
+    assert round(segment["source_end"], 3) == 7.0
+
+
 def test_materialize_broll_overlays_have_frames_and_no_overlap():
     boundary = _boundary()
     candidates = index_candidates(_material())
-    portrait_payload = materialize_portrait(
-        selection=_valid_selection(), boundary=boundary, candidates=candidates
+    selection = _valid_selection()
+    assignment = _assignment(selection)
+    portrait_payload = materialize_portrait_from_assignment(
+        windows=_windows(boundary),
+        assignment=assignment,
+        candidates=candidates,
     )
-    payload = materialize_broll(
-        selection=_valid_selection(),
-        boundary=boundary,
+    payload, drops = materialize_broll_from_assignment(
+        windows=_windows(boundary),
+        assignment=assignment,
         candidates=candidates,
         cut_frames=portrait_cut_frames(portrait_payload),
         enabled=True,
         max_inserts=4,
     )
+    assert drops == []
     overlays = payload["overlays"]
     assert payload["enabled"] is True
     assert len(overlays) == 2
@@ -485,25 +658,229 @@ def test_materialize_broll_overlays_have_frames_and_no_overlap():
 
 
 def test_materialize_broll_disabled_returns_empty():
-    payload = materialize_broll(
-        selection=_valid_selection(),
-        boundary=_boundary(),
+    payload, drops = materialize_broll_from_assignment(
+        windows=_windows(_boundary()),
+        assignment=_assignment(_valid_selection()),
         candidates=index_candidates(_material()),
         cut_frames=[0, 180, 360],
         enabled=False,
         max_inserts=4,
     )
+    assert drops == []
     assert payload["enabled"] is False
     assert payload["overlays"] == []
 
 
-def test_materialize_style_uses_chosen_font_and_bgm():
-    payload = materialize_style(
-        selection=_valid_selection(),
-        candidates=index_candidates(_material()),
-        request=_request(),
-        overlay_events=[],
+def test_agent_broll_rejects_unsnappable_short_residual():
+    material = _material()
+    material["broll_candidates"] = [
+        {
+            "asset_id": "broll_flash",
+            "score": 90.0,
+            "metadata": {
+                "clip_id": "flash_clip",
+                "source_start": 0.04,
+                "source_end": 1.6,
+                "scene_name": "product",
+            },
+        }
+    ]
+    boundary = {
+        "broll_slots": [
+            {"slot_id": "bslot_flash", "start_frame": 668, "end_frame": 715}
+        ]
+    }
+    selection = EditingSelection(
+        broll=[BrollChoice(slot_id="bslot_flash", candidate_id="bc_000")]
     )
+
+    payload, drops = materialize_broll_from_assignment(
+        windows=_windows(boundary),
+        assignment=_assignment(selection),
+        candidates=index_candidates(material),
+        cut_frames=[488, 724, 816],
+        enabled=True,
+        max_inserts=4,
+    )
+
+    assert payload["overlays"] == []
+    assert drops == [
+        {"slot_id": "bslot_flash", "candidate_id": "bc_000", "reason": "geometry_rejected"}
+    ]
+
+
+def test_agent_broll_repositions_inside_window_before_drop():
+    material = _material()
+    material["broll_candidates"] = [
+        {
+            "asset_id": "broll_report",
+            "score": 90.0,
+            "metadata": {
+                "clip_id": "report_clip",
+                "source_start": 0.0,
+                "source_end": 2.0,
+                "scene_name": "report",
+            },
+        }
+    ]
+    boundary = {
+        "broll_slots": [
+            {"slot_id": "bslot_report", "start_frame": 81, "end_frame": 150}
+        ]
+    }
+    selection = EditingSelection(
+        broll=[BrollChoice(slot_id="bslot_report", candidate_id="bc_000")]
+    )
+
+    payload, drops = materialize_broll_from_assignment(
+        windows=_windows(boundary),
+        assignment=_assignment(selection),
+        candidates=index_candidates(material),
+        cut_frames=[0, 150],
+        enabled=True,
+        max_inserts=4,
+    )
+
+    assert drops == []
+    [overlay] = payload["overlays"]
+    assert (overlay["timeline_start_frame"], overlay["timeline_end_frame"]) == (90, 150)
+    assert round(overlay["timeline_start"], 3) == 3.0
+    assert round(overlay["timeline_end"], 3) == 5.0
+
+
+def test_agent_broll_honours_min_max_insert_seconds():
+    material = _material()
+    material["broll_candidates"] = [
+        {
+            "asset_id": "broll_long",
+            "score": 90.0,
+            "metadata": {"clip_id": "long_clip", "source_start": 0.0, "source_end": 8.0},
+        },
+        {
+            "asset_id": "broll_short",
+            "score": 80.0,
+            "metadata": {"clip_id": "short_clip", "source_start": 0.0, "source_end": 1.2},
+        },
+    ]
+    boundary = {
+        "broll_slots": [
+            {"slot_id": "bslot_long", "start_frame": 0, "end_frame": 300},
+            {"slot_id": "bslot_short", "start_frame": 300, "end_frame": 450},
+        ]
+    }
+    selection = EditingSelection(
+        broll=[
+            BrollChoice(slot_id="bslot_long", candidate_id="bc_000"),
+            BrollChoice(slot_id="bslot_short", candidate_id="bc_001"),
+        ]
+    )
+
+    payload, drops = materialize_broll_from_assignment(
+        windows=_windows(boundary),
+        assignment=_assignment(selection),
+        candidates=index_candidates(material),
+        cut_frames=[0, 300, 600],
+        enabled=True,
+        max_inserts=4,
+    )
+
+    [overlay] = payload["overlays"]
+    assert round(overlay["timeline_end"] - overlay["timeline_start"], 3) == 4.0
+    assert round(overlay["source_end"] - overlay["source_start"], 3) == 4.0
+    assert drops == [
+        {"slot_id": "bslot_short", "candidate_id": "bc_001", "reason": "source_too_short"}
+    ]
+
+
+def test_agent_broll_uses_shared_geometry_policy_object():
+    assert materialize_broll_from_assignment.__kwdefaults__["policy"] is BROLL_GEOMETRY_POLICY
+
+
+def test_same_assignment_same_frames_across_engines():
+    boundary = _boundary()
+    candidates = index_candidates(_material())
+    assignment = _assignment(_valid_selection())
+    llm_portrait = materialize_portrait_from_assignment(
+        windows=_windows(boundary),
+        assignment={**assignment, "engine": "editing_agent_llm"},
+        candidates=candidates,
+    )
+    fallback_portrait = materialize_portrait_from_assignment(
+        windows=_windows(boundary),
+        assignment={**assignment, "engine": "deterministic_fallback"},
+        candidates=candidates,
+    )
+    assert [
+        (
+            item["timeline_start_frame"],
+            item["timeline_end_frame"],
+            item["source_start_frame"],
+            item["source_end_frame"],
+        )
+        for item in llm_portrait["segments"]
+    ] == [
+        (
+            item["timeline_start_frame"],
+            item["timeline_end_frame"],
+            item["source_start_frame"],
+            item["source_end_frame"],
+        )
+        for item in fallback_portrait["segments"]
+    ]
+
+    llm_broll, llm_drops = materialize_broll_from_assignment(
+        windows=_windows(boundary),
+        assignment={**assignment, "engine": "editing_agent_llm"},
+        candidates=candidates,
+        cut_frames=portrait_cut_frames(llm_portrait),
+        enabled=True,
+        max_inserts=4,
+    )
+    fallback_broll, fallback_drops = materialize_broll_from_assignment(
+        windows=_windows(boundary),
+        assignment={**assignment, "engine": "deterministic_fallback"},
+        candidates=candidates,
+        cut_frames=portrait_cut_frames(fallback_portrait),
+        enabled=True,
+        max_inserts=4,
+    )
+    assert llm_drops == fallback_drops == []
+    assert [
+        (
+            item["timeline_start_frame"],
+            item["timeline_end_frame"],
+            item["source_start_frame"],
+            item["source_end_frame"],
+        )
+        for item in llm_broll["overlays"]
+    ] == [
+        (
+            item["timeline_start_frame"],
+            item["timeline_end_frame"],
+            item["source_start_frame"],
+            item["source_end_frame"],
+        )
+        for item in fallback_broll["overlays"]
+    ]
+
+
+def test_editing_agent_helper_has_no_materializer_definitions():
+    source = Path(_editing_agent.__file__).read_text()
+    assert "def materialize_portrait" not in source
+    assert "def materialize_broll" not in source
+    assert "def materialize_style" not in source
+
+
+def test_materialize_style_uses_chosen_font_and_bgm():
+    payload, warnings, degradations = materialize_style_from_selection(
+        request=_request(),
+        material=_material(),
+        overlay_events=[],
+        font_id=_valid_selection().font_id,
+        bgm_id=_valid_selection().bgm_id,
+    )
+    assert warnings == []
+    assert degradations == []
     assert payload["font_asset_id"] == "font_yst"
     assert payload["font"]["font_id"] == "font_yst"
     assert payload["bgm"] is not None
@@ -513,14 +890,22 @@ def test_materialize_style_uses_chosen_font_and_bgm():
 
 
 def test_materialize_style_empty_font_pool_falls_back_to_default():
-    payload = materialize_style(
-        selection=EditingSelection(font_id=None, bgm_id=None),
-        candidates=index_candidates(_material(with_font=False, with_bgm=False)),
+    payload, warnings, degradations = materialize_style_from_selection(
         request=_request(),
+        material=_material(with_font=False, with_bgm=False),
         overlay_events=[],
+        font_id=None,
+        bgm_id=None,
     )
     assert payload["font_asset_id"] == "case_default_font"
-    assert payload["bgm"] is None
+    assert payload["bgm"]["asset_id"] is None
+    assert warnings == [
+        WarningCode.font_default_used,
+        WarningCode.bgm_skipped_library_unannotated,
+    ]
+    assert [notice.code for notice in degradations] == [
+        WarningCode.bgm_skipped_library_unannotated
+    ]
 
 
 def test_materialize_style_bgm_disabled_yields_no_bgm():
@@ -530,13 +915,58 @@ def test_materialize_style_bgm_disabled_yields_no_bgm():
         voice={"voice_id": "voice_sandbox"},
         bgm={"enabled": False},
     )
-    payload = materialize_style(
-        selection=_valid_selection(),
-        candidates=index_candidates(_material()),
+    payload, warnings, degradations = materialize_style_from_selection(
         request=req,
+        material=_material(),
         overlay_events=[],
+        font_id=_valid_selection().font_id,
+        bgm_id=_valid_selection().bgm_id,
     )
-    assert payload["bgm"] is None
+    assert warnings == []
+    assert degradations == []
+    assert payload["bgm"]["enabled"] is False
+    assert payload["bgm"]["asset_id"] is None
+
+
+def test_style_selection_cannot_mutate_visual_windows():
+    boundary = _boundary()
+    candidates = index_candidates(_material())
+    assignment = _assignment(_valid_selection())
+    portrait_before = materialize_portrait_from_assignment(
+        windows=_windows(boundary),
+        assignment=assignment,
+        candidates=candidates,
+    )
+    broll_before, _drops = materialize_broll_from_assignment(
+        windows=_windows(boundary),
+        assignment=assignment,
+        candidates=candidates,
+        cut_frames=portrait_cut_frames(portrait_before),
+        enabled=True,
+        max_inserts=4,
+    )
+    style_payload, _warnings, _degradations = materialize_style_from_selection(
+        request=_request(),
+        material=_material(),
+        overlay_events=[],
+        font_id="font_yst",
+        bgm_id="bgm_001",
+    )
+    assert "segments" not in style_payload
+    assert "overlays" not in style_payload
+    assert portrait_before == materialize_portrait_from_assignment(
+        windows=_windows(boundary),
+        assignment=assignment,
+        candidates=candidates,
+    )
+    assert broll_before == materialize_broll_from_assignment(
+        windows=_windows(boundary),
+        assignment=assignment,
+        candidates=candidates,
+        cut_frames=portrait_cut_frames(portrait_before),
+        enabled=True,
+        max_inserts=4,
+    )[0]
 
 
 def test_parse_selection_is_robust_to_garbage():
@@ -602,25 +1032,28 @@ def test_select_with_repair_gives_up_after_budget():
     assert len(trace) == 2  # 1 initial + 1 repair attempt
 
 
-def test_materialize_broll_drops_sub_frame_overlay():
-    # A broll candidate whose usable source window is shorter than one 30fps frame
-    # would quantize to a zero-length overlay; it must be dropped, not emitted.
+def test_materialize_broll_drops_source_shorter_than_min_insert():
+    # A broll candidate shorter than the shared minimum insert duration is dropped
+    # before geometry placement, so the diagnostic is source_too_short.
     material = _material()
     material["broll_candidates"] = [
         {
             "asset_id": "broll_tiny",
             "score": 80.0,
-            "metadata": {"clip_id": "c", "source_start": 1.0, "source_end": 1.01},
+            "metadata": {"clip_id": "c", "source_start": 1.0, "source_end": 2.0},
         }
     ]
     candidates = index_candidates(material)
     selection = EditingSelection(broll=[BrollChoice(slot_id="bslot_000", candidate_id="bc_000")])
-    payload = materialize_broll(
-        selection=selection,
-        boundary=_boundary(),
+    payload, drops = materialize_broll_from_assignment(
+        windows=_windows(_boundary()),
+        assignment=_assignment(selection),
         candidates=candidates,
         cut_frames=[0, 180, 360],
         enabled=True,
         max_inserts=4,
     )
     assert payload["overlays"] == []
+    assert drops == [
+        {"slot_id": "bslot_000", "candidate_id": "bc_000", "reason": "source_too_short"}
+    ]

@@ -11,7 +11,7 @@ material clears the relevance floor, the node soft-degrades with
 from __future__ import annotations
 
 from packages.core.contracts import ArtifactKind, NodeStatus, WarningCode
-from packages.core.contracts.artifacts import BrollOverlay, BrollPlanArtifact, NarrationUnit
+from packages.core.contracts.artifacts import BrollPlanArtifact, NarrationUnit
 from packages.planning.material import (
     ScriptSegment,
     demote_recent_broll_candidates,
@@ -20,6 +20,7 @@ from packages.planning.material import (
     rank_broll_candidates,
 )
 from packages.core.workflow import NodeOutput
+from packages.production.pipeline._materialize import overlays_from_insertions
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
 from packages.production.pipeline.nodes._broll_policy import (
@@ -72,17 +73,16 @@ def run(ctx: NodeContext) -> NodeOutput:
     units = [NarrationUnit.model_validate(unit) for unit in narration.get("units", [])]
     segments = _narration_segments(units)
 
-    # PortraitPlanning (runs before this node) already laid the portrait main track on
-    # the fixed 30fps grid. Read its fps + the set of portrait cut frames so b-roll is
-    # frame-aligned to those cuts AT PLAN TIME (#105) — the timeline node no longer
-    # snaps. Cuts are the portrait segment boundary frames (contiguous track).
-    portrait = state.require(ArtifactKind.plan_portrait).payload or {}
-    fps = int(portrait.get("fps") or 30)
+    # TimelineWindowPlanning owns the portrait cut grid. Read its fps + the set of
+    # compiled portrait window boundaries so B-roll is frame-aligned at plan time.
+    windows = state.require(ArtifactKind.plan_timeline_windows).payload or {}
+    fps = int(windows.get("fps") or 30)
     portrait_cut_frames = sorted(
         {
             int(frame)
-            for seg in portrait.get("segments", [])
-            for frame in (seg.get("timeline_start_frame"), seg.get("timeline_end_frame"))
+            for window in windows.get("portrait_windows", [])
+            if isinstance(window, dict)
+            for frame in (window.get("start_frame"), window.get("end_frame"))
             if frame is not None
         }
     )
@@ -139,38 +139,13 @@ def run(ctx: NodeContext) -> NodeOutput:
             ],
         )
 
-    overlays = [
-        BrollOverlay(
-            overlay_id=f"broll_{index + 1}",
-            asset_id=ins.asset_id,
-            clip_id=ins.clip_id,
-            timeline_start=ins.timeline_start,
-            timeline_end=ins.timeline_end,
-            source_start=ins.source_start,
-            source_end=ins.source_end,
-            # Authoritative frame-aligned boundaries (#105): downstream renders trust
-            # these verbatim; the timeline node fail-fasts if any are missing.
-            timeline_start_frame=ins.timeline_start_frame,
-            timeline_end_frame=ins.timeline_end_frame,
-            source_start_frame=ins.source_start_frame,
-            source_end_frame=ins.source_end_frame,
-            pad_start=ins.pad_start,
-            pad_end=ins.pad_end,
-            reason=ins.reason,
-            confidence=ins.confidence,
-            matched_keywords=list(ins.matched_keywords),
-            scene_name=ins.scene_name,
-            diversity_key=ins.diversity_key or None,
-        )
-        for index, ins in enumerate(insertions)
-    ]
     return NodeOutput(
         artifacts=[
             ctx.artifact(
                 ArtifactKind.plan_broll,
                 BrollPlanArtifact(
                     enabled=True,
-                    overlays=overlays,
+                    overlays=overlays_from_insertions(insertions),
                 ).model_dump(mode="json"),
                 "BrollPlanArtifact.v1",
             )

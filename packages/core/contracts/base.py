@@ -86,6 +86,7 @@ class WarningCode(str, Enum):
     subtitle_burn_skipped = "subtitle.burn_skipped"
     editing_agent_deterministic_fallback = "editing_agent.deterministic_fallback"
     portrait_asset_reuse_relaxed = "portrait.asset_reuse_relaxed"
+    broll_insertions_dropped_geometry = "broll.insertions_dropped_geometry"
 
 
 class DegradationCode(str, Enum):
@@ -158,6 +159,8 @@ class ArtifactKind(str, Enum):
     narration_units = "narration.units"
     plan_material_pack = "plan.material_pack"
     plan_narration_boundary = "plan.narration_boundary"
+    plan_timeline_windows = "plan.timeline_windows"
+    plan_media_assignment = "plan.media_assignment"
     plan_portrait = "plan.portrait"
     plan_broll = "plan.broll"
     plan_style = "plan.style"

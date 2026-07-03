@@ -1,9 +1,9 @@
 # packages/production
 
-数字人视频生产引擎：执行 3 套工作流模板——`digital_human_v2`（16 节点主链）、`broll_only_v1`（13 节点纯空镜）、`seedance_t2v_v1`（5 节点文生视频），以及成片的 SQL 仓储、剪映草稿包、剪辑师交接包导出。
+数字人视频生产引擎：执行 4 套工作流模板——`digital_human_v2`（18 节点主链）、`digital_human_editing_agent_v1`（16 节点 LLM 剪辑）、`broll_only_v1`（13 节点纯空镜）、`seedance_t2v_v1`（5 节点文生视频），以及成片的 SQL 仓储、剪映草稿包、剪辑师交接包导出。
 
 ## 职责
-- 定义并执行三套工作流模板：`node_sequence.py` 给出三套序列（`NODE_SEQUENCE` 16 节点 / `BROLL_ONLY_SEQUENCE` 13 节点 / `SEEDANCE_T2V_SEQUENCE` 5 节点，外加 `WORKFLOW_TEMPLATE_NODE_COUNTS` 模板节点数）；`digital_human.py` 的 `_TEMPLATE_BUILDERS`/`template_for()` 按 `workflow_template_id` 路由三模板；`NODE_HANDLERS`（21 项，覆盖三模板全部节点，`digital_human_v2` 走其中 16 个）分发到 `pipeline/nodes/` 下一文件一节点的 `run(ctx)`。
+- 定义并执行四套工作流模板：`node_sequence.py` 给出四套序列（`NODE_SEQUENCE` 18 节点 / `EDITING_AGENT_SEQUENCE` 16 节点 / `BROLL_ONLY_SEQUENCE` 13 节点 / `SEEDANCE_T2V_SEQUENCE` 5 节点，外加 `WORKFLOW_TEMPLATE_NODE_COUNTS` 模板节点数）；`digital_human.py` 的 `_TEMPLATE_BUILDERS`/`template_for()` 按 `workflow_template_id` 路由四模板；`NODE_HANDLERS`（24 项，覆盖四模板全部节点，`digital_human_v2` 走其中 18 个）分发到 `pipeline/nodes/` 下一文件一节点的 `run(ctx)`。
 - `LocalRuntimeAdapter` 是 thin engine：跑节点循环、run/node 状态机迁移（`assert_transition`）、事件/漏斗/可观测埋点、写 public+debug run report，并向节点提供共享服务（artifact 创建、media 解析、provider profile 选取、object store）。
 - resume 复用既有有效产物（`reuse.py` 校验 node_status/node_version/input_manifest_hash/schema_version/sha256），retry 则全新跑。
 - 节点产出 TYPED artifacts + provider invocation + warnings + GRADED degradations；选材落 selection ledger（`_selection.py`，驱动下一次 recency 降权）。当前 ledger 只由 `MaterialPackPlanning` 读取并写入候选 metadata，B-roll/Portrait 后续节点不再直接查 ledger。
@@ -28,7 +28,14 @@
 - `BrollPlanArtifact` 新写入只用 `overlays`；下游读取统一走 `broll_overlays_from_plan()`，不要再写 `segments` 双结构。
 - 真实 vs sandbox 由 provider profile 选取判定；无真实供应商时是否回退 sandbox 受 `sandbox_fallback_allowed()`（即 `CUTAGENT_ALLOW_SANDBOX_FALLBACK`，默认 OFF=显式报错）控制。
 - 有 provider 副作用的节点（TTS/ResolveCreativeIntent/LipSync/ExportFinishedVideo/SeedanceGenerateVideo）必须带 `idempotency_key`，否则 reuse 拒绝复用。
-- 增删节点须同步三处（`digital_human_template()` 已数据驱动、只调 `_build_template`，无需手改）：①对应模板的 `*_SEQUENCE`（`node_sequence.py`）②`NODE_HANDLERS` ③`_NODE_OUTPUT_KINDS`（声明每节点 `output_artifact_kinds`）。节点有 provider 副作用还需加入 `_PROVIDER_SIDE_EFFECT_NODES`，会破坏时间线复用还需加入 `_TIMELINE_REUSE_BREAK_NODES`。
+- 增删节点须同步八处（`digital_human_template()` 已数据驱动、只调 `_build_template`，无需手改）：①对应模板的 `*_SEQUENCE`（`node_sequence.py`）②`NODE_HANDLERS` ③`_NODE_OUTPUT_KINDS`（声明每节点 `output_artifact_kinds`）④`pipeline/nodes/__init__.py` 手写模块导入清单（漏掉会 AttributeError）⑤`apps/api/services/jobs_runs.py` 的 `NODE_LABELS` ⑥`sqlalchemy_repository.py` 的 `NODE_LABELS` ⑦前端 `runModel.ts` 节点标签+阶段分组 ⑧节点有 provider 副作用加 `_PROVIDER_SIDE_EFFECT_NODES`、会破坏时间线复用加 `_TIMELINE_REUSE_BREAK_NODES`。
+
+## 剪辑职责矩阵
+- `NarrationBoundaryPlanning` 只产出安全切点事实和 base/available windows；`portrait_slots` / `broll_slots` 不是最终帧权威。
+- `PortraitPlanning` 拥有人像主轨最终窗口与资产级容量判定；素材不足用 `material_insufficient_portrait` hard fail。
+- `BrollPlanning` 和 editing planner 的 B-roll 落点必须共用 `packages/planning/material/broll_plan.py` 的几何政策与安全放置函数。
+- `EditingAgentPlanning` 只做候选指派和本地校验；LLM 不输出最终帧，任何 B-roll 几何丢弃必须进入 diagnostics / degradation。
+- `TimelinePlanning` 保持 verify-only，只校验并组装上游已经决定的帧边界。
 
 ## 测试
 - `pytest tests/production tests/workflow`。人像唯一性/恢复诊断重点见 `test_portrait_planning_node.py`；B-roll canonical overlays 见 `test_broll_overlays_helper.py`、`test_broll_planning_node.py`、`test_broll_coverage_planning.py`。

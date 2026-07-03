@@ -16,8 +16,21 @@ from dataclasses import dataclass, replace
 from packages.core.contracts.artifacts import NarrationUnit
 from packages.planning.material.broll_pack import BrollCandidate
 
-_MIN_INSERT_SECONDS = 1.5
-_MAX_INSERT_SECONDS = 4.0
+
+@dataclass(frozen=True)
+class BrollGeometryPolicy:
+    fps: int = 30
+    min_insert_seconds: float = 1.5
+    max_insert_seconds: float = 4.0
+    min_visible_aroll_seconds: float = 2.0
+    snap_max_frames: int = 15
+    max_pad_seconds: float = 0.15
+
+
+BROLL_GEOMETRY_POLICY = BrollGeometryPolicy()
+
+_MIN_INSERT_SECONDS = BROLL_GEOMETRY_POLICY.min_insert_seconds
+_MAX_INSERT_SECONDS = BROLL_GEOMETRY_POLICY.max_insert_seconds
 
 # Portrait-cut frame-grid alignment constants (#105). Moved here from the old
 # downstream production helper ``_timeline_grid.align_broll_to_portrait_cuts`` so the
@@ -29,9 +42,9 @@ _MAX_INSERT_SECONDS = 4.0
 #    read" -> snap it away; longer -> leave the real portrait visible;
 #  - MAX_PAD_SECONDS: the snap may extend the timeline window by at most this much of
 #    clone-pad (the source window is never pulled past its clean span).
-BROLL_PORTRAIT_CUT_SNAP_MAX_FRAMES = 15
-BROLL_MIN_VISIBLE_AROLL_SECONDS = 2.0
-BROLL_MAX_PAD_SECONDS = 0.15
+BROLL_PORTRAIT_CUT_SNAP_MAX_FRAMES = BROLL_GEOMETRY_POLICY.snap_max_frames
+BROLL_MIN_VISIBLE_AROLL_SECONDS = BROLL_GEOMETRY_POLICY.min_visible_aroll_seconds
+BROLL_MAX_PAD_SECONDS = BROLL_GEOMETRY_POLICY.max_pad_seconds
 
 
 def _seconds_to_frame(seconds: float, fps: int) -> int:
@@ -406,6 +419,7 @@ def align_insertions_to_portrait_cuts(
     portrait_cut_frames: Sequence[int],
     min_visible_residual_frames: int | None = None,
     max_gap_frames: int = BROLL_PORTRAIT_CUT_SNAP_MAX_FRAMES,
+    max_pad_seconds: float = BROLL_MAX_PAD_SECONDS,
 ) -> list[BrollInsertion]:
     """Frame-align b-roll inserts to the portrait cut grid at PLAN time (#105).
 
@@ -433,7 +447,7 @@ def align_insertions_to_portrait_cuts(
         if min_visible_residual_frames is not None
         else _seconds_to_frame(BROLL_MIN_VISIBLE_AROLL_SECONDS, fps)
     )
-    max_pad_seconds = max(0.0, BROLL_MAX_PAD_SECONDS)
+    max_pad_seconds = max(0.0, float(max_pad_seconds))
     cuts = sorted({int(frame) for frame in portrait_cut_frames})
     windows = [(start, end) for start, end in zip(cuts, cuts[1:]) if end > start]
     snapping_enabled = (
@@ -601,6 +615,8 @@ def _align_insertions_to_grid_if_safe(
     fps: int | None,
     portrait_cut_frames: Sequence[int] | None,
     min_visible_residual_frames: int | None,
+    max_gap_frames: int = BROLL_PORTRAIT_CUT_SNAP_MAX_FRAMES,
+    max_pad_seconds: float = BROLL_MAX_PAD_SECONDS,
 ) -> list[BrollInsertion] | None:
     ordered = sorted(insertions, key=lambda ins: ins.timeline_start)
     if fps is None or portrait_cut_frames is None:
@@ -611,6 +627,8 @@ def _align_insertions_to_grid_if_safe(
         fps=fps,
         portrait_cut_frames=portrait_cut_frames,
         min_visible_residual_frames=min_visible_residual_frames,
+        max_gap_frames=max_gap_frames,
+        max_pad_seconds=max_pad_seconds,
     )
     if _has_short_visible_portrait_gap(
         aligned,
@@ -695,6 +713,8 @@ def _accept_insertion_if_safe(
     fps: int | None,
     portrait_cut_frames: Sequence[int] | None,
     min_visible_residual_frames: int | None,
+    max_gap_frames: int = BROLL_PORTRAIT_CUT_SNAP_MAX_FRAMES,
+    max_pad_seconds: float = BROLL_MAX_PAD_SECONDS,
 ) -> list[BrollInsertion] | None:
     for variant in _timeline_start_variants(
         insert,
@@ -709,10 +729,38 @@ def _accept_insertion_if_safe(
             fps=fps,
             portrait_cut_frames=portrait_cut_frames,
             min_visible_residual_frames=min_visible_residual_frames,
+            max_gap_frames=max_gap_frames,
+            max_pad_seconds=max_pad_seconds,
         )
         if accepted is not None:
             return accepted
     return None
+
+
+def place_insertion_safely(
+    existing: Sequence[BrollInsertion],
+    insert: BrollInsertion,
+    *,
+    window_start: float,
+    window_end: float,
+    fps: int | None,
+    portrait_cut_frames: Sequence[int] | None,
+    policy: BrollGeometryPolicy = BROLL_GEOMETRY_POLICY,
+) -> list[BrollInsertion] | None:
+    min_visible_residual_frames = (
+        _seconds_to_frame(policy.min_visible_aroll_seconds, fps) if fps is not None else None
+    )
+    return _accept_insertion_if_safe(
+        existing,
+        insert,
+        start=window_start,
+        host_end=window_end,
+        fps=fps,
+        portrait_cut_frames=portrait_cut_frames,
+        min_visible_residual_frames=min_visible_residual_frames,
+        max_gap_frames=policy.snap_max_frames,
+        max_pad_seconds=policy.max_pad_seconds,
+    )
 
 
 def plan_insertions(

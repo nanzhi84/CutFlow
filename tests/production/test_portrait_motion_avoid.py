@@ -65,7 +65,7 @@ def test_portrait_window_candidates_carries_material_pack_recent_usage_without_l
         "similar_recent_segment_use_count": 0,
         "similar_recent_opening_use_count": 0,
     }
-    candidates = nodes.portrait_planning._portrait_window_candidates(
+    candidates = nodes.timeline_window_planning._portrait_window_candidates(
         _window_ctx(duration=10.0),
         [_portrait_item(start=1.25, end=5.75, recent_usage=recent_usage)],
     )
@@ -91,7 +91,7 @@ def test_portrait_window_candidates_carries_material_pack_recent_usage_without_l
 def test_portrait_window_candidates_defaults_recent_usage_when_metadata_omits_it():
     # Missing ``recent_usage`` (e.g. an older material pack) degrades to "fresh" —
     # no demotion — rather than the node reaching back to the ledger.
-    candidates = nodes.portrait_planning._portrait_window_candidates(
+    candidates = nodes.timeline_window_planning._portrait_window_candidates(
         _window_ctx(duration=10.0),
         [_portrait_item(start=1.25, end=5.75)],
     )
@@ -101,7 +101,7 @@ def test_portrait_window_candidates_defaults_recent_usage_when_metadata_omits_it
 
 
 def test_portrait_window_candidates_uses_clean_head_before_tail_bad_span():
-    candidates = nodes.portrait_planning._portrait_window_candidates(
+    candidates = nodes.timeline_window_planning._portrait_window_candidates(
         _window_ctx(duration=10.0),
         [_portrait_item(start=0.0, end=8.0, avoid_spans=[[4.2, 8.0]])],
     )
@@ -114,7 +114,7 @@ def test_portrait_window_candidates_uses_clean_head_before_tail_bad_span():
 
 
 def test_portrait_window_candidates_splits_middle_bad_span_into_multiple_windows():
-    candidates = nodes.portrait_planning._portrait_window_candidates(
+    candidates = nodes.timeline_window_planning._portrait_window_candidates(
         _window_ctx(duration=10.0),
         [_portrait_item(start=0.0, end=6.0, avoid_spans=[[2.0, 4.0]])],
     )
