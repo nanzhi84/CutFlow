@@ -32,6 +32,7 @@ from packages.core.contracts import (
     WarningCode,
     utcnow,
 )
+from packages.core.contracts.artifacts import MediaAssignmentPlan
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.planning.editing.frame_grid import frame_index
 from packages.planning.material import shortlist_for_windows
@@ -39,12 +40,14 @@ from packages.production.pipeline._editing_agent import (
     build_agent_input,
     deterministic_selection,
     index_candidates,
-    materialize_broll,
-    materialize_portrait,
-    materialize_style,
     portrait_asset_reuse_cap,
-    portrait_cut_frames,
     select_with_repair,
+)
+from packages.production.pipeline._materialize import (
+    materialize_broll_from_assignment,
+    materialize_portrait_from_assignment,
+    materialize_style_from_selection,
+    portrait_cut_frames,
 )
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
@@ -176,6 +179,79 @@ def _broll_slot_from_window(window: dict) -> dict:
     }
 
 
+def _default_portrait_assignment(windows: dict) -> list[dict]:
+    default_assignment = windows.get("default_assignment") or {}
+    defaults = [
+        item
+        for item in (default_assignment.get("portrait") or [])
+        if isinstance(item, dict)
+    ]
+    portrait_windows = [
+        item for item in (windows.get("portrait_windows") or []) if isinstance(item, dict)
+    ]
+    assignment: list[dict] = []
+    for window_data, default in zip(portrait_windows, defaults):
+        segment_payload = default.get("segment_payload") or {}
+        assignment.append(
+            {
+                "window_id": str(window_data.get("window_id") or ""),
+                "candidate_id": str(default.get("window_id") or ""),
+                "source_mode": str(segment_payload.get("source_mode") or "lipsynced"),
+                "reason": "compiler default",
+            }
+        )
+    return assignment
+
+
+def _default_portrait_payload(windows: dict) -> dict:
+    default_assignment = windows.get("default_assignment") or {}
+    return dict(default_assignment.get("portrait_plan_payload") or {})
+
+
+def _selection_portrait_assignment(selection) -> list[dict]:
+    return [
+        {
+            "window_id": choice.slot_id,
+            "candidate_id": choice.window_id,
+            "source_mode": choice.source_mode or "lipsynced",
+            "reason": choice.reason,
+        }
+        for choice in selection.portrait
+    ]
+
+
+def _selection_broll_assignment(selection) -> list[dict]:
+    return [
+        {
+            "window_id": choice.slot_id,
+            "candidate_id": choice.candidate_id,
+            "reason": choice.reason,
+            "confidence": choice.confidence,
+            "matched_keywords": list(choice.matched_keywords),
+        }
+        for choice in selection.broll
+    ]
+
+
+def _assignment_payload(
+    *,
+    engine: str,
+    portrait: list[dict],
+    broll: list[dict],
+    font_id: str | None,
+    bgm_id: str | None,
+    diagnostics: dict,
+) -> dict:
+    return MediaAssignmentPlan(
+        engine=engine,
+        portrait=portrait,
+        broll=broll,
+        font_id=font_id,
+        bgm_id=bgm_id,
+        diagnostics=diagnostics,
+    ).model_dump(mode="json")
+
+
 def _record_llm_request_artifact(
     *,
     ctx: NodeContext,
@@ -287,6 +363,8 @@ def run(ctx: NodeContext) -> NodeOutput:
     warnings: list[WarningCode] = []
     provider_invocation_ids: list[str] = []
     repair_trace: list[dict] = []
+    fallback_used = False
+    fallback_reason: str | None = None
 
     if profile is None:
         if not sandbox_fallback_allowed():
@@ -301,7 +379,9 @@ def run(ctx: NodeContext) -> NodeOutput:
             bgm_enabled=state.request.bgm.enabled,
             max_inserts=state.request.broll.max_inserts,
         )
-        mode = "deterministic_fallback_no_provider"
+        engine = "deterministic_fallback"
+        fallback_used = True
+        fallback_reason = "no_provider"
         degradations.append(
             degradation_notice(
                 WarningCode.editing_agent_deterministic_fallback,
@@ -312,7 +392,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         )
         warnings.append(WarningCode.editing_agent_deterministic_fallback)
     else:
-        mode = "llm"
+        engine = "editing_agent_llm"
 
         def _invoke(previous_errors: list[str]):
             attempt = len(provider_invocation_ids)
@@ -384,12 +464,31 @@ def run(ctx: NodeContext) -> NodeOutput:
             max_repair_attempts=state.request.edit.max_repair_attempts,
         )
         if errors:
-            raise NodeExecutionError(
-                ErrorCode.prompt_output_invalid,
-                f"剪辑 Agent 的选择在 {state.request.edit.max_repair_attempts} "
-                "次修复后仍不合法："
-                + "；".join(errors[:5]),
+            if not sandbox_fallback_allowed():
+                raise NodeExecutionError(
+                    ErrorCode.prompt_output_invalid,
+                    f"剪辑 Agent 的选择在 {state.request.edit.max_repair_attempts} "
+                    "次修复后仍不合法："
+                    + "；".join(errors[:5]),
+                )
+            selection = deterministic_selection(
+                boundary=agent_boundary,
+                candidates=candidates,
+                bgm_enabled=state.request.bgm.enabled,
+                max_inserts=state.request.broll.max_inserts,
             )
+            engine = "deterministic_fallback"
+            fallback_used = True
+            fallback_reason = "llm_unrepairable"
+            degradations.append(
+                degradation_notice(
+                    WarningCode.editing_agent_deterministic_fallback,
+                    "剪辑 Agent 输出不可修复，改用确定性兜底选择。",
+                    node_id=node_run.node_id,
+                    affects_true_yield=False,
+                )
+            )
+            warnings.append(WarningCode.editing_agent_deterministic_fallback)
 
     # Portrait sources are scarcer than slots: the one-slot-per-asset uniqueness
     # rule was relaxed to a balanced reuse budget (both the prompt and the local
@@ -407,13 +506,28 @@ def run(ctx: NodeContext) -> NodeOutput:
         )
         warnings.append(WarningCode.portrait_asset_reuse_relaxed)
 
-    overlay_events = _derive_overlay_events(load_creative_intent(state).emphasis, raw_units)
-    portrait_payload = materialize_portrait(
-        selection=selection, boundary=agent_boundary, candidates=candidates
+    portrait_assignment = (
+        _default_portrait_assignment(windows)
+        if fallback_used
+        else _selection_portrait_assignment(selection)
     )
-    broll_payload, broll_drops = materialize_broll(
-        selection=selection,
-        boundary=agent_boundary,
+    broll_assignment = _selection_broll_assignment(selection)
+    assignment_for_materialize = {
+        "portrait": portrait_assignment,
+        "broll": broll_assignment,
+    }
+    portrait_payload = (
+        _default_portrait_payload(windows)
+        if fallback_used
+        else materialize_portrait_from_assignment(
+            windows=windows,
+            assignment=assignment_for_materialize,
+            candidates=candidates,
+        )
+    )
+    broll_payload, broll_drops = materialize_broll_from_assignment(
+        windows=windows,
+        assignment=assignment_for_materialize,
         candidates=candidates,
         cut_frames=portrait_cut_frames(portrait_payload),
         enabled=state.request.broll.enabled,
@@ -431,31 +545,64 @@ def run(ctx: NodeContext) -> NodeOutput:
             ).model_copy(update={"details": {"broll_drops": broll_drops}})
         )
         warnings.append(WarningCode.broll_insertions_dropped_geometry)
-    style_payload = materialize_style(
-        selection=selection,
-        candidates=candidates,
+    overlay_events = _derive_overlay_events(load_creative_intent(state).emphasis, raw_units)
+    style_payload, style_warnings, style_degradations = materialize_style_from_selection(
         request=state.request,
+        material=shortlisted_material,
         overlay_events=overlay_events,
+        font_id=selection.font_id,
+        bgm_id=selection.bgm_id,
+    )
+    warnings.extend(style_warnings)
+    degradations.extend(
+        notice.model_copy(update={"node_id": node_run.node_id}) for notice in style_degradations
+    )
+
+    assignment_diagnostics = {
+        "repair_trace": repair_trace,
+        "reuse_policy_applied": {"portrait_asset_reuse_cap": reuse_cap},
+        "shortlist_counts": shortlist_counts,
+        "fallback_used": fallback_used,
+        "fallback_reason": fallback_reason,
+        "broll_drops": broll_drops,
+    }
+    assignment_payload = _assignment_payload(
+        engine=engine,
+        portrait=portrait_assignment,
+        broll=broll_assignment,
+        font_id=selection.font_id,
+        bgm_id=selection.bgm_id,
+        diagnostics=assignment_diagnostics,
     )
 
     diagnostics = {
-        "mode": mode,
+        "mode": engine,
         "instruction": state.request.edit.instruction,
         "analysis": selection.analysis,
         "repair_trace": repair_trace,
         "portrait_choices": [
-            {"slot_id": c.slot_id, "window_id": c.window_id, "reason": c.reason}
-            for c in selection.portrait
+            {
+                "slot_id": item["window_id"],
+                "window_id": item["candidate_id"],
+                "reason": item["reason"],
+            }
+            for item in portrait_assignment
         ],
         "broll_choices": [
-            {"slot_id": c.slot_id, "candidate_id": c.candidate_id, "reason": c.reason}
-            for c in selection.broll
+            {
+                "slot_id": item["window_id"],
+                "candidate_id": item["candidate_id"],
+                "reason": item["reason"],
+            }
+            for item in broll_assignment
         ],
         "broll_drops": broll_drops,
         "font_id": selection.font_id,
         "bgm_id": selection.bgm_id,
         "portrait_asset_reuse_cap": reuse_cap,
         "shortlist_counts": shortlist_counts,
+        "fallback_used": fallback_used,
+        "fallback_reason": fallback_reason,
         "candidate_counts": {
             "portrait": len(candidates.portrait_by_id),
             "broll": len(candidates.broll_by_id),
@@ -467,6 +614,11 @@ def run(ctx: NodeContext) -> NodeOutput:
     return NodeOutput(
         status=NodeStatus.degraded if degradations else NodeStatus.succeeded,
         artifacts=[
+            ctx.artifact(
+                ArtifactKind.plan_media_assignment,
+                assignment_payload,
+                "MediaAssignmentPlan.v1",
+            ),
             ctx.artifact(ArtifactKind.plan_portrait, portrait_payload, "PortraitPlanArtifact.v1"),
             ctx.artifact(ArtifactKind.plan_broll, broll_payload, "BrollPlanArtifact.v1"),
             ctx.artifact(ArtifactKind.plan_style, style_payload, "StylePlanArtifact.v1"),

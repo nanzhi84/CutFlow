@@ -163,6 +163,7 @@ def _boundary() -> dict:
 
 
 def _timeline_windows(boundary: dict) -> dict:
+    portrait_plan_payload = _default_portrait_plan(boundary)
     return {
         "fps": int(boundary.get("fps") or 30),
         "total_frames": int(boundary.get("total_frames") or 0),
@@ -190,8 +191,61 @@ def _timeline_windows(boundary: dict) -> dict:
             }
             for slot in boundary.get("broll_slots") or []
         ],
-        "default_assignment": {},
+        "default_assignment": {
+            "portrait": [
+                {
+                    "window_id": f"{segment['asset_id']}:{segment['clip_id']}",
+                    "segment_payload": segment,
+                }
+                for segment in portrait_plan_payload["segments"]
+            ],
+            "portrait_plan_payload": portrait_plan_payload,
+            "engine": "compiler_default",
+        },
         "compile_diagnostics": {},
+    }
+
+
+def _default_portrait_plan(boundary: dict) -> dict:
+    segments = []
+    asset_ids = ["portrait_a", "portrait_b"]
+    clip_ids = ["clip_a", "clip_b"]
+    for index, slot in enumerate(boundary.get("portrait_slots") or []):
+        start_frame = int(slot.get("start_frame", 0) or 0)
+        end_frame = int(slot.get("end_frame", 0) or 0)
+        source_start_frame = 0
+        source_end_frame = end_frame - start_frame
+        segments.append(
+            {
+                "segment_id": f"portrait_{index + 1}",
+                "asset_id": asset_ids[index % len(asset_ids)],
+                "clip_id": clip_ids[index % len(clip_ids)],
+                "start_sec": round(start_frame / 30, 3),
+                "end_sec": round(end_frame / 30, 3),
+                "source_start": round(source_start_frame / 30, 3),
+                "source_end": round(source_end_frame / 30, 3),
+                "role": "main",
+                "source_mode": "lipsynced",
+                "boundary_source": slot.get("boundary_source"),
+                "boundary_reason": None,
+                "unit_ids": list(slot.get("unit_ids") or []),
+                "slot_phase": "portrait_opening" if index == 0 else "portrait_main",
+                "recently_used_material": False,
+                "timeline_start_frame": start_frame,
+                "timeline_end_frame": end_frame,
+                "source_start_frame": source_start_frame,
+                "source_end_frame": source_end_frame,
+            }
+        )
+    total_frames = segments[-1]["timeline_end_frame"] if segments else 0
+    total_duration = round(total_frames / 30, 3)
+    return {
+        "fps": 30,
+        "total_duration": total_duration,
+        "asset_id": segments[0]["asset_id"] if segments else None,
+        "duration_sec": total_duration,
+        "segments": segments,
+        "diagnostics": {"planner": "compiler_default", "segment_count": len(segments)},
     }
 
 
@@ -298,11 +352,16 @@ def _payload(output, kind: ArtifactKind) -> dict:
     return next(a.payload for a in output.artifacts if a.kind == kind)
 
 
-def test_fallback_path_emits_four_frame_exact_artifacts(tmp_path):
-    output = _run_node(_adapter(tmp_path), _state())
+def test_fallback_path_emits_five_frame_exact_artifacts(tmp_path):
+    state = _state()
+    default_portrait = state.artifacts[
+        ArtifactKind.plan_timeline_windows
+    ].payload["default_assignment"]["portrait_plan_payload"]
+    output = _run_node(_adapter(tmp_path), state)
 
     kinds = {a.kind for a in output.artifacts}
     assert kinds == {
+        ArtifactKind.plan_media_assignment,
         ArtifactKind.plan_portrait,
         ArtifactKind.plan_broll,
         ArtifactKind.plan_style,
@@ -314,6 +373,7 @@ def test_fallback_path_emits_four_frame_exact_artifacts(tmp_path):
     assert output.provider_invocation_ids == []
 
     portrait = _payload(output, ArtifactKind.plan_portrait)
+    assert portrait == default_portrait
     assert len(portrait["segments"]) == 2
     for seg in portrait["segments"]:
         for key in (
@@ -342,9 +402,28 @@ def test_fallback_path_emits_four_frame_exact_artifacts(tmp_path):
     assert style["bgm"]["asset_id"] == "bgm_001"
 
     diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
-    assert diagnostics["mode"] == "deterministic_fallback_no_provider"
+    assert diagnostics["mode"] == "deterministic_fallback"
+    assert diagnostics["fallback_used"] is True
+    assert diagnostics["fallback_reason"] == "no_provider"
     assert diagnostics["instruction"] == "尽量用穿搭相近的人像"
     assert {c["slot_id"] for c in diagnostics["portrait_choices"]} == {"pslot_000", "pslot_001"}
+
+    assignment = _payload(output, ArtifactKind.plan_media_assignment)
+    assert assignment["engine"] == "deterministic_fallback"
+    assert assignment["portrait"] == [
+        {
+            "window_id": "pslot_000",
+            "candidate_id": "portrait_a:clip_a",
+            "source_mode": "lipsynced",
+            "reason": "compiler default",
+        },
+        {
+            "window_id": "pslot_001",
+            "candidate_id": "portrait_b:clip_b",
+            "source_mode": "lipsynced",
+            "reason": "compiler default",
+        },
+    ]
 
 
 def test_editing_agent_artifacts_feed_timeline_planning(tmp_path):
@@ -652,7 +731,7 @@ def test_llm_path_repairs_reused_portrait_asset(monkeypatch, tmp_path):
     assert output.provider_invocation_ids == ["inv_1", "inv_2"]
     assert len(calls) == 2
     diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
-    assert diagnostics["mode"] == "llm"
+    assert diagnostics["mode"] == "editing_agent_llm"
     assert diagnostics["repair_trace"][0]["error_count"] == 1
     assert "more than one slot" in diagnostics["repair_trace"][0]["errors"][0]
     portrait = _payload(output, ArtifactKind.plan_portrait)
@@ -666,27 +745,21 @@ def _make_portrait_scarce(state: RunState) -> None:
     material["portrait_candidates"] = material["portrait_candidates"][:1]
 
 
-def test_fallback_relaxes_uniqueness_and_covers_all_slots_when_assets_scarce(tmp_path):
+def test_fallback_uses_default_assignment_when_assets_scarce(tmp_path):
     state = _state()
     _make_portrait_scarce(state)
+    default_portrait = state.artifacts[
+        ArtifactKind.plan_timeline_windows
+    ].payload["default_assignment"]["portrait_plan_payload"]
 
     output = _run_node(_adapter(tmp_path), state)
 
-    # Portrait main track is fully covered (no hole) by reusing the one asset.
     portrait = _payload(output, ArtifactKind.plan_portrait)
-    assert len(portrait["segments"]) == 2
-    assert portrait["segments"][0]["timeline_start_frame"] == 0
-    assert portrait["segments"][-1]["timeline_end_frame"] == 360
-    assert {seg["asset_id"] for seg in portrait["segments"]} == {"portrait_a"}
-
-    # The relaxation is surfaced as a graded degradation, never silent.
+    assert portrait == default_portrait
     assert output.status == NodeStatus.degraded
-    assert WarningCode.portrait_asset_reuse_relaxed in output.warnings
-    assert any(
-        d.code == WarningCode.portrait_asset_reuse_relaxed for d in output.degradations
-    )
-    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
-    assert diagnostics["portrait_asset_reuse_cap"] == 2
+    assignment = _payload(output, ArtifactKind.plan_media_assignment)
+    assert assignment["engine"] == "deterministic_fallback"
+    assert assignment["diagnostics"]["fallback_used"] is True
 
 
 def test_llm_path_accepts_reused_asset_when_scarce_without_burning_repairs(monkeypatch, tmp_path):
@@ -732,11 +805,11 @@ def test_llm_path_accepts_reused_asset_when_scarce_without_burning_repairs(monke
     portrait = _payload(output, ArtifactKind.plan_portrait)
     assert [seg["asset_id"] for seg in portrait["segments"]] == ["portrait_a", "portrait_a"]
     diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
-    assert diagnostics["mode"] == "llm"
+    assert diagnostics["mode"] == "editing_agent_llm"
     assert diagnostics["portrait_asset_reuse_cap"] == 2
 
 
-def test_llm_invalid_selection_records_raw_artifacts_before_fail_fast(tmp_path):
+def test_llm_invalid_selection_records_raw_artifacts_before_fallback(tmp_path):
     adapter = _adapter(tmp_path)
     _seed_fake_llm_profile(adapter)
     adapter.provider_gateway.register(
@@ -748,10 +821,18 @@ def test_llm_invalid_selection_records_raw_artifacts_before_fail_fast(tmp_path):
         )
     )
 
-    with pytest.raises(NodeExecutionError) as exc:
-        _run_node(adapter, _state())
+    state = _state()
+    default_portrait = state.artifacts[
+        ArtifactKind.plan_timeline_windows
+    ].payload["default_assignment"]["portrait_plan_payload"]
+    output = _run_node(adapter, state)
 
-    assert exc.value.error.code == ErrorCode.prompt_output_invalid
+    assert output.status == NodeStatus.degraded
+    assert WarningCode.editing_agent_deterministic_fallback in output.warnings
+    assert _payload(output, ArtifactKind.plan_portrait) == default_portrait
+    assignment = _payload(output, ArtifactKind.plan_media_assignment)
+    assert assignment["engine"] == "deterministic_fallback"
+    assert assignment["diagnostics"]["fallback_reason"] == "llm_unrepairable"
     invocations = list(adapter.repository.provider_invocations.values())
     assert len(invocations) == 2
     assert all(inv.request_artifact_id for inv in invocations)

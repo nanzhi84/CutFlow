@@ -8,17 +8,9 @@ only ever emits candidate IDs — never authoritative frame numbers — so a
 hallucinated timeline can never reach the renderer.
 
 This module is import-light and free of any ``NodeContext``/IO so the selection
-parsing, validation, deterministic fallback and the three materializers can be
-unit-tested as pure functions. The node
-(``nodes.editing_agent_planning``) wires them to the provider gateway + prompt
-registry and repairs an invalid selection before falling back.
-
-Materializers reuse the SAME primitives the deterministic nodes use:
-``frame_grid.slice_source_window`` for portrait source frames and
-``broll_plan.align_insertions_to_portrait_cuts`` for b-roll cut-snapping, so the
-emitted ``plan.portrait`` / ``plan.broll`` / ``plan.style`` artifacts are
-byte-for-byte the same shape the deterministic pipeline produces and the
-downstream ``TimelinePlanning`` verify-only path needs no special casing.
+parsing, validation, and deterministic fallback can be unit-tested as pure
+functions. Frame-exact artifact construction lives in ``_materialize`` so the
+agent and deterministic nodes share the same materialization helpers.
 """
 
 from __future__ import annotations
@@ -26,28 +18,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from packages.core.contracts.artifacts import (
-    BgmPlan,
-    BrollOverlay,
-    BrollPlanArtifact,
-    FontPlan,
-    OverlayEvent,
-    PortraitPlanArtifact,
-    PortraitSegment,
-    StylePlanArtifact,
-    SubtitleStylePlan,
-)
 from packages.planning.editing.frame_grid import (
-    FrameWindow,
     frame_index,
-    slice_source_window,
     to_seconds,
-)
-from packages.planning.material.broll_plan import (
-    BROLL_GEOMETRY_POLICY,
-    BrollGeometryPolicy,
-    BrollInsertion,
-    place_insertion_safely,
 )
 
 TIMELINE_FPS = 30
@@ -487,13 +460,10 @@ def deterministic_selection(
 ) -> EditingSelection:
     """Score-ranked default selection equivalent to the deterministic nodes.
 
-    Used when there is no real LLM provider (sandbox). Portrait picks honour the
-    per-asset reuse budget from ``portrait_asset_reuse_cap`` (strict one-slot when
-    assets are plentiful, balanced ceil(S/A) reuse when scarce) and always fill
-    every slot — the portrait main track must stay gap-free, so a slot is never
-    dropped: the cap is relaxed, and as a last resort the top-ranked source is
-    reused (materialize_portrait clone-pads a short source) rather than leaving a
-    hole.
+    Used when the agent falls back to local selection for b-roll/font/BGM.
+    Portrait choices still honour the per-asset reuse budget, but they no longer
+    invent coverage from a too-short source; the node's fallback portrait track
+    comes from ``TimelineWindowPlanning.default_assignment`` instead.
     """
     portrait_slots = [s for s in (boundary.get("portrait_slots") or []) if isinstance(s, dict)]
     broll_slots = [s for s in (boundary.get("broll_slots") or []) if isinstance(s, dict)]
@@ -528,10 +498,6 @@ def deterministic_selection(
                 ),
                 None,
             )
-        if window_id is None and ranked_portrait:
-            # No source is long enough at all: reuse the top-ranked one (clone-pad
-            # fills the remainder) — still a covered slot, never a hole.
-            window_id = ranked_portrait[0]
         if window_id is None:
             continue
         asset_key = _portrait_asset_key(candidates.portrait_by_id[window_id])
@@ -599,260 +565,3 @@ def select_with_repair(
         if not errors:
             break
     return selection, trace, errors
-
-
-# --------------------------------------------------------------------------- #
-# Materializers: ID selection -> frame-exact artifacts
-# --------------------------------------------------------------------------- #
-def materialize_portrait(
-    *,
-    selection: EditingSelection,
-    boundary: dict,
-    candidates: IndexedCandidates,
-) -> dict:
-    """Turn portrait ID choices into a frame-exact ``PortraitPlanArtifact``.
-
-    Each slot's timeline window is authoritative (from #135's frame-aligned
-    portrait_slots); the chosen candidate only supplies the source clip, whose
-    frames come from ``slice_source_window`` — never from the LLM.
-    """
-    choice_by_slot = {c.slot_id: c for c in selection.portrait}
-    slots = sorted(
-        (s for s in (boundary.get("portrait_slots") or []) if isinstance(s, dict)),
-        key=lambda s: int(s.get("start_frame", 0)),
-    )
-    segments: list[PortraitSegment] = []
-    for index, slot in enumerate(slots):
-        choice = choice_by_slot.get(_as_str(slot.get("slot_id")))
-        if choice is None:
-            continue
-        cand = candidates.portrait_by_id.get(choice.window_id)
-        if cand is None:
-            continue
-        meta = _meta(cand)
-        window = FrameWindow(
-            start_frame=int(slot.get("start_frame", 0)),
-            end_frame=int(slot.get("end_frame", 0)),
-        )
-        src_start = _as_float(meta.get("source_start"))
-        src_end = _as_float(meta.get("source_end"))
-        source_window, _pad_end = slice_source_window(
-            source_start_seconds=src_start,
-            length_frames=window.length_frames,
-            source_window_start_seconds=src_start,
-            source_window_end_seconds=src_end if src_end > src_start else None,
-        )
-        segments.append(
-            PortraitSegment(
-                segment_id=f"portrait_{index + 1}",
-                asset_id=_as_str(cand.get("asset_id")) or None,
-                clip_id=_as_str(meta.get("clip_id")) or None,
-                start_sec=to_seconds(window.start_frame),
-                end_sec=to_seconds(window.end_frame),
-                source_start=to_seconds(source_window.start_frame),
-                source_end=to_seconds(source_window.end_frame),
-                role="main",
-                source_mode=choice.source_mode or "lipsynced",
-                boundary_source=_as_str(slot.get("boundary_source")) or None,
-                boundary_reason=None,
-                unit_ids=[_as_str(u) for u in (slot.get("unit_ids") or [])],
-                slot_phase="portrait_opening" if index == 0 else "portrait_main",
-                recently_used_material=False,
-                timeline_start_frame=window.start_frame,
-                timeline_end_frame=window.end_frame,
-                source_start_frame=source_window.start_frame,
-                source_end_frame=source_window.end_frame,
-            )
-        )
-    total_frames = segments[-1].timeline_end_frame if segments else 0
-    total_duration = round(to_seconds(total_frames), 3)
-    return PortraitPlanArtifact(
-        fps=TIMELINE_FPS,
-        total_duration=total_duration,
-        asset_id=segments[0].asset_id if segments else None,
-        duration_sec=total_duration,
-        segments=segments,
-        diagnostics={"planner": "editing_agent", "segment_count": len(segments)},
-    ).model_dump(mode="json")
-
-
-def portrait_cut_frames(portrait_payload: dict) -> list[int]:
-    return sorted(
-        {
-            int(frame)
-            for seg in portrait_payload.get("segments", [])
-            for frame in (seg.get("timeline_start_frame"), seg.get("timeline_end_frame"))
-            if frame is not None
-        }
-    )
-
-
-def materialize_broll(
-    *,
-    selection: EditingSelection,
-    boundary: dict,
-    candidates: IndexedCandidates,
-    cut_frames: list[int],
-    enabled: bool,
-    max_inserts: int,
-    policy: BrollGeometryPolicy = BROLL_GEOMETRY_POLICY,
-) -> tuple[dict, list[dict]]:
-    """Turn b-roll ID choices into a frame-aligned ``BrollPlanArtifact``.
-
-    Each chosen slot+candidate becomes a ``BrollInsertion`` whose timeline span
-    is the #135 broll slot (clamped to the clip's available source) and whose
-    frames + clone-pad come from the SAME ``align_insertions_to_portrait_cuts``
-    the deterministic BrollPlanning uses, so overlays snap to portrait cuts and
-    never overlap.
-    """
-    if not enabled:
-        return BrollPlanArtifact(enabled=False).model_dump(mode="json"), []
-    slot_by_id = {
-        _as_str(s.get("slot_id")): s
-        for s in (boundary.get("broll_slots") or [])
-        if isinstance(s, dict)
-    }
-    accepted: list[BrollInsertion] = []
-    drop_diagnostics: list[dict] = []
-    for choice in selection.broll[: max(0, max_inserts)]:
-        slot = slot_by_id.get(choice.slot_id)
-        cand = candidates.broll_by_id.get(choice.candidate_id)
-        drop_base = {"slot_id": choice.slot_id, "candidate_id": choice.candidate_id}
-        if slot is None:
-            drop_diagnostics.append({**drop_base, "reason": "unknown_slot"})
-            continue
-        if cand is None:
-            drop_diagnostics.append({**drop_base, "reason": "unknown_candidate"})
-            continue
-        meta = _meta(cand)
-        ts = to_seconds(int(slot.get("start_frame", 0)))
-        te = to_seconds(int(slot.get("end_frame", 0)))
-        src_start = _as_float(meta.get("source_start"))
-        src_end = _as_float(meta.get("source_end"))
-        slot_span = max(0.0, te - ts)
-        source_available = src_end - src_start
-        if 0.0 < source_available < policy.min_insert_seconds:
-            drop_diagnostics.append({**drop_base, "reason": "source_too_short"})
-            continue
-        source_limit = source_available if source_available > 0.0 else policy.max_insert_seconds
-        span = min(policy.max_insert_seconds, slot_span, source_limit)
-        if span < policy.min_insert_seconds:
-            drop_diagnostics.append({**drop_base, "reason": "slot_too_short"})
-            continue
-        insert = BrollInsertion(
-            asset_id=_as_str(cand.get("asset_id")),
-            clip_id=_as_str(meta.get("clip_id")),
-            timeline_start=ts,
-            timeline_end=round(ts + span, 3),
-            source_start=src_start,
-            source_end=round(src_start + span, 3),
-            confidence=choice.confidence,
-            matched_keywords=choice.matched_keywords,
-            scene_name=_as_str(meta.get("scene_name")),
-            reason=choice.reason or "editing agent selection",
-            diversity_key=_as_str(meta.get("diversity_key")),
-        )
-        next_accepted = place_insertion_safely(
-            accepted,
-            insert,
-            window_start=ts,
-            window_end=te,
-            fps=TIMELINE_FPS,
-            portrait_cut_frames=cut_frames,
-            policy=policy,
-        )
-        if next_accepted is None:
-            drop_diagnostics.append({**drop_base, "reason": "geometry_rejected"})
-            continue
-        accepted = next_accepted
-    overlays = [
-        BrollOverlay(
-            overlay_id=f"broll_{index + 1}",
-            asset_id=ins.asset_id,
-            clip_id=ins.clip_id or None,
-            timeline_start=ins.timeline_start,
-            timeline_end=ins.timeline_end,
-            source_start=ins.source_start,
-            source_end=ins.source_end,
-            timeline_start_frame=ins.timeline_start_frame,
-            timeline_end_frame=ins.timeline_end_frame,
-            source_start_frame=ins.source_start_frame,
-            source_end_frame=ins.source_end_frame,
-            pad_start=ins.pad_start,
-            pad_end=ins.pad_end,
-            reason=ins.reason,
-            confidence=ins.confidence,
-            matched_keywords=list(ins.matched_keywords),
-            scene_name=ins.scene_name or None,
-            diversity_key=ins.diversity_key or None,
-        )
-        for index, ins in enumerate(accepted)
-    ]
-    payload = BrollPlanArtifact(enabled=True, overlays=overlays).model_dump(mode="json")
-    return payload, drop_diagnostics
-
-
-def materialize_style(
-    *,
-    selection: EditingSelection,
-    candidates: IndexedCandidates,
-    request,
-    overlay_events: list[OverlayEvent],
-) -> dict:
-    """Turn font/BGM ID choices into a ``StylePlanArtifact``.
-
-    Subtitle base style stays request-driven (mirrors StylePlanning); the LLM's
-    font choice sets the authoritative ``font_asset_id`` (default sentinel when
-    absent/invalid); BGM is filled from the chosen candidate's annotation.
-    """
-    font_id = selection.font_id
-    if font_id and font_id in candidates.font_by_id:
-        font_asset_id = font_id
-    elif candidates.font_by_id:
-        font_asset_id = next(iter(candidates.font_by_id))
-    else:
-        font_asset_id = "case_default_font"
-
-    bgm_plan: BgmPlan | None = None
-    bgm_asset_id: str | None = None
-    if request.bgm.enabled and selection.bgm_id and selection.bgm_id in candidates.bgm_by_id:
-        cand = candidates.bgm_by_id[selection.bgm_id]
-        meta = _meta(cand)
-        bgm_asset_id = _as_str(cand.get("asset_id"))
-        bgm_plan = BgmPlan(
-            enabled=True,
-            asset_id=bgm_asset_id,
-            segment_id=_as_str(meta.get("clip_id")) or None,
-            source_start=_as_float(meta.get("source_start"))
-            if meta.get("source_start") is not None
-            else None,
-            source_end=_as_float(meta.get("source_end"))
-            if meta.get("source_end") is not None
-            else None,
-            duration=_as_float(meta.get("duration")) if meta.get("duration") is not None else None,
-            section_type=_as_str(meta.get("section_type")),
-            section_label=_as_str(meta.get("section_label")),
-            repeat_group=_as_str(meta.get("repeat_group")),
-            loopable=bool(meta.get("loopable")),
-            energy_profile=_as_str(meta.get("energy_profile")),
-            mood=_as_str(meta.get("mood")),
-            scene_fit=[_as_str(x) for x in (meta.get("scene_fit") or []) if _as_str(x)],
-            script_fit=[_as_str(x) for x in (meta.get("script_fit") or []) if _as_str(x)],
-            avoid_script=[_as_str(x) for x in (meta.get("avoid_script") or []) if _as_str(x)],
-            reason=_as_str(meta.get("reason")) or _as_str(cand.get("reason")),
-            volume=request.bgm.volume,
-            auto_mix=request.bgm.auto_mix,
-        )
-
-    return StylePlanArtifact(
-        subtitle=SubtitleStylePlan(
-            font_id=request.subtitle.font_id,
-            font_size=request.subtitle.font_size,
-            position=request.subtitle.position,
-        ),
-        bgm=bgm_plan,
-        font=FontPlan(font_id=font_asset_id),
-        font_asset_id=font_asset_id,
-        bgm_asset_id=bgm_asset_id,
-        overlay_events=overlay_events,
-    ).model_dump(mode="json")

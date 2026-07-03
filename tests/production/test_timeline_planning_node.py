@@ -9,6 +9,8 @@ assembles the timeline + render plan. A missing frame is an upstream contract de
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from packages.core.contracts import (
@@ -27,6 +29,14 @@ from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
 import packages.production.pipeline.nodes.timeline_planning as timeline_planning
+
+
+def test_timeline_planning_stays_verify_only():
+    source = inspect.getsource(timeline_planning)
+    assert "place_insertion_safely" not in source
+    assert "plan_insertions" not in source
+    assert "align_insertions_to_portrait_cuts" not in source
+    assert "slice_source_window" not in source
 
 
 def _artifact(kind: ArtifactKind, payload: dict, *, schema: str | None = None) -> Artifact:

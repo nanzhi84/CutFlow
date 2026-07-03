@@ -170,6 +170,7 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
     "BrollCoveragePlanning": [ArtifactKind.plan_broll],
     "StylePlanning": [ArtifactKind.plan_style],
     "EditingAgentPlanning": [
+        ArtifactKind.plan_media_assignment,
         ArtifactKind.plan_portrait,
         ArtifactKind.plan_broll,
         ArtifactKind.plan_style,

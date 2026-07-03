@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from packages.planning.editing.frame_grid import TIMELINE_FPS, frame_index
+from packages.planning.material.broll_plan import BROLL_GEOMETRY_POLICY
 
 
 def shortlist_for_windows(
@@ -80,10 +81,10 @@ def _portrait_eligible(window: dict, candidate: dict) -> bool:
 
 
 def _broll_eligible(window: dict, candidate: dict) -> bool:
-    if _window_required_frames(window) / TIMELINE_FPS < 1.5:
+    if _window_required_frames(window) / TIMELINE_FPS < BROLL_GEOMETRY_POLICY.min_insert_seconds:
         return False
     available = _source_seconds_available(candidate)
-    return available <= 0.0 or available >= 1.5
+    return available <= 0.0 or available >= BROLL_GEOMETRY_POLICY.min_insert_seconds
 
 
 def _window_required_frames(window: dict) -> int:

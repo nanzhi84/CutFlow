@@ -175,6 +175,30 @@ class TimelineWindowsPlan(ContractModel):
     compile_diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
+class MediaPortraitAssignment(ContractModel):
+    window_id: str
+    candidate_id: str
+    source_mode: str = "lipsynced"
+    reason: str = ""
+
+
+class MediaBrollAssignment(ContractModel):
+    window_id: str
+    candidate_id: str
+    reason: str = ""
+    confidence: float = 0.0
+    matched_keywords: list[str] = Field(default_factory=list)
+
+
+class MediaAssignmentPlan(ContractModel):
+    engine: Literal["editing_agent_llm", "deterministic_default", "deterministic_fallback"]
+    portrait: list[MediaPortraitAssignment] = Field(default_factory=list)
+    broll: list[MediaBrollAssignment] = Field(default_factory=list)
+    font_id: str | None = None
+    bgm_id: str | None = None
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
 class MaterialPackArtifact(ContractModel):
     case_id: str
     portrait_candidates: list[MaterialCandidate] = Field(default_factory=list)
