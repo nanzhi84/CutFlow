@@ -32,6 +32,7 @@ from packages.planning.editing.frame_grid import (
     slice_source_window,
     to_seconds,
 )
+from packages.planning.material import longest_clean_portrait_source_span
 from packages.planning.material.broll_plan import (
     BROLL_GEOMETRY_POLICY,
     BrollGeometryPolicy,
@@ -81,13 +82,15 @@ def materialize_portrait_from_assignment(
             start_frame=int(window_data.get("start_frame", 0) or 0),
             end_frame=int(window_data.get("end_frame", 0) or 0),
         )
-        source_start = _as_float(meta.get("source_start"))
-        source_end = _as_float(meta.get("source_end"))
+        clean_span = longest_clean_portrait_source_span(meta)
+        if clean_span is None:
+            continue
+        source_start, source_end = clean_span
         source_window, _pad_end = slice_source_window(
             source_start_seconds=source_start,
             length_frames=window.length_frames,
             source_window_start_seconds=source_start,
-            source_window_end_seconds=source_end if source_end > source_start else None,
+            source_window_end_seconds=source_end,
         )
         phase = _as_str(window_data.get("phase")).lower()
         segments.append(

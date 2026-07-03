@@ -738,6 +738,111 @@ def test_llm_path_repairs_reused_portrait_asset(monkeypatch, tmp_path):
     assert [seg["asset_id"] for seg in portrait["segments"]] == ["portrait_b", "portrait_a"]
 
 
+def test_llm_path_repairs_portrait_choice_using_clean_source_span(monkeypatch, tmp_path):
+    adapter = _adapter(tmp_path)
+    fake_profile = SimpleNamespace(id="dashscope.llm.prod")
+    monkeypatch.setattr(
+        adapter.provider_profiles,
+        "first_available",
+        lambda capability, *, include_sandbox=True: fake_profile,
+    )
+    state = _state()
+    material = state.artifacts[ArtifactKind.plan_material_pack].payload
+    material["portrait_candidates"] = [
+        {
+            "asset_id": "portrait_a",
+            "score": 90.0,
+            "reason": "raw long but motion tail",
+            "metadata": {
+                "clip_id": "clip_a",
+                "source_start": 0.0,
+                "source_end": 8.0,
+                "avoid_spans": [[2.0, 8.0]],
+            },
+        },
+        {
+            "asset_id": "portrait_b",
+            "score": 70.0,
+            "reason": "clean middle",
+            "metadata": {
+                "clip_id": "clip_b",
+                "source_start": 0.0,
+                "source_end": 8.0,
+                "avoid_spans": [[0.0, 1.0], [7.0, 8.0]],
+            },
+        },
+    ]
+    boundary = state.artifacts[ArtifactKind.plan_narration_boundary].payload
+    boundary["total_frames"] = 240
+    boundary["safe_cut_boundaries"] = [
+        {"cut_id": "cut_000", "time": 0.0, "frame": 0, "source": "semantic_only"},
+        {"cut_id": "cut_001", "time": 2.0, "frame": 60, "source": "semantic_audio_pause"},
+        {"cut_id": "cut_002", "time": 8.0, "frame": 240, "source": "semantic_only"},
+    ]
+    boundary["portrait_slots"] = [
+        {
+            "slot_id": "pslot_000",
+            "start_frame": 0,
+            "end_frame": 60,
+            "unit_ids": ["unit_1"],
+            "boundary_source": "semantic_audio_pause",
+        },
+        {
+            "slot_id": "pslot_001",
+            "start_frame": 60,
+            "end_frame": 240,
+            "unit_ids": ["unit_2"],
+            "boundary_source": "semantic_only",
+        },
+    ]
+    boundary["broll_slots"] = []
+    state.artifacts[ArtifactKind.plan_timeline_windows].payload = _timeline_windows(boundary)
+
+    invalid_selection = {
+        "portrait_plan": [
+            {"slot_id": "pslot_000", "window_id": "pc_001"},
+            {"slot_id": "pslot_001", "window_id": "pc_000"},
+        ],
+        "broll_plan": [],
+        "font_plan": {"font_id": "font_yst"},
+        "bgm_plan": {"bgm_id": "bgm_001"},
+    }
+    repaired_selection = {
+        **invalid_selection,
+        "portrait_plan": [
+            {"slot_id": "pslot_000", "window_id": "pc_000"},
+            {"slot_id": "pslot_001", "window_id": "pc_001"},
+        ],
+    }
+    outputs = iter([invalid_selection, repaired_selection])
+    calls = []
+
+    def fake_invoke(call):
+        calls.append(call)
+        invocation_id = f"inv_{len(calls)}"
+        return (
+            SimpleNamespace(id=invocation_id, error=None),
+            SimpleNamespace(output={"content": "...", "intent": next(outputs)}),
+        )
+
+    monkeypatch.setattr(adapter.provider_gateway, "invoke", fake_invoke)
+
+    output = _run_node(adapter, state)
+
+    assert output.status == NodeStatus.succeeded
+    assert output.provider_invocation_ids == ["inv_1", "inv_2"]
+    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
+    assert diagnostics["repair_trace"][0]["error_count"] == 1
+    assert "has 60 frames" in diagnostics["repair_trace"][0]["errors"][0]
+    assert "choose one of legal_window_ids: pc_001" in diagnostics["repair_trace"][0]["errors"][0]
+    portrait = _payload(output, ArtifactKind.plan_portrait)
+    assert [seg["asset_id"] for seg in portrait["segments"]] == ["portrait_a", "portrait_b"]
+    assert portrait["segments"][0]["source_start_frame"] == 0
+    assert portrait["segments"][0]["source_end_frame"] == 60
+    assert portrait["segments"][1]["source_start_frame"] == 30
+    assert portrait["segments"][1]["source_end_frame"] == 210
+
+
 def _make_portrait_scarce(state: RunState) -> None:
     # Shrink the portrait pool to a single distinct asset: 1 asset for 2 slots
     # (A < S), which drives the relaxed-uniqueness path in both selection modes.

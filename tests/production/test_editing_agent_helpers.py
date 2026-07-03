@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from packages.core.contracts import DigitalHumanVideoRequest, WarningCode
+from packages.planning.material import shortlist_for_windows
 from packages.planning.material.broll_plan import BROLL_GEOMETRY_POLICY
 from packages.production.pipeline import _editing_agent
 from packages.production.pipeline._editing_agent import (
@@ -296,6 +297,58 @@ def test_agent_input_marks_short_portraits_illegal_per_slot():
     assert payload["portrait_slots"][1]["legal_window_ids"] == ["pc_000"]
 
 
+def test_agent_portrait_avoid_spans_trim_legal_windows_and_shortlist():
+    material = _material()
+    material["portrait_candidates"] = [
+        {
+            "asset_id": "portrait_bad",
+            "score": 90.0,
+            "metadata": {
+                "clip_id": "bad",
+                "source_start": 0.0,
+                "source_end": 8.0,
+                "avoid_spans": [[2.0, 8.0]],
+            },
+        },
+        {
+            "asset_id": "portrait_clean",
+            "score": 80.0,
+            "metadata": {
+                "clip_id": "clean",
+                "source_start": 0.0,
+                "source_end": 8.0,
+                "avoid_spans": [[0.0, 1.0]],
+            },
+        },
+    ]
+    material["broll_candidates"] = []
+
+    payload = build_agent_input(
+        request=_request(),
+        boundary=_boundary(),
+        candidates=index_candidates(material),
+        narration_units=[],
+        duration=12.0,
+    )
+
+    assert payload["portrait_slots"][0]["legal_window_ids"] == ["pc_001"]
+    assert payload["portrait_slots"][1]["legal_window_ids"] == ["pc_001"]
+    assert payload["portrait_candidates"][0]["source_start"] == 0.0
+    assert payload["portrait_candidates"][0]["source_end"] == 2.0
+    assert payload["portrait_candidates"][0]["available_frames"] == 60
+    assert payload["portrait_candidates"][1]["source_start"] == 1.0
+    assert payload["portrait_candidates"][1]["source_end"] == 8.0
+    assert payload["portrait_candidates"][1]["available_frames"] == 210
+
+    shortlisted, counts = shortlist_for_windows(
+        _windows(_boundary())["portrait_windows"],
+        [],
+        material,
+    )
+    assert [c["asset_id"] for c in shortlisted["portrait_candidates"]] == ["portrait_clean"]
+    assert counts["portrait"] == {"raw": 2, "eligible": 1, "exposed": 1, "dropped": 1}
+
+
 def test_valid_selection_passes_validation():
     errors = validate_selection(
         _valid_selection(),
@@ -531,6 +584,41 @@ def test_materialize_portrait_frames_are_complete_and_contiguous():
     assert segments[0]["timeline_start_frame"] == 0
     assert segments[0]["timeline_end_frame"] == segments[1]["timeline_start_frame"] == 180
     assert segments[1]["timeline_end_frame"] == 360
+
+
+def test_materialize_portrait_uses_clean_span_for_source_slice():
+    material = _material()
+    material["portrait_candidates"] = [
+        {
+            "asset_id": "portrait_clean",
+            "score": 90.0,
+            "metadata": {
+                "clip_id": "clean",
+                "source_start": 0.0,
+                "source_end": 8.0,
+                "avoid_spans": [[0.0, 1.0], [7.0, 8.0]],
+            },
+        }
+    ]
+    boundary = _boundary()
+    boundary["portrait_slots"] = [
+        {"slot_id": "pslot_000", "start_frame": 0, "end_frame": 180, "unit_ids": ["unit_001"]}
+    ]
+    selection = EditingSelection(
+        portrait=[PortraitChoice(slot_id="pslot_000", window_id="pc_000")]
+    )
+
+    payload = materialize_portrait_from_assignment(
+        windows=_windows(boundary),
+        assignment=_assignment(selection),
+        candidates=index_candidates(material),
+    )
+
+    [segment] = payload["segments"]
+    assert segment["source_start_frame"] == 30
+    assert segment["source_end_frame"] == 210
+    assert round(segment["source_start"], 3) == 1.0
+    assert round(segment["source_end"], 3) == 7.0
 
 
 def test_materialize_broll_overlays_have_frames_and_no_overlap():
@@ -944,15 +1032,15 @@ def test_select_with_repair_gives_up_after_budget():
     assert len(trace) == 2  # 1 initial + 1 repair attempt
 
 
-def test_materialize_broll_drops_sub_frame_overlay():
-    # A broll candidate whose usable source window is shorter than one 30fps frame
-    # would quantize to a zero-length overlay; it must be dropped, not emitted.
+def test_materialize_broll_drops_source_shorter_than_min_insert():
+    # A broll candidate shorter than the shared minimum insert duration is dropped
+    # before geometry placement, so the diagnostic is source_too_short.
     material = _material()
     material["broll_candidates"] = [
         {
             "asset_id": "broll_tiny",
             "score": 80.0,
-            "metadata": {"clip_id": "c", "source_start": 1.0, "source_end": 1.01},
+            "metadata": {"clip_id": "c", "source_start": 1.0, "source_end": 2.0},
         }
     ]
     candidates = index_candidates(material)

@@ -6,6 +6,7 @@ from typing import Any
 
 from packages.planning.editing.frame_grid import TIMELINE_FPS, frame_index
 from packages.planning.material.broll_plan import BROLL_GEOMETRY_POLICY
+from packages.planning.material.portrait_source import longest_clean_portrait_source_span
 
 
 def shortlist_for_windows(
@@ -93,10 +94,10 @@ def _window_required_frames(window: dict) -> int:
 
 def _source_frames_available(candidate: dict) -> int:
     meta = _meta(candidate)
-    start = _as_float(meta.get("source_start"))
-    end = _as_float(meta.get("source_end"))
-    if end <= start:
+    clean_span = longest_clean_portrait_source_span(meta)
+    if clean_span is None:
         return 0
+    start, end = clean_span
     return frame_index(end) - frame_index(start)
 
 

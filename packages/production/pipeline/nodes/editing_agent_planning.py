@@ -35,7 +35,7 @@ from packages.core.contracts import (
 from packages.core.contracts.artifacts import MediaAssignmentPlan
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.planning.editing.frame_grid import frame_index
-from packages.planning.material import shortlist_for_windows
+from packages.planning.material import longest_clean_portrait_source_span, shortlist_for_windows
 from packages.production.pipeline._editing_agent import (
     build_agent_input,
     deterministic_selection,
@@ -148,13 +148,10 @@ def _raw_portrait_candidate_diagnostics(material: dict) -> dict:
 def _source_frames_available(candidate: dict) -> int:
     meta = candidate.get("metadata")
     meta = meta if isinstance(meta, dict) else {}
-    try:
-        start = float(meta.get("source_start") or 0.0)
-        end = float(meta.get("source_end") or 0.0)
-    except (TypeError, ValueError):
+    clean_span = longest_clean_portrait_source_span(meta)
+    if clean_span is None:
         return 0
-    if end <= start:
-        return 0
+    start, end = clean_span
     return frame_index(end) - frame_index(start)
 
 

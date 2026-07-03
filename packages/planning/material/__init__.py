@@ -32,6 +32,7 @@ from packages.planning.material.portrait_pack import (
     rank_portrait_clip_candidates,
     score_simple_candidate,
 )
+from packages.planning.material.portrait_source import longest_clean_portrait_source_span
 from packages.planning.material.shortlist import shortlist_for_windows
 
 __all__ = [
@@ -54,5 +55,6 @@ __all__ = [
     "clip_is_lip_sync_usable",
     "rank_portrait_clip_candidates",
     "score_simple_candidate",
+    "longest_clean_portrait_source_span",
     "shortlist_for_windows",
 ]

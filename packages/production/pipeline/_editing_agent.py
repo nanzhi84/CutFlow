@@ -22,6 +22,7 @@ from packages.planning.editing.frame_grid import (
     frame_index,
     to_seconds,
 )
+from packages.planning.material import longest_clean_portrait_source_span
 
 TIMELINE_FPS = 30
 
@@ -168,11 +169,36 @@ def _meta(candidate: dict) -> dict:
 
 def _source_frames_available(candidate: dict) -> int:
     meta = _meta(candidate)
-    start = _as_float(meta.get("source_start"))
-    end = _as_float(meta.get("source_end"))
-    if end <= start:
+    clean_span = longest_clean_portrait_source_span(meta)
+    if clean_span is None:
         return 0
+    start, end = clean_span
     return frame_index(end) - frame_index(start)
+
+
+def _clean_source_span_for_payload(candidate: dict) -> tuple[float, float]:
+    meta = _meta(candidate)
+    clean_span = longest_clean_portrait_source_span(meta)
+    if clean_span is not None:
+        return clean_span
+    source_start = _as_float(meta.get("source_start"))
+    return source_start, source_start
+
+
+def _portrait_candidate_payload(cid: str, cand: dict) -> dict:
+    clean_start, clean_end = _clean_source_span_for_payload(cand)
+    available_frames = frame_index(clean_end) - frame_index(clean_start)
+    return {
+        "candidate_id": cid,
+        "asset_id": _as_str(cand.get("asset_id")),
+        "clip_id": _as_str(_meta(cand).get("clip_id")),
+        "source_start": clean_start,
+        "source_end": clean_end,
+        "available_frames": available_frames,
+        "available_seconds": round(to_seconds(available_frames), 3),
+        "score": _as_float(cand.get("score")),
+        "reason": _as_str(cand.get("reason")),
+    }
 
 
 def _slot_required_frames(slot: dict) -> int:
@@ -290,17 +316,7 @@ def build_agent_input(
         "portrait_slots": portrait_slots,
         "broll_slots": boundary.get("broll_slots") or [],
         "portrait_candidates": [
-            {
-                "candidate_id": cid,
-                "asset_id": _as_str(cand.get("asset_id")),
-                "clip_id": _as_str(_meta(cand).get("clip_id")),
-                "source_start": _as_float(_meta(cand).get("source_start")),
-                "source_end": _as_float(_meta(cand).get("source_end")),
-                "available_frames": _source_frames_available(cand),
-                "available_seconds": round(to_seconds(_source_frames_available(cand)), 3),
-                "score": _as_float(cand.get("score")),
-                "reason": _as_str(cand.get("reason")),
-            }
+            _portrait_candidate_payload(cid, cand)
             for cid, cand in candidates.portrait_by_id.items()
         ],
         "broll_candidates": [
