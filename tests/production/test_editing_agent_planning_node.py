@@ -339,6 +339,121 @@ def test_no_provider_without_sandbox_fallback_fails_fast(monkeypatch, tmp_path):
     assert exc.value.error.code == ErrorCode.provider_unsupported_option
 
 
+def test_agent_portrait_infeasible_slot_fails_with_material_insufficient(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    provider = _FakeEditingLlmProvider(
+        [
+            {
+                "intent": {
+                    "portrait_plan": [
+                        {"slot_id": "pslot_000", "window_id": "pc_000"},
+                        {"slot_id": "pslot_001", "window_id": "pc_001"},
+                    ]
+                }
+            }
+        ]
+    )
+    adapter.provider_gateway.register(provider)
+    state = _state()
+    material = state.artifacts[ArtifactKind.plan_material_pack].payload
+    for candidate in material["portrait_candidates"]:
+        candidate["metadata"]["source_end"] = 2.0
+
+    with pytest.raises(NodeExecutionError) as exc:
+        _run_node(adapter, state)
+
+    assert exc.value.error.code == ErrorCode.material_insufficient_portrait
+    assert provider.outputs
+    assert adapter.repository.provider_invocations == {}
+    details = exc.value.error.details
+    assert details == {
+        "failed_slot_ids": ["pslot_000", "pslot_001"],
+        "required_frames_by_slot": {"pslot_000": 180, "pslot_001": 180},
+        "longest_available_source_frames": 60,
+        "portrait_candidate_count": 2,
+    }
+
+
+def test_llm_path_records_broll_geometry_drops(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    adapter.provider_gateway.register(
+        _FakeEditingLlmProvider(
+            [
+                {
+                    "intent": {
+                        "portrait_plan": [
+                            {"slot_id": "pslot_000", "window_id": "pc_000"},
+                            {"slot_id": "pslot_001", "window_id": "pc_001"},
+                        ],
+                        "broll_plan": [
+                            {
+                                "slot_id": "bslot_000",
+                                "candidate_id": "bc_000",
+                                "reason": "展示问题细节",
+                                "confidence": 0.9,
+                            }
+                        ],
+                        "font_plan": {"font_id": "font_yst"},
+                        "bgm_plan": {"bgm_id": "bgm_001"},
+                    }
+                }
+            ]
+        )
+    )
+    state = _state()
+    boundary = state.artifacts[ArtifactKind.plan_narration_boundary].payload
+    boundary["total_frames"] = 816
+    boundary["safe_cut_boundaries"] = [
+        {"cut_id": "cut_000", "time": 488 / 30, "frame": 488, "source": "semantic_only"},
+        {"cut_id": "cut_001", "time": 724 / 30, "frame": 724, "source": "semantic_only"},
+        {"cut_id": "cut_002", "time": 816 / 30, "frame": 816, "source": "semantic_only"},
+    ]
+    boundary["portrait_slots"] = [
+        {
+            "slot_id": "pslot_000",
+            "start_frame": 488,
+            "end_frame": 724,
+            "unit_ids": ["unit_1"],
+            "boundary_source": "semantic_only",
+        },
+        {
+            "slot_id": "pslot_001",
+            "start_frame": 724,
+            "end_frame": 816,
+            "unit_ids": ["unit_2"],
+            "boundary_source": "semantic_only",
+        },
+    ]
+    boundary["broll_slots"] = [
+        {
+            "slot_id": "bslot_000",
+            "start_frame": 668,
+            "end_frame": 715,
+            "unit_ids": ["unit_1"],
+            "text": "问题细节",
+        }
+    ]
+
+    output = _run_node(adapter, state)
+
+    assert output.status == NodeStatus.degraded
+    assert output.provider_invocation_ids
+    assert WarningCode.broll_insertions_dropped_geometry in output.warnings
+    assert any(
+        notice.code == WarningCode.broll_insertions_dropped_geometry
+        and notice.affects_true_yield
+        for notice in output.degradations
+    )
+    broll = _payload(output, ArtifactKind.plan_broll)
+    assert broll["overlays"] == []
+    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
+    assert diagnostics["broll_drops"] == [
+        {"slot_id": "bslot_000", "candidate_id": "bc_000", "reason": "geometry_rejected"}
+    ]
+
+
 def test_llm_path_repairs_reused_portrait_asset(monkeypatch, tmp_path):
     """Real provider path: DashScope-style output nests the selection under
     ``output['intent']``; the node must unwrap it, honour the LLM's ID choices, and

@@ -14,8 +14,11 @@ from packages.planning.material.broll_pack import (
     rank_broll_candidates,
 )
 from packages.planning.material.broll_plan import (
+    BROLL_GEOMETRY_POLICY,
+    BrollGeometryPolicy,
     BrollInsertion,
     align_insertions_to_portrait_cuts,
+    place_insertion_safely,
     plan_coverage,
     plan_insertions,
 )
@@ -39,8 +42,11 @@ __all__ = [
     "clip_shows_person",
     "plan_coverage",
     "plan_insertions",
+    "BROLL_GEOMETRY_POLICY",
+    "BrollGeometryPolicy",
     "BrollInsertion",
     "align_insertions_to_portrait_cuts",
+    "place_insertion_safely",
     "ScriptSegment",
     "extract_keywords",
     "segment_script",

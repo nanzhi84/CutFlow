@@ -10,6 +10,8 @@ non-overlapping frame fields.
 from __future__ import annotations
 
 from packages.core.contracts import DigitalHumanVideoRequest
+from packages.planning.material.broll_plan import BROLL_GEOMETRY_POLICY
+from packages.production.pipeline import _editing_agent
 from packages.production.pipeline._editing_agent import (
     BrollChoice,
     EditingSelection,
@@ -74,8 +76,8 @@ def _boundary() -> dict:
             },
             {
                 "slot_id": "bslot_001",
-                "start_frame": 210,
-                "end_frame": 270,
+                "start_frame": 240,
+                "end_frame": 300,
                 "unit_ids": ["unit_002"],
                 "text": "施工过程",
             },
@@ -459,7 +461,7 @@ def test_materialize_broll_overlays_have_frames_and_no_overlap():
     portrait_payload = materialize_portrait(
         selection=_valid_selection(), boundary=boundary, candidates=candidates
     )
-    payload = materialize_broll(
+    payload, drops = materialize_broll(
         selection=_valid_selection(),
         boundary=boundary,
         candidates=candidates,
@@ -467,6 +469,7 @@ def test_materialize_broll_overlays_have_frames_and_no_overlap():
         enabled=True,
         max_inserts=4,
     )
+    assert drops == []
     overlays = payload["overlays"]
     assert payload["enabled"] is True
     assert len(overlays) == 2
@@ -485,7 +488,7 @@ def test_materialize_broll_overlays_have_frames_and_no_overlap():
 
 
 def test_materialize_broll_disabled_returns_empty():
-    payload = materialize_broll(
+    payload, drops = materialize_broll(
         selection=_valid_selection(),
         boundary=_boundary(),
         candidates=index_candidates(_material()),
@@ -493,8 +496,135 @@ def test_materialize_broll_disabled_returns_empty():
         enabled=False,
         max_inserts=4,
     )
+    assert drops == []
     assert payload["enabled"] is False
     assert payload["overlays"] == []
+
+
+def test_agent_broll_rejects_unsnappable_short_residual():
+    material = _material()
+    material["broll_candidates"] = [
+        {
+            "asset_id": "broll_flash",
+            "score": 90.0,
+            "metadata": {
+                "clip_id": "flash_clip",
+                "source_start": 0.04,
+                "source_end": 1.6,
+                "scene_name": "product",
+            },
+        }
+    ]
+    boundary = {
+        "broll_slots": [
+            {"slot_id": "bslot_flash", "start_frame": 668, "end_frame": 715}
+        ]
+    }
+    selection = EditingSelection(
+        broll=[BrollChoice(slot_id="bslot_flash", candidate_id="bc_000")]
+    )
+
+    payload, drops = materialize_broll(
+        selection=selection,
+        boundary=boundary,
+        candidates=index_candidates(material),
+        cut_frames=[488, 724, 816],
+        enabled=True,
+        max_inserts=4,
+    )
+
+    assert payload["overlays"] == []
+    assert drops == [
+        {"slot_id": "bslot_flash", "candidate_id": "bc_000", "reason": "geometry_rejected"}
+    ]
+
+
+def test_agent_broll_repositions_inside_window_before_drop():
+    material = _material()
+    material["broll_candidates"] = [
+        {
+            "asset_id": "broll_report",
+            "score": 90.0,
+            "metadata": {
+                "clip_id": "report_clip",
+                "source_start": 0.0,
+                "source_end": 2.0,
+                "scene_name": "report",
+            },
+        }
+    ]
+    boundary = {
+        "broll_slots": [
+            {"slot_id": "bslot_report", "start_frame": 81, "end_frame": 150}
+        ]
+    }
+    selection = EditingSelection(
+        broll=[BrollChoice(slot_id="bslot_report", candidate_id="bc_000")]
+    )
+
+    payload, drops = materialize_broll(
+        selection=selection,
+        boundary=boundary,
+        candidates=index_candidates(material),
+        cut_frames=[0, 150],
+        enabled=True,
+        max_inserts=4,
+    )
+
+    assert drops == []
+    [overlay] = payload["overlays"]
+    assert (overlay["timeline_start_frame"], overlay["timeline_end_frame"]) == (90, 150)
+    assert round(overlay["timeline_start"], 3) == 3.0
+    assert round(overlay["timeline_end"], 3) == 5.0
+
+
+def test_agent_broll_honours_min_max_insert_seconds():
+    material = _material()
+    material["broll_candidates"] = [
+        {
+            "asset_id": "broll_long",
+            "score": 90.0,
+            "metadata": {"clip_id": "long_clip", "source_start": 0.0, "source_end": 8.0},
+        },
+        {
+            "asset_id": "broll_short",
+            "score": 80.0,
+            "metadata": {"clip_id": "short_clip", "source_start": 0.0, "source_end": 1.2},
+        },
+    ]
+    boundary = {
+        "broll_slots": [
+            {"slot_id": "bslot_long", "start_frame": 0, "end_frame": 300},
+            {"slot_id": "bslot_short", "start_frame": 300, "end_frame": 450},
+        ]
+    }
+    selection = EditingSelection(
+        broll=[
+            BrollChoice(slot_id="bslot_long", candidate_id="bc_000"),
+            BrollChoice(slot_id="bslot_short", candidate_id="bc_001"),
+        ]
+    )
+
+    payload, drops = materialize_broll(
+        selection=selection,
+        boundary=boundary,
+        candidates=index_candidates(material),
+        cut_frames=[0, 300, 600],
+        enabled=True,
+        max_inserts=4,
+    )
+
+    [overlay] = payload["overlays"]
+    assert round(overlay["timeline_end"] - overlay["timeline_start"], 3) == 4.0
+    assert round(overlay["source_end"] - overlay["source_start"], 3) == 4.0
+    assert drops == [
+        {"slot_id": "bslot_short", "candidate_id": "bc_001", "reason": "source_too_short"}
+    ]
+
+
+def test_agent_broll_uses_shared_geometry_policy_object():
+    assert _editing_agent.BROLL_GEOMETRY_POLICY is BROLL_GEOMETRY_POLICY
+    assert materialize_broll.__kwdefaults__["policy"] is BROLL_GEOMETRY_POLICY
 
 
 def test_materialize_style_uses_chosen_font_and_bgm():
@@ -615,7 +745,7 @@ def test_materialize_broll_drops_sub_frame_overlay():
     ]
     candidates = index_candidates(material)
     selection = EditingSelection(broll=[BrollChoice(slot_id="bslot_000", candidate_id="bc_000")])
-    payload = materialize_broll(
+    payload, drops = materialize_broll(
         selection=selection,
         boundary=_boundary(),
         candidates=candidates,
@@ -624,3 +754,6 @@ def test_materialize_broll_drops_sub_frame_overlay():
         max_inserts=4,
     )
     assert payload["overlays"] == []
+    assert drops == [
+        {"slot_id": "bslot_000", "candidate_id": "bc_000", "reason": "source_too_short"}
+    ]

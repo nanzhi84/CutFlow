@@ -115,6 +115,7 @@ export function warningLabel(value: string) {
   if (value === "lipsync.fallback_used") return "主口型供应商失败，已由兜底供应商生成";
   if (value === "bgm.loudness_probe_failed") return "BGM 响度探测失败，已按请求音量混音";
   if (value === "font.resolution_failed") return "指定字体文件解析失败，已使用默认字体";
+  if (value === "broll.insertions_dropped_geometry") return "部分 B-roll 插入因时间线几何约束被丢弃";
   return "未知警告";
 }
 

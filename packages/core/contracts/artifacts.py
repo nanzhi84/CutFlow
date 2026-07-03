@@ -143,8 +143,8 @@ class NarrationBoundaryPlan(ContractModel):
     (``{start,end,duration,center}``); PortraitPlanning consumes it as the audio-pause
     input to its unchanged coverage/escalation planner, so portrait main-track frame
     boundaries stay identical to before the split. ``safe_cut_boundaries`` /
-    ``portrait_slots`` / ``broll_slots`` are the frame-quantized base boundary set (no
-    capacity split): the authoritative main-track plan is still emitted by
+    ``portrait_slots`` / ``broll_slots`` are frame-quantized base/available windows,
+    NOT final authority: the authoritative main-track plan is still emitted by
     PortraitPlanning, while these windows describe where cuts may safely land for the
     future comprehensive editing agent (see #136).
     """
@@ -154,8 +154,14 @@ class NarrationBoundaryPlan(ContractModel):
     source: str
     pause_windows: list[dict[str, float]] = Field(default_factory=list)
     safe_cut_boundaries: list[dict[str, Any]] = Field(default_factory=list)
-    portrait_slots: list[dict[str, Any]] = Field(default_factory=list)
-    broll_slots: list[dict[str, Any]] = Field(default_factory=list)
+    portrait_slots: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Base/available portrait windows, NOT final authority.",
+    )
+    broll_slots: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Base/available B-roll windows, NOT final authority.",
+    )
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 

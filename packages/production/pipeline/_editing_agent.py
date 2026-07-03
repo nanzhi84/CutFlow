@@ -44,8 +44,10 @@ from packages.planning.editing.frame_grid import (
     to_seconds,
 )
 from packages.planning.material.broll_plan import (
+    BROLL_GEOMETRY_POLICY,
+    BrollGeometryPolicy,
     BrollInsertion,
-    align_insertions_to_portrait_cuts,
+    place_insertion_safely,
 )
 
 TIMELINE_FPS = 30
@@ -693,7 +695,8 @@ def materialize_broll(
     cut_frames: list[int],
     enabled: bool,
     max_inserts: int,
-) -> dict:
+    policy: BrollGeometryPolicy = BROLL_GEOMETRY_POLICY,
+) -> tuple[dict, list[dict]]:
     """Turn b-roll ID choices into a frame-aligned ``BrollPlanArtifact``.
 
     Each chosen slot+candidate becomes a ``BrollInsertion`` whose timeline span
@@ -703,53 +706,65 @@ def materialize_broll(
     never overlap.
     """
     if not enabled:
-        return BrollPlanArtifact(enabled=False).model_dump(mode="json")
+        return BrollPlanArtifact(enabled=False).model_dump(mode="json"), []
     slot_by_id = {
         _as_str(s.get("slot_id")): s
         for s in (boundary.get("broll_slots") or [])
         if isinstance(s, dict)
     }
-    raw: list[BrollInsertion] = []
+    accepted: list[BrollInsertion] = []
+    drop_diagnostics: list[dict] = []
     for choice in selection.broll[: max(0, max_inserts)]:
         slot = slot_by_id.get(choice.slot_id)
         cand = candidates.broll_by_id.get(choice.candidate_id)
-        if slot is None or cand is None:
+        drop_base = {"slot_id": choice.slot_id, "candidate_id": choice.candidate_id}
+        if slot is None:
+            drop_diagnostics.append({**drop_base, "reason": "unknown_slot"})
+            continue
+        if cand is None:
+            drop_diagnostics.append({**drop_base, "reason": "unknown_candidate"})
             continue
         meta = _meta(cand)
         ts = to_seconds(int(slot.get("start_frame", 0)))
         te = to_seconds(int(slot.get("end_frame", 0)))
         src_start = _as_float(meta.get("source_start"))
         src_end = _as_float(meta.get("source_end"))
-        span = max(0.0, te - ts)
-        avail = src_end - src_start
-        if avail > 0:
-            span = min(span, avail)
-        # Drop a degenerate sub-frame overlay: a span shorter than one 30fps frame
-        # quantizes to timeline_start_frame == timeline_end_frame, which TimelinePlanning
-        # rejects as negative_duration and would hard-fail the whole run.
-        if span < 1.0 / TIMELINE_FPS:
+        slot_span = max(0.0, te - ts)
+        source_available = src_end - src_start
+        if 0.0 < source_available < policy.min_insert_seconds:
+            drop_diagnostics.append({**drop_base, "reason": "source_too_short"})
             continue
-        raw.append(
-            BrollInsertion(
-                asset_id=_as_str(cand.get("asset_id")),
-                clip_id=_as_str(meta.get("clip_id")),
-                timeline_start=ts,
-                timeline_end=ts + span,
-                source_start=src_start,
-                source_end=src_start + span,
-                confidence=choice.confidence,
-                matched_keywords=choice.matched_keywords,
-                scene_name=_as_str(meta.get("scene_name")),
-                reason=choice.reason or "editing agent selection",
-                diversity_key=_as_str(meta.get("diversity_key")),
-            )
+        source_limit = source_available if source_available > 0.0 else policy.max_insert_seconds
+        span = min(policy.max_insert_seconds, slot_span, source_limit)
+        if span < policy.min_insert_seconds:
+            drop_diagnostics.append({**drop_base, "reason": "slot_too_short"})
+            continue
+        insert = BrollInsertion(
+            asset_id=_as_str(cand.get("asset_id")),
+            clip_id=_as_str(meta.get("clip_id")),
+            timeline_start=ts,
+            timeline_end=round(ts + span, 3),
+            source_start=src_start,
+            source_end=round(src_start + span, 3),
+            confidence=choice.confidence,
+            matched_keywords=choice.matched_keywords,
+            scene_name=_as_str(meta.get("scene_name")),
+            reason=choice.reason or "editing agent selection",
+            diversity_key=_as_str(meta.get("diversity_key")),
         )
-    raw.sort(key=lambda ins: ins.timeline_start)
-    aligned = (
-        align_insertions_to_portrait_cuts(raw, fps=TIMELINE_FPS, portrait_cut_frames=cut_frames)
-        if cut_frames
-        else raw
-    )
+        next_accepted = place_insertion_safely(
+            accepted,
+            insert,
+            window_start=ts,
+            window_end=te,
+            fps=TIMELINE_FPS,
+            portrait_cut_frames=cut_frames,
+            policy=policy,
+        )
+        if next_accepted is None:
+            drop_diagnostics.append({**drop_base, "reason": "geometry_rejected"})
+            continue
+        accepted = next_accepted
     overlays = [
         BrollOverlay(
             overlay_id=f"broll_{index + 1}",
@@ -771,9 +786,10 @@ def materialize_broll(
             scene_name=ins.scene_name or None,
             diversity_key=ins.diversity_key or None,
         )
-        for index, ins in enumerate(aligned)
+        for index, ins in enumerate(accepted)
     ]
-    return BrollPlanArtifact(enabled=True, overlays=overlays).model_dump(mode="json")
+    payload = BrollPlanArtifact(enabled=True, overlays=overlays).model_dump(mode="json")
+    return payload, drop_diagnostics
 
 
 def materialize_style(

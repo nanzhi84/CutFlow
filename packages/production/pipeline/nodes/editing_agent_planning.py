@@ -82,6 +82,35 @@ def _prompt_variables(agent_input: dict, previous_errors: list[str]) -> dict:
     return variables
 
 
+def _portrait_feasibility_failure(agent_input: dict) -> dict | None:
+    portrait_slots = [s for s in agent_input.get("portrait_slots", []) if isinstance(s, dict)]
+    failed_slot_ids = [
+        str(slot.get("slot_id") or "")
+        for slot in portrait_slots
+        if not slot.get("legal_window_ids") and str(slot.get("slot_id") or "")
+    ]
+    if not failed_slot_ids:
+        return None
+
+    required_frames_by_slot = {
+        str(slot.get("slot_id")): int(slot.get("required_frames", 0) or 0)
+        for slot in portrait_slots
+        if str(slot.get("slot_id") or "") in failed_slot_ids
+    }
+    portrait_candidates = [
+        c for c in agent_input.get("portrait_candidates", []) if isinstance(c, dict)
+    ]
+    longest_available_source_frames = max(
+        [int(c.get("available_frames", 0) or 0) for c in portrait_candidates] or [0]
+    )
+    return {
+        "failed_slot_ids": failed_slot_ids,
+        "required_frames_by_slot": required_frames_by_slot,
+        "longest_available_source_frames": longest_available_source_frames,
+        "portrait_candidate_count": len(portrait_candidates),
+    }
+
+
 def _record_llm_request_artifact(
     *,
     ctx: NodeContext,
@@ -172,6 +201,13 @@ def run(ctx: NodeContext) -> NodeOutput:
         duration=duration,
     )
     reuse_cap = portrait_asset_reuse_cap(boundary=boundary, candidates=candidates)
+    portrait_feasibility_failure = _portrait_feasibility_failure(agent_input)
+    if portrait_feasibility_failure is not None:
+        raise NodeExecutionError(
+            ErrorCode.material_insufficient_portrait,
+            "人像素材不足：portrait slot 没有可覆盖的源窗口。",
+            details=portrait_feasibility_failure,
+        )
 
     profile = ctx.first_available_provider_profile("llm.chat", include_sandbox=False)
     degradations: list[DegradationNotice] = []
@@ -299,7 +335,7 @@ def run(ctx: NodeContext) -> NodeOutput:
     portrait_payload = materialize_portrait(
         selection=selection, boundary=boundary, candidates=candidates
     )
-    broll_payload = materialize_broll(
+    broll_payload, broll_drops = materialize_broll(
         selection=selection,
         boundary=boundary,
         candidates=candidates,
@@ -307,6 +343,18 @@ def run(ctx: NodeContext) -> NodeOutput:
         enabled=state.request.broll.enabled,
         max_inserts=state.request.broll.max_inserts,
     )
+    if broll_drops:
+        selected_broll_choices = selection.broll[: max(0, state.request.broll.max_inserts)]
+        affects_true_yield = bool(selected_broll_choices) and not broll_payload.get("overlays")
+        degradations.append(
+            degradation_notice(
+                WarningCode.broll_insertions_dropped_geometry,
+                f"B-roll 有 {len(broll_drops)} 个插入因时间线几何约束被丢弃。",
+                node_id=node_run.node_id,
+                affects_true_yield=affects_true_yield,
+            ).model_copy(update={"details": {"broll_drops": broll_drops}})
+        )
+        warnings.append(WarningCode.broll_insertions_dropped_geometry)
     style_payload = materialize_style(
         selection=selection,
         candidates=candidates,
@@ -327,6 +375,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             {"slot_id": c.slot_id, "candidate_id": c.candidate_id, "reason": c.reason}
             for c in selection.broll
         ],
+        "broll_drops": broll_drops,
         "font_id": selection.font_id,
         "bgm_id": selection.bgm_id,
         "portrait_asset_reuse_cap": reuse_cap,

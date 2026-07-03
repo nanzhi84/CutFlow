@@ -12,9 +12,13 @@ overlap a neighbouring insert, and always populating frame fields.
 from __future__ import annotations
 
 from packages.core.contracts.artifacts import NarrationUnit
-from packages.planning.material import align_insertions_to_portrait_cuts, plan_insertions
+from packages.planning.material import (
+    align_insertions_to_portrait_cuts,
+    place_insertion_safely,
+    plan_insertions,
+)
 from packages.planning.material.broll_pack import BrollCandidate
-from packages.planning.material.broll_plan import BrollInsertion
+from packages.planning.material.broll_plan import BROLL_GEOMETRY_POLICY, BrollInsertion
 from packages.planning.material.keywords import ScriptSegment
 
 
@@ -293,6 +297,93 @@ def test_plan_insertions_repositions_candidate_to_avoid_short_portrait_sliver():
 
     assert (insertion.timeline_start_frame, insertion.timeline_end_frame) == (90, 150)
     assert round(insertion.pad_end, 3) == 0.0
+
+
+def test_place_insertion_safely_matches_plan_insertions_geometry():
+    reject_unit = NarrationUnit(
+        unit_id="u_reject",
+        text="划个痕，就要全车重喷？",
+        start=22.267,
+        end=23.833,
+        confidence=1.0,
+    )
+    reject_beat = ScriptSegment(
+        text=reject_unit.text, start=22.267, end=23.833, keywords=("划痕",)
+    )
+    reject_candidate = BrollCandidate(
+        asset_id="asset_flash",
+        clip_id="flash_clip",
+        score=90.0,
+        base_score=90.0,
+        recency_penalty=0.0,
+        matched_keywords=("划痕",),
+        scene_name="product",
+        source_start=0.04,
+        source_end=1.6,
+        diversity_key="product_showcase",
+        best_segment=reject_beat,
+    )
+    rejected = plan_insertions(
+        candidates=[reject_candidate],
+        units=[reject_unit],
+        max_inserts=1,
+        fps=30,
+        portrait_cut_frames=[488, 724, 816],
+    )
+    rejected_shared = place_insertion_safely(
+        [],
+        _ins(22.267, 23.827, 0.04, 1.6, asset_id="asset_flash", clip_id="flash_clip"),
+        window_start=22.267,
+        window_end=23.833,
+        fps=30,
+        portrait_cut_frames=[488, 724, 816],
+        policy=BROLL_GEOMETRY_POLICY,
+    )
+    assert rejected == []
+    assert rejected_shared is None
+
+    accept_unit = NarrationUnit(
+        unit_id="u_accept",
+        text="最后展示报告效果。",
+        start=0.0,
+        end=5.0,
+        confidence=1.0,
+    )
+    accept_beat = ScriptSegment(text=accept_unit.text, start=2.7, end=5.0, keywords=("报告",))
+    accept_candidate = BrollCandidate(
+        asset_id="asset_report",
+        clip_id="report_clip",
+        score=90.0,
+        base_score=90.0,
+        recency_penalty=0.0,
+        matched_keywords=("报告",),
+        scene_name="report",
+        source_start=0.0,
+        source_end=2.0,
+        diversity_key="report",
+        best_segment=accept_beat,
+    )
+    [planned] = plan_insertions(
+        candidates=[accept_candidate],
+        units=[accept_unit],
+        max_inserts=1,
+        fps=30,
+        portrait_cut_frames=[0, 150],
+    )
+    [placed] = place_insertion_safely(
+        [],
+        _ins(2.7, 4.7, 0.0, 2.0, asset_id="asset_report", clip_id="report_clip"),
+        window_start=2.7,
+        window_end=5.0,
+        fps=30,
+        portrait_cut_frames=[0, 150],
+        policy=BROLL_GEOMETRY_POLICY,
+    )
+
+    assert (placed.timeline_start_frame, placed.timeline_end_frame) == (
+        planned.timeline_start_frame,
+        planned.timeline_end_frame,
+    )
 
 
 def test_plan_insertions_prefers_distinct_diversity_keys_within_run():

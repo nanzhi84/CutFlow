@@ -30,6 +30,13 @@
 - 有 provider 副作用的节点（TTS/ResolveCreativeIntent/LipSync/ExportFinishedVideo/SeedanceGenerateVideo）必须带 `idempotency_key`，否则 reuse 拒绝复用。
 - 增删节点须同步三处（`digital_human_template()` 已数据驱动、只调 `_build_template`，无需手改）：①对应模板的 `*_SEQUENCE`（`node_sequence.py`）②`NODE_HANDLERS` ③`_NODE_OUTPUT_KINDS`（声明每节点 `output_artifact_kinds`）。节点有 provider 副作用还需加入 `_PROVIDER_SIDE_EFFECT_NODES`，会破坏时间线复用还需加入 `_TIMELINE_REUSE_BREAK_NODES`。
 
+## 剪辑职责矩阵
+- `NarrationBoundaryPlanning` 只产出安全切点事实和 base/available windows；`portrait_slots` / `broll_slots` 不是最终帧权威。
+- `PortraitPlanning` 拥有人像主轨最终窗口与资产级容量判定；素材不足用 `material_insufficient_portrait` hard fail。
+- `BrollPlanning` 和 editing planner 的 B-roll 落点必须共用 `packages/planning/material/broll_plan.py` 的几何政策与安全放置函数。
+- `EditingAgentPlanning` 只做候选指派和本地校验；LLM 不输出最终帧，任何 B-roll 几何丢弃必须进入 diagnostics / degradation。
+- `TimelinePlanning` 保持 verify-only，只校验并组装上游已经决定的帧边界。
+
 ## 测试
 - `pytest tests/production tests/workflow`。人像唯一性/恢复诊断重点见 `test_portrait_planning_node.py`；B-roll canonical overlays 见 `test_broll_overlays_helper.py`、`test_broll_planning_node.py`、`test_broll_coverage_planning.py`。
 
