@@ -5,7 +5,7 @@ Case-first 数字人短视频内容生产系统。Python（FastAPI + Temporal）
 ## 仓库地图（改对应代码前先读该目录的 CLAUDE.md）
 
 - `apps/`：`api`（FastAPI）· `worker`（Temporal worker，独立进程）· `web`（React/Vite SPA）· `connectors`（OceanEngine 离线 ETL CLI）
-- `packages/`：`core`（contracts/storage【对象存储 local/S3/tiered + presigned upload、secret 信封加密】/config/auth/observability/workflow）· `ai`（gateway/prompts/providers）· `creative`（Case/脚本/自进化）· `media` · `planning` · `production`（多工作流流水线：主链 digital_human_v2 16 节点，另有 broll_only_v1 13 节点 / seedance_t2v_v1 5 节点模板）· `publishing` · `ops` · `migrations`（保留目录约定，**非** Alembic）
+- `packages/`：`core`（contracts/storage【对象存储 local/S3/tiered + presigned upload、secret 信封加密】/config/auth/observability/workflow）· `ai`（gateway/prompts/providers）· `creative`（Case/脚本/自进化）· `media` · `planning` · `production`（多工作流流水线：主链 digital_human_v2 18 节点，另有 digital_human_editing_agent_v1 16 节点 / broll_only_v1 13 节点 / seedance_t2v_v1 5 节点模板）· `publishing` · `ops` · `migrations`（保留目录约定，**非** Alembic）
 - `tests/`（按域）· `scripts/` · `deploy/`（Temporal 配置）· `docs/`（入口：`docs/README.md`）
 
 ## 关键命令
