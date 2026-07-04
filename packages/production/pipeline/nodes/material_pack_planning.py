@@ -215,16 +215,21 @@ def run(ctx: NodeContext) -> NodeOutput:
         annotations=bgm_annotations,
         medium="bgm",
     )
-    bgm_candidates = _bgm_segment_candidates(bgm_assets, bgm_annotations, bgm_ledger)
+    bgm_candidates, bgm_segment_rejections = _bgm_segment_candidates(
+        bgm_assets,
+        bgm_annotations,
+        bgm_ledger,
+    )
     font_candidates = _simple_candidates(font_assets, "font", font_ledger)
 
-    # §6.6 reserve: claim a TTL lease over each top candidate per medium so a
-    # concurrent same-case run does not silently collide on the same asset. The
-    # per-medium production node commits the asset it actually ships; cancel/failure
-    # releases the rest. Assets a live run already holds were filtered before ranking;
-    # the reservation ids surfaced here are the ones THIS run owns, wiring the
-    # previously-stubbed ``reservations`` contract field for real.
-    reservation_ids = _reserve_top_candidates(
+    # §6.6 reserve: claim a TTL lease over every eligible asset that downstream
+    # planners may choose so a concurrent same-case run does not silently collide.
+    # The per-medium production node commits the asset it actually ships;
+    # cancel/failure releases the rest. Assets a live run already holds were
+    # filtered before eligibility; the reservation ids surfaced here are the ones
+    # THIS run owns, wiring the previously-stubbed ``reservations`` contract field
+    # for real.
+    reservation_ids = _reserve_candidate_assets(
         ctx,
         case_id=request.case_id,
         portrait_candidates=portrait_candidates,
@@ -238,6 +243,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         *broll_rejections,
         *bgm_reservation_rejections,
         *bgm_annotation_rejections,
+        *bgm_segment_rejections,
         *font_reservation_rejections,
     ]
     payload = MaterialPackArtifact(
@@ -288,13 +294,6 @@ def run(ctx: NodeContext) -> NodeOutput:
             ctx.artifact(ArtifactKind.plan_material_pack, payload, "MaterialPackPlanArtifact.v1")
         ]
     )
-
-
-# How many visual/font candidates to reserve per medium. MaterialPack no longer ranks
-# its pools after #160 Stage 2, so this is a small deterministic lease over the first
-# eligible candidates, not a semantic/topK shortlist. BGM keeps the previous "reserve
-# every eligible asset" behavior because the later style selector may choose any segment.
-_RESERVE_TOP_N = 3
 
 
 def _active_reserved_asset_ids(repo, *, case_id: str, run_id: str, medium: str) -> set[str]:
@@ -654,7 +653,7 @@ def _clip_overlaps_bad_span(clip, bad_spans: list[tuple[float, float]]) -> bool:
     return any(min(end, bad_end) > max(start, bad_start) for bad_start, bad_end in bad_spans)
 
 
-def _reserve_top_candidates(
+def _reserve_candidate_assets(
     ctx: NodeContext,
     *,
     case_id: str,
@@ -670,13 +669,12 @@ def _reserve_top_candidates(
         ("bgm", bgm_candidates),
         ("font", font_candidates),
     ):
-        reserve_candidates = candidates if medium == "bgm" else candidates[:_RESERVE_TOP_N]
-        asset_ids = list(dict.fromkeys(c.asset_id for c in reserve_candidates if c.asset_id))
+        asset_ids = list(dict.fromkeys(c.asset_id for c in candidates if c.asset_id))
         if not asset_ids:
             continue
         diversity_keys = {
             c.asset_id: (c.metadata or {}).get("diversity_key")
-            for c in reserve_candidates
+            for c in candidates
             if c.asset_id
         }
         owned = ctx.repository.reserve_selections(
@@ -714,20 +712,44 @@ def _simple_candidates(assets, medium_label, ledger_entries) -> list[MaterialCan
     return candidates
 
 
-def _bgm_segment_candidates(assets, annotations, ledger_entries) -> list[MaterialCandidate]:
+def _bgm_segment_candidates(
+    assets,
+    annotations,
+    ledger_entries,
+) -> tuple[list[MaterialCandidate], list[dict]]:
     candidates: list[MaterialCandidate] = []
+    rejections: list[dict] = []
     for asset in assets:
         annotation = annotations.get(asset.id)
-        if annotation is None or not annotation.bgm_segments:
+        if annotation is None:
+            continue
+        if not annotation.bgm_segments:
+            rejections.append(
+                _asset_rejection(medium="bgm", asset_id=asset.id, reason="bgm_no_segments")
+            )
             continue
         for segment in annotation.bgm_segments:
             segment_id = str(segment.segment_id or "").strip()
             if not segment_id:
+                rejections.append(
+                    _bgm_segment_rejection(
+                        asset_id=asset.id,
+                        segment=segment,
+                        reason="bgm_segment_missing_id",
+                    )
+                )
                 continue
             source_start = round(float(segment.start), 3)
             source_end = round(float(segment.end), 3)
             duration = round(max(0.0, source_end - source_start), 3)
             if duration <= 0:
+                rejections.append(
+                    _bgm_segment_rejection(
+                        asset_id=asset.id,
+                        segment=segment,
+                        reason="bgm_segment_invalid_duration",
+                    )
+                )
                 continue
             penalty = recency_penalty_for(
                 ledger_entries,
@@ -785,4 +807,15 @@ def _bgm_segment_candidates(assets, annotations, ledger_entries) -> list[Materia
             str((c.metadata or {}).get("clip_id") or ""),
         )
     )
-    return candidates
+    return candidates, rejections
+
+
+def _bgm_segment_rejection(*, asset_id: str, segment, reason: str) -> dict:
+    return {
+        "medium": "bgm",
+        "asset_id": asset_id,
+        "clip_id": str(getattr(segment, "segment_id", "") or ""),
+        "reason": reason,
+        "source_start": round(float(getattr(segment, "start", 0.0) or 0.0), 3),
+        "source_end": round(float(getattr(segment, "end", 0.0) or 0.0), 3),
+    }

@@ -168,6 +168,34 @@ def test_material_pack_offers_one_bgm_candidate_per_annotated_segment(tmp_path, 
     assert first["scene_fit"] == ["短视频", "产品展示"]
 
 
+def test_material_pack_rejects_annotated_bgm_without_usable_segments(tmp_path, monkeypatch):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    adapter.repository.media_assets.clear()
+    adapter.repository.annotations.clear()
+    _inject_bgm_asset(adapter.repository, "asset_bgm_empty", [])
+    _inject_bgm_asset(
+        adapter.repository,
+        "asset_bgm_blank_segment",
+        [_segment("", 0.0, 58.0)],
+    )
+
+    output = nodes.material_pack_planning.run(_ctx(adapter, _request(), "MaterialPackPlanning"))
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_material_pack)
+
+    assert payload["bgm_candidates"] == []
+    bgm_rejections = {
+        (item["asset_id"], item["reason"])
+        for item in payload["rejected_candidates"]
+        if item["medium"] == "bgm"
+    }
+    assert bgm_rejections == {
+        ("asset_bgm_empty", "bgm_no_segments"),
+        ("asset_bgm_blank_segment", "bgm_segment_missing_id"),
+    }
+
+
 def test_bgm_segment_recency_is_metadata_not_material_pack_ranking(tmp_path, monkeypatch):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)

@@ -345,6 +345,43 @@ def test_material_pack_respects_active_reservations_from_parallel_run(tmp_path, 
     }
 
 
+def test_material_pack_reserves_every_eligible_broll_asset(tmp_path, monkeypatch):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    adapter.repository.media_assets.clear()
+    adapter.repository.annotations.clear()
+    for index in range(4):
+        asset_id = f"vid_broll_{index}"
+        _inject_video_asset(
+            adapter.repository,
+            asset_id,
+            [_cover_clip(f"cover_{index}", 0.0, 5.0, ["工艺", str(index)])],
+        )
+
+    output = nodes.material_pack_planning.run(_ctx(adapter, _request(), "MaterialPackPlanning"))
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_material_pack)
+
+    assert [c["asset_id"] for c in payload["broll_candidates"]] == [
+        "vid_broll_0",
+        "vid_broll_1",
+        "vid_broll_2",
+        "vid_broll_3",
+    ]
+    owned = [
+        reservation
+        for reservation in adapter.repository.selection_reservations.values()
+        if reservation.run_id == "run_1" and reservation.medium == "broll"
+    ]
+    assert {reservation.asset_id for reservation in owned} == {
+        "vid_broll_0",
+        "vid_broll_1",
+        "vid_broll_2",
+        "vid_broll_3",
+    }
+    assert len(payload["reservations"]) == 4
+
+
 def test_local_runtime_syncs_after_material_pack_reservations(tmp_path, monkeypatch):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
