@@ -6,14 +6,24 @@ from packages.ai.gateway import ProviderGateway
 from packages.ai.gateway.provider_gateway import _deterministic_embedding
 from packages.ai.prompts import PromptRegistry
 from packages.core.contracts import (
+    AnnotationEditorVm,
+    AnnotationMetaV4,
+    AnnotationV4,
     Artifact,
     ArtifactKind,
+    ClipRetrievalV4,
+    ClipSemanticsV4,
+    ClipUsageV4,
+    ClipV4,
     DigitalHumanVideoRequest,
     ErrorCode,
     MediaAssetRecord,
     NodeRun,
     NodeStatus,
     RunStatus,
+    UsageRole,
+    UsageWindowV4,
+    WarningCode,
     WorkflowRun,
 )
 from packages.core.storage.object_store import LocalObjectStore
@@ -181,6 +191,92 @@ def _material() -> dict:
         "font_candidates": [],
         "bgm_candidates": [],
     }
+
+
+def _complete_default_portrait_windows() -> dict:
+    windows = _windows()
+    default_segment = {
+        "segment_id": "portrait_1",
+        "asset_id": "portrait_a",
+        "clip_id": "portrait_clip",
+        "start_sec": 0.0,
+        "end_sec": 4.0,
+        "source_start": 0.0,
+        "source_end": 4.0,
+        "role": "main",
+        "source_mode": "lipsynced",
+        "boundary_source": "semantic",
+        "boundary_reason": None,
+        "unit_ids": ["unit_1"],
+        "slot_phase": "portrait_opening",
+        "recently_used_material": False,
+        "timeline_start_frame": 0,
+        "timeline_end_frame": 120,
+        "source_start_frame": 0,
+        "source_end_frame": 120,
+    }
+    windows["default_assignment"] = {
+        "portrait": [
+            {
+                "window_id": "portrait_a:portrait_clip",
+                "segment_payload": default_segment,
+            }
+        ],
+        "portrait_plan_payload": {
+            "fps": 30,
+            "total_duration": 4.0,
+            "asset_id": "portrait_a",
+            "duration_sec": 4.0,
+            "segments": [default_segment],
+            "diagnostics": {"planner": "timeline_window_default", "segment_count": 1},
+        },
+        "engine": "compiler_default",
+    }
+    return windows
+
+
+def _annotate_broll(repository: Repository, *, asset_id: str = "broll_a") -> None:
+    repository.media_assets[asset_id] = MediaAssetRecord(
+        id=asset_id,
+        case_id="case_demo",
+        title=asset_id,
+        kind="video",
+        annotation_status="annotated",
+        usable=True,
+    )
+    annotation = AnnotationV4(
+        meta=AnnotationMetaV4(
+            asset_id=asset_id,
+            case_id="case_demo",
+            material_type="broll",
+            duration=4.0,
+        ),
+        clips=[
+            ClipV4(
+                segment_id="clip_a",
+                start=0.0,
+                end=4.0,
+                duration=4.0,
+                semantics=ClipSemanticsV4(scene_type="施工前", narrative_role="现场展示"),
+                usage=ClipUsageV4(role=UsageRole.cover),
+                retrieval=ClipRetrievalV4(
+                    summary="施工前现场",
+                    keywords=["施工前", "现场"],
+                    retrieval_sentence="施工前现场",
+                ),
+            )
+        ],
+        usage_windows=[
+            UsageWindowV4(start=0.0, end=4.0, role=UsageRole.cover, confidence=0.9)
+        ],
+        quality_report={"usable_ratio": 0.9},
+    )
+    repository.annotations[asset_id] = AnnotationEditorVm(
+        asset=repository.media_assets[asset_id],
+        etag="etag-broll",
+        canonical=annotation.model_dump(mode="json"),
+        projection={"usable": True},
+    )
 
 
 def _ctx(adapter: LocalRuntimeAdapter, node_id: str, artifacts: dict[ArtifactKind, Artifact]):
@@ -384,44 +480,7 @@ def test_deterministic_editing_planning_accepts_complete_default_portrait_fallba
     tmp_path,
 ):
     adapter = _adapter(tmp_path)
-    windows = _windows()
-    default_segment = {
-        "segment_id": "portrait_1",
-        "asset_id": "portrait_a",
-        "clip_id": "portrait_clip",
-        "start_sec": 0.0,
-        "end_sec": 4.0,
-        "source_start": 0.0,
-        "source_end": 4.0,
-        "role": "main",
-        "source_mode": "lipsynced",
-        "boundary_source": "semantic",
-        "boundary_reason": None,
-        "unit_ids": ["unit_1"],
-        "slot_phase": "portrait_opening",
-        "recently_used_material": False,
-        "timeline_start_frame": 0,
-        "timeline_end_frame": 120,
-        "source_start_frame": 0,
-        "source_end_frame": 120,
-    }
-    windows["default_assignment"] = {
-        "portrait": [
-            {
-                "window_id": "portrait_a:portrait_clip",
-                "segment_payload": default_segment,
-            }
-        ],
-        "portrait_plan_payload": {
-            "fps": 30,
-            "total_duration": 4.0,
-            "asset_id": "portrait_a",
-            "duration_sec": 4.0,
-            "segments": [default_segment],
-            "diagnostics": {"planner": "timeline_window_default", "segment_count": 1},
-        },
-        "engine": "compiler_default",
-    }
+    windows = _complete_default_portrait_windows()
     retrieval = {"candidates_by_window": {}, "diagnostics": {}}
     ctx = _ctx(
         adapter,
@@ -451,12 +510,105 @@ def test_deterministic_editing_planning_accepts_complete_default_portrait_fallba
         for artifact in output.artifacts
         if artifact.kind == ArtifactKind.plan_media_assignment
     )
-    assert portrait_payload["segments"] == [default_segment]
+    assert portrait_payload["segments"] == windows["default_assignment"]["portrait_plan_payload"][
+        "segments"
+    ]
     assert media_assignment["portrait"][0]["window_id"] == "pwin_000"
     assert media_assignment["diagnostics"]["portrait_assignment_source"] == (
         "timeline_window_default"
     )
     assert media_assignment["diagnostics"]["missing_retrieval_window_ids"] == ["pwin_000"]
+
+
+def test_deterministic_editing_planning_falls_back_to_annotation_broll_when_retrieval_empty(
+    tmp_path,
+):
+    adapter = _adapter(tmp_path)
+    _annotate_broll(adapter.repository)
+    retrieval = {"candidates_by_window": {}, "diagnostics": {"missing_clip_embeddings": ["broll_a"]}}
+    ctx = _ctx(
+        adapter,
+        "DeterministicEditingPlanning",
+        {
+            ArtifactKind.plan_material_pack: _artifact(ArtifactKind.plan_material_pack, _material()),
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                _complete_default_portrait_windows(),
+            ),
+            ArtifactKind.plan_window_material_retrieval: _artifact(
+                ArtifactKind.plan_window_material_retrieval,
+                retrieval,
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+            ArtifactKind.creative_intent: _artifact(ArtifactKind.creative_intent, {"intent": {}}),
+        },
+    )
+
+    output = nodes.deterministic_editing_planning.run(ctx)
+
+    broll_payload = next(
+        artifact.payload for artifact in output.artifacts if artifact.kind == ArtifactKind.plan_broll
+    )
+    media_assignment = next(
+        artifact.payload
+        for artifact in output.artifacts
+        if artifact.kind == ArtifactKind.plan_media_assignment
+    )
+    assert WarningCode.broll_skipped_no_material not in output.warnings
+    assert broll_payload["overlays"][0]["asset_id"] == "broll_a"
+    assert broll_payload["overlays"][0]["window_id"] == "bwin_000"
+    assert broll_payload["overlays"][0]["matched_keywords"]
+    assert media_assignment["diagnostics"]["broll_assignment_source"] == (
+        "annotation_ranked_fallback"
+    )
+    assert media_assignment["diagnostics"]["missing_retrieval_broll"] is True
+
+
+def test_deterministic_editing_planning_does_not_fallback_when_broll_topk_is_stale(
+    tmp_path,
+):
+    adapter = _adapter(tmp_path)
+    _annotate_broll(adapter.repository)
+    retrieval = {
+        "candidates_by_window": {
+            "bwin_000": [{"candidate_id": "bc_404", "retrieval_score": 0.9}]
+        },
+        "diagnostics": {},
+    }
+    ctx = _ctx(
+        adapter,
+        "DeterministicEditingPlanning",
+        {
+            ArtifactKind.plan_material_pack: _artifact(ArtifactKind.plan_material_pack, _material()),
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                _complete_default_portrait_windows(),
+            ),
+            ArtifactKind.plan_window_material_retrieval: _artifact(
+                ArtifactKind.plan_window_material_retrieval,
+                retrieval,
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+            ArtifactKind.creative_intent: _artifact(ArtifactKind.creative_intent, {"intent": {}}),
+        },
+    )
+
+    output = nodes.deterministic_editing_planning.run(ctx)
+
+    broll_payload = next(
+        artifact.payload for artifact in output.artifacts if artifact.kind == ArtifactKind.plan_broll
+    )
+    media_assignment = next(
+        artifact.payload
+        for artifact in output.artifacts
+        if artifact.kind == ArtifactKind.plan_media_assignment
+    )
+    assert WarningCode.broll_skipped_no_material in output.warnings
+    assert broll_payload["overlays"] == []
+    assert broll_payload["skipped_reason"] == WarningCode.broll_skipped_no_material.value
+    assert media_assignment["broll"] == []
+    assert "broll_assignment_source" not in media_assignment["diagnostics"]
+    assert "missing_retrieval_broll" not in media_assignment["diagnostics"]
 
 
 def test_agent_validator_rejects_broll_choice_outside_window_topk():

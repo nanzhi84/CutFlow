@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from packages.core.contracts import ArtifactKind, ErrorCode, NodeStatus, WarningCode
-from packages.core.contracts.artifacts import BrollPlanArtifact, MediaAssignmentPlan
+from packages.core.contracts.artifacts import BrollPlanArtifact, MediaAssignmentPlan, NarrationUnit
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.planning.editing.frame_grid import frame_index
-from packages.planning.material import longest_clean_portrait_source_span
+from packages.planning.material import (
+    demote_recent_broll_candidates,
+    longest_clean_portrait_source_span,
+    rank_broll_candidates,
+)
 from packages.production.pipeline._editing_agent import index_candidates
 from packages.production.pipeline._materialize import (
     materialize_broll_from_assignment,
@@ -16,6 +20,15 @@ from packages.production.pipeline._materialize import (
 )
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
+from packages.production.pipeline.nodes._broll_policy import (
+    broll_generic_coverage_enabled,
+    broll_recency_penalties,
+)
+from packages.production.pipeline.nodes.broll_planning import (
+    _assign_candidates_to_windows,
+    _indexed_broll_candidates,
+    _narration_segments,
+)
 from packages.production.pipeline.nodes._creative_intent import load_creative_intent
 from packages.production.pipeline.nodes.style_planning import _derive_overlay_events
 
@@ -63,11 +76,32 @@ def run(ctx: NodeContext) -> NodeOutput:
         candidates=candidates.broll_by_id,
         max_inserts=state.request.broll.max_inserts,
     )
+    broll_candidate_index = candidates
+    broll_fallback_diagnostics: dict = {}
+    if (
+        state.request.broll.enabled
+        and not broll_assignment
+        and not _has_broll_retrieval_topk(retrieval=retrieval, windows=windows)
+    ):
+        fallback_assignment, fallback_candidate_index = _assign_broll_from_annotations(
+            ctx=ctx,
+            material=material,
+            windows=windows,
+            units=units,
+            max_inserts=state.request.broll.max_inserts,
+        )
+        if fallback_assignment:
+            broll_assignment = fallback_assignment
+            broll_candidate_index = fallback_candidate_index
+            broll_fallback_diagnostics = {
+                "broll_assignment_source": "annotation_ranked_fallback",
+                "missing_retrieval_broll": True,
+            }
     assignment = {"portrait": portrait_assignment, "broll": broll_assignment}
     broll_payload, broll_drops = materialize_broll_from_assignment(
         windows=windows,
         assignment=assignment,
-        candidates=candidates,
+        candidates=broll_candidate_index,
         cut_frames=portrait_cut_frames(portrait_payload),
         enabled=state.request.broll.enabled,
         max_inserts=state.request.broll.max_inserts,
@@ -123,6 +157,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             "source": "window_material_retrieval",
             "portrait_segment_count": len(portrait_payload.get("segments") or []),
             **portrait_fallback_diagnostics,
+            **broll_fallback_diagnostics,
             "broll_drops": broll_drops,
             "retrieval_diagnostics": retrieval.get("diagnostics") or {},
         },
@@ -278,6 +313,64 @@ def _assign_broll_from_retrieval(
             )
             break
     return assignments
+
+
+def _has_broll_retrieval_topk(*, retrieval: dict, windows: dict) -> bool:
+    broll_window_ids = {
+        str(window.get("window_id") or "")
+        for window in (windows.get("broll_windows") or [])
+        if isinstance(window, dict) and str(window.get("window_id") or "")
+    }
+    candidates_by_window = retrieval.get("candidates_by_window") or {}
+    for window_id in broll_window_ids:
+        topk = candidates_by_window.get(window_id) or []
+        if any(
+            isinstance(retrieved, dict) and str(retrieved.get("candidate_id") or "")
+            for retrieved in topk
+        ):
+            return True
+    return False
+
+
+def _assign_broll_from_annotations(
+    *,
+    ctx: NodeContext,
+    material: dict,
+    windows: dict,
+    units: list[dict],
+    max_inserts: int,
+) -> tuple[list[dict], dict]:
+    candidate_asset_ids = [
+        item.get("asset_id")
+        for item in material.get("broll_candidates", [])
+        if isinstance(item, dict) and item.get("asset_id")
+    ]
+    narration_units = [NarrationUnit.model_validate(unit) for unit in units]
+    segments = _narration_segments(narration_units)
+    annotations = {
+        asset_id: annotation
+        for asset_id in dict.fromkeys(candidate_asset_ids)
+        if (annotation := ctx.repository.annotation_v4_for_asset(asset_id)) is not None
+    }
+    ranked_candidates = rank_broll_candidates(
+        annotations=annotations,
+        segments=segments,
+        ledger_entries=(),
+        include_generic_coverage=broll_generic_coverage_enabled(ctx.state.request),
+    )
+    penalty_by_clip, penalty_by_diversity = broll_recency_penalties(material)
+    ranked_candidates = demote_recent_broll_candidates(
+        ranked_candidates,
+        penalty_by_clip=penalty_by_clip,
+        penalty_by_diversity=penalty_by_diversity,
+    )
+    candidate_index = _indexed_broll_candidates(ranked_candidates)
+    assignment = _assign_candidates_to_windows(
+        windows=windows,
+        candidates=candidate_index["broll_by_id"],
+        max_inserts=max_inserts,
+    )
+    return assignment, candidate_index
 
 
 def _ensure_portrait_coverage(
