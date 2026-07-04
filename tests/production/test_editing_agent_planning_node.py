@@ -184,6 +184,7 @@ def _timeline_windows(boundary: dict) -> dict:
                 "window_id": slot["slot_id"],
                 "start_frame": slot["start_frame"],
                 "end_frame": slot["end_frame"],
+                "length_frames": slot["end_frame"] - slot["start_frame"],
                 "host_unit_ids": list(slot.get("unit_ids") or []),
                 "host_portrait_window_ids": [],
                 "text": slot.get("text") or "",
@@ -563,7 +564,7 @@ def test_agent_portrait_infeasible_slot_fails_with_material_insufficient(tmp_pat
     }
 
 
-def test_llm_path_records_broll_geometry_drops(tmp_path):
+def test_llm_path_records_broll_window_contract_drops(tmp_path):
     adapter = _adapter(tmp_path)
     _seed_fake_llm_profile(adapter)
     adapter.provider_gateway.register(
@@ -623,7 +624,9 @@ def test_llm_path_records_broll_geometry_drops(tmp_path):
             "text": "问题细节",
         }
     ]
-    state.artifacts[ArtifactKind.plan_timeline_windows].payload = _timeline_windows(boundary)
+    windows = _timeline_windows(boundary)
+    windows["broll_windows"][0]["length_frames"] = 120
+    state.artifacts[ArtifactKind.plan_timeline_windows].payload = windows
 
     output = _run_node(adapter, state)
 
@@ -639,7 +642,7 @@ def test_llm_path_records_broll_geometry_drops(tmp_path):
     assert broll["overlays"] == []
     diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
     assert diagnostics["broll_drops"] == [
-        {"slot_id": "bslot_000", "candidate_id": "bc_000", "reason": "geometry_rejected"}
+        {"slot_id": "bslot_000", "candidate_id": "bc_000", "reason": "window_length_mismatch"}
     ]
 
 

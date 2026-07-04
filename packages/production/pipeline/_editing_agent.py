@@ -180,6 +180,13 @@ def _source_frames_available(candidate: dict) -> int:
     return frame_index(end) - frame_index(start)
 
 
+def _broll_source_frames_available(candidate: dict) -> int:
+    meta = _meta(candidate)
+    start = _as_float(meta.get("source_start"))
+    end = _as_float(meta.get("source_end"))
+    return max(0, frame_index(end) - frame_index(start))
+
+
 def _clean_source_span_for_payload(candidate: dict) -> tuple[float, float]:
     meta = _meta(candidate)
     clean_span = longest_clean_portrait_source_span(meta)
@@ -252,6 +259,19 @@ def build_agent_input(
             }
         )
 
+    broll_slots = []
+    for slot in (boundary.get("broll_slots") or []):
+        if not isinstance(slot, dict):
+            continue
+        need = _slot_required_frames(slot)
+        broll_slots.append(
+            {
+                **slot,
+                "required_frames": need,
+                "required_seconds": round(to_seconds(need), 3),
+            }
+        )
+
     return {
         "script": request.script,
         "title": request.title or "",
@@ -274,7 +294,7 @@ def build_agent_input(
         ],
         "safe_cut_boundaries": boundary.get("safe_cut_boundaries") or [],
         "portrait_slots": portrait_slots,
-        "broll_slots": boundary.get("broll_slots") or [],
+        "broll_slots": broll_slots,
         "portrait_candidates": [
             _portrait_candidate_payload(cid, cand)
             for cid, cand in candidates.portrait_by_id.items()
@@ -286,6 +306,8 @@ def build_agent_input(
                 "clip_id": _as_str(_meta(cand).get("clip_id")),
                 "source_start": _as_float(_meta(cand).get("source_start")),
                 "source_end": _as_float(_meta(cand).get("source_end")),
+                "available_frames": _broll_source_frames_available(cand),
+                "available_seconds": round(to_seconds(_broll_source_frames_available(cand)), 3),
                 "matched_keywords": _meta(cand).get("matched_keywords") or [],
                 "scene_name": _as_str(_meta(cand).get("scene_name")),
                 "score": _as_float(cand.get("score")),
@@ -383,9 +405,13 @@ def validate_selection(
     if missing:
         errors.append(f"portrait slots not covered: {', '.join(missing)}")
 
-    # B-roll: valid, unique, in-bounds slot + candidate; slots never overlap by
-    # construction (one per narration unit) so uniqueness is the only overlap gate.
+    # B-roll: valid optional window + unique candidate/asset/diversity. The slot
+    # geometry is authoritative; the agent may skip any window but cannot assign a
+    # source span that is shorter than the window's length.
     seen_broll: set[str] = set()
+    seen_broll_candidates: set[str] = set()
+    broll_asset_slots: dict[str, str] = {}
+    broll_diversity_slots: dict[str, str] = {}
     for choice in selection.broll:
         if choice.slot_id not in broll_slots:
             errors.append(f"broll slot_id '{choice.slot_id}' is not a known broll slot")
@@ -394,8 +420,42 @@ def validate_selection(
             errors.append(f"broll slot '{choice.slot_id}' is covered more than once")
             continue
         seen_broll.add(choice.slot_id)
-        if choice.candidate_id not in candidates.broll_by_id:
+        cand = candidates.broll_by_id.get(choice.candidate_id)
+        if cand is None:
             errors.append(f"broll candidate_id '{choice.candidate_id}' is not a known candidate")
+            continue
+        if choice.candidate_id in seen_broll_candidates:
+            errors.append(f"broll candidate_id '{choice.candidate_id}' is assigned more than once")
+            continue
+        seen_broll_candidates.add(choice.candidate_id)
+        slot = broll_slots[choice.slot_id]
+        need = _slot_required_frames(slot)
+        available = _broll_source_frames_available(cand)
+        if available < need:
+            errors.append(
+                f"broll candidate '{choice.candidate_id}' source is too short: has "
+                f"{available} frames but slot '{choice.slot_id}' requires {need} frames"
+            )
+        asset_key = _as_str(cand.get("asset_id"))
+        if asset_key:
+            prior_slot = broll_asset_slots.get(asset_key)
+            if prior_slot is not None:
+                errors.append(
+                    f"broll asset_id '{asset_key}' is assigned to more than one slot "
+                    f"('{prior_slot}' and '{choice.slot_id}'); choose a different asset"
+                )
+            else:
+                broll_asset_slots[asset_key] = choice.slot_id
+        diversity_key = _as_str(_meta(cand).get("diversity_key"))
+        if diversity_key:
+            prior_slot = broll_diversity_slots.get(diversity_key)
+            if prior_slot is not None:
+                errors.append(
+                    f"broll diversity_key '{diversity_key}' is assigned to more than one slot "
+                    f"('{prior_slot}' and '{choice.slot_id}'); choose a different scene cluster"
+                )
+            else:
+                broll_diversity_slots[diversity_key] = choice.slot_id
 
     # Font / BGM: an explicit choice must reference a real candidate; null is fine
     # (empty candidate pool → default font / no BGM).
@@ -467,12 +527,43 @@ def deterministic_selection(
         )
 
     broll: list[BrollChoice] = []
+    used_broll_candidates: set[str] = set()
+    used_broll_assets: set[str] = set()
+    used_broll_diversity: set[str] = set()
     if ranked_broll and max_inserts > 0:
-        for slot in broll_slots[:max_inserts]:
+        for slot in broll_slots:
+            if len(broll) >= max(0, max_inserts):
+                break
+            need = _slot_required_frames(slot)
+            candidate_id = next(
+                (
+                    cid
+                    for cid in ranked_broll
+                    if cid not in used_broll_candidates
+                    and _broll_source_frames_available(candidates.broll_by_id[cid]) >= need
+                    and _as_str(candidates.broll_by_id[cid].get("asset_id"))
+                    not in used_broll_assets
+                    and (
+                        not _as_str(_meta(candidates.broll_by_id[cid]).get("diversity_key"))
+                        or _as_str(_meta(candidates.broll_by_id[cid]).get("diversity_key"))
+                        not in used_broll_diversity
+                    )
+                ),
+                None,
+            )
+            if candidate_id is None:
+                continue
+            used_broll_candidates.add(candidate_id)
+            asset_key = _as_str(candidates.broll_by_id[candidate_id].get("asset_id"))
+            if asset_key:
+                used_broll_assets.add(asset_key)
+            diversity_key = _as_str(_meta(candidates.broll_by_id[candidate_id]).get("diversity_key"))
+            if diversity_key:
+                used_broll_diversity.add(diversity_key)
             broll.append(
                 BrollChoice(
                     slot_id=_as_str(slot.get("slot_id")),
-                    candidate_id=ranked_broll[0],
+                    candidate_id=candidate_id,
                     reason="deterministic coverage",
                     confidence=0.5,
                 )

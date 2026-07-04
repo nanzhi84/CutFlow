@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from packages.core.contracts import ArtifactKind, ErrorCode
+from packages.core.contracts.artifacts import BrollOverlay
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.production.pipeline._timeline_grid import (
     build_tracks,
     validate_timeline,
 )
-from packages.production._broll_overlays import broll_overlays_from_plan
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline.nodes._timeline_output import timeline_output
 
@@ -25,6 +25,12 @@ def run(ctx: NodeContext) -> NodeOutput:
         raise NodeExecutionError(ErrorCode.render_invalid_timeline, "Timeline duration is invalid.")
     fps = int(portrait.get("fps") or 30)
     total_frames = max(1, round(duration * fps))
+    windows = state.require(ArtifactKind.plan_timeline_windows).payload or {}
+    broll_window_by_id = {
+        str(window.get("window_id") or ""): window
+        for window in (windows.get("broll_windows") or [])
+        if isinstance(window, dict) and window.get("window_id")
+    }
 
     raw_segments: list[dict] = []
     for index, segment in enumerate(portrait.get("segments", [])):
@@ -51,11 +57,15 @@ def run(ctx: NodeContext) -> NodeOutput:
                 "pad_end": float(segment.get("pad_end", 0) or 0),
             }
         )
-    for index, overlay in enumerate(broll_overlays_from_plan(broll)):
-        # B-roll boundaries are authoritative frame fields produced by BrollPlanning
-        # (#105). This node is verify-only: it never re-snaps to portrait cuts or
-        # re-derives frames from seconds. A missing frame is an upstream contract
-        # defect (BrollPlanning is the authority) -> fail fast, naming the gap.
+    raw_overlays = broll.get("overlays") if isinstance(broll.get("overlays"), list) else []
+    for index, item in enumerate(raw_overlays):
+        if not isinstance(item, dict):
+            continue
+        overlay = BrollOverlay.model_validate(item)
+        # B-roll boundaries are authoritative frame fields produced from
+        # TimelineWindowPlanning's B-roll windows by the shared materializer. This node
+        # is verify-only: it never re-snaps to portrait cuts or re-derives frames from
+        # seconds. A missing frame is an upstream contract defect -> fail fast.
         missing = [
             name
             for name, value in (
@@ -71,6 +81,30 @@ def run(ctx: NodeContext) -> NodeOutput:
                 ErrorCode.render_invalid_timeline,
                 f"B-roll overlay {overlay.overlay_id} is missing authoritative frame "
                 f"boundaries: {', '.join(missing)}.",
+            )
+        if not overlay.window_id:
+            raise NodeExecutionError(
+                ErrorCode.render_invalid_timeline,
+                f"B-roll overlay {overlay.overlay_id} is missing authoritative window_id.",
+            )
+        window = broll_window_by_id.get(overlay.window_id)
+        if window is None:
+            raise NodeExecutionError(
+                ErrorCode.render_invalid_timeline,
+                f"B-roll overlay {overlay.overlay_id} references unknown authoritative "
+                f"window_id '{overlay.window_id}'.",
+            )
+        expected_start = int(window.get("start_frame", 0) or 0)
+        expected_end = int(window.get("end_frame", 0) or 0)
+        if (
+            overlay.timeline_start_frame != expected_start
+            or overlay.timeline_end_frame != expected_end
+        ):
+            raise NodeExecutionError(
+                ErrorCode.render_invalid_timeline,
+                f"B-roll overlay {overlay.overlay_id} drifts from authoritative window "
+                f"'{overlay.window_id}': expected frames {expected_start}-{expected_end}, "
+                f"got {overlay.timeline_start_frame}-{overlay.timeline_end_frame}.",
             )
         raw_segments.append(
             {

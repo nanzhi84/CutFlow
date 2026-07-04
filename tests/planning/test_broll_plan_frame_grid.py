@@ -1,12 +1,12 @@
-"""Plan-time b-roll frame-grid alignment (#105).
+"""Pure b-roll frame-grid alignment helpers (#105 legacy coverage).
 
 The portrait-cut snap that used to run downstream in ``TimelinePlanning`` (the old
-``_timeline_grid.align_broll_to_portrait_cuts``) now runs in the planning layer, so
-``BrollPlanning`` emits authoritative frame boundaries and the timeline node is
-verify-only. These pure-function tests cover: snapping a near-missed boundary onto a
-portrait cut, refusing to snap when it would leave too-short a portrait sliver / need
-too much clone-pad, never pulling the source window, dropping a snap that would
-overlap a neighbouring insert, and always populating frame fields.
+``_timeline_grid.align_broll_to_portrait_cuts``) moved into pure planning helpers in
+#105. digital_human_v2 now gets B-roll frame authority from
+``TimelineWindowPlanning`` placement slots, but these helpers remain covered for
+callers that still need seconds-to-grid alignment. These tests cover snapping a
+near-missed boundary, refusing unsafe snaps, never pulling the source window, and
+always populating frame fields when a grid context is supplied.
 """
 
 from __future__ import annotations
@@ -154,8 +154,7 @@ def test_snap_strictly_dropped_when_following_insert_starts_before_cut():
 
 def test_frames_always_populated_even_without_any_cut_grid():
     # No portrait cut frames -> no snapping, but the inserts must still come back with
-    # authoritative frame fields derived from their seconds (BrollPlanning is the
-    # authority; the timeline node never re-derives).
+    # frame fields derived from their seconds.
     [r] = align_insertions_to_portrait_cuts([_ins(1.0, 3.0, 0.0, 2.0)], fps=30, portrait_cut_frames=[])
     assert (r.timeline_start_frame, r.timeline_end_frame) == (30, 90)
     assert (r.source_start_frame, r.source_end_frame) == (0, 60)

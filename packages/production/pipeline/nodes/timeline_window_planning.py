@@ -109,6 +109,12 @@ def run(ctx: NodeContext) -> NodeOutput:
         total_frames=plan.total_frames,
         geometry_policy={
             "broll": asdict(BROLL_GEOMETRY_POLICY),
+            "broll_window_contract": {
+                "authority": "TimelineWindowPlanning",
+                "semantics": "authoritative_optional_placement_slot",
+                "downstream_may_skip": True,
+                "downstream_may_resize": False,
+            },
             "portrait_reuse": {"mode": "asset_level_unique", "max_uses": 1},
         },
         portrait_windows=portrait_windows,
@@ -355,6 +361,7 @@ def _broll_windows(broll_slots: list[dict], portrait_windows: list[dict]) -> lis
                 "window_id": f"bwin_{index:03d}",
                 "start_frame": start_frame,
                 "end_frame": end_frame,
+                "length_frames": max(0, end_frame - start_frame),
                 "host_unit_ids": list(slot.get("unit_ids") or []),
                 "host_portrait_window_ids": host_portrait_window_ids,
                 "text": str(slot.get("text") or ""),

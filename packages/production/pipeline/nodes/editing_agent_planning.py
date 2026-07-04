@@ -206,10 +206,13 @@ def _portrait_slot_from_window(window: dict) -> dict:
 
 
 def _broll_slot_from_window(window: dict) -> dict:
+    start_frame = int(window.get("start_frame", 0) or 0)
+    end_frame = int(window.get("end_frame", 0) or 0)
     return {
         "slot_id": str(window.get("window_id") or ""),
-        "start_frame": int(window.get("start_frame", 0) or 0),
-        "end_frame": int(window.get("end_frame", 0) or 0),
+        "start_frame": start_frame,
+        "end_frame": end_frame,
+        "length_frames": int(window.get("length_frames") or max(0, end_frame - start_frame)),
         "unit_ids": list(window.get("host_unit_ids") or window.get("unit_ids") or []),
         "boundary_source": window.get("boundary_source"),
         "text": str(window.get("text") or ""),

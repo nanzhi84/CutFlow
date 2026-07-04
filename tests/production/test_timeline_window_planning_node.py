@@ -98,6 +98,7 @@ def _state(
     recent_usage: dict | None = None,
     source_window: tuple[float, float] = (0.0, 15.0),
     pause_windows: list[dict] | None = None,
+    broll_slots: list[dict] | None = None,
 ) -> RunState:
     _back_portrait_sources(adapter, candidate_ids)
     request = DigitalHumanVideoRequest(
@@ -159,7 +160,7 @@ def _state(
         run_id="run_1",
         node_run_id="nr_narration_boundary",
         kind=ArtifactKind.plan_narration_boundary,
-        payload={"pause_windows": pause_windows or []},
+        payload={"pause_windows": pause_windows or [], "broll_slots": broll_slots or []},
         payload_schema="NarrationBoundaryPlan.v1",
     )
     return RunState(
@@ -225,7 +226,18 @@ def _agent_boundary_from_windows(payload: dict) -> dict:
             }
             for window in payload["portrait_windows"]
         ],
-        "broll_slots": [],
+        "broll_slots": [
+            {
+                "slot_id": window["window_id"],
+                "start_frame": window["start_frame"],
+                "end_frame": window["end_frame"],
+                "length_frames": window["length_frames"],
+                "unit_ids": list(window.get("host_unit_ids") or []),
+                "boundary_source": window.get("boundary_source"),
+                "text": window.get("text") or "",
+            }
+            for window in payload["broll_windows"]
+        ],
     }
 
 
@@ -267,6 +279,40 @@ def test_timeline_windows_have_no_concrete_frames_invented(monkeypatch, tmp_path
             payload["default_assignment"]["portrait"], payload["portrait_windows"]
         )
     )
+
+
+def test_broll_windows_are_authoritative_optional_slots(monkeypatch, tmp_path):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    state = _state(
+        adapter,
+        candidate_ids=["asset_portrait_demo", "asset_portrait_b", "asset_portrait_c"],
+        broll_slots=[
+            {
+                "start_frame": 45,
+                "end_frame": 120,
+                "unit_ids": ["unit_1"],
+                "text": "展示施工细节。",
+                "boundary_source": "narration_unit",
+            }
+        ],
+    )
+
+    payload = _payload(_run_node(adapter, state), ArtifactKind.plan_timeline_windows)
+
+    [window] = payload["broll_windows"]
+    assert window["window_id"] == "bwin_000"
+    assert window["start_frame"] == 45
+    assert window["end_frame"] == 120
+    assert window["length_frames"] == 75
+    assert window["host_unit_ids"] == ["unit_1"]
+    assert payload["geometry_policy"]["broll_window_contract"] == {
+        "authority": "TimelineWindowPlanning",
+        "semantics": "authoritative_optional_placement_slot",
+        "downstream_may_skip": True,
+        "downstream_may_resize": False,
+    }
 
 
 def test_v2_portrait_plan_is_published_from_windows_split(monkeypatch, tmp_path):

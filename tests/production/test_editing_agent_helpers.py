@@ -212,6 +212,7 @@ def _windows(boundary: dict) -> dict:
                 "window_id": slot["slot_id"],
                 "start_frame": slot["start_frame"],
                 "end_frame": slot["end_frame"],
+                "length_frames": slot["end_frame"] - slot["start_frame"],
                 "host_unit_ids": list(slot.get("unit_ids") or []),
                 "host_portrait_window_ids": [],
                 "text": slot.get("text") or "",
@@ -391,6 +392,26 @@ def test_short_source_window_is_rejected():
     assert any("requires 180 frames" in e and "pc_000" in e for e in errors)
 
 
+def test_short_broll_source_window_is_rejected():
+    material = _material()
+    material["broll_candidates"][0]["metadata"]["source_end"] = 1.0
+    candidates = index_candidates(material)
+    selection = EditingSelection(
+        portrait=[
+            PortraitChoice(slot_id="pslot_000", window_id="pc_000"),
+            PortraitChoice(slot_id="pslot_001", window_id="pc_001"),
+        ],
+        broll=[BrollChoice(slot_id="bslot_000", candidate_id="bc_000")],
+    )
+
+    errors = validate_selection(
+        selection, boundary=_boundary(), candidates=candidates, bgm_enabled=False
+    )
+
+    assert any("broll candidate 'bc_000' source is too short" in e for e in errors)
+    assert any("requires 60 frames" in e for e in errors)
+
+
 def test_reusing_same_portrait_asset_is_rejected():
     candidates = index_candidates(_material())
     selection = EditingSelection(
@@ -405,6 +426,57 @@ def test_reusing_same_portrait_asset_is_rejected():
     )
 
     assert any("asset_id 'portrait_a' is assigned to more than one slot" in e for e in errors)
+
+
+def test_reusing_same_broll_candidate_and_asset_is_rejected():
+    material = _material()
+    material["broll_candidates"].append(
+        {
+            "asset_id": "broll_x",
+            "score": 40.0,
+            "reason": "同素材另一个片段",
+            "metadata": {
+                "clip_id": "clip_x_alt",
+                "source_start": 6.0,
+                "source_end": 12.0,
+                "scene_name": "工地/施工前",
+            },
+        }
+    )
+    candidates = index_candidates(material)
+    selection = EditingSelection(
+        portrait=[
+            PortraitChoice(slot_id="pslot_000", window_id="pc_000"),
+            PortraitChoice(slot_id="pslot_001", window_id="pc_001"),
+        ],
+        broll=[
+            BrollChoice(slot_id="bslot_000", candidate_id="bc_000"),
+            BrollChoice(slot_id="bslot_001", candidate_id="bc_000"),
+        ],
+    )
+
+    errors = validate_selection(
+        selection, boundary=_boundary(), candidates=candidates, bgm_enabled=False
+    )
+
+    assert any("broll candidate_id 'bc_000' is assigned more than once" in e for e in errors)
+
+    selection = EditingSelection(
+        portrait=[
+            PortraitChoice(slot_id="pslot_000", window_id="pc_000"),
+            PortraitChoice(slot_id="pslot_001", window_id="pc_001"),
+        ],
+        broll=[
+            BrollChoice(slot_id="bslot_000", candidate_id="bc_000"),
+            BrollChoice(slot_id="bslot_001", candidate_id="bc_002"),
+        ],
+    )
+
+    errors = validate_selection(
+        selection, boundary=_boundary(), candidates=candidates, bgm_enabled=False
+    )
+
+    assert any("broll asset_id 'broll_x' is assigned to more than one slot" in e for e in errors)
 
 
 def test_deterministic_selection_is_valid_and_covers_all_slots():
@@ -486,6 +558,34 @@ def test_deterministic_selection_leaves_unfillable_slot_uncovered_instead_of_reu
         validate_selection(selection, boundary=boundary, candidates=candidates, bgm_enabled=False)
         != []
     )
+
+
+def test_deterministic_selection_counts_max_inserts_by_accepted_broll():
+    boundary = {
+        "broll_slots": [
+            {"slot_id": "bslot_too_long", "start_frame": 0, "end_frame": 300},
+            {"slot_id": "bslot_fillable", "start_frame": 300, "end_frame": 360},
+        ]
+    }
+    material = _material()
+    material["broll_candidates"] = [
+        {
+            "asset_id": "broll_short",
+            "score": 90.0,
+            "metadata": {"clip_id": "short_clip", "source_start": 0.0, "source_end": 2.0},
+        }
+    ]
+
+    selection = deterministic_selection(
+        boundary=boundary,
+        candidates=index_candidates(material),
+        bgm_enabled=False,
+        max_inserts=1,
+    )
+
+    assert [(choice.slot_id, choice.candidate_id) for choice in selection.broll] == [
+        ("bslot_fillable", "bc_000")
+    ]
 
 
 def test_materialize_portrait_frames_are_complete_and_contiguous():
@@ -570,7 +670,10 @@ def test_materialize_broll_overlays_have_frames_and_no_overlap():
     overlays = payload["overlays"]
     assert payload["enabled"] is True
     assert len(overlays) == 2
-    for ov in overlays:
+    windows_by_id = {window["window_id"]: window for window in _windows(boundary)["broll_windows"]}
+    for ov, choice in zip(overlays, assignment["broll"]):
+        window = windows_by_id[choice["window_id"]]
+        assert ov["window_id"] == choice["window_id"]
         for key in (
             "timeline_start_frame",
             "timeline_end_frame",
@@ -580,6 +683,9 @@ def test_materialize_broll_overlays_have_frames_and_no_overlap():
             assert isinstance(ov[key], int)
         assert ov["timeline_end_frame"] > ov["timeline_start_frame"]
         assert ov["source_end_frame"] > ov["source_start_frame"]
+        assert ov["timeline_start_frame"] == window["start_frame"]
+        assert ov["timeline_end_frame"] == window["end_frame"]
+        assert ov["timeline_end_frame"] - ov["timeline_start_frame"] == window["length_frames"]
     ordered = sorted(overlays, key=lambda o: o["timeline_start_frame"])
     assert ordered[0]["timeline_end_frame"] <= ordered[1]["timeline_start_frame"]
 
@@ -598,7 +704,7 @@ def test_materialize_broll_disabled_returns_empty():
     assert payload["overlays"] == []
 
 
-def test_agent_broll_rejects_unsnappable_short_residual():
+def test_agent_broll_rejects_source_shorter_than_window():
     material = _material()
     material["broll_candidates"] = [
         {
@@ -614,7 +720,7 @@ def test_agent_broll_rejects_unsnappable_short_residual():
     ]
     boundary = {
         "broll_slots": [
-            {"slot_id": "bslot_flash", "start_frame": 668, "end_frame": 715}
+            {"slot_id": "bslot_flash", "start_frame": 668, "end_frame": 730}
         ]
     }
     selection = EditingSelection(
@@ -632,11 +738,11 @@ def test_agent_broll_rejects_unsnappable_short_residual():
 
     assert payload["overlays"] == []
     assert drops == [
-        {"slot_id": "bslot_flash", "candidate_id": "bc_000", "reason": "geometry_rejected"}
+        {"slot_id": "bslot_flash", "candidate_id": "bc_000", "reason": "source_too_short"}
     ]
 
 
-def test_agent_broll_repositions_inside_window_before_drop():
+def test_agent_broll_uses_window_frames_without_repositioning():
     material = _material()
     material["broll_candidates"] = [
         {
@@ -645,7 +751,7 @@ def test_agent_broll_repositions_inside_window_before_drop():
             "metadata": {
                 "clip_id": "report_clip",
                 "source_start": 0.0,
-                "source_end": 2.0,
+                "source_end": 3.0,
                 "scene_name": "report",
             },
         }
@@ -670,18 +776,18 @@ def test_agent_broll_repositions_inside_window_before_drop():
 
     assert drops == []
     [overlay] = payload["overlays"]
-    assert (overlay["timeline_start_frame"], overlay["timeline_end_frame"]) == (90, 150)
-    assert round(overlay["timeline_start"], 3) == 3.0
+    assert (overlay["timeline_start_frame"], overlay["timeline_end_frame"]) == (81, 150)
+    assert round(overlay["timeline_start"], 3) == 2.7
     assert round(overlay["timeline_end"], 3) == 5.0
 
 
-def test_agent_broll_honours_min_max_insert_seconds():
+def test_agent_broll_uses_full_authoritative_window_length():
     material = _material()
     material["broll_candidates"] = [
         {
             "asset_id": "broll_long",
             "score": 90.0,
-            "metadata": {"clip_id": "long_clip", "source_start": 0.0, "source_end": 8.0},
+            "metadata": {"clip_id": "long_clip", "source_start": 0.0, "source_end": 12.0},
         },
         {
             "asset_id": "broll_short",
@@ -712,14 +818,14 @@ def test_agent_broll_honours_min_max_insert_seconds():
     )
 
     [overlay] = payload["overlays"]
-    assert round(overlay["timeline_end"] - overlay["timeline_start"], 3) == 4.0
-    assert round(overlay["source_end"] - overlay["source_start"], 3) == 4.0
+    assert round(overlay["timeline_end"] - overlay["timeline_start"], 3) == 10.0
+    assert round(overlay["source_end"] - overlay["source_start"], 3) == 10.0
     assert drops == [
         {"slot_id": "bslot_short", "candidate_id": "bc_001", "reason": "source_too_short"}
     ]
 
 
-def test_agent_broll_uses_shared_geometry_policy_object():
+def test_agent_broll_keeps_legacy_policy_argument_for_callers():
     assert materialize_broll_from_assignment.__kwdefaults__["policy"] is BROLL_GEOMETRY_POLICY
 
 
