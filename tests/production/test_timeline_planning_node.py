@@ -1,10 +1,10 @@
 """TimelinePlanning is verify-only for B-roll frames (#105).
 
-After the frame-grid constraint moved up into BrollPlanning, TimelinePlanning no
-longer snaps B-roll to portrait cuts or re-derives frames from seconds: it reads the
-authoritative ``*_frame`` boundaries off each overlay verbatim, validates, and
-assembles the timeline + render plan. A missing frame is an upstream contract defect
--> fail fast.
+After B-roll frame authority moved upstream into TimelineWindowPlanning plus the
+shared materializer, TimelinePlanning no longer snaps B-roll to portrait cuts or
+re-derives frames from seconds: it reads the authoritative ``*_frame`` boundaries off
+each overlay verbatim, validates, and assembles the timeline + render plan. A missing
+frame is an upstream contract defect -> fail fast.
 """
 
 from __future__ import annotations
@@ -160,7 +160,7 @@ def _state(*, with_frames: bool) -> tuple[LocalRuntimeAdapter, RunState]:
 def test_timeline_planning_passes_broll_frames_through_verbatim_without_snapping():
     # The overlay's tail (frame 147) sits 3 frames short of the portrait cut at 150.
     # The OLD timeline node would have snapped it to 150; the verify-only node must
-    # leave every B-roll frame exactly as BrollPlanning authored it.
+    # leave every B-roll frame exactly as upstream materialization authored it.
     adapter, state = _state(with_frames=True)
     ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
     output = timeline_planning.run(ctx)
@@ -178,7 +178,7 @@ def test_timeline_planning_passes_broll_frames_through_verbatim_without_snapping
 
 def test_timeline_planning_fail_fasts_on_overlay_missing_authoritative_frames():
     # A legacy / seconds-only overlay (no frame fields) is an upstream contract defect
-    # now that BrollPlanning is the authority -> fail fast naming the missing frames.
+    # now that window materialization is authoritative -> fail fast naming missing frames.
     adapter, state = _state(with_frames=False)
     ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
     with pytest.raises(NodeExecutionError) as exc:

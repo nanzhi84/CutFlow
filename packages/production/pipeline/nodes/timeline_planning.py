@@ -52,10 +52,10 @@ def run(ctx: NodeContext) -> NodeOutput:
             }
         )
     for index, overlay in enumerate(broll_overlays_from_plan(broll)):
-        # B-roll boundaries are authoritative frame fields produced by BrollPlanning
-        # (#105). This node is verify-only: it never re-snaps to portrait cuts or
-        # re-derives frames from seconds. A missing frame is an upstream contract
-        # defect (BrollPlanning is the authority) -> fail fast, naming the gap.
+        # B-roll boundaries are authoritative frame fields produced from
+        # TimelineWindowPlanning's B-roll windows by the shared materializer. This node
+        # is verify-only: it never re-snaps to portrait cuts or re-derives frames from
+        # seconds. A missing frame is an upstream contract defect -> fail fast.
         missing = [
             name
             for name, value in (

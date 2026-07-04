@@ -13,6 +13,7 @@ The B-roll and style helpers are shared by both paths. They contain no
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from packages.core.contracts import DegradationNotice, WarningCode
@@ -37,7 +38,6 @@ from packages.planning.material.broll_plan import (
     BROLL_GEOMETRY_POLICY,
     BrollGeometryPolicy,
     BrollInsertion,
-    place_insertion_safely,
 )
 
 TIMELINE_FPS = 30
@@ -166,6 +166,9 @@ def materialize_broll_from_assignment(
     candidate_by_id = _candidate_group(candidates, "broll_by_id")
     accepted: list[BrollInsertion] = []
     drop_diagnostics: list[dict] = []
+    used_candidate_ids: set[str] = set()
+    used_asset_ids: set[str] = set()
+    used_diversity_keys: set[str] = set()
     for choice in (assignment.get("broll") or [])[: max(0, max_inserts)]:
         if not isinstance(choice, dict):
             continue
@@ -180,30 +183,46 @@ def materialize_broll_from_assignment(
         if candidate is None:
             drop_diagnostics.append({**drop_base, "reason": "unknown_candidate"})
             continue
+        if candidate_id in used_candidate_ids:
+            drop_diagnostics.append({**drop_base, "reason": "duplicate_candidate"})
+            continue
 
         meta = _meta(candidate)
-        timeline_start = int(window_data.get("start_frame", 0) or 0) / fps
-        timeline_end = int(window_data.get("end_frame", 0) or 0) / fps
+        asset_id = _as_str(candidate.get("asset_id"))
+        if asset_id and asset_id in used_asset_ids:
+            drop_diagnostics.append({**drop_base, "reason": "duplicate_asset"})
+            continue
+        diversity_key = _as_str(meta.get("diversity_key"))
+        if diversity_key and diversity_key in used_diversity_keys:
+            drop_diagnostics.append({**drop_base, "reason": "duplicate_diversity"})
+            continue
+
+        start_frame = int(window_data.get("start_frame", 0) or 0)
+        end_frame = int(window_data.get("end_frame", 0) or 0)
+        required_frames = int(window_data.get("length_frames") or max(0, end_frame - start_frame))
+        if end_frame <= start_frame or required_frames <= 0:
+            drop_diagnostics.append({**drop_base, "reason": "invalid_window"})
+            continue
+        if end_frame - start_frame != required_frames:
+            drop_diagnostics.append({**drop_base, "reason": "window_length_mismatch"})
+            continue
+
         source_start = _as_float(meta.get("source_start"))
         source_end = _as_float(meta.get("source_end"))
-        slot_span = max(0.0, timeline_end - timeline_start)
-        source_available = source_end - source_start
-        if 0.0 < source_available < policy.min_insert_seconds:
+        source_start_frame = _frame_index_at_fps(source_start, fps=fps)
+        source_end_frame_limit = _frame_index_at_fps(source_end, fps=fps)
+        source_frames_available = max(0, source_end_frame_limit - source_start_frame)
+        if source_frames_available < required_frames:
             drop_diagnostics.append({**drop_base, "reason": "source_too_short"})
-            continue
-        source_limit = source_available if source_available > 0.0 else policy.max_insert_seconds
-        span = min(policy.max_insert_seconds, slot_span, source_limit)
-        if span < policy.min_insert_seconds:
-            drop_diagnostics.append({**drop_base, "reason": "slot_too_short"})
             continue
 
         insert = BrollInsertion(
-            asset_id=_as_str(candidate.get("asset_id")),
+            asset_id=asset_id,
             clip_id=_as_str(meta.get("clip_id")),
-            timeline_start=timeline_start,
-            timeline_end=round(timeline_start + span, 3),
-            source_start=source_start,
-            source_end=round(source_start + span, 3),
+            timeline_start=to_seconds(start_frame),
+            timeline_end=to_seconds(end_frame),
+            source_start=to_seconds(source_start_frame),
+            source_end=to_seconds(source_start_frame + required_frames),
             confidence=_as_float(choice.get("confidence")),
             matched_keywords=tuple(
                 _as_str(keyword)
@@ -212,21 +231,20 @@ def materialize_broll_from_assignment(
             ),
             scene_name=_as_str(meta.get("scene_name")),
             reason=_as_str(choice.get("reason")) or "editing agent selection",
-            diversity_key=_as_str(meta.get("diversity_key")),
+            diversity_key=diversity_key,
+            timeline_start_frame=start_frame,
+            timeline_end_frame=end_frame,
+            source_start_frame=source_start_frame,
+            source_end_frame=source_start_frame + required_frames,
+            pad_start=0.0,
+            pad_end=0.0,
         )
-        next_accepted = place_insertion_safely(
-            accepted,
-            insert,
-            window_start=timeline_start,
-            window_end=timeline_end,
-            fps=fps,
-            portrait_cut_frames=cut_frames,
-            policy=policy,
-        )
-        if next_accepted is None:
-            drop_diagnostics.append({**drop_base, "reason": "geometry_rejected"})
-            continue
-        accepted = next_accepted
+        accepted.append(insert)
+        used_candidate_ids.add(candidate_id)
+        if asset_id:
+            used_asset_ids.add(asset_id)
+        if diversity_key:
+            used_diversity_keys.add(diversity_key)
 
     return (
         BrollPlanArtifact(enabled=True, overlays=overlays_from_insertions(accepted)).model_dump(
@@ -358,6 +376,10 @@ def _candidate_group(candidates, attribute: str) -> dict[str, dict]:
         if isinstance(value, dict):
             return value
     return {}
+
+
+def _frame_index_at_fps(seconds: float, *, fps: int) -> int:
+    return max(0, int(math.floor(float(seconds) * int(fps) + 0.5)))
 
 
 def _selected_font_id(candidates: list[dict], font_id: str | None) -> str:

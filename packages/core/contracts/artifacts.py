@@ -166,11 +166,24 @@ class NarrationBoundaryPlan(ContractModel):
 
 
 class TimelineWindowsPlan(ContractModel):
+    """Authoritative timeline-window registry emitted by TimelineWindowPlanning.
+
+    ``broll_windows`` are optional placement slots, not suggestions for downstream
+    re-planning. A downstream assignment may skip any window, but when it binds a
+    candidate to one, the final ``plan.broll`` overlay must keep that window's
+    ``start_frame`` / ``end_frame`` unchanged. Materializers verify the candidate
+    source span can cover ``length_frames`` and expand the selection; they must not
+    add, move, resize, or re-snap these windows.
+    """
+
     fps: int
     total_frames: int
     geometry_policy: dict[str, Any] = Field(default_factory=dict)
     portrait_windows: list[dict[str, Any]] = Field(default_factory=list)
-    broll_windows: list[dict[str, Any]] = Field(default_factory=list)
+    broll_windows: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Authoritative optional B-roll placement slots.",
+    )
     default_assignment: dict[str, Any] = Field(default_factory=dict)
     compile_diagnostics: dict[str, Any] = Field(default_factory=dict)
 
@@ -259,13 +272,13 @@ class BrollOverlay(ContractModel):
     timeline_end: float
     source_start: float
     source_end: float
-    # Frame-aligned authoritative B-roll boundaries (#105). Optional on the contract
-    # because (a) the legacy reader ``broll_overlays_from_plan`` has no fps to derive
-    # them and (b) ``broll_only_v1`` shares ``BrollOverlay`` but has no portrait-cut
-    # grid. The "frame fields are required" semantics live at the digital_human_v2
-    # production boundary: BrollPlanning writes them, TimelinePlanning fail-fasts when
-    # they are missing. ``pad_start``/``pad_end`` carry the cut-snap residual that the
-    # renderer clone-pads (tpad) so a snapped overlay never flashes a sliver at a seam.
+    # Frame-aligned authoritative B-roll boundaries. Optional on the contract because
+    # (a) the legacy reader ``broll_overlays_from_plan`` has no fps to derive them and
+    # (b) ``broll_only_v1`` shares ``BrollOverlay`` but has no portrait-cut grid. In
+    # digital_human_v2 these fields must match the authoritative
+    # ``TimelineWindowsPlan.broll_windows`` slot; TimelinePlanning fail-fasts when
+    # they are missing or drift. ``pad_start``/``pad_end`` remain for legacy snapped
+    # plans, but the v2 materializer no longer uses them to resize B-roll windows.
     timeline_start_frame: int | None = None
     timeline_end_frame: int | None = None
     source_start_frame: int | None = None
