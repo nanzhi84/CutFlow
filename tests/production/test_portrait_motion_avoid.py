@@ -107,16 +107,30 @@ def test_portrait_window_candidates_defaults_recent_usage_when_metadata_omits_it
     assert candidates[0]["recency_penalty"] == 0.0
 
 
-def test_portrait_window_candidates_consumes_clean_candidate_without_avoid_splitting():
+def test_portrait_window_candidates_splits_legacy_avoid_spans():
     candidates = nodes.timeline_window_planning._portrait_window_candidates(
         [_portrait_item(start=0.0, end=8.0, avoid_spans=[[2.0, 4.0]])],
+    )
+
+    assert [
+        (candidate["window_id"], candidate["start"], candidate["end"], candidate["duration"])
+        for candidate in candidates
+    ] == [
+        ("asset_portrait:talk", 0.0, 2.0, 2.0),
+        ("asset_portrait:talk:m1", 4.0, 8.0, 4.0),
+    ]
+
+
+def test_portrait_window_candidates_filters_legacy_tail_avoid_span():
+    candidates = nodes.timeline_window_planning._portrait_window_candidates(
+        [_portrait_item(start=0.0, end=8.0, avoid_spans=[[2.0, 8.0]])],
     )
 
     assert len(candidates) == 1
     assert candidates[0]["window_id"] == "asset_portrait:talk"
     assert candidates[0]["start"] == 0.0
-    assert candidates[0]["end"] == 8.0
-    assert candidates[0]["duration"] == 8.0
+    assert candidates[0]["end"] == 2.0
+    assert candidates[0]["duration"] == 2.0
 
 
 def _quality_event(event_id: str, event_type: QualityEventType, start: float, end: float):

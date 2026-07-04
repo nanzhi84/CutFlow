@@ -12,7 +12,7 @@ from packages.planning.editing import (
     BoundaryConstraints,
     plan_boundary_timeline,
 )
-from packages.planning.material import BROLL_GEOMETRY_POLICY
+from packages.planning.material import BROLL_GEOMETRY_POLICY, clean_portrait_source_windows
 from packages.production.pipeline._narration_units import build_planner_narration_units
 from packages.production.pipeline._node_context import NodeContext
 
@@ -245,12 +245,12 @@ def _portrait_window_candidates(items: list[dict]) -> list[dict]:
         clip_id = meta.get("clip_id")
         if clip_id is None or meta.get("source_start") is None or meta.get("source_end") is None:
             continue
-        try:
-            win_start = float(meta.get("source_start") or 0.0)
-            win_end = float(meta.get("source_end") or 0.0)
-        except (TypeError, ValueError):
-            continue
-        if win_end - win_start <= 0.08:
+        clean_windows = (
+            clean_portrait_source_windows(meta)
+            if meta.get("avoid_spans") is not None
+            else _raw_portrait_source_windows(meta)
+        )
+        if not clean_windows:
             continue
         recent_usage = meta.get("recent_usage")
         if not isinstance(recent_usage, dict):
@@ -258,23 +258,36 @@ def _portrait_window_candidates(items: list[dict]) -> list[dict]:
         recency_penalty = recent_usage.get("recency_penalty", meta.get("recency_penalty", 0.0))
         confidence = round(max(0.1, 0.9 - rank * 0.05), 3)
         source_window_id = str(meta.get("source_window_id") or clip_id)
-        candidates.append(
-            {
-                "window_id": f"{asset_id}:{source_window_id}",
-                "template_id": asset_id,
-                "template_name": asset_id,
-                "start": round(win_start, 3),
-                "end": round(win_end, 3),
-                "duration": round(win_end - win_start, 3),
-                "role": "main",
-                "confidence": confidence,
-                "source_mode_hint": "lipsynced",
-                "recent_usage": recent_usage,
-                "recency_penalty": recency_penalty,
-                "diversity_key": None,
-            }
-        )
+        for window_index, (win_start, win_end) in enumerate(clean_windows):
+            window_suffix = "" if window_index == 0 else f":m{window_index}"
+            candidates.append(
+                {
+                    "window_id": f"{asset_id}:{source_window_id}{window_suffix}",
+                    "template_id": asset_id,
+                    "template_name": asset_id,
+                    "start": round(win_start, 3),
+                    "end": round(win_end, 3),
+                    "duration": round(win_end - win_start, 3),
+                    "role": "main",
+                    "confidence": confidence,
+                    "source_mode_hint": "lipsynced",
+                    "recent_usage": recent_usage,
+                    "recency_penalty": recency_penalty,
+                    "diversity_key": None,
+                }
+            )
     return candidates
+
+
+def _raw_portrait_source_windows(metadata: dict) -> list[tuple[float, float]]:
+    try:
+        win_start = float(metadata.get("source_start") or 0.0)
+        win_end = float(metadata.get("source_end") or 0.0)
+    except (TypeError, ValueError):
+        return []
+    if win_end - win_start <= 0.08:
+        return []
+    return [(win_start, win_end)]
 
 
 def _segment_payload(index: int, seg, *, recent_template_ids: set[str]) -> dict:
