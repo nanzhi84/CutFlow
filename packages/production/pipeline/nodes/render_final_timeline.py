@@ -11,7 +11,6 @@ from packages.media.assets import store_file
 from packages.media.rendering import render_video_timeline, validate_rendered_output
 from packages.media.video.ffmpeg import FfmpegCommandError
 from packages.production._broll_overlays import broll_overlays_from_plan
-from packages.production.pipeline._timeline_grid import to_frame
 from packages.production.pipeline._node_context import NodeContext
 
 
@@ -36,16 +35,29 @@ def _broll_segments_from_timeline(timeline: dict, broll_plan: dict, fps: int) ->
     for fallback_index, track in enumerate(tracks):
         plan_index = _broll_segment_index(track.get("segment_id"), fallback_index)
         original = dict(plan_segments[plan_index]) if plan_index < len(plan_segments) else {}
-        start_frame = int(track.get("timeline_start_frame") or 0)
-        end_frame = int(track.get("timeline_end_frame") or 0)
+        missing_frames = [
+            name
+            for name in (
+                "timeline_start_frame",
+                "timeline_end_frame",
+                "source_start_frame",
+                "source_end_frame",
+            )
+            if track.get(name) is None
+        ]
+        if missing_frames:
+            segment_id = str(track.get("segment_id") or f"broll_{fallback_index + 1}")
+            raise NodeExecutionError(
+                ErrorCode.render_invalid_timeline,
+                f"B-roll timeline track {segment_id} is missing authoritative frame "
+                f"boundaries: {', '.join(missing_frames)}.",
+            )
+        start_frame = int(track["timeline_start_frame"])
+        end_frame = int(track["timeline_end_frame"])
         source_start_frame = track.get("source_start_frame")
         source_end_frame = track.get("source_end_frame")
         pad_start = float(track.get("pad_start", original.get("pad_start", 0)) or 0)
         pad_end = float(track.get("pad_end", original.get("pad_end", 0)) or 0)
-        if source_start_frame is None:
-            source_start_frame = to_frame(float(original.get("source_start", 0) or 0), fps)
-        if source_end_frame is None:
-            source_end_frame = to_frame(float(original.get("source_end", 0) or 0), fps)
         source_start_frame = int(source_start_frame)
         source_end_frame = int(source_end_frame)
         original.update(
