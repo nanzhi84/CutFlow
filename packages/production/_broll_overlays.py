@@ -52,7 +52,8 @@ def _overlay_from_item(item: dict[str, Any], index: int) -> BrollOverlay:
         source_end=float(item.get("source_end", 0) or 0),
         # Frame-aligned authoritative boundaries (#105): pass them through verbatim so
         # the canonical read boundary never drops them. Absent on a pre-#105 legacy
-        # plan (no fps to derive) — left None, then re-derived downstream from seconds.
+        # plan (no fps to derive) — left None so digital-human timeline/render
+        # boundaries can fail fast instead of silently deriving contract fields.
         timeline_start_frame=_int_or_none(item.get("timeline_start_frame")),
         timeline_end_frame=_int_or_none(item.get("timeline_end_frame")),
         source_start_frame=_int_or_none(item.get("source_start_frame")),
