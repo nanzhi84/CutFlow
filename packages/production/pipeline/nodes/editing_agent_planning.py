@@ -40,7 +40,6 @@ from packages.production.pipeline._editing_agent import (
     build_agent_input,
     deterministic_selection,
     index_candidates,
-    portrait_asset_reuse_cap,
     select_with_repair,
 )
 from packages.production.pipeline._materialize import (
@@ -332,20 +331,10 @@ def run(ctx: NodeContext) -> NodeOutput:
     duration = max([float(unit.get("end", 0) or 0) for unit in raw_units] or [1.0])
 
     agent_boundary = _boundary_with_compiled_windows(boundary, windows)
-    policy_candidates = index_candidates(material)
-    reuse_cap = portrait_asset_reuse_cap(boundary=agent_boundary, candidates=policy_candidates)
-    portrait_window_count = sum(
-        1 for slot in (agent_boundary.get("portrait_slots") or []) if isinstance(slot, dict)
-    )
-    min_distinct_portrait_assets = (
-        -(-portrait_window_count // max(1, reuse_cap)) if portrait_window_count else None
-    )
     shortlisted_material, shortlist_counts = shortlist_for_windows(
         windows.get("portrait_windows", []) or [],
         windows.get("broll_windows", []) or [],
         material,
-        portrait_min_distinct_assets=min_distinct_portrait_assets,
-        portrait_reuse_cap=reuse_cap,
     )
     candidates = index_candidates(shortlisted_material)
     agent_input = build_agent_input(
@@ -354,7 +343,6 @@ def run(ctx: NodeContext) -> NodeOutput:
         candidates=candidates,
         narration_units=raw_units,
         duration=duration,
-        portrait_asset_use_cap=reuse_cap,
     )
     portrait_feasibility_failure = _portrait_feasibility_failure(agent_input)
     if portrait_feasibility_failure is not None:
@@ -385,7 +373,6 @@ def run(ctx: NodeContext) -> NodeOutput:
             candidates=candidates,
             bgm_enabled=state.request.bgm.enabled,
             max_inserts=state.request.broll.max_inserts,
-            portrait_asset_use_cap=reuse_cap,
         )
         engine = "deterministic_fallback"
         fallback_used = True
@@ -470,7 +457,6 @@ def run(ctx: NodeContext) -> NodeOutput:
             candidates=candidates,
             bgm_enabled=state.request.bgm.enabled,
             max_repair_attempts=state.request.edit.max_repair_attempts,
-            portrait_asset_use_cap=reuse_cap,
         )
         if errors:
             if not sandbox_fallback_allowed():
@@ -485,7 +471,6 @@ def run(ctx: NodeContext) -> NodeOutput:
                 candidates=candidates,
                 bgm_enabled=state.request.bgm.enabled,
                 max_inserts=state.request.broll.max_inserts,
-                portrait_asset_use_cap=reuse_cap,
             )
             engine = "deterministic_fallback"
             fallback_used = True
@@ -499,22 +484,6 @@ def run(ctx: NodeContext) -> NodeOutput:
                 )
             )
             warnings.append(WarningCode.editing_agent_deterministic_fallback)
-
-    # Portrait sources are scarcer than slots: the one-slot-per-asset uniqueness
-    # rule was relaxed to a balanced reuse budget (both the prompt and the local
-    # validator/fallback agree on it). Surface it as a graded degradation — never
-    # a silent downgrade — regardless of the LLM vs deterministic path taken.
-    if reuse_cap > 1:
-        degradations.append(
-            degradation_notice(
-                WarningCode.portrait_asset_reuse_relaxed,
-                "人像可用素材数少于人像插槽数，已放松唯一性约束："
-                f"同一素材最多复用 {reuse_cap} 个片段。",
-                node_id=node_run.node_id,
-                affects_true_yield=False,
-            )
-        )
-        warnings.append(WarningCode.portrait_asset_reuse_relaxed)
 
     portrait_assignment = (
         _default_portrait_assignment(windows)
@@ -570,7 +539,6 @@ def run(ctx: NodeContext) -> NodeOutput:
 
     assignment_diagnostics = {
         "repair_trace": repair_trace,
-        "reuse_policy_applied": {"portrait_asset_reuse_cap": reuse_cap},
         "shortlist_counts": shortlist_counts,
         "fallback_used": fallback_used,
         "fallback_reason": fallback_reason,
@@ -609,7 +577,6 @@ def run(ctx: NodeContext) -> NodeOutput:
         "broll_drops": broll_drops,
         "font_id": selection.font_id,
         "bgm_id": selection.bgm_id,
-        "portrait_asset_reuse_cap": reuse_cap,
         "shortlist_counts": shortlist_counts,
         "fallback_used": fallback_used,
         "fallback_reason": fallback_reason,

@@ -29,18 +29,3 @@ def can_cover_slots_with_cap(
         )
         usage[chosen] += 1
     return True
-
-
-def minimum_reuse_cap(
-    required_frames: Sequence[int],
-    asset_capacities: Mapping[str, int],
-) -> int:
-    slot_count = len(required_frames)
-    if slot_count <= 0:
-        return 1
-    if not asset_capacities:
-        return 1
-    for cap in range(1, slot_count + 1):
-        if can_cover_slots_with_cap(required_frames, asset_capacities, cap):
-            return cap
-    return slot_count

@@ -23,8 +23,6 @@ from packages.production.pipeline._editing_agent import (
     deterministic_selection,
     index_candidates,
     parse_selection,
-    portrait_asset_reuse_cap,
-    portrait_uniqueness_rule_text,
     select_with_repair,
     validate_selection,
 )
@@ -425,17 +423,6 @@ def test_deterministic_selection_is_valid_and_covers_all_slots():
     )
 
 
-# --------------------------------------------------------------------------- #
-# Portrait asset scarcity: uniqueness relaxes to a balanced reuse budget when the
-# distinct portrait pool is smaller than the slot count (HIGH fix for PR #147).
-# --------------------------------------------------------------------------- #
-def _single_asset_material() -> dict:
-    material = _material()
-    # Keep only portrait_a: one distinct asset for two portrait slots (A < S).
-    material["portrait_candidates"] = material["portrait_candidates"][:1]
-    return material
-
-
 def _three_slot_boundary() -> dict:
     boundary = _boundary()
     boundary["portrait_slots"] = [
@@ -446,158 +433,59 @@ def _three_slot_boundary() -> dict:
     return boundary
 
 
-def test_portrait_reuse_cap_is_strict_when_assets_are_plentiful():
-    assert (
-        portrait_asset_reuse_cap(
-            boundary=_boundary(),
-            candidates=index_candidates(_material()),
-        )
-        == 1
-    )
-
-
-def test_portrait_reuse_cap_relaxes_to_ceil_when_assets_are_scarce():
-    # A=1 asset, S=2 slots -> ceil(2/1)=2
-    assert (
-        portrait_asset_reuse_cap(
-            boundary=_boundary(), candidates=index_candidates(_single_asset_material())
-        )
-        == 2
-    )
-    # A=2 assets, S=3 slots -> ceil(3/2)=2
-    assert (
-        portrait_asset_reuse_cap(
-            boundary=_three_slot_boundary(), candidates=index_candidates(_material())
-        )
-        == 2
-    )
-
-
-def test_portrait_reuse_cap_ignores_assets_that_fit_no_slot():
-    boundary = _three_slot_boundary()
+def _three_asset_material() -> dict:
     material = _material()
     material["portrait_candidates"].append(
         {
-            "asset_id": "portrait_too_short",
-            "score": 95.0,
-            "metadata": {"clip_id": "short", "source_start": 0.0, "source_end": 1.0},
+            "asset_id": "portrait_c",
+            "score": 60.0,
+            "reason": "蓝色上衣",
+            "metadata": {"clip_id": "clip_c", "source_start": 0.0, "source_end": 18.0},
         }
     )
-
-    assert portrait_asset_reuse_cap(boundary=boundary, candidates=index_candidates(material)) == 2
-
-
-def test_portrait_reuse_cap_accounts_for_uneven_slot_capacity():
-    boundary = _boundary()
-    boundary["portrait_slots"] = [
-        {"slot_id": "long_0", "start_frame": 0, "end_frame": 120},
-        {"slot_id": "long_1", "start_frame": 120, "end_frame": 240},
-        {"slot_id": "long_2", "start_frame": 240, "end_frame": 360},
-        {"slot_id": "short_0", "start_frame": 360, "end_frame": 390},
-    ]
-    material = _material()
-    material["portrait_candidates"] = [
-        {
-            "asset_id": "portrait_long",
-            "score": 90.0,
-            "metadata": {"clip_id": "long", "source_start": 0.0, "source_end": 10.0},
-        },
-        {
-            "asset_id": "portrait_short",
-            "score": 80.0,
-            "metadata": {"clip_id": "short", "source_start": 0.0, "source_end": 1.0},
-        },
-    ]
-
-    assert portrait_asset_reuse_cap(boundary=boundary, candidates=index_candidates(material)) == 3
+    return material
 
 
-def test_uniqueness_rule_text_tracks_the_cap():
-    assert "禁止" in portrait_uniqueness_rule_text(1)
-    scarce = portrait_uniqueness_rule_text(2)
-    assert "允许复用" in scarce
-    assert "2" in scarce
-
-
-def test_scarce_assets_allow_reuse_up_to_cap_in_validation():
+def test_strict_uniqueness_rejects_reused_portrait_asset():
     boundary = _three_slot_boundary()
-    candidates = index_candidates(_material())  # A=2, S=3 -> cap 2
-    # portrait_a used exactly twice (==cap), portrait_b once: legal reuse.
-    ok = EditingSelection(
+    candidates = index_candidates(_material())
+    over = EditingSelection(
         portrait=[
             PortraitChoice(slot_id="pslot_000", window_id="pc_000"),
             PortraitChoice(slot_id="pslot_001", window_id="pc_000"),
             PortraitChoice(slot_id="pslot_002", window_id="pc_001"),
         ]
     )
-    assert (
-        validate_selection(ok, boundary=boundary, candidates=candidates, bgm_enabled=False) == []
-    )
-
-
-def test_scarce_assets_still_reject_reuse_beyond_cap():
-    boundary = _three_slot_boundary()
-    candidates = index_candidates(_material())  # cap 2
-    # portrait_a used three times: exceeds the relaxed reuse budget of 2.
-    over = EditingSelection(
-        portrait=[
-            PortraitChoice(slot_id="pslot_000", window_id="pc_000"),
-            PortraitChoice(slot_id="pslot_001", window_id="pc_000"),
-            PortraitChoice(slot_id="pslot_002", window_id="pc_000"),
-        ]
-    )
     errors = validate_selection(over, boundary=boundary, candidates=candidates, bgm_enabled=False)
-    assert any("reused more than the allowed 2 slots" in e for e in errors)
+    assert any("assigned to more than one slot" in e for e in errors)
 
 
-def test_deterministic_scarce_covers_every_slot_by_reusing_asset():
+def test_deterministic_selection_keeps_portrait_assets_unique():
     boundary = _three_slot_boundary()
-    candidates = index_candidates(_single_asset_material())  # A=1, S=3 -> cap 3
+    candidates = index_candidates(_three_asset_material())
     selection = deterministic_selection(
         boundary=boundary, candidates=candidates, bgm_enabled=False, max_inserts=0
     )
-    # Every slot covered (no hole in the portrait main track) by reusing pc_000.
     assert [c.slot_id for c in selection.portrait] == ["pslot_000", "pslot_001", "pslot_002"]
-    assert all(c.window_id == "pc_000" for c in selection.portrait)
+    assert [c.window_id for c in selection.portrait] == ["pc_000", "pc_001", "pc_002"]
     assert (
         validate_selection(selection, boundary=boundary, candidates=candidates, bgm_enabled=False)
         == []
     )
 
 
-def test_deterministic_scarce_balances_reuse_within_cap():
+def test_deterministic_selection_leaves_unfillable_slot_uncovered_instead_of_reusing():
     boundary = _three_slot_boundary()
-    candidates = index_candidates(_material())  # A=2, S=3 -> cap 2
+    candidates = index_candidates(_material())
     selection = deterministic_selection(
         boundary=boundary, candidates=candidates, bgm_enabled=False, max_inserts=0
     )
-    assert [c.slot_id for c in selection.portrait] == ["pslot_000", "pslot_001", "pslot_002"]
-    # Top-ranked asset fills up to the cap, then coverage spreads to the next asset.
-    assert [c.window_id for c in selection.portrait] == ["pc_000", "pc_000", "pc_001"]
+    assert [c.slot_id for c in selection.portrait] == ["pslot_000", "pslot_001"]
+    assert [c.window_id for c in selection.portrait] == ["pc_000", "pc_001"]
     assert (
         validate_selection(selection, boundary=boundary, candidates=candidates, bgm_enabled=False)
-        == []
+        != []
     )
-
-
-def test_deterministic_scarce_materializes_gap_free_portrait_track():
-    boundary = _three_slot_boundary()
-    candidates = index_candidates(_single_asset_material())
-    selection = deterministic_selection(
-        boundary=boundary, candidates=candidates, bgm_enabled=False, max_inserts=0
-    )
-    payload = materialize_portrait_from_assignment(
-        windows=_windows(boundary),
-        assignment=_assignment(selection),
-        candidates=candidates,
-    )
-    segments = payload["segments"]
-    assert len(segments) == 3
-    # Contiguous, gap-free coverage across the whole [0, 360) grid.
-    assert segments[0]["timeline_start_frame"] == 0
-    for prev, nxt in zip(segments, segments[1:]):
-        assert prev["timeline_end_frame"] == nxt["timeline_start_frame"]
-    assert segments[-1]["timeline_end_frame"] == 360
 
 
 def test_materialize_portrait_frames_are_complete_and_contiguous():

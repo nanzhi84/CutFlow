@@ -89,7 +89,7 @@
 - `packages/production/pipeline/nodes/broll_planning.py`：fps 与 `portrait_cut_frames` 改从 `plan_timeline_windows.portrait_windows` 边界帧派生（数值与今天从 plan_portrait 读完全一致）。
 - `packages/production/pipeline/nodes/editing_agent_planning.py` + `_editing_agent.py`：
   - slots 来源从 `boundary.portrait_slots/broll_slots` 换成 `windows.portrait_windows/broll_windows`（喂 prompt 前 `window_id`→`slot_id` 别名，条目形状与今天一致，prompt 零改动）。
-  - `portrait_asset_reuse_cap` 的 slot 计数改用 windows。
+  - Agent 只校验 strict asset-level uniqueness；素材稀缺由 `TimelineWindowPlanning` 编译层 hard-fail，不在 Agent 层放宽复用。
 - 新增 `packages/planning/material/shortlist.py`：纯函数
   `shortlist_for_windows(portrait_windows, broll_windows, material_candidates, *, portrait_per_window=12, broll_per_window=6)` → 每类 exposed 子集（按 legal→slot-fit→全局分排序的 top-k 并集，稳定 tie-break）+ 计数 `{raw, eligible, exposed, dropped}`。`index_candidates` 只对 exposed 子集编号；计数进 `plan_editing_diagnostics.shortlist_counts`。
 - 注册同步（全局约束 4 的八处全走一遍）：两个模板序列在 `NarrationBoundaryPlanning` 之后插入 `TimelineWindowPlanning`；后端两处 NODE_LABELS + 前端 `runModel.ts` 标签（"编译时间线窗口"）+ material 阶段分组，并顺带补齐 NarrationBoundaryPlanning / EditingAgentPlanning 缺失的标签与分组条目。
@@ -123,8 +123,7 @@
   portrait: [ {window_id, candidate_id, source_mode, reason} ],
   broll:    [ {window_id, candidate_id, reason, confidence, matched_keywords} ],
   font_id, bgm_id,
-  diagnostics: { repair_trace, reuse_policy_applied, shortlist_counts,
-                 fallback_used, broll_drops }
+  diagnostics: { repair_trace, shortlist_counts, fallback_used, broll_drops }
   ```
 - 新共享落帧库 `packages/production/pipeline/_materialize.py`（纯函数，从 `_editing_agent.py` 迁移+归并）：
   - `materialize_portrait_from_assignment(windows, assignment, candidates)` → PortraitPlanArtifact payload。
