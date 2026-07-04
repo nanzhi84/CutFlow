@@ -676,6 +676,224 @@ def test_shortlist_applies_budget_and_reports_counts(tmp_path):
     assert diagnostics["candidate_counts"]["broll"] == 6
 
 
+def test_reuse_cap_uses_full_pool_not_shortlisted_prompt_budget(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    slot_count = 13
+    duplicate_selection = {
+        "intent": {
+            "portrait_plan": [
+                {
+                    "slot_id": f"pslot_{index:03d}",
+                    "window_id": f"pc_{max(0, index - 1):03d}",
+                }
+                for index in range(slot_count)
+            ],
+            "broll_plan": [],
+            "font_plan": {"font_id": "font_yst"},
+            "bgm_plan": {"bgm_id": "bgm_001"},
+        }
+    }
+    repaired_selection = {
+        "intent": {
+            **duplicate_selection["intent"],
+            "portrait_plan": [
+                {"slot_id": f"pslot_{index:03d}", "window_id": f"pc_{index:03d}"}
+                for index in range(slot_count)
+            ],
+        }
+    }
+    adapter.provider_gateway.register(
+        _FakeEditingLlmProvider([duplicate_selection, repaired_selection])
+    )
+    state = _state()
+    material = state.artifacts[ArtifactKind.plan_material_pack].payload
+    material["portrait_candidates"] = [
+        {
+            "asset_id": f"portrait_{index:02d}",
+            "score": 100 - index,
+            "metadata": {
+                "clip_id": f"clip_{index:02d}",
+                "source_start": 0.0,
+                "source_end": 30.0,
+            },
+        }
+        for index in range(slot_count)
+    ]
+    boundary = state.artifacts[ArtifactKind.plan_narration_boundary].payload
+    boundary["total_frames"] = slot_count * 60
+    boundary["safe_cut_boundaries"] = [
+        {
+            "cut_id": f"cut_{index:03d}",
+            "time": round(index * 2.0, 3),
+            "frame": index * 60,
+            "source": "semantic_only",
+        }
+        for index in range(slot_count + 1)
+    ]
+    boundary["portrait_slots"] = [
+        {
+            "slot_id": f"pslot_{index:03d}",
+            "start_frame": index * 60,
+            "end_frame": (index + 1) * 60,
+            "unit_ids": [f"unit_{index:03d}"],
+            "boundary_source": "semantic_only",
+        }
+        for index in range(slot_count)
+    ]
+    boundary["broll_slots"] = []
+    state.artifacts[ArtifactKind.plan_timeline_windows].payload = _timeline_windows(boundary)
+
+    output = _run_node(adapter, state)
+
+    assert output.status == NodeStatus.succeeded
+    assert len(output.provider_invocation_ids) == 2
+    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
+    assert diagnostics["portrait_asset_reuse_cap"] == 1
+    assert diagnostics["shortlist_counts"]["portrait"] == {
+        "raw": slot_count,
+        "eligible": slot_count,
+        "exposed": slot_count,
+        "dropped": 0,
+    }
+    assert diagnostics["repair_trace"][0]["error_count"] == 1
+    assert "more than one slot" in diagnostics["repair_trace"][0]["errors"][0]
+    assert diagnostics["candidate_counts"]["portrait"] == slot_count
+
+
+def test_shortlist_exposes_enough_distinct_assets_for_relaxed_reuse(tmp_path):
+    slot_count = 13
+    state = _state()
+    material = state.artifacts[ArtifactKind.plan_material_pack].payload
+    material["portrait_candidates"] = [
+        {
+            "asset_id": "portrait_hot",
+            "score": 100 - index,
+            "metadata": {
+                "clip_id": f"hot_{index:02d}",
+                "source_start": 0.0,
+                "source_end": 30.0,
+            },
+        }
+        for index in range(12)
+    ] + [
+        {
+            "asset_id": f"portrait_extra_{index:02d}",
+            "score": 50 - index,
+            "metadata": {
+                "clip_id": f"extra_{index:02d}",
+                "source_start": 0.0,
+                "source_end": 30.0,
+            },
+        }
+        for index in range(6)
+    ]
+    boundary = state.artifacts[ArtifactKind.plan_narration_boundary].payload
+    boundary["total_frames"] = slot_count * 60
+    boundary["safe_cut_boundaries"] = [
+        {
+            "cut_id": f"cut_{index:03d}",
+            "time": round(index * 2.0, 3),
+            "frame": index * 60,
+            "source": "semantic_only",
+        }
+        for index in range(slot_count + 1)
+    ]
+    boundary["portrait_slots"] = [
+        {
+            "slot_id": f"pslot_{index:03d}",
+            "start_frame": index * 60,
+            "end_frame": (index + 1) * 60,
+            "unit_ids": [f"unit_{index:03d}"],
+            "boundary_source": "semantic_only",
+        }
+        for index in range(slot_count)
+    ]
+    boundary["broll_slots"] = []
+    state.artifacts[ArtifactKind.plan_timeline_windows].payload = _timeline_windows(boundary)
+
+    output = _run_node(_adapter(tmp_path), state)
+
+    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
+    assert diagnostics["portrait_asset_reuse_cap"] == 2
+    assert diagnostics["shortlist_counts"]["portrait"] == {
+        "raw": 18,
+        "eligible": 18,
+        "exposed": 18,
+        "dropped": 0,
+    }
+    assert diagnostics["candidate_counts"]["portrait"] == 18
+
+
+def test_shortlist_keeps_capacity_for_restricted_long_slots(tmp_path):
+    long_slot_count = 13
+    short_slot_count = 2
+    slot_count = long_slot_count + short_slot_count
+    state = _state()
+    material = state.artifacts[ArtifactKind.plan_material_pack].payload
+    material["portrait_candidates"] = [
+        {
+            "asset_id": f"portrait_long_{index:02d}",
+            "score": 60 - index,
+            "metadata": {
+                "clip_id": f"long_{index:02d}",
+                "source_start": 0.0,
+                "source_end": 30.0,
+            },
+        }
+        for index in range(long_slot_count)
+    ] + [
+        {
+            "asset_id": f"portrait_short_{index:02d}",
+            "score": 100 - index,
+            "metadata": {
+                "clip_id": f"short_{index:02d}",
+                "source_start": 0.0,
+                "source_end": 1.0,
+            },
+        }
+        for index in range(20)
+    ]
+    boundary = state.artifacts[ArtifactKind.plan_narration_boundary].payload
+    boundary["total_frames"] = long_slot_count * 60 + short_slot_count * 30
+    frames = [index * 60 for index in range(long_slot_count + 1)]
+    short_base_frame = frames[-1]
+    frames.extend(short_base_frame + (index + 1) * 30 for index in range(short_slot_count))
+    boundary["safe_cut_boundaries"] = [
+        {
+            "cut_id": f"cut_{index:03d}",
+            "time": round(frame / 30, 3),
+            "frame": frame,
+            "source": "semantic_only",
+        }
+        for index, frame in enumerate(frames)
+    ]
+    boundary["portrait_slots"] = [
+        {
+            "slot_id": f"pslot_{index:03d}",
+            "start_frame": frames[index],
+            "end_frame": frames[index + 1],
+            "unit_ids": [f"unit_{index:03d}"],
+            "boundary_source": "semantic_only",
+        }
+        for index in range(slot_count)
+    ]
+    boundary["broll_slots"] = []
+    state.artifacts[ArtifactKind.plan_timeline_windows].payload = _timeline_windows(boundary)
+
+    output = _run_node(_adapter(tmp_path), state)
+
+    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
+    assert diagnostics["portrait_asset_reuse_cap"] == 1
+    assert diagnostics["shortlist_counts"]["portrait"] == {
+        "raw": 33,
+        "eligible": 33,
+        "exposed": 25,
+        "dropped": 8,
+    }
+    assert diagnostics["candidate_counts"]["portrait"] == 25
+
+
 def test_llm_path_repairs_reused_portrait_asset(monkeypatch, tmp_path):
     """Real provider path: DashScope-style output nests the selection under
     ``output['intent']``; the node must unwrap it, honour the LLM's ID choices, and
