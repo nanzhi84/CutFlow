@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 from packages.ai.gateway import ProviderGateway
 from packages.ai.prompts import PromptRegistry
 from packages.core.contracts import (
@@ -32,13 +30,17 @@ from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
 
 
-def _window_ctx(*, duration: float = 10.0):
-    source = SimpleNamespace(media_info=SimpleNamespace(duration_sec=duration))
-    return SimpleNamespace(source_artifact_for_asset=lambda asset_id: source)
-
-
-def _portrait_item(*, start: float = 0.0, end: float = 8.0, avoid_spans=None, recent_usage=None) -> dict:
+def _portrait_item(
+    *,
+    start: float = 0.0,
+    end: float = 8.0,
+    source_window_id=None,
+    avoid_spans=None,
+    recent_usage=None,
+) -> dict:
     metadata = {"clip_id": "talk", "source_start": start, "source_end": end}
+    if source_window_id is not None:
+        metadata["source_window_id"] = source_window_id
     if avoid_spans is not None:
         metadata["avoid_spans"] = avoid_spans
     if recent_usage is not None:
@@ -66,13 +68,19 @@ def test_portrait_window_candidates_carries_material_pack_recent_usage_without_l
         "similar_recent_opening_use_count": 0,
     }
     candidates = nodes.timeline_window_planning._portrait_window_candidates(
-        _window_ctx(duration=10.0),
-        [_portrait_item(start=1.25, end=5.75, recent_usage=recent_usage)],
+        [
+            _portrait_item(
+                start=1.25,
+                end=5.75,
+                source_window_id="talk:m1",
+                recent_usage=recent_usage,
+            )
+        ],
     )
 
     assert candidates == [
         {
-            "window_id": "asset_portrait:talk",
+            "window_id": "asset_portrait:talk:m1",
             "template_id": "asset_portrait",
             "template_name": "asset_portrait",
             "start": 1.25,
@@ -92,7 +100,6 @@ def test_portrait_window_candidates_defaults_recent_usage_when_metadata_omits_it
     # Missing ``recent_usage`` (e.g. an older material pack) degrades to "fresh" —
     # no demotion — rather than the node reaching back to the ledger.
     candidates = nodes.timeline_window_planning._portrait_window_candidates(
-        _window_ctx(duration=10.0),
         [_portrait_item(start=1.25, end=5.75)],
     )
 
@@ -100,29 +107,16 @@ def test_portrait_window_candidates_defaults_recent_usage_when_metadata_omits_it
     assert candidates[0]["recency_penalty"] == 0.0
 
 
-def test_portrait_window_candidates_uses_clean_head_before_tail_bad_span():
+def test_portrait_window_candidates_consumes_clean_candidate_without_avoid_splitting():
     candidates = nodes.timeline_window_planning._portrait_window_candidates(
-        _window_ctx(duration=10.0),
-        [_portrait_item(start=0.0, end=8.0, avoid_spans=[[4.2, 8.0]])],
+        [_portrait_item(start=0.0, end=8.0, avoid_spans=[[2.0, 4.0]])],
     )
 
     assert len(candidates) == 1
     assert candidates[0]["window_id"] == "asset_portrait:talk"
     assert candidates[0]["start"] == 0.0
-    assert candidates[0]["end"] == 4.2
-    assert candidates[0]["duration"] == 4.2
-
-
-def test_portrait_window_candidates_splits_middle_bad_span_into_multiple_windows():
-    candidates = nodes.timeline_window_planning._portrait_window_candidates(
-        _window_ctx(duration=10.0),
-        [_portrait_item(start=0.0, end=6.0, avoid_spans=[[2.0, 4.0]])],
-    )
-
-    assert [(c["window_id"], c["start"], c["end"], c["duration"]) for c in candidates] == [
-        ("asset_portrait:talk", 0.0, 2.0, 2.0),
-        ("asset_portrait:talk:m1", 4.0, 6.0, 2.0),
-    ]
+    assert candidates[0]["end"] == 8.0
+    assert candidates[0]["duration"] == 8.0
 
 
 def _quality_event(event_id: str, event_type: QualityEventType, start: float, end: float):
@@ -202,9 +196,14 @@ def _material_ctx(adapter: LocalRuntimeAdapter) -> NodeContext:
     )
 
 
-def _inject_video_asset(repository: Repository) -> None:
+def _inject_video_asset(
+    repository: Repository,
+    *,
+    quality_events: list[QualityEventV4] | None = None,
+    duration: float = 8.0,
+) -> None:
     asset_id = "asset_motion_portrait"
-    clip = _talk_clip("talk", 0.0, 8.0)
+    clip = _talk_clip("talk", 0.0, duration)
     source = repository.create_artifact(
         kind=ArtifactKind.uploaded_file,
         payload_schema="UploadedFileArtifact.v1",
@@ -216,7 +215,7 @@ def _inject_video_asset(repository: Repository) -> None:
             codec="h264",
             format="mp4",
             mime_type="video/mp4",
-            duration_sec=8.0,
+            duration_sec=duration,
             width=320,
             height=568,
             fps=30,
@@ -235,12 +234,10 @@ def _inject_video_asset(repository: Repository) -> None:
             asset_id=asset_id,
             case_id="case_demo",
             material_type="video",
-            duration=8.0,
+            duration=duration,
         ),
         clips=[clip],
-        quality_events=[
-            _quality_event("shake_tail", QualityEventType.shake, 6.0, 8.0),
-        ],
+        quality_events=quality_events or [],
     )
     repository.media_assets[asset_id] = asset
     repository.annotations[asset_id] = AnnotationEditorVm(
@@ -251,13 +248,20 @@ def _inject_video_asset(repository: Repository) -> None:
     )
 
 
-def test_material_pack_adds_portrait_avoid_spans_and_motion_diagnostic(tmp_path, monkeypatch):
+def test_material_pack_emits_clean_portrait_windows_and_motion_diagnostic(
+    tmp_path, monkeypatch
+):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
     adapter = _adapter(object_store)
     adapter.repository.media_assets.clear()
     adapter.repository.annotations.clear()
-    _inject_video_asset(adapter.repository)
+    _inject_video_asset(
+        adapter.repository,
+        quality_events=[
+            _quality_event("shake_tail", QualityEventType.shake, 6.0, 8.0),
+        ],
+    )
 
     output = nodes.material_pack_planning.run(_material_ctx(adapter))
     payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_material_pack)
@@ -265,5 +269,47 @@ def test_material_pack_adds_portrait_avoid_spans_and_motion_diagnostic(tmp_path,
     portrait = payload["portrait_candidates"]
     assert len(portrait) == 1
     assert portrait[0]["metadata"]["clip_id"] == "talk"
-    assert portrait[0]["metadata"]["avoid_spans"] == [[6.0, 8.0]]
+    assert portrait[0]["metadata"]["source_window_id"] == "talk"
+    assert portrait[0]["metadata"]["source_start"] == 0.0
+    assert portrait[0]["metadata"]["source_end"] == 6.0
+    assert portrait[0]["metadata"]["duration"] == 6.0
+    assert "avoid_spans" not in portrait[0]["metadata"]
+    assert payload["diagnostics"]["portrait_motion_excluded"] == 1
+
+
+def test_material_pack_splits_portrait_clip_into_multiple_clean_source_windows(
+    tmp_path, monkeypatch
+):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    adapter.repository.media_assets.clear()
+    adapter.repository.annotations.clear()
+    _inject_video_asset(
+        adapter.repository,
+        quality_events=[
+            _quality_event("shake_middle", QualityEventType.shake, 2.0, 4.0),
+        ],
+        duration=6.0,
+    )
+
+    output = nodes.material_pack_planning.run(_material_ctx(adapter))
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_material_pack)
+
+    portrait = payload["portrait_candidates"]
+    assert [
+        (
+            item["metadata"]["clip_id"],
+            item["metadata"]["source_window_id"],
+            item["metadata"]["source_start"],
+            item["metadata"]["source_end"],
+            item["metadata"]["duration"],
+        )
+        for item in portrait
+    ] == [
+        ("talk", "talk", 0.0, 2.0, 2.0),
+        ("talk", "talk:m1", 4.0, 6.0, 2.0),
+    ]
+    assert payload["reservations"]
+    assert len(payload["reservations"]) == 1
     assert payload["diagnostics"]["portrait_motion_excluded"] == 1

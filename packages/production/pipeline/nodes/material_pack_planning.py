@@ -17,6 +17,7 @@ from packages.planning.material import (
     avoid_intervals,
     clip_is_lip_sync_usable,
     clip_shows_person,
+    clean_portrait_source_windows,
     extract_keywords,
     rank_broll_candidates,
     rank_portrait_clip_candidates,
@@ -133,6 +134,21 @@ def run(ctx: NodeContext) -> NodeOutput:
         if avoid is None:
             avoid = avoid_intervals(portrait_annotations[clip_candidate.asset_id])
             portrait_avoid_cache[clip_candidate.asset_id] = avoid
+        source_duration = _source_duration_for_asset(
+            ctx,
+            asset_id=clip_candidate.asset_id,
+            annotation=portrait_annotations[clip_candidate.asset_id],
+        )
+        clean_windows = clean_portrait_source_windows(
+            {
+                "source_start": clip_candidate.source_start,
+                "source_end": clip_candidate.source_end,
+                "avoid_spans": avoid,
+            },
+            source_duration=source_duration,
+        )
+        if not clean_windows:
+            continue
         recent_usage = portrait_recent_usage_cache.get(clip_candidate.asset_id)
         if recent_usage is None:
             recent_usage = build_portrait_recency_context_from_ledger(
@@ -141,25 +157,37 @@ def run(ctx: NodeContext) -> NodeOutput:
                 diversity_key=None,
             )
             portrait_recent_usage_cache[clip_candidate.asset_id] = recent_usage
-        portrait_candidates.append(
-            MaterialCandidate(
-                asset_id=clip_candidate.asset_id,
-                score=clip_candidate.score,
-                reason=clip_candidate.reason,
-                metadata={
-                    "base_score": clip_candidate.base_score,
-                    "recency_penalty": clip_candidate.recency_penalty,
-                    "clip_id": clip_candidate.clip_id,
-                    "source_start": clip_candidate.source_start,
-                    "source_end": clip_candidate.source_end,
-                    "duration": clip_candidate.duration,
-                    "avoid_spans": [[float(s), float(e)] for s, e in avoid],
-                    "recent_usage": recent_usage,
-                },
+        for clean_index, (clean_start, clean_end) in enumerate(clean_windows):
+            source_window_id = (
+                clip_candidate.clip_id
+                if clean_index == 0
+                else f"{clip_candidate.clip_id}:m{clean_index}"
             )
-        )
+            clean_duration = round(clean_end - clean_start, 3)
+            portrait_candidates.append(
+                MaterialCandidate(
+                    asset_id=clip_candidate.asset_id,
+                    score=clip_candidate.score,
+                    reason=clip_candidate.reason,
+                    metadata={
+                        "base_score": clip_candidate.base_score,
+                        "recency_penalty": clip_candidate.recency_penalty,
+                        "clip_id": clip_candidate.clip_id,
+                        "source_window_id": source_window_id,
+                        "source_start": round(clean_start, 3),
+                        "source_end": round(clean_end, 3),
+                        "duration": clean_duration,
+                        "recent_usage": recent_usage,
+                    },
+                )
+            )
     portrait_candidates.sort(
-        key=lambda c: (-c.score, c.asset_id, str((c.metadata or {}).get("clip_id") or ""))
+        key=lambda c: (
+            -c.score,
+            c.asset_id,
+            str((c.metadata or {}).get("clip_id") or ""),
+            float((c.metadata or {}).get("source_start") or 0.0),
+        )
     )
     _portrait_from_video_count = sum(
         1 for c in portrait_candidates if (c.metadata or {}).get("clip_id")
@@ -309,6 +337,23 @@ def _active_reserved_asset_ids(repo, *, case_id: str, run_id: str, medium: str) 
     }
 
 
+def _source_duration_for_asset(ctx: NodeContext, *, asset_id: str, annotation) -> float | None:
+    source = ctx.source_artifact_for_asset(asset_id)
+    media_info = getattr(source, "media_info", None)
+    if media_info is not None:
+        try:
+            duration = float(media_info.duration_sec or 0.0)
+        except (TypeError, ValueError):
+            duration = 0.0
+        if duration > 0:
+            return duration
+    try:
+        duration = float(getattr(getattr(annotation, "meta", None), "duration", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    return duration if duration > 0 else None
+
+
 def _broll_motion_excluded_count(annotations) -> int:
     excluded = 0
     for asset_id, annotation in annotations.items():
@@ -384,7 +429,7 @@ def _reserve_top_candidates(
         ("font", font_candidates),
     ):
         reserve_candidates = candidates if medium == "bgm" else candidates[:_RESERVE_TOP_N]
-        asset_ids = [c.asset_id for c in reserve_candidates if c.asset_id]
+        asset_ids = list(dict.fromkeys(c.asset_id for c in reserve_candidates if c.asset_id))
         if not asset_ids:
             continue
         diversity_keys = {
