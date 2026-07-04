@@ -473,6 +473,45 @@ def test_portrait_reuse_cap_relaxes_to_ceil_when_assets_are_scarce():
     )
 
 
+def test_portrait_reuse_cap_ignores_assets_that_fit_no_slot():
+    boundary = _three_slot_boundary()
+    material = _material()
+    material["portrait_candidates"].append(
+        {
+            "asset_id": "portrait_too_short",
+            "score": 95.0,
+            "metadata": {"clip_id": "short", "source_start": 0.0, "source_end": 1.0},
+        }
+    )
+
+    assert portrait_asset_reuse_cap(boundary=boundary, candidates=index_candidates(material)) == 2
+
+
+def test_portrait_reuse_cap_accounts_for_uneven_slot_capacity():
+    boundary = _boundary()
+    boundary["portrait_slots"] = [
+        {"slot_id": "long_0", "start_frame": 0, "end_frame": 120},
+        {"slot_id": "long_1", "start_frame": 120, "end_frame": 240},
+        {"slot_id": "long_2", "start_frame": 240, "end_frame": 360},
+        {"slot_id": "short_0", "start_frame": 360, "end_frame": 390},
+    ]
+    material = _material()
+    material["portrait_candidates"] = [
+        {
+            "asset_id": "portrait_long",
+            "score": 90.0,
+            "metadata": {"clip_id": "long", "source_start": 0.0, "source_end": 10.0},
+        },
+        {
+            "asset_id": "portrait_short",
+            "score": 80.0,
+            "metadata": {"clip_id": "short", "source_start": 0.0, "source_end": 1.0},
+        },
+    ]
+
+    assert portrait_asset_reuse_cap(boundary=boundary, candidates=index_candidates(material)) == 3
+
+
 def test_uniqueness_rule_text_tracks_the_cap():
     assert "禁止" in portrait_uniqueness_rule_text(1)
     scarce = portrait_uniqueness_rule_text(2)

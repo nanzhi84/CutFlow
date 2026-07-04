@@ -6,6 +6,7 @@ from typing import Any
 
 from packages.planning.editing.frame_grid import TIMELINE_FPS, frame_index
 from packages.planning.material.broll_plan import BROLL_GEOMETRY_POLICY
+from packages.planning.material.portrait_capacity import can_cover_slots_with_cap
 from packages.planning.material.portrait_source import longest_clean_portrait_source_span
 
 
@@ -16,12 +17,16 @@ def shortlist_for_windows(
     *,
     portrait_per_window: int = 12,
     broll_per_window: int = 6,
+    portrait_min_distinct_assets: int | None = None,
+    portrait_reuse_cap: int | None = None,
 ) -> tuple[dict, dict[str, dict[str, int]]]:
     portrait, portrait_counts = _shortlist_medium(
         windows=portrait_windows,
         candidates=_candidate_list(material_candidates, "portrait_candidates"),
         per_window=portrait_per_window,
         eligible=_portrait_eligible,
+        min_distinct_assets=portrait_min_distinct_assets,
+        capacity_cap=portrait_reuse_cap,
     )
     broll, broll_counts = _shortlist_medium(
         windows=broll_windows,
@@ -41,6 +46,8 @@ def _shortlist_medium(
     candidates: list[dict],
     per_window: int,
     eligible,
+    min_distinct_assets: int | None = None,
+    capacity_cap: int | None = None,
 ) -> tuple[list[dict], dict[str, int]]:
     raw = len(candidates)
     eligible_indices: set[int] = set()
@@ -54,6 +61,21 @@ def _shortlist_medium(
         ranked.sort(key=lambda item: (-_score(item[1]), _candidate_key(item[1], item[0])))
         eligible_indices.update(index for index, _candidate in ranked)
         exposed_indices.update(index for index, _candidate in ranked[: max(0, per_window)])
+    if min_distinct_assets is not None and min_distinct_assets > 0:
+        _add_distinct_assets(
+            candidates=candidates,
+            eligible_indices=eligible_indices,
+            exposed_indices=exposed_indices,
+            min_distinct_assets=min_distinct_assets,
+        )
+    if capacity_cap is not None and capacity_cap > 0:
+        _add_until_capacity_feasible(
+            windows=windows,
+            candidates=candidates,
+            eligible_indices=eligible_indices,
+            exposed_indices=exposed_indices,
+            capacity_cap=capacity_cap,
+        )
     exposed = [
         candidate
         for index, candidate in sorted(
@@ -67,6 +89,89 @@ def _shortlist_medium(
         "exposed": len(exposed),
         "dropped": max(0, raw - len(exposed)),
     }
+
+
+def _add_distinct_assets(
+    *,
+    candidates: list[dict],
+    eligible_indices: set[int],
+    exposed_indices: set[int],
+    min_distinct_assets: int,
+) -> None:
+    exposed_assets = {
+        asset_id
+        for index in exposed_indices
+        if (asset_id := str(candidates[index].get("asset_id") or ""))
+    }
+    if len(exposed_assets) >= min_distinct_assets:
+        return
+    ranked = sorted(
+        (
+            (index, candidates[index])
+            for index in eligible_indices
+            if index not in exposed_indices
+        ),
+        key=lambda item: (-_score(item[1]), _candidate_key(item[1], item[0])),
+    )
+    for index, candidate in ranked:
+        asset_id = str(candidate.get("asset_id") or "")
+        if not asset_id or asset_id in exposed_assets:
+            continue
+        exposed_indices.add(index)
+        exposed_assets.add(asset_id)
+        if len(exposed_assets) >= min_distinct_assets:
+            break
+
+
+def _add_until_capacity_feasible(
+    *,
+    windows: list[dict],
+    candidates: list[dict],
+    eligible_indices: set[int],
+    exposed_indices: set[int],
+    capacity_cap: int,
+) -> None:
+    required_frames = [_window_required_frames(window) for window in windows]
+    if can_cover_slots_with_cap(
+        required_frames,
+        _asset_capacities(candidates, exposed_indices),
+        capacity_cap,
+    ):
+        return
+    ranked = sorted(
+        (
+            (index, candidates[index])
+            for index in eligible_indices
+            if index not in exposed_indices
+        ),
+        key=lambda item: (
+            -_source_frames_available(item[1]),
+            -_score(item[1]),
+            _candidate_key(item[1], item[0]),
+        ),
+    )
+    for index, _candidate in ranked:
+        exposed_indices.add(index)
+        if can_cover_slots_with_cap(
+            required_frames,
+            _asset_capacities(candidates, exposed_indices),
+            capacity_cap,
+        ):
+            break
+
+
+def _asset_capacities(candidates: list[dict], indices: set[int]) -> dict[str, int]:
+    capacities: dict[str, int] = {}
+    for index in indices:
+        candidate = candidates[index]
+        asset_id = str(candidate.get("asset_id") or "")
+        if not asset_id:
+            continue
+        capacities[asset_id] = max(
+            capacities.get(asset_id, 0),
+            _source_frames_available(candidate),
+        )
+    return capacities
 
 
 def _candidate_list(material: dict, key: str) -> list[dict]:

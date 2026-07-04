@@ -22,7 +22,7 @@ from packages.planning.editing.frame_grid import (
     frame_index,
     to_seconds,
 )
-from packages.planning.material import longest_clean_portrait_source_span
+from packages.planning.material import longest_clean_portrait_source_span, minimum_reuse_cap
 
 TIMELINE_FPS = 30
 
@@ -218,28 +218,38 @@ def _portrait_asset_key(candidate: dict) -> str:
     return _as_str(candidate.get("asset_id"))
 
 
-def _distinct_portrait_asset_count(candidates: IndexedCandidates) -> int:
-    return len(
-        {key for cand in candidates.portrait_by_id.values() if (key := _portrait_asset_key(cand))}
-    )
+def _portrait_asset_capacities(candidates: IndexedCandidates) -> dict[str, int]:
+    capacities: dict[str, int] = {}
+    for candidate in candidates.portrait_by_id.values():
+        asset_key = _portrait_asset_key(candidate)
+        if not asset_key:
+            continue
+        capacities[asset_key] = max(
+            capacities.get(asset_key, 0),
+            _source_frames_available(candidate),
+        )
+    return capacities
 
 
 def portrait_asset_reuse_cap(*, boundary: dict, candidates: IndexedCandidates) -> int:
     """Max portrait slots a single source asset may fill for this run.
 
     Strict uniqueness (cap ``1``) is the hardened default. When the distinct
-    portrait asset pool ``A`` is smaller than the slot count ``S`` — a common
+    eligible portrait asset pool cannot cover every compiled slot once — a common
     shortage when an operator uploads only 2-3 portrait sources for an 8-15 slot
-    short video — strict uniqueness is unsatisfiable and would strand slots, so
-    the cap relaxes to ``ceil(S / A)``: a deterministic, balanced reuse budget
-    whose total capacity ``A * ceil(S / A) >= S`` always covers every slot while
-    still spreading coverage across the available sources.
+    short video — the cap relaxes to the smallest deterministic reuse budget that
+    can cover the slot requirements while still spreading coverage across assets.
     """
-    assets = _distinct_portrait_asset_count(candidates)
     slots = sum(1 for s in (boundary.get("portrait_slots") or []) if isinstance(s, dict))
-    if assets <= 0 or slots <= 0 or assets >= slots:
+    if slots <= 0:
         return 1
-    return -(-slots // assets)
+    required_frames = [
+        _slot_required_frames(slot)
+        for slot in (boundary.get("portrait_slots") or [])
+        if isinstance(slot, dict)
+    ]
+    asset_capacities = _portrait_asset_capacities(candidates)
+    return minimum_reuse_cap(required_frames, asset_capacities)
 
 
 def portrait_uniqueness_rule_text(cap: int) -> str:
@@ -267,6 +277,7 @@ def build_agent_input(
     candidates: IndexedCandidates,
     narration_units: list[dict],
     duration: float,
+    portrait_asset_use_cap: int | None = None,
 ) -> dict:
     """Assemble the numbered, frame-free structure handed to the LLM.
 
@@ -297,7 +308,9 @@ def build_agent_input(
         "video_duration": round(float(duration), 3),
         "max_broll_inserts": request.broll.max_inserts if request.broll.enabled else 0,
         "portrait_uniqueness_rule": portrait_uniqueness_rule_text(
-            portrait_asset_reuse_cap(boundary=boundary, candidates=candidates)
+            portrait_asset_use_cap
+            if portrait_asset_use_cap is not None
+            else portrait_asset_reuse_cap(boundary=boundary, candidates=candidates)
         ),
         "narration_units": [
             {
@@ -363,6 +376,7 @@ def validate_selection(
     boundary: dict,
     candidates: IndexedCandidates,
     bgm_enabled: bool,
+    portrait_asset_use_cap: int | None = None,
 ) -> list[str]:
     """Local hard constraints on the LLM's ID-only selection.
 
@@ -382,9 +396,13 @@ def validate_selection(
     }
 
     # Portrait: every slot covered exactly once by a valid, long-enough window;
-    # each source asset used at most ``asset_use_cap`` times (1 when assets are
-    # plentiful, ceil(S/A) when scarce — see portrait_asset_reuse_cap).
-    asset_use_cap = portrait_asset_reuse_cap(boundary=boundary, candidates=candidates)
+    # each source asset used at most ``asset_use_cap`` times (1 when assets can
+    # cover the slots uniquely, higher when scarce — see portrait_asset_reuse_cap).
+    asset_use_cap = (
+        portrait_asset_use_cap
+        if portrait_asset_use_cap is not None
+        else portrait_asset_reuse_cap(boundary=boundary, candidates=candidates)
+    )
     seen_slots: set[str] = set()
     asset_slots: dict[str, list[str]] = {}
     for choice in selection.portrait:
@@ -473,6 +491,7 @@ def deterministic_selection(
     candidates: IndexedCandidates,
     bgm_enabled: bool,
     max_inserts: int,
+    portrait_asset_use_cap: int | None = None,
 ) -> EditingSelection:
     """Score-ranked default selection equivalent to the deterministic nodes.
 
@@ -488,7 +507,11 @@ def deterministic_selection(
     ranked_font = _ranked_ids(candidates.font_by_id)
     ranked_bgm = _ranked_ids(candidates.bgm_by_id)
 
-    reuse_cap = portrait_asset_reuse_cap(boundary=boundary, candidates=candidates)
+    reuse_cap = (
+        portrait_asset_use_cap
+        if portrait_asset_use_cap is not None
+        else portrait_asset_reuse_cap(boundary=boundary, candidates=candidates)
+    )
     portrait: list[PortraitChoice] = []
     asset_use: dict[str, int] = {}
     for slot in portrait_slots:
@@ -557,6 +580,7 @@ def select_with_repair(
     candidates: IndexedCandidates,
     bgm_enabled: bool,
     max_repair_attempts: int,
+    portrait_asset_use_cap: int | None = None,
 ) -> tuple[EditingSelection, list[dict], list[str]]:
     """Drive one LLM selection + up to ``max_repair_attempts`` local repairs.
 
@@ -575,7 +599,11 @@ def select_with_repair(
         output = invoke(errors)
         selection = parse_selection(output)
         errors = validate_selection(
-            selection, boundary=boundary, candidates=candidates, bgm_enabled=bgm_enabled
+            selection,
+            boundary=boundary,
+            candidates=candidates,
+            bgm_enabled=bgm_enabled,
+            portrait_asset_use_cap=portrait_asset_use_cap,
         )
         trace.append({"attempt": attempt, "error_count": len(errors), "errors": errors})
         if not errors:
