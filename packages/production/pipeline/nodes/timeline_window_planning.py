@@ -12,7 +12,7 @@ from packages.planning.editing import (
     BoundaryConstraints,
     plan_boundary_timeline,
 )
-from packages.planning.material import BROLL_GEOMETRY_POLICY, subtract_bad_spans
+from packages.planning.material import BROLL_GEOMETRY_POLICY, clean_portrait_source_windows
 from packages.production.pipeline._narration_units import build_planner_narration_units
 from packages.production.pipeline._node_context import NodeContext
 
@@ -35,7 +35,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             "Portrait main track cannot cover the full audio.",
         )
 
-    candidates = _portrait_window_candidates(ctx, portrait_candidate_items)
+    candidates = _portrait_window_candidates(portrait_candidate_items)
     if portrait_candidate_items and not candidates:
         raise NodeExecutionError(
             ErrorCode.material_insufficient_portrait,
@@ -235,7 +235,7 @@ def _plan_with_escalation(
     }
 
 
-def _portrait_window_candidates(ctx: NodeContext, items: list[dict]) -> list[dict]:
+def _portrait_window_candidates(items: list[dict]) -> list[dict]:
     candidates: list[dict] = []
     for rank, item in enumerate(items):
         asset_id = item.get("asset_id")
@@ -245,53 +245,49 @@ def _portrait_window_candidates(ctx: NodeContext, items: list[dict]) -> list[dic
         clip_id = meta.get("clip_id")
         if clip_id is None or meta.get("source_start") is None or meta.get("source_end") is None:
             continue
-        source = ctx.source_artifact_for_asset(asset_id)
-        source_duration = (
-            float(source.media_info.duration_sec or 0) if source and source.media_info else 0.0
+        clean_windows = (
+            clean_portrait_source_windows(meta)
+            if meta.get("avoid_spans") is not None
+            else _raw_portrait_source_windows(meta)
         )
-        if source_duration <= 0.08:
-            continue
-        try:
-            win_start = max(0.0, float(meta.get("source_start") or 0.0))
-            win_end = min(round(source_duration, 3), float(meta.get("source_end")))
-        except (TypeError, ValueError):
-            continue
-        if win_end - win_start <= 0.08:
-            continue
-        try:
-            avoid_spans = [(float(a), float(b)) for a, b in (meta.get("avoid_spans") or [])]
-        except (TypeError, ValueError):
-            avoid_spans = []
-        clean_spans = subtract_bad_spans(win_start, win_end, avoid_spans, min_len=0.08)
-        if not clean_spans:
+        if not clean_windows:
             continue
         recent_usage = meta.get("recent_usage")
         if not isinstance(recent_usage, dict):
             recent_usage = {}
+        recency_penalty = recent_usage.get("recency_penalty", meta.get("recency_penalty", 0.0))
         confidence = round(max(0.1, 0.9 - rank * 0.05), 3)
-        for clean_index, (clean_start, clean_end) in enumerate(clean_spans):
-            window_id = (
-                f"{asset_id}:{clip_id}"
-                if clean_index == 0
-                else f"{asset_id}:{clip_id}:m{clean_index}"
-            )
+        source_window_id = str(meta.get("source_window_id") or clip_id)
+        for window_index, (win_start, win_end) in enumerate(clean_windows):
+            window_suffix = "" if window_index == 0 else f":m{window_index}"
             candidates.append(
                 {
-                    "window_id": window_id,
+                    "window_id": f"{asset_id}:{source_window_id}{window_suffix}",
                     "template_id": asset_id,
                     "template_name": asset_id,
-                    "start": round(clean_start, 3),
-                    "end": round(clean_end, 3),
-                    "duration": round(clean_end - clean_start, 3),
+                    "start": round(win_start, 3),
+                    "end": round(win_end, 3),
+                    "duration": round(win_end - win_start, 3),
                     "role": "main",
                     "confidence": confidence,
                     "source_mode_hint": "lipsynced",
                     "recent_usage": recent_usage,
-                    "recency_penalty": recent_usage.get("recency_penalty", 0.0),
+                    "recency_penalty": recency_penalty,
                     "diversity_key": None,
                 }
             )
     return candidates
+
+
+def _raw_portrait_source_windows(metadata: dict) -> list[tuple[float, float]]:
+    try:
+        win_start = float(metadata.get("source_start") or 0.0)
+        win_end = float(metadata.get("source_end") or 0.0)
+    except (TypeError, ValueError):
+        return []
+    if win_end - win_start <= 0.08:
+        return []
+    return [(win_start, win_end)]
 
 
 def _segment_payload(index: int, seg, *, recent_template_ids: set[str]) -> dict:
