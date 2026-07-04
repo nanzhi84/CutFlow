@@ -69,6 +69,7 @@ def test_real_plugins_register_alongside_sandbox(tmp_path):
         "dashscope.vlm",
         "runninghub.heygem",
         "dashscope.llm",
+        "dashscope.multimodal_embedding",
         "openai.image",
         "volcengine.seedream",
     } <= set(gateway.plugins)
@@ -922,6 +923,58 @@ def test_dashscope_llm_uses_compatible_chat_base_url_and_ignores_legacy_max_toke
     assert result.output["intent"] == {"ok": True}
     assert result.input_tokens == 11
     assert result.output_tokens == 7
+
+
+def test_dashscope_multimodal_embedding_uses_compatible_embeddings_url(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/compatible-mode/v1/embeddings"
+        assert request.headers["authorization"] == "Bearer dashscope-key"
+        body = __import__("json").loads(request.content)
+        assert body == {
+            "model": "qwen3-vl-embedding",
+            "input": "施工前现场细节",
+            "dimensions": 1024,
+        }
+        return httpx.Response(
+            200,
+            json={
+                "id": "emb_req_1",
+                "data": [{"embedding": [0.1, 0.2, 0.3]}],
+            },
+        )
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+    secret_ref = gateway.secret_store.put("dashscope-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="dashscope.multimodal_embedding",
+        capability="multimodal.embedding",
+        model_id="qwen3-vl-embedding",
+        secret_ref=secret_ref,
+        default_options={
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "dimension": 1024,
+            "normalization": "l2",
+            "index_version": "clip-vl-qwen3-v1",
+        },
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            provider_profile_id=profile.id,
+            capability_id="multimodal.embedding",
+            input={"retrieval_intent": "施工前现场细节"},
+        )
+    )
+
+    assert invocation.status == ProviderStatus.succeeded
+    assert result is not None
+    assert result.output["embedding"] == [0.1, 0.2, 0.3]
+    assert result.output["dimension"] == 3
+    assert result.output["model"] == "qwen3-vl-embedding"
+    assert result.output["normalization"] == "l2"
+    assert result.input_tokens == len("施工前现场细节")
 
 
 def test_dashscope_llm_invalid_json_returns_text_intent(tmp_path):

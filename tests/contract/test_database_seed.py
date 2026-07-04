@@ -64,12 +64,18 @@ def test_seed_provider_profiles_and_prompt_binding_are_ready_for_workflow():
     profile_ids = {row.id for row in rows if isinstance(row, ProviderProfileRow)}
     prompt_versions = {row.id for row in rows if isinstance(row, PromptVersionRow)}
     bindings = [row for row in rows if isinstance(row, PromptBindingRow)]
-    assert {"sandbox.tts.default", "runninghub.heygem.default", "sandbox.llm.default"} <= profile_ids
+    assert {
+        "sandbox.tts.default",
+        "runninghub.heygem.default",
+        "sandbox.llm.default",
+        "sandbox.embedding.default",
+    } <= profile_ids
     assert {
         "minimax.tts.prod",
         "dashscope.asr.prod",
         "dashscope.vlm.prod",
         "dashscope.llm.prod",
+        "dashscope.multimodal_embedding.prod",
         "runninghub.heygem.prod",
         "volcengine.seedream.prod",
     } <= profile_ids

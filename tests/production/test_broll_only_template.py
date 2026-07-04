@@ -91,7 +91,7 @@ def test_digital_human_template_keeps_existing_sequence_edges_and_outputs():
 
     assert template.workflow_template_id == "digital_human_v2"
     assert [spec.node_id for spec in template.nodes] == NODE_SEQUENCE
-    assert len(template.nodes) == 17
+    assert len(template.nodes) == 18
     assert "PortraitPlanning" not in NODE_SEQUENCE
     assert len(template.edges) == len(NODE_SEQUENCE) - 1
     assert [
@@ -110,8 +110,13 @@ def test_digital_human_template_keeps_existing_sequence_edges_and_outputs():
             ArtifactKind.plan_timeline_windows,
             ArtifactKind.plan_portrait,
         ],
-        "BrollPlanning": [ArtifactKind.plan_broll],
-        "StylePlanning": [ArtifactKind.plan_style],
+        "WindowQueryPlanning": [ArtifactKind.plan_window_queries],
+        "WindowMaterialRetrieval": [ArtifactKind.plan_window_material_retrieval],
+        "DeterministicEditingPlanning": [
+            ArtifactKind.plan_media_assignment,
+            ArtifactKind.plan_broll,
+            ArtifactKind.plan_style,
+        ],
         "TimelinePlanning": [ArtifactKind.plan_timeline, ArtifactKind.plan_render],
         "PortraitTrackBuild": [ArtifactKind.video_portrait_track],
         "LipSync": [ArtifactKind.video_lipsync, ArtifactKind.lipsync_report],
@@ -127,7 +132,9 @@ def test_digital_human_template_keeps_existing_sequence_edges_and_outputs():
     specs = {spec.node_id: spec for spec in template.nodes}
     assert specs["NarrationBoundaryPlanning"].reuse_policy == "never"
     assert specs["TimelineWindowPlanning"].reuse_policy == "never"
-    assert specs["BrollPlanning"].reuse_policy == "never"
+    assert specs["WindowQueryPlanning"].reuse_policy == "never"
+    assert specs["WindowMaterialRetrieval"].reuse_policy == "never"
+    assert specs["DeterministicEditingPlanning"].reuse_policy == "never"
     assert specs["TimelinePlanning"].reuse_policy == "never"
 
 

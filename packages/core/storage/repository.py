@@ -10,6 +10,7 @@ from packages.core.registration_codes import hash_registration_code
 from packages.core.storage.prompt_groups import seed_prompt_groups
 from packages.core.storage.provider_seed import seed_real_provider_configuration
 from packages.core.storage.selection_ledger import material_usage_ranking_from_entries
+from packages.core.contracts.artifacts import ClipEmbeddingRecord
 from packages.core.contracts import (
     AnnotationEditorVm,
     AnnotationMetaV4,
@@ -207,6 +208,7 @@ class Repository:
         self.media_assets: dict[str, MediaAssetRecord] = {}
         self.selection_ledger: dict[str, SelectionLedgerEntry] = {}
         self.selection_reservations: dict[str, SelectionReservationRecord] = {}
+        self.clip_embedding_index: dict[str, ClipEmbeddingRecord] = {}
         self.annotations: dict[str, AnnotationEditorVm] = {}
         self.voices: dict[str, VoiceProfile] = {}
         self.prompt_templates: dict[str, PromptTemplate] = {}
@@ -374,6 +376,21 @@ class Repository:
             environment="local",
             concurrency_key="sandbox:llm.chat",
             options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.llm.options"),
+        )
+        self.provider_profiles["sandbox.embedding.default"] = ProviderProfile(
+            id="sandbox.embedding.default",
+            provider_id="sandbox",
+            model_id="qwen3-vl-embedding",
+            capability="multimodal.embedding",
+            display_name="Sandbox Multimodal Embedding",
+            environment="local",
+            concurrency_key="sandbox:multimodal.embedding",
+            options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.embedding.options"),
+            default_options={
+                "dimension": 1024,
+                "normalization": "l2",
+                "index_version": "clip-vl-qwen3-v1",
+            },
         )
         self.provider_profiles["sandbox.video.default"] = ProviderProfile(
             id="sandbox.video.default",

@@ -7,6 +7,7 @@ from packages.ai.gateway.provider_gateway import ProviderGateway
 from .dashscope import (
     DashScopeASRProvider,
     DashScopeLLMProvider,
+    DashScopeMultimodalEmbeddingProvider,
     DashScopeOmniProvider,
     DashScopeVLMProvider,
 )
@@ -29,6 +30,7 @@ def register_real_provider_plugins(gateway: ProviderGateway) -> None:
         DashScopeASRProvider(client),
         DashScopeVLMProvider(client),
         DashScopeLLMProvider(client),
+        DashScopeMultimodalEmbeddingProvider(client),
         DashScopeOmniProvider(client),
         RunningHubHeyGemProvider(client),
         DashScopeVideoReTalkProvider(client),

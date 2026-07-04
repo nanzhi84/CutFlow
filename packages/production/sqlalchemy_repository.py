@@ -57,12 +57,14 @@ from packages.core.contracts import (
     normalize_visual_asset_kind,
     utcnow,
 )
+from packages.core.contracts.artifacts import ClipEmbeddingRecord
 from packages.core.observability.funnel import resolve_event_owner
 from packages.core.storage import ObjectStore, Repository, get_object_store
 from packages.core.storage.database import (
     AnnotationRow,
     ArtifactRow,
     CaseRow,
+    ClipEmbeddingIndexRow,
     FinishedVideoRow,
     ImportBatchReportRow,
     JobRow,
@@ -168,6 +170,9 @@ NODE_LABELS = {
     "NarrationAlignment": "对齐旁白",
     "NarrationBoundaryPlanning": "规划旁白边界",
     "TimelineWindowPlanning": "编译时间线窗口",
+    "WindowQueryPlanning": "规划窗口检索意图",
+    "WindowMaterialRetrieval": "检索窗口素材",
+    "DeterministicEditingPlanning": "确定性剪辑规划",
     # Legacy display label for historical runs created before #158.
     "PortraitPlanning": "规划数字人镜头",
     "BrollPlanning": "规划 B-roll",
@@ -233,6 +238,31 @@ def _selection_ledger_entry_from_row(row: SelectionLedgerRow) -> SelectionLedger
         slot_phase=row.slot_phase,
         diversity_key=row.diversity_key,
         created_at=row.created_at,
+    )
+
+
+def _clip_embedding_record_from_row(row: ClipEmbeddingIndexRow) -> ClipEmbeddingRecord:
+    return ClipEmbeddingRecord(
+        clip_embedding_key=row.clip_embedding_key,
+        asset_id=row.asset_id,
+        asset_revision=row.asset_revision,
+        clip_id=row.clip_id,
+        source_start=row.source_start,
+        source_end=row.source_end,
+        source_frames_available=row.source_frames_available,
+        index_namespace=row.index_namespace,  # type: ignore[arg-type]
+        embedding_scope=row.embedding_scope,  # type: ignore[arg-type]
+        embedding_input_type=row.embedding_input_type,  # type: ignore[arg-type]
+        embedding_input_ref=row.embedding_input_ref,
+        sample_policy=row.sample_policy or {},
+        embedding_id=row.embedding_id,
+        embedding=[float(value) for value in (row.embedding or [])],
+        provider_profile_id=row.provider_profile_id,
+        embedding_model=row.embedding_model,
+        embedding_dimension=row.embedding_dimension,
+        normalization=row.normalization,
+        instruct=row.instruct,
+        index_version=row.index_version,
     )
 
 
@@ -646,6 +676,12 @@ class SqlAlchemyProductionRepository(BaseRepository):
                         ):
                             contract = artifact_row_to_contract(artifact_row)
                             repository.artifacts[contract.id] = contract
+                    embedding_statement = select(ClipEmbeddingIndexRow).where(
+                        ClipEmbeddingIndexRow.asset_id.in_(asset_ids)
+                    )
+                    for embedding_row in session.scalars(embedding_statement):
+                        record = _clip_embedding_record_from_row(embedding_row)
+                        repository.clip_embedding_index[record.clip_embedding_key] = record
                 for video_row in session.scalars(
                     select(FinishedVideoRow).where(FinishedVideoRow.case_id == run.case_id)
                 ):

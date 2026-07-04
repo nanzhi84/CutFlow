@@ -8639,6 +8639,8 @@
           "plan.material_pack",
           "plan.narration_boundary",
           "plan.timeline_windows",
+          "plan.window_queries",
+          "plan.window_material_retrieval",
           "plan.media_assignment",
           "plan.portrait",
           "plan.broll",

@@ -111,6 +111,25 @@ def seed_real_provider_configuration(repository) -> None:
             options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.audio.options"),
         ),
         ProviderProfile(
+            id="dashscope.multimodal_embedding.prod",
+            provider_id="dashscope.multimodal_embedding",
+            model_id="qwen3-vl-embedding",
+            capability="multimodal.embedding",
+            display_name="DashScope Qwen3-VL Embedding Production",
+            environment="prod",
+            enabled=True,
+            secret_ref="dashscope_prod.secret",
+            concurrency_key="dashscope:multimodal.embedding",
+            timeout_sec=60,
+            options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.embedding.options"),
+            default_options={
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "dimension": 1024,
+                "normalization": "l2",
+                "index_version": "clip-vl-qwen3-v1",
+            },
+        ),
+        ProviderProfile(
             id="runninghub.heygem.prod",
             provider_id="runninghub.heygem",
             model_id="heygem-webapp",
@@ -338,6 +357,11 @@ def _seed_price_catalogs(repository) -> None:
             provider_id="dashscope.omni",
             status="published",
         ),
+        ProviderPriceCatalog(
+            id="price_dashscope_embedding_prod",
+            provider_id="dashscope.multimodal_embedding",
+            status="published",
+        ),
         ProviderPriceCatalog(id="price_openai_image_prod", provider_id="openai.image", status="published"),
         ProviderPriceCatalog(
             id="price_volcengine_seedream_prod", provider_id="volcengine.seedream", status="published"
@@ -405,6 +429,15 @@ def _seed_price_catalogs(repository) -> None:
         capability_id="audio.understanding",
         unit="output_token",
         unit_price=Money(currency="CNY", amount=Decimal("0.000008")),
+    )
+    repository.price_items["price_dashscope_embedding_call"] = ProviderPriceItem(
+        id="price_dashscope_embedding_call",
+        catalog_id="price_dashscope_embedding_prod",
+        provider_id="dashscope.multimodal_embedding",
+        model_id="qwen3-vl-embedding",
+        capability_id="multimodal.embedding",
+        unit="call",
+        unit_price=Money(currency="CNY", amount=Decimal("0")),
     )
     repository.price_items["price_dashscope_asr_media_second"] = ProviderPriceItem(
         id="price_dashscope_asr_media_second",

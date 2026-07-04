@@ -83,6 +83,7 @@ class EditingAgentContext:
     shortlisted_material: dict
     shortlist_counts: dict
     candidates: IndexedCandidates
+    retrieval_topk_by_window: dict[str, list[str]]
     agent_input: dict
 
 
@@ -248,6 +249,23 @@ def _default_portrait_payload(windows: dict) -> dict:
     return dict(default_assignment.get("portrait_plan_payload") or {})
 
 
+def _retrieval_topk_by_window(retrieval: dict) -> dict[str, list[str]]:
+    candidates_by_window = retrieval.get("candidates_by_window") if isinstance(retrieval, dict) else {}
+    if not isinstance(candidates_by_window, dict):
+        return {}
+    topk: dict[str, list[str]] = {}
+    for window_id, candidates in candidates_by_window.items():
+        if not isinstance(candidates, list):
+            continue
+        ids = [
+            str(candidate.get("candidate_id") or "")
+            for candidate in candidates
+            if isinstance(candidate, dict) and str(candidate.get("candidate_id") or "")
+        ]
+        topk[str(window_id)] = ids
+    return topk
+
+
 def _selection_portrait_assignment(selection) -> list[dict]:
     return [
         {
@@ -369,6 +387,7 @@ def build_editing_agent_context(
     narration: dict,
     boundary: dict,
     windows: dict,
+    retrieval: dict | None = None,
 ) -> EditingAgentContext:
     raw_units = narration.get("units", []) or []
     duration = max([float(unit.get("end", 0) or 0) for unit in raw_units] or [1.0])
@@ -379,13 +398,16 @@ def build_editing_agent_context(
         windows.get("broll_windows", []) or [],
         material,
     )
-    candidates = index_candidates(shortlisted_material)
+    retrieval_topk_by_window = _retrieval_topk_by_window(retrieval or {})
+    candidate_material = material if retrieval_topk_by_window else shortlisted_material
+    candidates = index_candidates(candidate_material)
     agent_input = build_agent_input(
         request=request,
         boundary=agent_boundary,
         candidates=candidates,
         narration_units=raw_units,
         duration=duration,
+        retrieval_topk_by_window=retrieval_topk_by_window,
     )
     portrait_feasibility_failure = _portrait_feasibility_failure(agent_input)
     if portrait_feasibility_failure is not None:
@@ -407,6 +429,7 @@ def build_editing_agent_context(
         shortlisted_material=shortlisted_material,
         shortlist_counts=shortlist_counts,
         candidates=candidates,
+        retrieval_topk_by_window=retrieval_topk_by_window,
         agent_input=agent_input,
     )
 
@@ -439,6 +462,7 @@ def select_editing_assignment(
             candidates=agent_context.candidates,
             bgm_enabled=state.request.bgm.enabled,
             max_inserts=state.request.broll.max_inserts,
+            retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
         )
         engine = "deterministic_fallback"
         fallback_used = True
@@ -523,6 +547,7 @@ def select_editing_assignment(
             candidates=agent_context.candidates,
             bgm_enabled=state.request.bgm.enabled,
             max_repair_attempts=state.request.edit.max_repair_attempts,
+            retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
         )
         if errors:
             if not sandbox_fallback_allowed():
@@ -537,6 +562,7 @@ def select_editing_assignment(
                 candidates=agent_context.candidates,
                 bgm_enabled=state.request.bgm.enabled,
                 max_inserts=state.request.broll.max_inserts,
+                retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
             )
             engine = "deterministic_fallback"
             fallback_used = True
@@ -633,6 +659,7 @@ def materialize_editing_outputs(
     assignment_diagnostics = {
         "repair_trace": selection_result.repair_trace,
         "shortlist_counts": agent_context.shortlist_counts,
+        "retrieval_topk_by_window": agent_context.retrieval_topk_by_window,
         "fallback_used": selection_result.fallback_used,
         "fallback_reason": selection_result.fallback_reason,
         "broll_drops": broll_drops,
@@ -671,6 +698,7 @@ def materialize_editing_outputs(
         "font_id": selection.font_id,
         "bgm_id": selection.bgm_id,
         "shortlist_counts": agent_context.shortlist_counts,
+        "retrieval_topk_by_window": agent_context.retrieval_topk_by_window,
         "fallback_used": selection_result.fallback_used,
         "fallback_reason": selection_result.fallback_reason,
         "candidate_counts": {
@@ -698,6 +726,8 @@ def run(ctx: NodeContext) -> NodeOutput:
     narration = state.require(ArtifactKind.narration_units).payload or {}
     boundary = state.require(ArtifactKind.plan_narration_boundary).payload or {}
     windows = state.require(ArtifactKind.plan_timeline_windows).payload or {}
+    retrieval_artifact = state.artifacts.get(ArtifactKind.plan_window_material_retrieval)
+    retrieval = retrieval_artifact.payload if retrieval_artifact is not None else {}
 
     agent_context = build_editing_agent_context(
         request=state.request,
@@ -705,6 +735,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         narration=narration,
         boundary=boundary,
         windows=windows,
+        retrieval=retrieval,
     )
     selection_result = select_editing_assignment(ctx=ctx, agent_context=agent_context)
     materialized = materialize_editing_outputs(

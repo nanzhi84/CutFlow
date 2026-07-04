@@ -188,6 +188,60 @@ class TimelineWindowsPlan(ContractModel):
     compile_diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
+class WindowRetrievalQuery(ContractModel):
+    window_id: str
+    retrieval_intent: str
+
+
+class WindowQueryPlanArtifact(ContractModel):
+    window_queries: list[WindowRetrievalQuery] = Field(default_factory=list)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
+class ClipEmbeddingRecord(ContractModel):
+    clip_embedding_key: str
+    asset_id: str
+    asset_revision: str
+    clip_id: str
+    source_start: float
+    source_end: float
+    source_frames_available: int
+    index_namespace: Literal["portrait", "broll"]
+    embedding_scope: Literal["clip"] = "clip"
+    embedding_input_type: Literal["video_clip", "sampled_frames"] = "video_clip"
+    embedding_input_ref: str
+    sample_policy: dict[str, Any] = Field(default_factory=dict)
+    embedding_id: str
+    embedding: list[float] = Field(default_factory=list)
+    provider_profile_id: str
+    embedding_model: str = "qwen3-vl-embedding"
+    embedding_dimension: int = 1024
+    normalization: str = "l2"
+    instruct: str = "video_clip_retrieval_v1"
+    index_version: str = "clip-vl-qwen3-v1"
+
+
+class RetrievedWindowCandidate(ContractModel):
+    candidate_id: str
+    clip_embedding_key: str
+    asset_id: str
+    clip_id: str
+    source_start: float
+    source_end: float
+    source_frames_available: int
+    required_frames: int
+    semantic_similarity: float
+    recency_adjustment: float = 0.0
+    deterministic_tiebreaker: float = 0.0
+    retrieval_score: float
+    retrieval_trace: dict[str, Any] = Field(default_factory=dict)
+
+
+class WindowMaterialRetrievalArtifact(ContractModel):
+    candidates_by_window: dict[str, list[RetrievedWindowCandidate]] = Field(default_factory=dict)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
 class MediaPortraitAssignment(ContractModel):
     window_id: str
     candidate_id: str
