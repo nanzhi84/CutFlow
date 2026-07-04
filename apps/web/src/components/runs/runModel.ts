@@ -35,7 +35,7 @@ type StageDef = { key: string; label: string; detail: string; nodes: string[] };
 const STAGE_DEFS: StageDef[] = [
   { key: "script", label: "脚本与意图", detail: "校验请求、加载案例、解析创作意图", nodes: ["ValidateRequest", "LoadCaseContext", "ResolveCreativeIntent"] },
   { key: "voice", label: "配音合成", detail: "生成数字人配音并对齐时间轴", nodes: ["TTS", "NarrationAlignment"] },
-  { key: "material", label: "素材匹配与编排", detail: "匹配 B-roll、数字人镜头、字幕样式与时间线", nodes: ["MaterialPackPlanning", "NarrationBoundaryPlanning", "TimelineWindowPlanning", "BrollPlanning", "StylePlanning", "EditingAgentPlanning", "TimelinePlanning"] },
+  { key: "material", label: "素材匹配与编排", detail: "匹配 B-roll、数字人镜头、字幕样式与时间线", nodes: ["MaterialPackPlanning", "NarrationBoundaryPlanning", "TimelineWindowPlanning", "PortraitPlanning", "BrollPlanning", "StylePlanning", "EditingAgentPlanning", "TimelinePlanning"] },
   { key: "lipsync", label: "口型同步", detail: "生成数字人轨道并做唇形同步", nodes: ["PortraitTrackBuild", "LipSync"] },
   { key: "compose", label: "合成出片", detail: "渲染时间线、混合字幕配乐、导出成片", nodes: ["RenderFinalTimeline", "SubtitleAndBgmMix", "ExportFinishedVideo", "FinalizeRunReport"] },
 ];
