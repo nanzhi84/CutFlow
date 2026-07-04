@@ -30,10 +30,33 @@ def run(ctx: NodeContext) -> NodeOutput:
     units = (narration_units.payload or {}).get("units", []) if narration_units is not None else []
     candidates = index_candidates(material)
 
-    portrait_assignment = _assign_portrait_from_retrieval(
+    retrieval_portrait_assignment = _assign_portrait_from_retrieval(
         retrieval=retrieval,
         candidates=candidates.portrait_by_id,
         windows=windows,
+    )
+    portrait_fallback_diagnostics: dict = {}
+    if _missing_portrait_window_ids(windows, retrieval_portrait_assignment):
+        portrait_assignment = _default_portrait_assignment(windows)
+        portrait_payload = _default_portrait_payload(windows)
+        portrait_fallback_diagnostics = {
+            "portrait_assignment_source": "timeline_window_default",
+            "missing_retrieval_window_ids": _missing_portrait_window_ids(
+                windows,
+                retrieval_portrait_assignment,
+            ),
+        }
+    else:
+        portrait_assignment = retrieval_portrait_assignment
+        portrait_payload = materialize_portrait_from_assignment(
+            windows=windows,
+            assignment={"portrait": portrait_assignment, "broll": []},
+            candidates=candidates,
+        )
+    _ensure_portrait_coverage(
+        windows=windows,
+        assignment=portrait_assignment,
+        portrait_payload=portrait_payload,
     )
     broll_assignment = _assign_broll_from_retrieval(
         retrieval=retrieval,
@@ -41,16 +64,6 @@ def run(ctx: NodeContext) -> NodeOutput:
         max_inserts=state.request.broll.max_inserts,
     )
     assignment = {"portrait": portrait_assignment, "broll": broll_assignment}
-    portrait_payload = materialize_portrait_from_assignment(
-        windows=windows,
-        assignment=assignment,
-        candidates=candidates,
-    )
-    _ensure_portrait_coverage(
-        windows=windows,
-        assignment=portrait_assignment,
-        portrait_payload=portrait_payload,
-    )
     broll_payload, broll_drops = materialize_broll_from_assignment(
         windows=windows,
         assignment=assignment,
@@ -109,6 +122,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         diagnostics={
             "source": "window_material_retrieval",
             "portrait_segment_count": len(portrait_payload.get("segments") or []),
+            **portrait_fallback_diagnostics,
             "broll_drops": broll_drops,
             "retrieval_diagnostics": retrieval.get("diagnostics") or {},
         },
@@ -177,6 +191,47 @@ def _assign_portrait_from_retrieval(
             )
             break
     return assignments
+
+
+def _default_portrait_assignment(windows: dict) -> list[dict]:
+    default_assignment = windows.get("default_assignment") or {}
+    defaults = [
+        item for item in (default_assignment.get("portrait") or []) if isinstance(item, dict)
+    ]
+    portrait_windows = [
+        item for item in (windows.get("portrait_windows") or []) if isinstance(item, dict)
+    ]
+    assignment: list[dict] = []
+    for window_data, default in zip(portrait_windows, defaults):
+        segment_payload = default.get("segment_payload") or {}
+        assignment.append(
+            {
+                "window_id": str(window_data.get("window_id") or ""),
+                "candidate_id": str(default.get("window_id") or ""),
+                "source_mode": str(segment_payload.get("source_mode") or "lipsynced"),
+                "reason": "compiler default",
+            }
+        )
+    return assignment
+
+
+def _default_portrait_payload(windows: dict) -> dict:
+    default_assignment = windows.get("default_assignment") or {}
+    return dict(default_assignment.get("portrait_plan_payload") or {})
+
+
+def _missing_portrait_window_ids(windows: dict, assignment: list[dict]) -> list[str]:
+    expected = {
+        str(window.get("window_id") or "")
+        for window in (windows.get("portrait_windows") or [])
+        if isinstance(window, dict) and str(window.get("window_id") or "")
+    }
+    assigned = {
+        str(item.get("window_id") or "")
+        for item in assignment
+        if isinstance(item, dict) and str(item.get("window_id") or "")
+    }
+    return sorted(expected - assigned)
 
 
 def _assign_broll_from_retrieval(

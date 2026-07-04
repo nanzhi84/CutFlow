@@ -349,6 +349,116 @@ def test_deterministic_editing_planning_consumes_window_retrieval_topk(tmp_path)
     assert broll_payload["overlays"][0]["timeline_end_frame"] == 90
 
 
+def test_deterministic_editing_planning_rejects_incomplete_default_portrait_fallback(
+    tmp_path,
+):
+    adapter = _adapter(tmp_path)
+    retrieval = {"candidates_by_window": {}, "diagnostics": {}}
+    ctx = _ctx(
+        adapter,
+        "DeterministicEditingPlanning",
+        {
+            ArtifactKind.plan_material_pack: _artifact(ArtifactKind.plan_material_pack, _material()),
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                _windows(),
+            ),
+            ArtifactKind.plan_window_material_retrieval: _artifact(
+                ArtifactKind.plan_window_material_retrieval,
+                retrieval,
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+            ArtifactKind.creative_intent: _artifact(ArtifactKind.creative_intent, {"intent": {}}),
+        },
+    )
+
+    with pytest.raises(NodeExecutionError) as exc:
+        nodes.deterministic_editing_planning.run(ctx)
+
+    assert exc.value.error.code == ErrorCode.material_insufficient_portrait
+    assert exc.value.error.details["missing_assignment_window_ids"] == ["pwin_000"]
+    assert exc.value.error.details["materialized_portrait_segment_count"] == 0
+
+
+def test_deterministic_editing_planning_accepts_complete_default_portrait_fallback(
+    tmp_path,
+):
+    adapter = _adapter(tmp_path)
+    windows = _windows()
+    default_segment = {
+        "segment_id": "portrait_1",
+        "asset_id": "portrait_a",
+        "clip_id": "portrait_clip",
+        "start_sec": 0.0,
+        "end_sec": 4.0,
+        "source_start": 0.0,
+        "source_end": 4.0,
+        "role": "main",
+        "source_mode": "lipsynced",
+        "boundary_source": "semantic",
+        "boundary_reason": None,
+        "unit_ids": ["unit_1"],
+        "slot_phase": "portrait_opening",
+        "recently_used_material": False,
+        "timeline_start_frame": 0,
+        "timeline_end_frame": 120,
+        "source_start_frame": 0,
+        "source_end_frame": 120,
+    }
+    windows["default_assignment"] = {
+        "portrait": [
+            {
+                "window_id": "portrait_a:portrait_clip",
+                "segment_payload": default_segment,
+            }
+        ],
+        "portrait_plan_payload": {
+            "fps": 30,
+            "total_duration": 4.0,
+            "asset_id": "portrait_a",
+            "duration_sec": 4.0,
+            "segments": [default_segment],
+            "diagnostics": {"planner": "timeline_window_default", "segment_count": 1},
+        },
+        "engine": "compiler_default",
+    }
+    retrieval = {"candidates_by_window": {}, "diagnostics": {}}
+    ctx = _ctx(
+        adapter,
+        "DeterministicEditingPlanning",
+        {
+            ArtifactKind.plan_material_pack: _artifact(ArtifactKind.plan_material_pack, _material()),
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                windows,
+            ),
+            ArtifactKind.plan_window_material_retrieval: _artifact(
+                ArtifactKind.plan_window_material_retrieval,
+                retrieval,
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+            ArtifactKind.creative_intent: _artifact(ArtifactKind.creative_intent, {"intent": {}}),
+        },
+    )
+
+    output = nodes.deterministic_editing_planning.run(ctx)
+
+    portrait_payload = next(
+        artifact.payload for artifact in output.artifacts if artifact.kind == ArtifactKind.plan_portrait
+    )
+    media_assignment = next(
+        artifact.payload
+        for artifact in output.artifacts
+        if artifact.kind == ArtifactKind.plan_media_assignment
+    )
+    assert portrait_payload["segments"] == [default_segment]
+    assert media_assignment["portrait"][0]["window_id"] == "pwin_000"
+    assert media_assignment["diagnostics"]["portrait_assignment_source"] == (
+        "timeline_window_default"
+    )
+    assert media_assignment["diagnostics"]["missing_retrieval_window_ids"] == ["pwin_000"]
+
+
 def test_agent_validator_rejects_broll_choice_outside_window_topk():
     candidates = index_candidates(_material())
     selection = EditingSelection(
