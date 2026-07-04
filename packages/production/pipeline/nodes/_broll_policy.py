@@ -1,9 +1,9 @@
 """Shared b-roll selection policy helpers.
 
-Single source of truth for the ``include_generic_coverage`` decision so the
-three call sites (MaterialPackPlanning, BrollPlanning, BrollCoveragePlanning)
-can never drift apart — a past drift between two of these gates is exactly what
-silently emptied the b-roll pool.
+Single source of truth for the downstream ``include_generic_coverage`` decision
+so BrollPlanning and BrollCoveragePlanning cannot drift apart. MaterialPack is
+only the hard eligibility pool after #160 Stage 2; it does not run semantic
+retrieval or generic-coverage ranking.
 """
 
 from __future__ import annotations

@@ -218,6 +218,7 @@ class MaterialPackArtifact(ContractModel):
     broll_candidates: list[MaterialCandidate] = Field(default_factory=list)
     font_candidates: list[MaterialCandidate] = Field(default_factory=list)
     bgm_candidates: list[MaterialCandidate] = Field(default_factory=list)
+    rejected_candidates: list[dict[str, Any]] = Field(default_factory=list)
     reservations: list[str] = Field(default_factory=list)
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 

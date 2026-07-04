@@ -218,7 +218,7 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
             ("packages/production/pipeline/nodes/editing_agent_planning.py", "request.bgm.enabled"),
         ),
         "bgm_id": (
-            ("packages/production/pipeline/nodes/material_pack_planning.py", "request.bgm.bgm_id"),
+            ("packages/production/pipeline/_materialize.py", "request.bgm.bgm_id"),
         ),
         "volume": (
             ("packages/production/pipeline/_materialize.py", "request.bgm.volume"),
