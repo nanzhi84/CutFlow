@@ -50,6 +50,7 @@ NODE_LABELS = {
     "NarrationAlignment": "对齐旁白",
     "NarrationBoundaryPlanning": "规划旁白边界",
     "TimelineWindowPlanning": "编译时间线窗口",
+    # Legacy display label for historical runs created before #158.
     "PortraitPlanning": "规划数字人镜头",
     "BrollPlanning": "规划 B-roll",
     "StylePlanning": "规划字幕与包装",

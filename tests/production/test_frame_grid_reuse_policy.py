@@ -2,7 +2,7 @@
 
 The #105 refactor deliberately does NOT version the artifact schema or bump
 node_version when frame fields move authority into BrollPlanning. That is only safe
-because TimelineWindowPlanning / PortraitPlanning / BrollPlanning / TimelinePlanning all carry
+because TimelineWindowPlanning / BrollPlanning / TimelinePlanning all carry
 ``reuse_policy="never"``: on resume their old artifacts are discarded and the nodes
 re-run, so a run cannot resume onto a pre-#105 frame-less plan. This test pins that
 invariant (if a future change flips one to "strict" the frame-less reuse hole reopens).
@@ -18,7 +18,6 @@ def test_frame_grid_planning_nodes_never_reuse_on_resume():
     by_id = {node.node_id: node for node in template.nodes}
     for node_id in (
         "TimelineWindowPlanning",
-        "PortraitPlanning",
         "BrollPlanning",
         "TimelinePlanning",
     ):

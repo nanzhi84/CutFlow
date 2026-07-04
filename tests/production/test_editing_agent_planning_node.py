@@ -343,13 +343,82 @@ def _node_run(node_id: str = "EditingAgentPlanning") -> NodeRun:
     )
 
 
+def _node_ctx(adapter: LocalRuntimeAdapter, state: RunState) -> NodeContext:
+    return NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+
+
 def _run_node(adapter: LocalRuntimeAdapter, state: RunState):
-    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
-    return nodes.editing_agent_planning.run(ctx)
+    return nodes.editing_agent_planning.run(_node_ctx(adapter, state))
 
 
 def _payload(output, kind: ArtifactKind) -> dict:
     return next(a.payload for a in output.artifacts if a.kind == kind)
+
+
+def _agent_context(state: RunState):
+    return nodes.editing_agent_planning.build_editing_agent_context(
+        request=state.request,
+        material=state.artifacts[ArtifactKind.plan_material_pack].payload,
+        narration=state.artifacts[ArtifactKind.narration_units].payload,
+        boundary=state.artifacts[ArtifactKind.plan_narration_boundary].payload,
+        windows=state.artifacts[ArtifactKind.plan_timeline_windows].payload,
+    )
+
+
+def test_build_editing_agent_context_is_independent_from_provider():
+    state = _state()
+    context = _agent_context(state)
+
+    assert context.agent_boundary["portrait_slots"][0]["slot_id"] == "pslot_000"
+    assert context.agent_input["portrait_slots"][0]["legal_window_ids"] == ["pc_000", "pc_001"]
+    assert context.shortlist_counts == {
+        "portrait": {"raw": 2, "eligible": 2, "exposed": 2, "dropped": 0},
+        "broll": {"raw": 1, "eligible": 1, "exposed": 1, "dropped": 0},
+    }
+    assert context.candidates.portrait_by_id
+
+
+def test_select_editing_assignment_runs_before_materialization(tmp_path):
+    adapter = _adapter(tmp_path)
+    state = _state()
+    context = _agent_context(state)
+
+    result = nodes.editing_agent_planning.select_editing_assignment(
+        ctx=_node_ctx(adapter, state),
+        agent_context=context,
+    )
+
+    assert result.engine == "deterministic_fallback"
+    assert result.fallback_used is True
+    assert result.fallback_reason == "no_provider"
+    assert result.provider_invocation_ids == []
+    assert result.selection.broll
+
+
+def test_materialize_editing_outputs_runs_after_selection(tmp_path):
+    adapter = _adapter(tmp_path)
+    state = _state()
+    context = _agent_context(state)
+    selection_result = nodes.editing_agent_planning.select_editing_assignment(
+        ctx=_node_ctx(adapter, state),
+        agent_context=context,
+    )
+    default_portrait = state.artifacts[
+        ArtifactKind.plan_timeline_windows
+    ].payload["default_assignment"]["portrait_plan_payload"]
+
+    materialized = nodes.editing_agent_planning.materialize_editing_outputs(
+        request=state.request,
+        node_id="EditingAgentPlanning",
+        agent_context=context,
+        selection_result=selection_result,
+        creative_intent=SimpleNamespace(emphasis=[]),
+    )
+
+    assert materialized.assignment_payload["engine"] == "deterministic_fallback"
+    assert materialized.portrait_payload == default_portrait
+    assert materialized.broll_payload["enabled"] is True
+    assert materialized.diagnostics["fallback_used"] is True
 
 
 def test_fallback_path_emits_five_frame_exact_artifacts(tmp_path):

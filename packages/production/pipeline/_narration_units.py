@@ -1,4 +1,4 @@
-"""Shared narration-unit rebuild used by boundary + portrait planning.
+"""Shared narration-unit rebuild used by boundary + timeline-window planning.
 
 Given the aligned raw narration units, rebuild the boundary-annotated ``NarrationUnit``
 list the editing planner needs (``portrait_cut_allowed`` / ``hard_end`` /
@@ -7,7 +7,7 @@ already carries a boundary signal it is used as-is; otherwise the units are rebu
 the script + spoken spans.
 
 This is a PURE deterministic function, so ``NarrationBoundaryPlanning`` (which detects
-audio pauses and assembles safe cuts) and ``PortraitPlanning`` (which packs portrait
+audio pauses and assembles safe cuts) and ``TimelineWindowPlanning`` (which packs portrait
 material into the same boundaries) each derive identical planner units independently —
 no node-to-node coupling, and the boundary set is bit-for-bit the same on both sides.
 """

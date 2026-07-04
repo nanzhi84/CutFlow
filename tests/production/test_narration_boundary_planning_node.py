@@ -2,7 +2,7 @@
 
 These tests prove the node reads the TTS audio, detects real pauses (ffmpeg
 silencedetect), assembles the semantic + audio safe-cut boundaries, and emits a
-frame-quantized plan.narration_boundary artifact — the pause windows PortraitPlanning then
+frame-quantized plan.narration_boundary artifact — the pause windows TimelineWindowPlanning then
 consumes instead of re-detecting them. They also pin the two guards that moved here with
 the detection: honest artifact_missing on an unreadable TTS audio, and semantic-only
 fallback when the audio has no reliable silence.
@@ -183,7 +183,7 @@ def test_detects_pauses_on_resolved_tts_path_and_publishes_them(monkeypatch, tmp
     assert seen.get("audio_path") is not None, "detection must run on the resolved TTS path"
     payload = _payload(output)
     assert payload["source"] == "tts_subtitle+silence"
-    # The raw pause windows are handed downstream verbatim for PortraitPlanning to consume.
+    # The raw pause windows are handed downstream verbatim for TimelineWindowPlanning.
     assert payload["pause_windows"] == pauses
     assert payload["diagnostics"]["used_audio_pauses"] is True
     # A real pause at a sentence end produces a semantic_audio_pause safe cut carrying the
@@ -245,14 +245,14 @@ def test_frame_quantized_slots_are_contiguous_and_cover_the_timeline(monkeypatch
     assert all(slot["text"] for slot in payload["broll_slots"])
 
 
-def test_boundaries_match_portrait_planning_consumed_pauses(monkeypatch, tmp_path):
-    """The pauses this node publishes are exactly what PortraitPlanning would plan on.
+def test_boundaries_match_timeline_window_planning_consumed_pauses(monkeypatch, tmp_path):
+    """The pauses this node publishes are exactly what TimelineWindowPlanning plans on.
 
     Running both nodes on the same inputs, the portrait main-track boundaries land on the
     audio pauses this node detected — proving the split front-moves detection without
-    changing the frame boundaries PortraitPlanning produces (#135 acceptance).
+    changing the frame boundaries TimelineWindowPlanning produces (#135 acceptance).
     """
-    from tests.production import test_portrait_planning_node as portrait_test
+    from tests.production import test_timeline_window_planning_node as timeline_window_test
 
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
@@ -287,13 +287,13 @@ def test_boundaries_match_portrait_planning_consumed_pauses(monkeypatch, tmp_pat
     boundary_output = _run_node(adapter, state)
     boundary_payload = _payload(boundary_output)
 
-    # Feed the published pauses into PortraitPlanning exactly as the pipeline would.
-    portrait_state = portrait_test._state(
+    # Feed the published pauses into TimelineWindowPlanning exactly as the pipeline would.
+    portrait_state = timeline_window_test._state(
         adapter,
         candidate_ids=["asset_portrait_demo", "asset_portrait_b", "asset_portrait_c"],
         pause_windows=boundary_payload["pause_windows"],
     )
-    portrait_output = portrait_test._run_node(adapter, portrait_state)
+    portrait_output = timeline_window_test._run_node(adapter, portrait_state)
     portrait_payload = next(
         a.payload for a in portrait_output.artifacts if a.kind == ArtifactKind.plan_portrait
     )

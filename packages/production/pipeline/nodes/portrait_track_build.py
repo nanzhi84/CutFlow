@@ -33,7 +33,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             temp_dir = Path(directory)
             segment_paths: list[Path] = []
             for index, segment in enumerate(segments):
-                # PortraitPlanning unconditionally emits frame-aligned segments on the
+                # TimelineWindowPlanning unconditionally emits frame-aligned segments on the
                 # 30fps grid; a missing source frame is an upstream contract defect, not
                 # something to silently re-derive from seconds (#105). Fail fast naming
                 # the gap BEFORE any source resolution / ffmpeg work. (reuse_policy="never"

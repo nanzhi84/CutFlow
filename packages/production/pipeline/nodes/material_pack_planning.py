@@ -110,8 +110,8 @@ def run(ctx: NodeContext) -> NodeOutput:
     portrait_ledger = repo.recent_selections(case_id=request.case_id, medium="portrait")
     portrait_candidates: list[MaterialCandidate] = []
     # Clip-level lip-sync candidates from the unified visual bucket: one candidate per
-    # usable talking-head clip, carrying its source window so PortraitPlanning cuts the
-    # exact clip span. Coverage/capacity is still gated downstream.
+    # usable talking-head clip, carrying its source window so TimelineWindowPlanning cuts
+    # the exact clip span. Coverage/capacity is still gated downstream.
     portrait_annotations = {
         asset.id: annotation
         for asset in portrait_visual_assets
@@ -119,9 +119,9 @@ def run(ctx: NodeContext) -> NodeOutput:
     }
     portrait_avoid_cache: dict[str, list[tuple[float, float]]] = {}
     # Weighted recency + opening-guard context is the single ledger-derived signal the
-    # downstream PortraitPlanning boundary planner consumes; computing it HERE (the one
+    # downstream TimelineWindowPlanning compiler consumes; computing it HERE (the one
     # node that reads the ledger) and stamping the full ``recent_usage`` dict onto each
-    # candidate's open metadata is what lets PortraitPlanning stop reading the ledger
+    # candidate's open metadata is what lets TimelineWindowPlanning avoid reading ledger
     # itself. It depends only on ``asset_id`` (template identity), so it is cached per
     # asset and shared across that asset's clip windows — identical to the value the
     # old per-window recompute produced.
@@ -306,7 +306,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             # Unified video bucket visibility: how many portrait candidates came from
             # per-clip lip-sync windows, and the honest "operator uploaded visual
             # material but it has no talking-head clip" signal (an A-roll-insufficiency
-            # early warning; PortraitPlanning still enforces the hard coverage gate
+            # early warning; TimelineWindowPlanning still enforces the hard coverage gate
             # downstream). Key names stay stable for downstream consumers.
             "portrait_from_video": _portrait_from_video_count,
             "video_no_lipsync": bool(portrait_visual_assets) and _portrait_from_video_count == 0,

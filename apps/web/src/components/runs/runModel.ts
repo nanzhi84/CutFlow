@@ -12,6 +12,7 @@ const NODE_LABELS: Record<string, string> = {
   NarrationAlignment: "对齐旁白时间轴",
   NarrationBoundaryPlanning: "规划旁白边界",
   TimelineWindowPlanning: "编译时间线窗口",
+  // 历史 run 兼容：#158 后 active 模板不再调度 PortraitPlanning。
   PortraitPlanning: "规划数字人镜头",
   BrollPlanning: "规划 B-roll 插入",
   StylePlanning: "规划字幕与包装",
