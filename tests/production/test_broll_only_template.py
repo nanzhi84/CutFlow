@@ -112,11 +112,12 @@ def test_digital_human_template_keeps_existing_sequence_edges_and_outputs():
         ],
         "WindowQueryPlanning": [ArtifactKind.plan_window_queries],
         "WindowMaterialRetrieval": [ArtifactKind.plan_window_material_retrieval],
-        "DeterministicEditingPlanning": [
-            ArtifactKind.plan_media_assignment,
-            ArtifactKind.plan_broll,
-            ArtifactKind.plan_style,
-        ],
+            "DeterministicEditingPlanning": [
+                ArtifactKind.plan_media_assignment,
+                ArtifactKind.plan_portrait,
+                ArtifactKind.plan_broll,
+                ArtifactKind.plan_style,
+            ],
         "TimelinePlanning": [ArtifactKind.plan_timeline, ArtifactKind.plan_render],
         "PortraitTrackBuild": [ArtifactKind.video_portrait_track],
         "LipSync": [ArtifactKind.video_lipsync, ArtifactKind.lipsync_report],

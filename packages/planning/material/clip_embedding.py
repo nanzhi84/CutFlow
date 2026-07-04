@@ -79,9 +79,19 @@ def clip_embedding_key(
 
 def candidate_source_span(candidate: dict) -> tuple[str, float, float]:
     metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
-    clip_id = str(metadata.get("clip_id") or candidate.get("asset_id") or "").strip()
-    source_start = _as_float(metadata.get("source_start"))
-    source_end = _as_float(metadata.get("source_end"))
+    clip_id = str(metadata.get("clip_id") or "").strip()
+    if not clip_id:
+        raise ValueError("clip_id is required for clip embedding index records")
+    source_start = _required_finite_float(
+        metadata.get("source_start"),
+        field_name="source_start",
+    )
+    source_end = _required_finite_float(
+        metadata.get("source_end"),
+        field_name="source_end",
+    )
+    if source_end <= source_start:
+        raise ValueError("source_end must be greater than source_start for clip embedding index records")
     return clip_id, source_start, source_end
 
 
@@ -138,10 +148,7 @@ def build_clip_embedding_record(
         index_version=index_version,
         sample_policy=sample_policy,
     )
-    vector = embedding or deterministic_dense_embedding(
-        f"{asset_id}:{clip_id}:{source_start:.6f}:{source_end:.6f}",
-        dimension=dimension,
-    )
+    vector = _validated_embedding_vector(embedding, dimension=dimension)
     return ClipEmbeddingRecord(
         clip_embedding_key=key,
         asset_id=asset_id,
@@ -183,11 +190,25 @@ def normalize_vector(values: list[float], *, dimension: int) -> list[float]:
     vector = [float(value) for value in values[:dimension]]
     if len(vector) < dimension:
         vector.extend([0.0] * (dimension - len(vector)))
+    if not all(math.isfinite(value) for value in vector):
+        raise ValueError("vector must contain only finite values")
     norm = math.sqrt(sum(value * value for value in vector))
     if norm <= 0:
-        vector[0] = 1.0
-        return vector
+        raise ValueError("vector must have non-zero norm")
     return [value / norm for value in vector]
+
+
+def _validated_embedding_vector(values: list[float] | None, *, dimension: int) -> list[float]:
+    if values is None:
+        raise ValueError("clip embedding is required")
+    if len(values) != dimension:
+        raise ValueError(f"clip embedding dimension mismatch: expected {dimension}, got {len(values)}")
+    vector = [float(value) for value in values]
+    if not all(math.isfinite(value) for value in vector):
+        raise ValueError("clip embedding must contain only finite values")
+    if math.sqrt(sum(value * value for value in vector)) <= 0:
+        raise ValueError("clip embedding must have non-zero norm")
+    return vector
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
@@ -202,8 +223,11 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
     return dot / (left_norm * right_norm)
 
 
-def _as_float(value: Any, default: float = 0.0) -> float:
+def _required_finite_float(value: Any, *, field_name: str) -> float:
     try:
-        return float(value)
+        result = float(value)
     except (TypeError, ValueError):
-        return default
+        raise ValueError(f"{field_name} must be a finite number for clip embedding index records") from None
+    if not math.isfinite(result):
+        raise ValueError(f"{field_name} must be a finite number for clip embedding index records")
+    return result

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from packages.core.contracts import (
     ArtifactRef,
@@ -219,6 +220,18 @@ class ClipEmbeddingRecord(ContractModel):
     normalization: str = "l2"
     instruct: str = "video_clip_retrieval_v1"
     index_version: str = "clip-vl-qwen3-v1"
+
+    @model_validator(mode="after")
+    def validate_embedding_vector(self) -> "ClipEmbeddingRecord":
+        if self.embedding_dimension != 1024:
+            raise ValueError("clip embedding dimension must be 1024")
+        if len(self.embedding) != self.embedding_dimension:
+            raise ValueError(
+                "clip embedding vector length must equal embedding_dimension"
+            )
+        if not all(math.isfinite(float(value)) for value in self.embedding):
+            raise ValueError("clip embedding vector must contain only finite values")
+        return self
 
 
 class RetrievedWindowCandidate(ContractModel):

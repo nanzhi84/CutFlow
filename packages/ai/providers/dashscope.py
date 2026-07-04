@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from typing import Any
 
@@ -10,6 +11,7 @@ from packages.ai.gateway.provider_gateway import (
     ProviderCall,
     ProviderResult,
     ProviderRuntimeError,
+    parse_multimodal_embedding_dimension,
 )
 from packages.ai.gateway.provider_context import ProviderInvocationContext
 from packages.ai.providers.common import (
@@ -184,7 +186,10 @@ class DashScopeMultimodalEmbeddingProvider:
                 ErrorCode.provider_unsupported_option,
                 "retrieval_intent text is required.",
             )
-        dimension = int(call.input.get("dimension") or context.profile.default_options.get("dimension") or 1024)
+        dimension = parse_multimodal_embedding_dimension(
+            call.input.get("dimension"),
+            context.profile.default_options.get("dimension"),
+        )
         payload = {
             "model": context.profile.model_id,
             "input": text,
@@ -205,12 +210,20 @@ class DashScopeMultimodalEmbeddingProvider:
                 ErrorCode.provider_remote_failed,
                 "DashScope embedding response missing embedding vector.",
             )
+        if len(embedding) != dimension:
+            raise ProviderRuntimeError(
+                ErrorCode.provider_remote_failed,
+                (
+                    "DashScope embedding response dimension mismatch: "
+                    f"expected {dimension}, got {len(embedding)}."
+                ),
+            )
         return ProviderResult(
             output={
                 "embedding": embedding,
                 "embedding_id": str(first_value(result, "id", "request_id") or ""),
                 "model": context.profile.model_id,
-                "dimension": len(embedding),
+                "dimension": dimension,
                 "normalization": str(
                     call.input.get("normalization")
                     or context.profile.default_options.get("normalization")
@@ -391,9 +404,12 @@ def _coerce_embedding(value: Any) -> list[float]:
     vector: list[float] = []
     for item in value:
         try:
-            vector.append(float(item))
+            component = float(item)
         except (TypeError, ValueError):
             return []
+        if not math.isfinite(component):
+            return []
+        vector.append(component)
     return vector
 
 

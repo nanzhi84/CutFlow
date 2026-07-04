@@ -174,6 +174,7 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
     "WindowMaterialRetrieval": [ArtifactKind.plan_window_material_retrieval],
     "DeterministicEditingPlanning": [
         ArtifactKind.plan_media_assignment,
+        ArtifactKind.plan_portrait,
         ArtifactKind.plan_broll,
         ArtifactKind.plan_style,
     ],

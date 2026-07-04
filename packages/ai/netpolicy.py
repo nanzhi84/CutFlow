@@ -59,6 +59,7 @@ DEFAULT_ALLOWED_HOSTS: frozenset[str] = frozenset(
 URL_OPTION_KEYS: tuple[str, ...] = (
     "base_url",
     "data_base_url",
+    "embedding_url",
     "transcription_url",
     "chat_completions_url",
 )

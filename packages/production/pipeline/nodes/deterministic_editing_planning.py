@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from packages.core.contracts import ArtifactKind, NodeStatus, WarningCode
+from packages.core.contracts import ArtifactKind, ErrorCode, NodeStatus, WarningCode
 from packages.core.contracts.artifacts import BrollPlanArtifact, MediaAssignmentPlan
-from packages.core.workflow import NodeOutput
+from packages.core.workflow import NodeExecutionError, NodeOutput
+from packages.planning.editing.frame_grid import frame_index
+from packages.planning.material import longest_clean_portrait_source_span
 from packages.production.pipeline._editing_agent import index_candidates
 from packages.production.pipeline._materialize import (
     materialize_broll_from_assignment,
+    materialize_portrait_from_assignment,
     materialize_style_from_selection,
+    portrait_cut_frames,
 )
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
@@ -26,17 +30,32 @@ def run(ctx: NodeContext) -> NodeOutput:
     units = (narration_units.payload or {}).get("units", []) if narration_units is not None else []
     candidates = index_candidates(material)
 
+    portrait_assignment = _assign_portrait_from_retrieval(
+        retrieval=retrieval,
+        candidates=candidates.portrait_by_id,
+        windows=windows,
+    )
     broll_assignment = _assign_broll_from_retrieval(
         retrieval=retrieval,
         candidates=candidates.broll_by_id,
         max_inserts=state.request.broll.max_inserts,
     )
-    assignment = {"portrait": [], "broll": broll_assignment}
+    assignment = {"portrait": portrait_assignment, "broll": broll_assignment}
+    portrait_payload = materialize_portrait_from_assignment(
+        windows=windows,
+        assignment=assignment,
+        candidates=candidates,
+    )
+    _ensure_portrait_coverage(
+        windows=windows,
+        assignment=portrait_assignment,
+        portrait_payload=portrait_payload,
+    )
     broll_payload, broll_drops = materialize_broll_from_assignment(
         windows=windows,
         assignment=assignment,
         candidates=candidates,
-        cut_frames=[],
+        cut_frames=portrait_cut_frames(portrait_payload),
         enabled=state.request.broll.enabled,
         max_inserts=state.request.broll.max_inserts,
     )
@@ -85,9 +104,11 @@ def run(ctx: NodeContext) -> NodeOutput:
     ]
     media_assignment = MediaAssignmentPlan(
         engine="deterministic_default",
+        portrait=portrait_assignment,
         broll=broll_assignment,
         diagnostics={
             "source": "window_material_retrieval",
+            "portrait_segment_count": len(portrait_payload.get("segments") or []),
             "broll_drops": broll_drops,
             "retrieval_diagnostics": retrieval.get("diagnostics") or {},
         },
@@ -103,12 +124,59 @@ def run(ctx: NodeContext) -> NodeOutput:
                 media_assignment,
                 "MediaAssignmentPlan.v1",
             ),
+            ctx.artifact(ArtifactKind.plan_portrait, portrait_payload, "PortraitPlanArtifact.v1"),
             ctx.artifact(ArtifactKind.plan_broll, broll_payload, "BrollPlanArtifact.v1"),
             ctx.artifact(ArtifactKind.plan_style, style_payload, "StylePlanArtifact.v1"),
         ],
         warnings=warnings,
         degradations=degradations,
     )
+
+
+def _assign_portrait_from_retrieval(
+    *,
+    retrieval: dict,
+    candidates: dict[str, dict],
+    windows: dict,
+) -> list[dict]:
+    assignments: list[dict] = []
+    candidates_by_window = retrieval.get("candidates_by_window") or {}
+    used_asset_ids: set[str] = set()
+    portrait_windows = sorted(
+        (
+            window
+            for window in (windows.get("portrait_windows") or [])
+            if isinstance(window, dict)
+        ),
+        key=lambda window: int(window.get("start_frame", 0) or 0),
+    )
+    for window in portrait_windows:
+        window_id = str(window.get("window_id") or "")
+        required_frames = _required_frames(window)
+        for retrieved in candidates_by_window.get(window_id) or []:
+            if not isinstance(retrieved, dict):
+                continue
+            candidate_id = str(retrieved.get("candidate_id") or "")
+            candidate = candidates.get(candidate_id)
+            if candidate is None:
+                continue
+            asset_id = str(candidate.get("asset_id") or "")
+            if asset_id and asset_id in used_asset_ids:
+                continue
+            if _portrait_source_frames_available(candidate) < required_frames:
+                continue
+            if asset_id:
+                used_asset_ids.add(asset_id)
+            assignments.append(
+                {
+                    "window_id": window_id,
+                    "candidate_id": candidate_id,
+                    "source_mode": "lipsynced",
+                    "reason": "window retrieval topK",
+                }
+            )
+            break
+    return assignments
 
 
 def _assign_broll_from_retrieval(
@@ -155,3 +223,51 @@ def _assign_broll_from_retrieval(
             )
             break
     return assignments
+
+
+def _ensure_portrait_coverage(
+    *,
+    windows: dict,
+    assignment: list[dict],
+    portrait_payload: dict,
+) -> None:
+    portrait_windows = [
+        window for window in (windows.get("portrait_windows") or []) if isinstance(window, dict)
+    ]
+    expected_window_ids = {
+        str(window.get("window_id") or "") for window in portrait_windows if window.get("window_id")
+    }
+    assigned_window_ids = {
+        str(item.get("window_id") or "") for item in assignment if isinstance(item, dict)
+    }
+    segment_count = len(
+        [segment for segment in (portrait_payload.get("segments") or []) if isinstance(segment, dict)]
+    )
+    missing_assignment_ids = sorted(expected_window_ids - assigned_window_ids)
+    missing_segment_count = max(0, len(expected_window_ids) - segment_count)
+    if missing_assignment_ids or missing_segment_count:
+        raise NodeExecutionError(
+            ErrorCode.material_insufficient_portrait,
+            "人像素材不足：retrieval topK 未覆盖所有 portrait window。",
+            details={
+                "missing_assignment_window_ids": missing_assignment_ids,
+                "expected_portrait_window_count": len(expected_window_ids),
+                "assigned_portrait_window_count": len(assigned_window_ids),
+                "materialized_portrait_segment_count": segment_count,
+            },
+        )
+
+
+def _required_frames(window: dict) -> int:
+    start = int(window.get("start_frame", 0) or 0)
+    end = int(window.get("end_frame", 0) or 0)
+    return max(0, int(window.get("length_frames") or end - start))
+
+
+def _portrait_source_frames_available(candidate: dict) -> int:
+    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    clean_span = longest_clean_portrait_source_span(metadata)
+    if clean_span is None:
+        return 0
+    source_start, source_end = clean_span
+    return max(0, frame_index(source_end) - frame_index(source_start))

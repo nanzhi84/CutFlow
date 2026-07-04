@@ -926,6 +926,8 @@ def test_dashscope_llm_uses_compatible_chat_base_url_and_ignores_legacy_max_toke
 
 
 def test_dashscope_multimodal_embedding_uses_compatible_embeddings_url(tmp_path):
+    embedding = [0.001] * 1024
+
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
         assert request.url.path == "/compatible-mode/v1/embeddings"
@@ -940,7 +942,7 @@ def test_dashscope_multimodal_embedding_uses_compatible_embeddings_url(tmp_path)
             200,
             json={
                 "id": "emb_req_1",
-                "data": [{"embedding": [0.1, 0.2, 0.3]}],
+                "data": [{"embedding": embedding}],
             },
         )
 
@@ -970,8 +972,8 @@ def test_dashscope_multimodal_embedding_uses_compatible_embeddings_url(tmp_path)
 
     assert invocation.status == ProviderStatus.succeeded
     assert result is not None
-    assert result.output["embedding"] == [0.1, 0.2, 0.3]
-    assert result.output["dimension"] == 3
+    assert result.output["embedding"] == embedding
+    assert result.output["dimension"] == 1024
     assert result.output["model"] == "qwen3-vl-embedding"
     assert result.output["normalization"] == "l2"
     assert result.input_tokens == len("施工前现场细节")

@@ -235,6 +235,14 @@ def _topk_for_slot(slot: dict, retrieval_topk_by_window: dict[str, list[str]] | 
     ]
 
 
+def _slot_has_retrieval_constraint(
+    slot: dict, retrieval_topk_by_window: dict[str, list[str]] | None
+) -> bool:
+    if retrieval_topk_by_window is None:
+        return False
+    return _as_str(slot.get("slot_id")) in retrieval_topk_by_window
+
+
 def _portrait_asset_key(candidate: dict) -> str:
     return _as_str(candidate.get("asset_id"))
 
@@ -261,31 +269,35 @@ def build_agent_input(
         if not isinstance(slot, dict):
             continue
         need = _slot_required_frames(slot)
-        retrieval_topk = _topk_for_slot(slot, retrieval_topk_by_window)
-        portrait_slots.append(
-            {
-                **slot,
-                "required_frames": need,
-                "required_seconds": round(to_seconds(need), 3),
-                "legal_window_ids": _legal_portrait_window_ids(slot, candidates),
-                "retrieval_topk_candidate_ids": retrieval_topk,
-            }
-        )
+        payload = {
+            **slot,
+            "required_frames": need,
+            "required_seconds": round(to_seconds(need), 3),
+            "legal_window_ids": _legal_portrait_window_ids(slot, candidates),
+        }
+        if _slot_has_retrieval_constraint(slot, retrieval_topk_by_window):
+            payload["retrieval_topk_candidate_ids"] = _topk_for_slot(
+                slot,
+                retrieval_topk_by_window,
+            )
+        portrait_slots.append(payload)
 
     broll_slots = []
     for slot in (boundary.get("broll_slots") or []):
         if not isinstance(slot, dict):
             continue
         need = _slot_required_frames(slot)
-        retrieval_topk = _topk_for_slot(slot, retrieval_topk_by_window)
-        broll_slots.append(
-            {
-                **slot,
-                "required_frames": need,
-                "required_seconds": round(to_seconds(need), 3),
-                "retrieval_topk_candidate_ids": retrieval_topk,
-            }
-        )
+        payload = {
+            **slot,
+            "required_frames": need,
+            "required_seconds": round(to_seconds(need), 3),
+        }
+        if _slot_has_retrieval_constraint(slot, retrieval_topk_by_window):
+            payload["retrieval_topk_candidate_ids"] = _topk_for_slot(
+                slot,
+                retrieval_topk_by_window,
+            )
+        broll_slots.append(payload)
 
     return {
         "script": request.script,
@@ -397,8 +409,11 @@ def validate_selection(
             errors.append(f"portrait window_id '{choice.window_id}' is not a known candidate")
             continue
         retrieval_topk = set(_topk_for_slot(portrait_slots[choice.slot_id], retrieval_topk_by_window))
-        if retrieval_topk and choice.window_id not in retrieval_topk:
-            legal_hint = ", ".join(sorted(retrieval_topk)[:20])
+        if (
+            _slot_has_retrieval_constraint(portrait_slots[choice.slot_id], retrieval_topk_by_window)
+            and choice.window_id not in retrieval_topk
+        ):
+            legal_hint = ", ".join(sorted(retrieval_topk)[:20]) if retrieval_topk else "none"
             errors.append(
                 f"portrait window_id '{choice.window_id}' is not in retrieval_topk_candidate_ids "
                 f"for slot '{choice.slot_id}'; choose one of: {legal_hint}"
@@ -448,8 +463,11 @@ def validate_selection(
             errors.append(f"broll candidate_id '{choice.candidate_id}' is not a known candidate")
             continue
         retrieval_topk = set(_topk_for_slot(broll_slots[choice.slot_id], retrieval_topk_by_window))
-        if retrieval_topk and choice.candidate_id not in retrieval_topk:
-            legal_hint = ", ".join(sorted(retrieval_topk)[:20])
+        if (
+            _slot_has_retrieval_constraint(broll_slots[choice.slot_id], retrieval_topk_by_window)
+            and choice.candidate_id not in retrieval_topk
+        ):
+            legal_hint = ", ".join(sorted(retrieval_topk)[:20]) if retrieval_topk else "none"
             errors.append(
                 f"broll candidate_id '{choice.candidate_id}' is not in retrieval_topk_candidate_ids "
                 f"for slot '{choice.slot_id}'; choose one of: {legal_hint}"
@@ -535,7 +553,10 @@ def deterministic_selection(
     used_assets: set[str] = set()
     for slot in portrait_slots:
         need = _slot_required_frames(slot)
-        portrait_pool = _topk_for_slot(slot, retrieval_topk_by_window) or ranked_portrait
+        if _slot_has_retrieval_constraint(slot, retrieval_topk_by_window):
+            portrait_pool = _topk_for_slot(slot, retrieval_topk_by_window)
+        else:
+            portrait_pool = ranked_portrait
         window_id = next(
             (
                 cid
@@ -568,7 +589,10 @@ def deterministic_selection(
             if len(broll) >= max(0, max_inserts):
                 break
             need = _slot_required_frames(slot)
-            broll_pool = _topk_for_slot(slot, retrieval_topk_by_window) or ranked_broll
+            if _slot_has_retrieval_constraint(slot, retrieval_topk_by_window):
+                broll_pool = _topk_for_slot(slot, retrieval_topk_by_window)
+            else:
+                broll_pool = ranked_broll
             candidate_id = next(
                 (
                     cid

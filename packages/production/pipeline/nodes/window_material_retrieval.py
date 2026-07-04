@@ -6,13 +6,13 @@ from typing import Any
 
 from packages.ai.gateway import ProviderCall
 from packages.core.config.settings import sandbox_fallback_allowed
-from packages.core.contracts import ArtifactKind, NodeStatus
+from packages.core.contracts import ArtifactKind, ErrorCode, NodeStatus
 from packages.core.contracts.artifacts import (
     ClipEmbeddingRecord,
     RetrievedWindowCandidate,
     WindowMaterialRetrievalArtifact,
 )
-from packages.core.workflow import NodeOutput
+from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.planning.editing.frame_grid import frame_index
 from packages.planning.material import (
     CLIP_EMBEDDING_DIMENSION,
@@ -21,6 +21,7 @@ from packages.planning.material import (
     CLIP_INDEX_VERSION,
     candidate_clip_embedding_key,
     cosine_similarity,
+    longest_clean_portrait_source_span,
     normalize_vector,
 )
 from packages.production.pipeline._editing_agent import index_candidates
@@ -40,9 +41,10 @@ def run(ctx: NodeContext) -> NodeOutput:
         if isinstance(item, dict)
     }
     indexed = index_candidates(material)
+    allow_sandbox_fallback = sandbox_fallback_allowed()
     profile = ctx.first_available_provider_profile(
         "multimodal.embedding",
-        include_sandbox=sandbox_fallback_allowed(),
+        include_sandbox=allow_sandbox_fallback,
     )
     diagnostics: dict[str, Any] = {
         "source": "offline_clip_embedding_index",
@@ -60,6 +62,12 @@ def run(ctx: NodeContext) -> NodeOutput:
     candidates_by_window: dict[str, list[RetrievedWindowCandidate]] = {}
 
     if profile is None:
+        if not allow_sandbox_fallback:
+            raise NodeExecutionError(
+                ErrorCode.provider_unsupported_option,
+                "未配置可用的真实多模态 embedding 供应商（multimodal.embedding）。"
+                "请在「设置」中配置并启用 qwen3-vl-embedding 供应商及密钥。",
+            )
         diagnostics["query_embedding_provider_missing"] = True
         return _output(ctx, diagnostics=diagnostics, candidates_by_window=candidates_by_window)
 
@@ -165,7 +173,7 @@ def _retrieve_for_window(
     required_frames = _required_frames(window)
     ranked: list[RetrievedWindowCandidate] = []
     for index, (candidate_id, candidate) in enumerate(candidate_pool.items()):
-        source_frames = _source_frames_available(candidate)
+        source_frames = _source_frames_available(candidate, namespace=namespace)
         if source_frames < required_frames:
             diagnostics["rejected_candidates"].append(
                 {
@@ -249,10 +257,12 @@ def _retrieve_for_window(
     return ranked[:_TOP_K]
 
 
-def _valid_query_embedding(output: dict[str, Any]) -> list[float] | None:
+def _valid_query_embedding(output: Any) -> list[float] | None:
+    if not isinstance(output, dict):
+        return None
     if str(output.get("model") or CLIP_EMBEDDING_MODEL) != CLIP_EMBEDDING_MODEL:
         return None
-    if int(output.get("dimension") or 0) != CLIP_EMBEDDING_DIMENSION:
+    if _embedding_dimension(output.get("dimension")) != CLIP_EMBEDDING_DIMENSION:
         return None
     if str(output.get("normalization") or CLIP_EMBEDDING_NORMALIZATION) != CLIP_EMBEDDING_NORMALIZATION:
         return None
@@ -267,7 +277,20 @@ def _valid_query_embedding(output: dict[str, Any]) -> list[float] | None:
         return None
     if len(vector) != CLIP_EMBEDDING_DIMENSION:
         return None
-    return normalize_vector(vector, dimension=CLIP_EMBEDDING_DIMENSION)
+    try:
+        return normalize_vector(vector, dimension=CLIP_EMBEDDING_DIMENSION)
+    except (TypeError, ValueError):
+        return None
+
+
+def _embedding_dimension(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
 
 
 def _record_incompatibility(
@@ -328,10 +351,14 @@ def _required_frames(window: dict) -> int:
     return max(0, int(window.get("length_frames") or end - start))
 
 
-def _source_frames_available(candidate: dict) -> int:
+def _source_frames_available(candidate: dict, *, namespace: str) -> int:
     metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
-    if metadata.get("source_frames_available") is not None:
-        return int(float(metadata.get("source_frames_available") or 0))
+    if namespace == "portrait":
+        clean_span = longest_clean_portrait_source_span(metadata)
+        if clean_span is None:
+            return 0
+        source_start, source_end = clean_span
+        return max(0, frame_index(source_end) - frame_index(source_start))
     source_start = _as_float(metadata.get("source_start"))
     source_end = _as_float(metadata.get("source_end"))
     return max(0, frame_index(source_end) - frame_index(source_start))
@@ -345,7 +372,9 @@ def _recency_adjustment(candidate: dict) -> float:
     return -0.1 * penalty
 
 
-def _embedding_output_metadata(output: dict[str, Any]) -> dict[str, Any]:
+def _embedding_output_metadata(output: Any) -> dict[str, Any]:
+    if not isinstance(output, dict):
+        return {"type": type(output).__name__}
     return {
         "model": output.get("model"),
         "dimension": output.get("dimension"),

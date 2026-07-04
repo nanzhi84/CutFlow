@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from packages.ai.gateway import ProviderGateway
 from packages.ai.gateway.provider_gateway import _deterministic_embedding
 from packages.ai.prompts import PromptRegistry
@@ -7,6 +9,7 @@ from packages.core.contracts import (
     Artifact,
     ArtifactKind,
     DigitalHumanVideoRequest,
+    ErrorCode,
     MediaAssetRecord,
     NodeRun,
     NodeStatus,
@@ -15,6 +18,7 @@ from packages.core.contracts import (
 )
 from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
+from packages.core.workflow import NodeExecutionError
 from packages.planning.material import build_clip_embedding_record
 from packages.production.pipeline import nodes
 from packages.production.pipeline._editing_agent import (
@@ -206,7 +210,7 @@ def test_window_query_planning_emits_only_window_id_and_intent(tmp_path):
 
     payload = output.artifacts[0].payload
     assert len(payload["window_queries"]) == 2
-    assert set(payload["window_queries"][0]) == {"window_id", "retrieval_intent"}
+    assert all(set(item) == {"window_id", "retrieval_intent"} for item in payload["window_queries"])
     assert {item["window_id"] for item in payload["window_queries"]} == {
         "pwin_000",
         "bwin_000",
@@ -288,8 +292,19 @@ def test_window_material_retrieval_uses_material_pack_pool_and_offline_index(tmp
 def test_deterministic_editing_planning_consumes_window_retrieval_topk(tmp_path):
     adapter = _adapter(tmp_path)
     material = _material()
+    material["broll_candidates"][1]["score"] = 2.0
+    material["broll_candidates"][1]["metadata"]["source_end"] = 4.0
+    material["broll_candidates"][1]["metadata"]["source_frames_available"] = 120
     retrieval = {
         "candidates_by_window": {
+            "pwin_000": [
+                {
+                    "candidate_id": "pc_000",
+                    "retrieval_score": 1.0,
+                    "source_frames_available": 240,
+                    "required_frames": 120,
+                }
+            ],
             "bwin_000": [
                 {
                     "candidate_id": "bc_000",
@@ -321,9 +336,13 @@ def test_deterministic_editing_planning_consumes_window_retrieval_topk(tmp_path)
 
     output = nodes.deterministic_editing_planning.run(ctx)
 
+    portrait_payload = next(
+        artifact.payload for artifact in output.artifacts if artifact.kind == ArtifactKind.plan_portrait
+    )
     broll_payload = next(
         artifact.payload for artifact in output.artifacts if artifact.kind == ArtifactKind.plan_broll
     )
+    assert portrait_payload["segments"][0]["asset_id"] == "portrait_a"
     assert broll_payload["overlays"][0]["window_id"] == "bwin_000"
     assert broll_payload["overlays"][0]["asset_id"] == "broll_a"
     assert broll_payload["overlays"][0]["timeline_start_frame"] == 30
@@ -353,3 +372,70 @@ def test_agent_validator_rejects_broll_choice_outside_window_topk():
     )
 
     assert any("retrieval_topk_candidate_ids" in error for error in errors)
+
+
+def test_editing_agent_fallback_fails_when_retrieval_topk_cannot_cover_portrait_slots(
+    tmp_path,
+):
+    adapter = _adapter(tmp_path)
+    windows = _windows()
+    windows["portrait_windows"].append(
+        {
+            "window_id": "pwin_001",
+            "start_frame": 120,
+            "end_frame": 180,
+            "unit_ids": ["unit_1"],
+            "boundary_source": "semantic",
+            "phase": "main",
+        }
+    )
+    retrieval = {
+        "candidates_by_window": {
+            "pwin_000": [
+                {
+                    "candidate_id": "pc_000",
+                    "retrieval_score": 1.0,
+                    "source_frames_available": 240,
+                    "required_frames": 120,
+                }
+            ],
+            "pwin_001": [
+                {
+                    "candidate_id": "pc_000",
+                    "retrieval_score": 1.0,
+                    "source_frames_available": 240,
+                    "required_frames": 60,
+                }
+            ],
+        }
+    }
+    ctx = _ctx(
+        adapter,
+        "EditingAgentPlanning",
+        {
+            ArtifactKind.plan_material_pack: _artifact(ArtifactKind.plan_material_pack, _material()),
+            ArtifactKind.plan_narration_boundary: _artifact(
+                ArtifactKind.plan_narration_boundary,
+                {"fps": 30, "total_frames": 180, "safe_cut_boundaries": []},
+            ),
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                windows,
+            ),
+            ArtifactKind.plan_window_material_retrieval: _artifact(
+                ArtifactKind.plan_window_material_retrieval,
+                retrieval,
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+            ArtifactKind.creative_intent: _artifact(ArtifactKind.creative_intent, {"intent": {}}),
+        },
+    )
+
+    with pytest.raises(NodeExecutionError) as exc:
+        nodes.editing_agent_planning.run(ctx)
+
+    assert exc.value.error.code == ErrorCode.material_insufficient_portrait
+    assert any(
+        "portrait slots not covered: pwin_001" in error
+        for error in exc.value.error.details["errors"]
+    )

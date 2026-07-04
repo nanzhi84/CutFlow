@@ -44,6 +44,7 @@ def upgrade() -> None:
         sa.Column("normalization", sa.String(), nullable=False),
         sa.Column("instruct", sa.String(), nullable=False),
         sa.Column("index_version", sa.String(), nullable=False),
+        sa.Column("schema_version", sa.String(16), nullable=False, server_default="v1"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
     )

@@ -114,6 +114,39 @@ class ProviderRuntimeError(Exception):
         self.message = message
 
 
+SUPPORTED_MULTIMODAL_EMBEDDING_DIMENSIONS = {1024}
+
+
+def parse_multimodal_embedding_dimension(*values: object, default: int = 1024) -> int:
+    dimension_value: object = default
+    for value in values:
+        if value is None or value == "":
+            continue
+        dimension_value = value
+        break
+    if isinstance(dimension_value, bool):
+        dimension: int | None = None
+    elif isinstance(dimension_value, int):
+        dimension = dimension_value
+    elif isinstance(dimension_value, str):
+        stripped = dimension_value.strip()
+        dimension = int(stripped) if stripped.isdecimal() else None
+    else:
+        dimension = None
+    if dimension is None:
+        raise ProviderRuntimeError(
+            ErrorCode.provider_unsupported_option,
+            "multimodal.embedding dimension must be a supported integer value.",
+        )
+    if dimension not in SUPPORTED_MULTIMODAL_EMBEDDING_DIMENSIONS:
+        supported = ", ".join(str(value) for value in sorted(SUPPORTED_MULTIMODAL_EMBEDDING_DIMENSIONS))
+        raise ProviderRuntimeError(
+            ErrorCode.provider_unsupported_option,
+            f"multimodal.embedding dimension must be one of: {supported}.",
+        )
+    return dimension
+
+
 class SandboxProvider:
     provider_id = "sandbox"
 
@@ -167,7 +200,7 @@ class SandboxProvider:
             )
         if call.capability_id == "multimodal.embedding":
             text = str(call.input.get("text") or call.input.get("retrieval_intent") or "")
-            dimension = int(call.input.get("dimension") or 1024)
+            dimension = parse_multimodal_embedding_dimension(call.input.get("dimension"))
             embedding = _deterministic_embedding(
                 f"{call.provider_profile_id}:{call.capability_id}:{text}", dimension=dimension
             )
