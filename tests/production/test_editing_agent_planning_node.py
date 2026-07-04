@@ -676,7 +676,7 @@ def test_shortlist_applies_budget_and_reports_counts(tmp_path):
     assert diagnostics["candidate_counts"]["broll"] == 6
 
 
-def test_reuse_cap_uses_full_pool_not_shortlisted_prompt_budget(tmp_path):
+def test_strict_uniqueness_uses_full_pool_not_shortlisted_prompt_budget(tmp_path):
     adapter = _adapter(tmp_path)
     _seed_fake_llm_profile(adapter)
     slot_count = 13
@@ -749,7 +749,6 @@ def test_reuse_cap_uses_full_pool_not_shortlisted_prompt_budget(tmp_path):
     assert output.status == NodeStatus.succeeded
     assert len(output.provider_invocation_ids) == 2
     diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
-    assert diagnostics["portrait_asset_reuse_cap"] == 1
     assert diagnostics["shortlist_counts"]["portrait"] == {
         "raw": slot_count,
         "eligible": slot_count,
@@ -759,70 +758,6 @@ def test_reuse_cap_uses_full_pool_not_shortlisted_prompt_budget(tmp_path):
     assert diagnostics["repair_trace"][0]["error_count"] == 1
     assert "more than one slot" in diagnostics["repair_trace"][0]["errors"][0]
     assert diagnostics["candidate_counts"]["portrait"] == slot_count
-
-
-def test_shortlist_exposes_enough_distinct_assets_for_relaxed_reuse(tmp_path):
-    slot_count = 13
-    state = _state()
-    material = state.artifacts[ArtifactKind.plan_material_pack].payload
-    material["portrait_candidates"] = [
-        {
-            "asset_id": "portrait_hot",
-            "score": 100 - index,
-            "metadata": {
-                "clip_id": f"hot_{index:02d}",
-                "source_start": 0.0,
-                "source_end": 30.0,
-            },
-        }
-        for index in range(12)
-    ] + [
-        {
-            "asset_id": f"portrait_extra_{index:02d}",
-            "score": 50 - index,
-            "metadata": {
-                "clip_id": f"extra_{index:02d}",
-                "source_start": 0.0,
-                "source_end": 30.0,
-            },
-        }
-        for index in range(6)
-    ]
-    boundary = state.artifacts[ArtifactKind.plan_narration_boundary].payload
-    boundary["total_frames"] = slot_count * 60
-    boundary["safe_cut_boundaries"] = [
-        {
-            "cut_id": f"cut_{index:03d}",
-            "time": round(index * 2.0, 3),
-            "frame": index * 60,
-            "source": "semantic_only",
-        }
-        for index in range(slot_count + 1)
-    ]
-    boundary["portrait_slots"] = [
-        {
-            "slot_id": f"pslot_{index:03d}",
-            "start_frame": index * 60,
-            "end_frame": (index + 1) * 60,
-            "unit_ids": [f"unit_{index:03d}"],
-            "boundary_source": "semantic_only",
-        }
-        for index in range(slot_count)
-    ]
-    boundary["broll_slots"] = []
-    state.artifacts[ArtifactKind.plan_timeline_windows].payload = _timeline_windows(boundary)
-
-    output = _run_node(_adapter(tmp_path), state)
-
-    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
-    assert diagnostics["portrait_asset_reuse_cap"] == 2
-    assert diagnostics["shortlist_counts"]["portrait"] == {
-        "raw": 18,
-        "eligible": 18,
-        "exposed": 18,
-        "dropped": 0,
-    }
-    assert diagnostics["candidate_counts"]["portrait"] == 18
 
 
 def test_shortlist_keeps_capacity_for_restricted_long_slots(tmp_path):
@@ -884,7 +819,6 @@ def test_shortlist_keeps_capacity_for_restricted_long_slots(tmp_path):
     output = _run_node(_adapter(tmp_path), state)
 
     diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
-    assert diagnostics["portrait_asset_reuse_cap"] == 1
     assert diagnostics["shortlist_counts"]["portrait"] == {
         "raw": 33,
         "eligible": 33,
@@ -1059,77 +993,6 @@ def test_llm_path_repairs_portrait_choice_using_clean_source_span(monkeypatch, t
     assert portrait["segments"][0]["source_end_frame"] == 60
     assert portrait["segments"][1]["source_start_frame"] == 30
     assert portrait["segments"][1]["source_end_frame"] == 210
-
-
-def _make_portrait_scarce(state: RunState) -> None:
-    # Shrink the portrait pool to a single distinct asset: 1 asset for 2 slots
-    # (A < S), which drives the relaxed-uniqueness path in both selection modes.
-    material = state.artifacts[ArtifactKind.plan_material_pack].payload
-    material["portrait_candidates"] = material["portrait_candidates"][:1]
-
-
-def test_fallback_uses_default_assignment_when_assets_scarce(tmp_path):
-    state = _state()
-    _make_portrait_scarce(state)
-    default_portrait = state.artifacts[
-        ArtifactKind.plan_timeline_windows
-    ].payload["default_assignment"]["portrait_plan_payload"]
-
-    output = _run_node(_adapter(tmp_path), state)
-
-    portrait = _payload(output, ArtifactKind.plan_portrait)
-    assert portrait == default_portrait
-    assert output.status == NodeStatus.degraded
-    assignment = _payload(output, ArtifactKind.plan_media_assignment)
-    assert assignment["engine"] == "deterministic_fallback"
-    assert assignment["diagnostics"]["fallback_used"] is True
-
-
-def test_llm_path_accepts_reused_asset_when_scarce_without_burning_repairs(monkeypatch, tmp_path):
-    adapter = _adapter(tmp_path)
-    fake_profile = SimpleNamespace(id="dashscope.llm.prod")
-    monkeypatch.setattr(
-        adapter.provider_profiles,
-        "first_available",
-        lambda capability, *, include_sandbox=True: fake_profile,
-    )
-    state = _state()
-    _make_portrait_scarce(state)  # only pc_000 (portrait_a) remains; cap relaxes to 2
-
-    selection = {
-        "portrait_plan": [
-            {"slot_id": "pslot_000", "window_id": "pc_000"},
-            {"slot_id": "pslot_001", "window_id": "pc_000"},
-        ],
-        "broll_plan": [],
-        "font_plan": {"font_id": "font_yst"},
-        "bgm_plan": {"bgm_id": "bgm_001"},
-        "analysis": "素材有限，复用同一人像",
-    }
-    calls = []
-
-    def fake_invoke(call):
-        calls.append(call)
-        return (
-            SimpleNamespace(id="inv_1", error=None),
-            SimpleNamespace(output={"content": "...", "intent": selection}),
-        )
-
-    monkeypatch.setattr(adapter.provider_gateway, "invoke", fake_invoke)
-
-    output = _run_node(adapter, state)
-
-    # Reuse is legal under the relaxed cap -> accepted on the first attempt.
-    assert len(calls) == 1
-    assert output.provider_invocation_ids == ["inv_1"]
-    # Still surfaced as a graded degradation.
-    assert output.status == NodeStatus.degraded
-    assert WarningCode.portrait_asset_reuse_relaxed in output.warnings
-    portrait = _payload(output, ArtifactKind.plan_portrait)
-    assert [seg["asset_id"] for seg in portrait["segments"]] == ["portrait_a", "portrait_a"]
-    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
-    assert diagnostics["mode"] == "editing_agent_llm"
-    assert diagnostics["portrait_asset_reuse_cap"] == 2
 
 
 def test_llm_invalid_selection_records_raw_artifacts_before_fallback(tmp_path):

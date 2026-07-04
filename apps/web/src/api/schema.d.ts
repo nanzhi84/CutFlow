@@ -8485,7 +8485,7 @@ export interface components {
          * WarningCode
          * @enum {string}
          */
-        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced" | "budget.exceeded" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "editing_agent.deterministic_fallback" | "portrait.asset_reuse_relaxed" | "broll.insertions_dropped_geometry";
+        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced" | "budget.exceeded" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "editing_agent.deterministic_fallback" | "broll.insertions_dropped_geometry";
         /** WorkflowRun */
         WorkflowRun: {
             /** Id */

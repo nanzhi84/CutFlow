@@ -34,7 +34,6 @@ from packages.planning.material.portrait_pack import (
 )
 from packages.planning.material.portrait_capacity import (
     can_cover_slots_with_cap,
-    minimum_reuse_cap,
 )
 from packages.planning.material.portrait_source import longest_clean_portrait_source_span
 from packages.planning.material.shortlist import shortlist_for_windows
@@ -60,7 +59,6 @@ __all__ = [
     "rank_portrait_clip_candidates",
     "score_simple_candidate",
     "can_cover_slots_with_cap",
-    "minimum_reuse_cap",
     "longest_clean_portrait_source_span",
     "shortlist_for_windows",
 ]

@@ -30,9 +30,9 @@ def upgrade() -> None:
 
     0029 only repaired DBs still holding the pre-#136 legacy prompt. This second
     sync widens the stale-detection so DBs already on the #136 (or interim
-    hardened) prompt also pick up the scarce-asset uniqueness relaxation: any row
-    missing the ``{portrait_uniqueness_rule}`` placeholder (or the hardening
-    markers) is refreshed from prompt_group_defaults.json.
+    hardened) prompt also pick up the strict portrait-uniqueness placeholder:
+    any row missing ``{portrait_uniqueness_rule}`` (or the hardening markers) is
+    refreshed from prompt_group_defaults.json.
     """
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":

@@ -79,8 +79,8 @@
 ```python
 BrollGeometryPolicy: fps=30, min_insert=1.5s, max_insert=4.0s,
                      min_visible_aroll=2.0s, snap_max_frames=15, max_pad=0.15s
-PortraitReusePolicy: strict(max_uses=1, #102) | balanced_reuse(ceil(S/A)+degradation, #147)
-                     两链读同一 policy 函数，差异成为配置而非漂移
+PortraitReusePolicy: strict(max_uses=1, #102)，由 TimelineWindowPlanning 统一执行；
+                     Agent 不再放宽复用
 ```
 
 ### 智能演进（A0–A3）
