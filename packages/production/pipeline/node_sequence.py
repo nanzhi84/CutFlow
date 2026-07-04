@@ -29,7 +29,6 @@ NODE_SEQUENCE = [
     "NarrationAlignment",
     "NarrationBoundaryPlanning",
     "TimelineWindowPlanning",
-    "PortraitPlanning",
     "BrollPlanning",
     "StylePlanning",
     "TimelinePlanning",
@@ -65,10 +64,10 @@ SEEDANCE_T2V_SEQUENCE = [
     "FinalizeRunReport",
 ]
 
-# Same digital-human chain as NODE_SEQUENCE, but the three deterministic planning
-# nodes (PortraitPlanning / BrollPlanning / StylePlanning) are replaced by the
-# single LLM EditingAgentPlanning node (issue #136). Upstream order matches v2 so
-# EditingAgentPlanning sees the same MaterialPack + NarrationBoundary inputs.
+# Same digital-human chain as NODE_SEQUENCE, but the deterministic portrait / B-roll /
+# style planning stages are replaced by the single LLM EditingAgentPlanning node
+# (issue #136). Upstream order matches v2 so EditingAgentPlanning sees the same
+# MaterialPack + NarrationBoundary inputs.
 EDITING_AGENT_SEQUENCE = [
     "ValidateRequest",
     "LoadCaseContext",

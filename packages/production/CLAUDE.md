@@ -1,13 +1,13 @@
 # packages/production
 
-数字人视频生产引擎：执行 4 套工作流模板——`digital_human_v2`（18 节点主链）、`digital_human_editing_agent_v1`（16 节点 LLM 剪辑）、`broll_only_v1`（13 节点纯空镜）、`seedance_t2v_v1`（5 节点文生视频），以及成片的 SQL 仓储、剪映草稿包、剪辑师交接包导出。
+数字人视频生产引擎：执行 4 套工作流模板——`digital_human_v2`（17 节点主链）、`digital_human_editing_agent_v1`（16 节点 LLM 剪辑）、`broll_only_v1`（13 节点纯空镜）、`seedance_t2v_v1`（5 节点文生视频），以及成片的 SQL 仓储、剪映草稿包、剪辑师交接包导出。
 
 ## 职责
-- 定义并执行四套工作流模板：`node_sequence.py` 给出四套序列（`NODE_SEQUENCE` 18 节点 / `EDITING_AGENT_SEQUENCE` 16 节点 / `BROLL_ONLY_SEQUENCE` 13 节点 / `SEEDANCE_T2V_SEQUENCE` 5 节点，外加 `WORKFLOW_TEMPLATE_NODE_COUNTS` 模板节点数）；`digital_human.py` 的 `_TEMPLATE_BUILDERS`/`template_for()` 按 `workflow_template_id` 路由四模板；`NODE_HANDLERS`（24 项，覆盖四模板全部节点，`digital_human_v2` 走其中 18 个）分发到 `pipeline/nodes/` 下一文件一节点的 `run(ctx)`。
+- 定义并执行四套工作流模板：`node_sequence.py` 给出四套序列（`NODE_SEQUENCE` 17 节点 / `EDITING_AGENT_SEQUENCE` 16 节点 / `BROLL_ONLY_SEQUENCE` 13 节点 / `SEEDANCE_T2V_SEQUENCE` 5 节点，外加 `WORKFLOW_TEMPLATE_NODE_COUNTS` 模板节点数）；`digital_human.py` 的 `_TEMPLATE_BUILDERS`/`template_for()` 按 `workflow_template_id` 路由四模板；`NODE_HANDLERS`（23 项，覆盖四模板全部 active 节点，`digital_human_v2` 走其中 17 个）分发到 `pipeline/nodes/` 下一文件一节点的 `run(ctx)`。
 - `LocalRuntimeAdapter` 是 thin engine：跑节点循环、run/node 状态机迁移（`assert_transition`）、事件/漏斗/可观测埋点、写 public+debug run report，并向节点提供共享服务（artifact 创建、media 解析、provider profile 选取、object store）。
 - resume 复用既有有效产物（`reuse.py` 校验 node_status/node_version/input_manifest_hash/schema_version/sha256），retry 则全新跑。
 - 节点产出 TYPED artifacts + provider invocation + warnings + GRADED degradations；选材落 selection ledger（`_selection.py`，驱动下一次 recency 降权）。当前 ledger 只由 `MaterialPackPlanning` 读取并写入候选 metadata，B-roll/Portrait 后续节点不再直接查 ledger。
-- 人像主轨执行资产级唯一性：`PortraitPlanning`/editing planner 把 `template_id` 作为资产 id，每个 run 最多使用一次；覆盖不足是 `material_insufficient_portrait` hard fail，capacity-controlled split 只能用更多不同资产恢复，不能复用同一资产。
+- 人像主轨执行资产级唯一性：`TimelineWindowPlanning`/editing planner 把 `template_id` 作为资产 id，每个 run 最多使用一次；覆盖不足是 `material_insufficient_portrait` hard fail，capacity-controlled split 只能用更多不同资产恢复，不能复用同一资产。
 - 成片侧出口：`jianying_draft.py`/`jianying_draft_json.py`（剪映草稿包）、`editor_handoff.py`（zip 交接包）、`sqlalchemy_repository.py` + `sqlalchemy_mappers.py`（成片/草稿/交接的 SQL 持久化）。
 
 ## 关键文件 / 子目录
@@ -32,13 +32,13 @@
 
 ## 剪辑职责矩阵
 - `NarrationBoundaryPlanning` 只产出安全切点事实和 base/available windows；`portrait_slots` / `broll_slots` 不是最终帧权威。
-- `PortraitPlanning` 拥有人像主轨最终窗口与资产级容量判定；素材不足用 `material_insufficient_portrait` hard fail。
+- `TimelineWindowPlanning` 拥有人像主轨最终窗口与资产级容量判定，并同时发布 `plan_timeline_windows` + `plan_portrait`；素材不足用 `material_insufficient_portrait` hard fail。
 - `BrollPlanning` 和 editing planner 的 B-roll 落点必须共用 `packages/planning/material/broll_plan.py` 的几何政策与安全放置函数。
 - `EditingAgentPlanning` 只做候选指派和本地校验；LLM 不输出最终帧，任何 B-roll 几何丢弃必须进入 diagnostics / degradation。
 - `TimelinePlanning` 保持 verify-only，只校验并组装上游已经决定的帧边界。
 
 ## 测试
-- `pytest tests/production tests/workflow`。人像唯一性/恢复诊断重点见 `test_portrait_planning_node.py`；B-roll canonical overlays 见 `test_broll_overlays_helper.py`、`test_broll_planning_node.py`、`test_broll_coverage_planning.py`。
+- `pytest tests/production tests/workflow`。人像唯一性/恢复诊断重点见 `test_timeline_window_planning_node.py`；B-roll canonical overlays 见 `test_broll_overlays_helper.py`、`test_broll_planning_node.py`、`test_broll_coverage_planning.py`。
 
 ## 注意 / 坑
 - worker 是独立进程，改完节点逻辑要重启 worker，不只是重启 API。

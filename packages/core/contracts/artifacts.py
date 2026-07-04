@@ -134,18 +134,18 @@ class NarrationUnitsArtifact(ContractModel):
 class NarrationBoundaryPlan(ContractModel):
     """Safe-cut boundary plan produced by NarrationBoundaryPlanning (#135).
 
-    Front-moves the editing-boundary responsibility out of PortraitPlanning: the ffmpeg
+    Front-moves the editing-boundary responsibility out of timeline-window planning: the ffmpeg
     silence detection + semantic/audio safe-cut assembly now live in one node right after
     NarrationAlignment. Downstream planning nodes read these frame-quantized windows
-    instead of re-detecting pauses (PortraitPlanning no longer calls ffmpeg).
+    instead of re-detecting pauses.
 
     ``pause_windows`` is the raw ``detect_silence_windows`` output
-    (``{start,end,duration,center}``); PortraitPlanning consumes it as the audio-pause
-    input to its unchanged coverage/escalation planner, so portrait main-track frame
+    (``{start,end,duration,center}``); TimelineWindowPlanning consumes it as the audio-pause
+    input to its coverage/escalation planner, so portrait main-track frame
     boundaries stay identical to before the split. ``safe_cut_boundaries`` /
     ``portrait_slots`` / ``broll_slots`` are frame-quantized base/available windows,
-    NOT final authority: the authoritative main-track plan is still emitted by
-    PortraitPlanning, while these windows describe where cuts may safely land for the
+    NOT final authority: the authoritative main-track plan is emitted by
+    TimelineWindowPlanning, while these windows describe where cuts may safely land for the
     future comprehensive editing agent (see #136).
     """
 

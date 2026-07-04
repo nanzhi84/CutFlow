@@ -1,9 +1,9 @@
 """EditingAgentPlanning node: one LLM综合剪辑 pass -> portrait/broll/style plans.
 
-Replaces the three deterministic planning nodes (PortraitPlanning /
-BrollPlanning / StylePlanning) with a single LLM node for the
-``digital_human_editing_agent_v1`` template (issue #136). The LLM only makes
-semantic ID choices; the local materializers (``_editing_agent``) turn them into
+Replaces the deterministic portrait / B-roll / style planning stages with a
+single LLM node for the ``digital_human_editing_agent_v1`` template (issue #136).
+The LLM only makes semantic ID choices; the local materializers (``_editing_agent``)
+turn them into
 the SAME frame-exact ``plan.portrait`` / ``plan.broll`` / ``plan.style``
 artifacts the deterministic nodes emit, so ``TimelinePlanning`` and the whole
 render chain are untouched.
@@ -19,6 +19,7 @@ Selection flow:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 
 from packages.ai.gateway import ProviderCall
@@ -37,6 +38,8 @@ from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.planning.editing.frame_grid import frame_index
 from packages.planning.material import longest_clean_portrait_source_span, shortlist_for_windows
 from packages.production.pipeline._editing_agent import (
+    EditingSelection,
+    IndexedCandidates,
     build_agent_input,
     deterministic_selection,
     index_candidates,
@@ -66,6 +69,44 @@ _JSON_VARS = frozenset(
         "bgm_candidates",
     }
 )
+
+
+@dataclass(frozen=True)
+class EditingAgentContext:
+    material: dict
+    narration: dict
+    boundary: dict
+    windows: dict
+    raw_units: list[dict]
+    duration: float
+    agent_boundary: dict
+    shortlisted_material: dict
+    shortlist_counts: dict
+    candidates: IndexedCandidates
+    agent_input: dict
+
+
+@dataclass(frozen=True)
+class EditingAgentSelectionResult:
+    selection: EditingSelection
+    engine: str
+    fallback_used: bool
+    fallback_reason: str | None
+    repair_trace: list[dict]
+    warnings: list[WarningCode]
+    degradations: list[DegradationNotice]
+    provider_invocation_ids: list[str]
+
+
+@dataclass(frozen=True)
+class EditingAgentMaterializedOutputs:
+    assignment_payload: dict
+    portrait_payload: dict
+    broll_payload: dict
+    style_payload: dict
+    diagnostics: dict
+    warnings: list[WarningCode]
+    degradations: list[DegradationNotice]
 
 
 def _enum_value(value) -> str:
@@ -318,15 +359,14 @@ def _attach_provider_artifacts(
     )
 
 
-def run(ctx: NodeContext) -> NodeOutput:
-    state = ctx.state
-    run = ctx.run
-    node_run = ctx.node_run
-
-    material = state.require(ArtifactKind.plan_material_pack).payload or {}
-    narration = state.require(ArtifactKind.narration_units).payload or {}
-    boundary = state.require(ArtifactKind.plan_narration_boundary).payload or {}
-    windows = state.require(ArtifactKind.plan_timeline_windows).payload or {}
+def build_editing_agent_context(
+    *,
+    request,
+    material: dict,
+    narration: dict,
+    boundary: dict,
+    windows: dict,
+) -> EditingAgentContext:
     raw_units = narration.get("units", []) or []
     duration = max([float(unit.get("end", 0) or 0) for unit in raw_units] or [1.0])
 
@@ -338,7 +378,7 @@ def run(ctx: NodeContext) -> NodeOutput:
     )
     candidates = index_candidates(shortlisted_material)
     agent_input = build_agent_input(
-        request=state.request,
+        request=request,
         boundary=agent_boundary,
         candidates=candidates,
         narration_units=raw_units,
@@ -353,6 +393,29 @@ def run(ctx: NodeContext) -> NodeOutput:
             details=portrait_feasibility_failure,
         )
 
+    return EditingAgentContext(
+        material=material,
+        narration=narration,
+        boundary=boundary,
+        windows=windows,
+        raw_units=raw_units,
+        duration=duration,
+        agent_boundary=agent_boundary,
+        shortlisted_material=shortlisted_material,
+        shortlist_counts=shortlist_counts,
+        candidates=candidates,
+        agent_input=agent_input,
+    )
+
+
+def select_editing_assignment(
+    *,
+    ctx: NodeContext,
+    agent_context: EditingAgentContext,
+) -> EditingAgentSelectionResult:
+    state = ctx.state
+    run = ctx.run
+    node_run = ctx.node_run
     profile = ctx.first_available_provider_profile("llm.chat", include_sandbox=False)
     degradations: list[DegradationNotice] = []
     warnings: list[WarningCode] = []
@@ -369,8 +432,8 @@ def run(ctx: NodeContext) -> NodeOutput:
                 "请在「设置」中配置并启用真实 LLM 供应商及密钥。",
             )
         selection = deterministic_selection(
-            boundary=agent_boundary,
-            candidates=candidates,
+            boundary=agent_context.agent_boundary,
+            candidates=agent_context.candidates,
             bgm_enabled=state.request.bgm.enabled,
             max_inserts=state.request.broll.max_inserts,
         )
@@ -393,7 +456,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             attempt = len(provider_invocation_ids)
             prompt_invocation, rendered = ctx.prompt_registry.render(
                 node_id="EditingAgentPlanning",
-                variables=_prompt_variables(agent_input, previous_errors),
+                variables=_prompt_variables(agent_context.agent_input, previous_errors),
                 case_id=run.case_id,
                 run_id=run.id,
                 node_run_id=node_run.id,
@@ -453,8 +516,8 @@ def run(ctx: NodeContext) -> NodeOutput:
 
         selection, repair_trace, errors = select_with_repair(
             invoke=_invoke,
-            boundary=agent_boundary,
-            candidates=candidates,
+            boundary=agent_context.agent_boundary,
+            candidates=agent_context.candidates,
             bgm_enabled=state.request.bgm.enabled,
             max_repair_attempts=state.request.edit.max_repair_attempts,
         )
@@ -467,8 +530,8 @@ def run(ctx: NodeContext) -> NodeOutput:
                     + "；".join(errors[:5]),
                 )
             selection = deterministic_selection(
-                boundary=agent_boundary,
-                candidates=candidates,
+                boundary=agent_context.agent_boundary,
+                candidates=agent_context.candidates,
                 bgm_enabled=state.request.bgm.enabled,
                 max_inserts=state.request.broll.max_inserts,
             )
@@ -484,6 +547,33 @@ def run(ctx: NodeContext) -> NodeOutput:
                 )
             )
             warnings.append(WarningCode.editing_agent_deterministic_fallback)
+
+    return EditingAgentSelectionResult(
+        selection=selection,
+        engine=engine,
+        fallback_used=fallback_used,
+        fallback_reason=fallback_reason,
+        repair_trace=repair_trace,
+        warnings=warnings,
+        degradations=degradations,
+        provider_invocation_ids=provider_invocation_ids,
+    )
+
+
+def materialize_editing_outputs(
+    *,
+    request,
+    node_id: str,
+    agent_context: EditingAgentContext,
+    selection_result: EditingAgentSelectionResult,
+    creative_intent,
+) -> EditingAgentMaterializedOutputs:
+    selection = selection_result.selection
+    warnings = list(selection_result.warnings)
+    degradations = list(selection_result.degradations)
+    windows = agent_context.windows
+    candidates = agent_context.candidates
+    fallback_used = selection_result.fallback_used
 
     portrait_assignment = (
         _default_portrait_assignment(windows)
@@ -509,43 +599,43 @@ def run(ctx: NodeContext) -> NodeOutput:
         assignment=assignment_for_materialize,
         candidates=candidates,
         cut_frames=portrait_cut_frames(portrait_payload),
-        enabled=state.request.broll.enabled,
-        max_inserts=state.request.broll.max_inserts,
+        enabled=request.broll.enabled,
+        max_inserts=request.broll.max_inserts,
     )
     if broll_drops:
-        selected_broll_choices = selection.broll[: max(0, state.request.broll.max_inserts)]
+        selected_broll_choices = selection.broll[: max(0, request.broll.max_inserts)]
         affects_true_yield = bool(selected_broll_choices) and not broll_payload.get("overlays")
         degradations.append(
             degradation_notice(
                 WarningCode.broll_insertions_dropped_geometry,
                 f"B-roll 有 {len(broll_drops)} 个插入因时间线几何约束被丢弃。",
-                node_id=node_run.node_id,
+                node_id=node_id,
                 affects_true_yield=affects_true_yield,
             ).model_copy(update={"details": {"broll_drops": broll_drops}})
         )
         warnings.append(WarningCode.broll_insertions_dropped_geometry)
-    overlay_events = _derive_overlay_events(load_creative_intent(state).emphasis, raw_units)
+    overlay_events = _derive_overlay_events(creative_intent.emphasis, agent_context.raw_units)
     style_payload, style_warnings, style_degradations = materialize_style_from_selection(
-        request=state.request,
-        material=shortlisted_material,
+        request=request,
+        material=agent_context.shortlisted_material,
         overlay_events=overlay_events,
         font_id=selection.font_id,
         bgm_id=selection.bgm_id,
     )
     warnings.extend(style_warnings)
     degradations.extend(
-        notice.model_copy(update={"node_id": node_run.node_id}) for notice in style_degradations
+        notice.model_copy(update={"node_id": node_id}) for notice in style_degradations
     )
 
     assignment_diagnostics = {
-        "repair_trace": repair_trace,
-        "shortlist_counts": shortlist_counts,
-        "fallback_used": fallback_used,
-        "fallback_reason": fallback_reason,
+        "repair_trace": selection_result.repair_trace,
+        "shortlist_counts": agent_context.shortlist_counts,
+        "fallback_used": selection_result.fallback_used,
+        "fallback_reason": selection_result.fallback_reason,
         "broll_drops": broll_drops,
     }
     assignment_payload = _assignment_payload(
-        engine=engine,
+        engine=selection_result.engine,
         portrait=portrait_assignment,
         broll=broll_assignment,
         font_id=selection.font_id,
@@ -554,10 +644,10 @@ def run(ctx: NodeContext) -> NodeOutput:
     )
 
     diagnostics = {
-        "mode": engine,
-        "instruction": state.request.edit.instruction,
+        "mode": selection_result.engine,
+        "instruction": request.edit.instruction,
         "analysis": selection.analysis,
-        "repair_trace": repair_trace,
+        "repair_trace": selection_result.repair_trace,
         "portrait_choices": [
             {
                 "slot_id": item["window_id"],
@@ -577,9 +667,9 @@ def run(ctx: NodeContext) -> NodeOutput:
         "broll_drops": broll_drops,
         "font_id": selection.font_id,
         "bgm_id": selection.bgm_id,
-        "shortlist_counts": shortlist_counts,
-        "fallback_used": fallback_used,
-        "fallback_reason": fallback_reason,
+        "shortlist_counts": agent_context.shortlist_counts,
+        "fallback_used": selection_result.fallback_used,
+        "fallback_reason": selection_result.fallback_reason,
         "candidate_counts": {
             "portrait": len(candidates.portrait_by_id),
             "broll": len(candidates.broll_by_id),
@@ -588,22 +678,62 @@ def run(ctx: NodeContext) -> NodeOutput:
         },
     }
 
+    return EditingAgentMaterializedOutputs(
+        assignment_payload=assignment_payload,
+        portrait_payload=portrait_payload,
+        broll_payload=broll_payload,
+        style_payload=style_payload,
+        diagnostics=diagnostics,
+        warnings=warnings,
+        degradations=degradations,
+    )
+
+
+def run(ctx: NodeContext) -> NodeOutput:
+    state = ctx.state
+    material = state.require(ArtifactKind.plan_material_pack).payload or {}
+    narration = state.require(ArtifactKind.narration_units).payload or {}
+    boundary = state.require(ArtifactKind.plan_narration_boundary).payload or {}
+    windows = state.require(ArtifactKind.plan_timeline_windows).payload or {}
+
+    agent_context = build_editing_agent_context(
+        request=state.request,
+        material=material,
+        narration=narration,
+        boundary=boundary,
+        windows=windows,
+    )
+    selection_result = select_editing_assignment(ctx=ctx, agent_context=agent_context)
+    materialized = materialize_editing_outputs(
+        request=state.request,
+        node_id=ctx.node_run.node_id,
+        agent_context=agent_context,
+        selection_result=selection_result,
+        creative_intent=load_creative_intent(state),
+    )
+
     return NodeOutput(
-        status=NodeStatus.degraded if degradations else NodeStatus.succeeded,
+        status=NodeStatus.degraded if materialized.degradations else NodeStatus.succeeded,
         artifacts=[
             ctx.artifact(
                 ArtifactKind.plan_media_assignment,
-                assignment_payload,
+                materialized.assignment_payload,
                 "MediaAssignmentPlan.v1",
             ),
-            ctx.artifact(ArtifactKind.plan_portrait, portrait_payload, "PortraitPlanArtifact.v1"),
-            ctx.artifact(ArtifactKind.plan_broll, broll_payload, "BrollPlanArtifact.v1"),
-            ctx.artifact(ArtifactKind.plan_style, style_payload, "StylePlanArtifact.v1"),
             ctx.artifact(
-                ArtifactKind.plan_editing_diagnostics, diagnostics, "EditingAgentDiagnostics.v1"
+                ArtifactKind.plan_portrait,
+                materialized.portrait_payload,
+                "PortraitPlanArtifact.v1",
+            ),
+            ctx.artifact(ArtifactKind.plan_broll, materialized.broll_payload, "BrollPlanArtifact.v1"),
+            ctx.artifact(ArtifactKind.plan_style, materialized.style_payload, "StylePlanArtifact.v1"),
+            ctx.artifact(
+                ArtifactKind.plan_editing_diagnostics,
+                materialized.diagnostics,
+                "EditingAgentDiagnostics.v1",
             ),
         ],
-        warnings=warnings,
-        degradations=degradations,
-        provider_invocation_ids=provider_invocation_ids,
+        warnings=materialized.warnings,
+        degradations=materialized.degradations,
+        provider_invocation_ids=selection_result.provider_invocation_ids,
     )

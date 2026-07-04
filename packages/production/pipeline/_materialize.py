@@ -1,7 +1,7 @@
 """Pure media-assignment materializers shared by deterministic and agent paths.
 
-``PortraitPlanning`` in the v2 chain intentionally keeps republishing
-``TimelineWindowPlanning.default_assignment.portrait_plan_payload`` byte-for-byte:
+``TimelineWindowPlanning`` in the v2 chain publishes
+``default_assignment.portrait_plan_payload`` byte-for-byte as ``plan.portrait``:
 that payload is the Phase 1 golden output, and rebuilding it here would risk
 changing field order or diagnostics. The LLM agent path uses the portrait
 materializer below because it starts from a media assignment rather than the

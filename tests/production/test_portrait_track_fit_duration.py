@@ -6,7 +6,7 @@ accumulate sub-frame drift that, for longer tracks, exceeds the one-frame
 tolerance of the duration sanity check. ``fit_video_to_exact_duration`` re-encodes
 the concatenated track to exactly the plan duration (clone-pad if short, trim if
 long). The node-level wiring + relaxed tolerance is covered by
-``tests/production/test_portrait_planning_node.py`` and the golden workflow; this
+``tests/production/test_timeline_window_planning_node.py`` and the golden workflow; this
 test drives the real ffmpeg pass directly to prove both pad-short and trim-long
 branches land on the exact target.
 """

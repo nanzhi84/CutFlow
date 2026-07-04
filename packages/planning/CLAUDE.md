@@ -27,5 +27,5 @@
 
 ## 注意 / 坑
 - 改 portrait recency 语义要同步 `recency_context.py` 里 ledger 字段映射：`asset_id`→template_id、`slot_phase=="portrait_opening"`→开场守卫、`diversity_key`→相似簇。
-- `PortraitPlanning` 的 capacity-controlled split 只缩短过长 chunk，让不同资产参与覆盖；它不能放宽 `max_uses=1`，覆盖不足应 hard fail 而不是复用同一资产。
+- `TimelineWindowPlanning` 的 capacity-controlled split 只缩短过长 chunk，让不同资产参与覆盖；它不能放宽 `max_uses=1`，覆盖不足应 hard fail 而不是复用同一资产。
 - editing 里 timeline 边界连续（段 i 的 end frame == 段 i+1 的 start frame）是不变量；量化后 <1 帧的退化段会被丢弃并记入 trace，别改成静默平移后续段。

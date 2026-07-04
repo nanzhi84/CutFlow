@@ -145,7 +145,12 @@ def run(ctx: NodeContext) -> NodeOutput:
                 ArtifactKind.plan_timeline_windows,
                 payload,
                 "TimelineWindowsPlan.v1",
-            )
+            ),
+            ctx.artifact(
+                ArtifactKind.plan_portrait,
+                portrait_plan_payload,
+                "PortraitPlanArtifact.v1",
+            ),
         ]
     )
 

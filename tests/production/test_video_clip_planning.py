@@ -226,7 +226,7 @@ def test_material_pack_is_single_point_for_portrait_recency_scoring(tmp_path, mo
     # MaterialPackPlanning is the ONE node that reads the selection ledger: a portrait
     # template used in a prior run is demoted (scalar recency_penalty + score) AND the
     # full weighted recency/opening context is stamped onto the candidate metadata for
-    # PortraitPlanning to consume — so the fresh template ranks first.
+    # TimelineWindowPlanning to consume — so the fresh template ranks first.
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
     adapter = _adapter(object_store)
@@ -259,7 +259,7 @@ def test_material_pack_is_single_point_for_portrait_recency_scoring(tmp_path, mo
     assert used["score"] < fresh["score"]
 
     # The full weighted recency/opening context (recency_context.py) is stamped on each
-    # candidate so PortraitPlanning never needs the ledger.
+    # candidate so TimelineWindowPlanning never needs the ledger.
     assert used["metadata"]["recent_usage"]["is_recently_used"] is True
     assert used["metadata"]["recent_usage"]["recent_opening_use_count"] >= 1
     assert fresh["metadata"]["recent_usage"]["is_recently_used"] is False
@@ -524,7 +524,7 @@ def test_portrait_plan_cuts_only_the_talking_head_clip_window(tmp_path, monkeypa
         {"unit_id": "u1", "text": "先讲解打磨工艺。", "start": 0.0, "end": 4.0, "confidence": 0.9},
         {"unit_id": "u2", "text": "再展示补漆效果。", "start": 4.0, "end": 8.0, "confidence": 0.9},
     ]
-    ctx = _ctx(adapter, _request(), "PortraitPlanning")
+    ctx = _ctx(adapter, _request(), "TimelineWindowPlanning")
     ctx.state.artifacts[ArtifactKind.plan_material_pack] = Artifact(
         id="art_mp",
         case_id="case_demo",
@@ -554,12 +554,7 @@ def test_portrait_plan_cuts_only_the_talking_head_clip_window(tmp_path, monkeypa
         payload_schema="NarrationBoundaryPlan.v1",
     )
 
-    ctx.node_run = ctx.node_run.model_copy(update={"node_id": "TimelineWindowPlanning"})
-    timeline_output = nodes.timeline_window_planning.run(ctx)
-    for artifact in timeline_output.artifacts:
-        ctx.state.artifacts[artifact.kind] = artifact
-    ctx.node_run = ctx.node_run.model_copy(update={"node_id": "PortraitPlanning"})
-    output = nodes.portrait_planning.run(ctx)
+    output = nodes.timeline_window_planning.run(ctx)
     payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_portrait)
     assert payload["segments"]
     # Every planned source slice is drawn from INSIDE the pinned clip window.

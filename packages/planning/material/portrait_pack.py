@@ -97,7 +97,7 @@ def rank_portrait_clip_candidates(
     availability baseline + its VLM lip-sync confidence, demoted by a recency penalty
     on its source asset. Empty when no clip clears the gate (the honest "no usable
     portrait" signal — the node then soft-degrades). Audio coverage/capacity is NOT
-    scored here; it is enforced downstream by PortraitPlanning.
+    scored here; it is enforced downstream by TimelineWindowPlanning.
     """
     candidates: list[PortraitClipCandidate] = []
     for asset_id, annotation in annotations.items():

@@ -5,11 +5,11 @@ produced TTS audio, detects real audio pauses (ffmpeg ``silencedetect``), assemb
 semantic + audio-pause safe-cut boundaries, and emits a frame-quantized
 ``plan.narration_boundary`` artifact.
 
-This is the ONE node that reads ``audio_tts`` for pause detection: PortraitPlanning (and
-the future EditingAgentPlanning #136) consume ``pause_windows`` from this artifact instead
-of re-running ffmpeg. The boundary assembly is the same pure planning function packing
-uses internally, so PortraitPlanning's frame boundaries are unchanged — this node only
-front-moves the "where can we safely cut" responsibility, it does not fill any slot.
+This is the ONE node that reads ``audio_tts`` for pause detection: TimelineWindowPlanning
+and EditingAgentPlanning consume ``pause_windows`` from this artifact instead of
+re-running ffmpeg. The boundary assembly is the same pure planning function packing
+uses internally, so portrait frame boundaries are unchanged — this node only front-moves
+the "where can we safely cut" responsibility, it does not fill any slot.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ def run(ctx: NodeContext) -> NodeOutput:
 
     # Detect real audio pauses on the produced TTS audio (semantic-only fallback when the
     # audio is the sandbox tone and has no reliable silences). This is the ffmpeg call
-    # that used to live in PortraitPlanning.
+    # that used to live downstream from boundary planning.
     pause_windows = _detect_audio_pauses(ctx)
 
     # The boundary planner also returns a diagnostic trace; this node publishes counts, not
