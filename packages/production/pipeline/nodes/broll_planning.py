@@ -202,7 +202,10 @@ def _assign_candidates_to_windows(
     broll_windows = [
         window for window in (windows.get("broll_windows") or []) if isinstance(window, dict)
     ]
-    for window in broll_windows[: max(0, max_inserts)]:
+    max_assignments = max(0, max_inserts)
+    for window in broll_windows:
+        if len(assignments) >= max_assignments:
+            break
         required_frames = _window_required_frames(window)
         selected = None
         for candidate_id, candidate in candidates.items():

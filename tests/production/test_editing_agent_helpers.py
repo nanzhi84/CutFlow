@@ -560,6 +560,34 @@ def test_deterministic_selection_leaves_unfillable_slot_uncovered_instead_of_reu
     )
 
 
+def test_deterministic_selection_counts_max_inserts_by_accepted_broll():
+    boundary = {
+        "broll_slots": [
+            {"slot_id": "bslot_too_long", "start_frame": 0, "end_frame": 300},
+            {"slot_id": "bslot_fillable", "start_frame": 300, "end_frame": 360},
+        ]
+    }
+    material = _material()
+    material["broll_candidates"] = [
+        {
+            "asset_id": "broll_short",
+            "score": 90.0,
+            "metadata": {"clip_id": "short_clip", "source_start": 0.0, "source_end": 2.0},
+        }
+    ]
+
+    selection = deterministic_selection(
+        boundary=boundary,
+        candidates=index_candidates(material),
+        bgm_enabled=False,
+        max_inserts=1,
+    )
+
+    assert [(choice.slot_id, choice.candidate_id) for choice in selection.broll] == [
+        ("bslot_fillable", "bc_000")
+    ]
+
+
 def test_materialize_portrait_frames_are_complete_and_contiguous():
     selection = _valid_selection()
     payload = materialize_portrait_from_assignment(
@@ -645,6 +673,7 @@ def test_materialize_broll_overlays_have_frames_and_no_overlap():
     windows_by_id = {window["window_id"]: window for window in _windows(boundary)["broll_windows"]}
     for ov, choice in zip(overlays, assignment["broll"]):
         window = windows_by_id[choice["window_id"]]
+        assert ov["window_id"] == choice["window_id"]
         for key in (
             "timeline_start_frame",
             "timeline_end_frame",

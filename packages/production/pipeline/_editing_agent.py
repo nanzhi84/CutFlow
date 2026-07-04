@@ -531,7 +531,9 @@ def deterministic_selection(
     used_broll_assets: set[str] = set()
     used_broll_diversity: set[str] = set()
     if ranked_broll and max_inserts > 0:
-        for slot in broll_slots[:max_inserts]:
+        for slot in broll_slots:
+            if len(broll) >= max(0, max_inserts):
+                break
             need = _slot_required_frames(slot)
             candidate_id = next(
                 (

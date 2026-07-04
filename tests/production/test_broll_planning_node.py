@@ -176,6 +176,68 @@ def test_broll_planning_outputs_clip_id_on_overlays(
     assert payload["overlays"][0]["timeline_end"] == 2.0
 
 
+def test_broll_planning_max_inserts_counts_accepted_overlays_not_attempted_windows(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repository = Repository()
+    adapter = object.__new__(LocalRuntimeAdapter)
+    adapter.repository = repository
+    state = RunState(
+        request=DigitalHumanVideoRequest(
+            case_id="case_demo",
+            script="hello",
+            voice={"voice_id": "voice_sandbox"},
+            broll={"enabled": True, "max_inserts": 1},
+        ),
+        artifacts={
+            ArtifactKind.plan_material_pack: _artifact(
+                ArtifactKind.plan_material_pack,
+                {"broll_candidates": [{"asset_id": "asset_broll_demo"}]},
+            ),
+            ArtifactKind.narration_units: _artifact(
+                ArtifactKind.narration_units,
+                {
+                    "units": [
+                        {
+                            "unit_id": "unit_1",
+                            "text": "hello",
+                            "start": 0.0,
+                            "end": 12.0,
+                            "confidence": 0.9,
+                        }
+                    ]
+                },
+            ),
+            ArtifactKind.plan_timeline_windows: _timeline_windows_artifact(
+                12.0,
+                broll_frames=((0, 300), (300, 360)),
+            ),
+        },
+    )
+    candidate = BrollCandidate(
+        asset_id="asset_broll_demo",
+        clip_id="cover_a",
+        source_start=0.0,
+        source_end=2.0,
+        score=0.8,
+        base_score=0.8,
+        recency_penalty=0.0,
+        matched_keywords=("hello",),
+        scene_name="demo",
+        diversity_key="scene:demo",
+    )
+    monkeypatch.setattr(nodes.broll_planning, "rank_broll_candidates", lambda **_: [candidate])
+
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+    output = nodes.broll_planning.run(ctx)
+    payload = _broll_payload(output)
+
+    assert output.status != NodeStatus.degraded
+    assert len(payload["overlays"]) == 1
+    assert payload["overlays"][0]["timeline_start_frame"] == 300
+    assert payload["overlays"][0]["timeline_end_frame"] == 360
+
+
 def _state_with_clean_unrelated_clip(*, allow_generic_coverage: bool):
     """A digital_human_v2 run whose only b-roll asset is a person-free clean clip
     that shares NO keyword with the narration — usable only via generic coverage."""

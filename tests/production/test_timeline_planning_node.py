@@ -107,6 +107,7 @@ def _portrait_payload() -> dict:
 def _broll_overlay(*, with_frames: bool) -> dict:
     overlay = {
         "overlay_id": "broll_1",
+        "window_id": "bwin_000",
         "asset_id": "asset_broll_demo",
         "clip_id": "cover_a",
         "timeline_start": 3.0,
@@ -131,7 +132,26 @@ def _broll_overlay(*, with_frames: bool) -> dict:
     return overlay
 
 
-def _state(*, with_frames: bool) -> tuple[LocalRuntimeAdapter, RunState]:
+def _timeline_windows_payload(*, start_frame: int = 90, end_frame: int = 147) -> dict:
+    return {
+        "fps": 30,
+        "total_frames": 180,
+        "geometry_policy": {},
+        "portrait_windows": [],
+        "broll_windows": [
+            {
+                "window_id": "bwin_000",
+                "start_frame": start_frame,
+                "end_frame": end_frame,
+                "length_frames": end_frame - start_frame,
+            }
+        ],
+    }
+
+
+def _state(
+    *, with_frames: bool, window_start_frame: int = 90, window_end_frame: int = 147
+) -> tuple[LocalRuntimeAdapter, RunState]:
     adapter = object.__new__(LocalRuntimeAdapter)
     adapter.repository = Repository()
     portrait = _artifact(ArtifactKind.plan_portrait, _portrait_payload())
@@ -140,8 +160,14 @@ def _state(*, with_frames: bool) -> tuple[LocalRuntimeAdapter, RunState]:
         {"enabled": True, "overlays": [_broll_overlay(with_frames=with_frames)]},
         schema="BrollPlanArtifact.v1",
     )
+    timeline_windows = _artifact(
+        ArtifactKind.plan_timeline_windows,
+        _timeline_windows_payload(start_frame=window_start_frame, end_frame=window_end_frame),
+        schema="TimelineWindowsPlan.v1",
+    )
     adapter.repository.artifacts[portrait.id] = portrait
     adapter.repository.artifacts[broll.id] = broll
+    adapter.repository.artifacts[timeline_windows.id] = timeline_windows
     state = RunState(
         request=DigitalHumanVideoRequest(
             case_id="case_demo",
@@ -152,6 +178,7 @@ def _state(*, with_frames: bool) -> tuple[LocalRuntimeAdapter, RunState]:
         artifacts={
             ArtifactKind.plan_portrait: portrait,
             ArtifactKind.plan_broll: broll,
+            ArtifactKind.plan_timeline_windows: timeline_windows,
         },
     )
     return adapter, state
@@ -185,3 +212,12 @@ def test_timeline_planning_fail_fasts_on_overlay_missing_authoritative_frames():
         timeline_planning.run(ctx)
     assert exc.value.error.code == ErrorCode.render_invalid_timeline
     assert "timeline_start_frame" in exc.value.error.message
+
+
+def test_timeline_planning_rejects_broll_frame_drift_from_authoritative_window():
+    adapter, state = _state(with_frames=True, window_start_frame=90, window_end_frame=150)
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+    with pytest.raises(NodeExecutionError) as exc:
+        timeline_planning.run(ctx)
+    assert exc.value.error.code == ErrorCode.render_invalid_timeline
+    assert "drifts from authoritative window" in exc.value.error.message

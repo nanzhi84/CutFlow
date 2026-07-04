@@ -164,12 +164,14 @@ def materialize_broll_from_assignment(
         if isinstance(window, dict)
     }
     candidate_by_id = _candidate_group(candidates, "broll_by_id")
-    accepted: list[BrollInsertion] = []
+    accepted: list[tuple[str, BrollInsertion]] = []
     drop_diagnostics: list[dict] = []
     used_candidate_ids: set[str] = set()
     used_asset_ids: set[str] = set()
     used_diversity_keys: set[str] = set()
-    for choice in (assignment.get("broll") or [])[: max(0, max_inserts)]:
+    for choice in assignment.get("broll") or []:
+        if len(accepted) >= max(0, max_inserts):
+            break
         if not isinstance(choice, dict):
             continue
         window_id = _as_str(choice.get("window_id"))
@@ -239,7 +241,7 @@ def materialize_broll_from_assignment(
             pad_start=0.0,
             pad_end=0.0,
         )
-        accepted.append(insert)
+        accepted.append((window_id, insert))
         used_candidate_ids.add(candidate_id)
         if asset_id:
             used_asset_ids.add(asset_id)
@@ -254,10 +256,11 @@ def materialize_broll_from_assignment(
     )
 
 
-def overlays_from_insertions(insertions: list[BrollInsertion]) -> list[BrollOverlay]:
+def overlays_from_insertions(insertions: list[tuple[str, BrollInsertion]]) -> list[BrollOverlay]:
     return [
         BrollOverlay(
             overlay_id=f"broll_{index + 1}",
+            window_id=window_id,
             asset_id=insertion.asset_id,
             clip_id=insertion.clip_id,
             timeline_start=insertion.timeline_start,
@@ -276,7 +279,7 @@ def overlays_from_insertions(insertions: list[BrollInsertion]) -> list[BrollOver
             scene_name=insertion.scene_name,
             diversity_key=insertion.diversity_key or None,
         )
-        for index, insertion in enumerate(insertions)
+        for index, (window_id, insertion) in enumerate(insertions)
     ]
 
 
