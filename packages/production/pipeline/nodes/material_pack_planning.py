@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from packages.core.contracts import ArtifactKind
 from packages.core.contracts.artifacts import MaterialCandidate, MaterialPackArtifact
-from packages.core.workflow import NodeOutput
+from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.planning.material import (
     avoid_intervals,
     clip_is_lip_sync_usable,
@@ -338,7 +338,10 @@ def _active_reserved_asset_ids(repo, *, case_id: str, run_id: str, medium: str) 
 
 
 def _source_duration_for_asset(ctx: NodeContext, *, asset_id: str, annotation) -> float | None:
-    source = ctx.source_artifact_for_asset(asset_id)
+    try:
+        source = ctx.source_artifact_for_asset(asset_id)
+    except NodeExecutionError:
+        source = None
     media_info = getattr(source, "media_info", None)
     if media_info is not None:
         try:
