@@ -168,7 +168,7 @@ def test_material_pack_offers_one_bgm_candidate_per_annotated_segment(tmp_path, 
     assert first["scene_fit"] == ["短视频", "产品展示"]
 
 
-def test_bgm_segment_candidate_recency_demotes_exact_segment_not_whole_song(tmp_path, monkeypatch):
+def test_bgm_segment_recency_is_metadata_not_material_pack_ranking(tmp_path, monkeypatch):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
     adapter = _adapter(object_store)
@@ -200,9 +200,10 @@ def test_bgm_segment_candidate_recency_demotes_exact_segment_not_whole_song(tmp_
     payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_material_pack)
 
     assert [c["metadata"]["clip_id"] for c in payload["bgm_candidates"][:2]] == [
-        "bgm_segment_2",
         "bgm_segment_1",
+        "bgm_segment_2",
     ]
+    assert {c["score"] for c in payload["bgm_candidates"]} == {1.0}
     penalties = {
         c["metadata"]["clip_id"]: c["metadata"]["recency_penalty"]
         for c in payload["bgm_candidates"]
@@ -248,7 +249,7 @@ def test_material_pack_respects_active_bgm_reservations_from_parallel_run(tmp_pa
     }
 
 
-def test_material_pack_limits_bgm_candidates_to_top_k(tmp_path, monkeypatch):
+def test_material_pack_offers_complete_bgm_segment_pool_without_top_k(tmp_path, monkeypatch):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
     adapter = _adapter(object_store)
@@ -271,13 +272,14 @@ def test_material_pack_limits_bgm_candidates_to_top_k(tmp_path, monkeypatch):
     output = nodes.material_pack_planning.run(_ctx(adapter, _request(), "MaterialPackPlanning"))
     payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_material_pack)
 
-    assert len(payload["bgm_candidates"]) == 8
+    assert len(payload["bgm_candidates"]) == 10
+    assert {c["score"] for c in payload["bgm_candidates"]} == {1.0}
     assert [c["metadata"]["clip_id"] for c in payload["bgm_candidates"]] == [
-        f"bgm_segment_{index}" for index in range(8)
+        f"bgm_segment_{index}" for index in range(10)
     ]
 
 
-def test_material_pack_keeps_requested_bgm_inside_top_k(tmp_path, monkeypatch):
+def test_material_pack_complete_bgm_pool_includes_requested_asset(tmp_path, monkeypatch):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
     adapter = _adapter(object_store)
@@ -304,7 +306,7 @@ def test_material_pack_keeps_requested_bgm_inside_top_k(tmp_path, monkeypatch):
     )
     payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_material_pack)
 
-    assert len(payload["bgm_candidates"]) == 8
+    assert len(payload["bgm_candidates"]) == 9
     assert any(candidate["asset_id"] == "asset_requested_bgm" for candidate in payload["bgm_candidates"])
     owned = [
         reservation

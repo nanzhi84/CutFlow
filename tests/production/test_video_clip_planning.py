@@ -200,6 +200,7 @@ def test_material_pack_splits_one_video_into_portrait_and_broll(tmp_path, monkey
         [
             _talk_clip("talk", 2.0, 9.0),  # A-roll
             _cover_clip("cover", 9.0, 14.0, ["打磨", "工艺"]),  # B-roll, matches script
+            _cover_clip("unrelated", 14.0, 19.0, ["门店", "咖啡"]),  # still eligible
         ],
     )
 
@@ -215,33 +216,46 @@ def test_material_pack_splits_one_video_into_portrait_and_broll(tmp_path, monkey
     # B-roll pool: the cover clip is offered; the talking-head clip never leaks in.
     broll_clip_ids = {(c["metadata"] or {}).get("clip_id") for c in payload["broll_candidates"]}
     assert "cover" in broll_clip_ids
+    assert "unrelated" in broll_clip_ids
     assert "talk" not in broll_clip_ids
+    assert {c["score"] for c in payload["broll_candidates"]} == {1.0}
+    assert {
+        (item["medium"], item["asset_id"], item["clip_id"], item["reason"])
+        for item in payload["rejected_candidates"]
+    } >= {
+        ("broll", "vid_mixed", "talk", "broll_lipsync_routed_to_portrait"),
+    }
 
     # Honest diagnostics for the unified bucket.
+    assert payload["diagnostics"]["visual_eligibility_mode"] == "hard_gate_complete_pool"
+    assert payload["diagnostics"]["visual_ranking_disabled"] == {"portrait": True, "broll": True}
     assert payload["diagnostics"]["portrait_from_video"] >= 1
     assert payload["diagnostics"]["video_no_lipsync"] is False
 
 
-def test_material_pack_is_single_point_for_portrait_recency_scoring(tmp_path, monkeypatch):
-    # MaterialPackPlanning is the ONE node that reads the selection ledger: a portrait
-    # template used in a prior run is demoted (scalar recency_penalty + score) AND the
-    # full weighted recency/opening context is stamped onto the candidate metadata for
-    # TimelineWindowPlanning to consume — so the fresh template ranks first.
+def test_material_pack_carries_portrait_recency_without_ranking_pool(tmp_path, monkeypatch):
+    # MaterialPackPlanning is the ONE node that reads the selection ledger, but Stage 2
+    # keeps it as hard eligibility only: a prior portrait use is stamped onto metadata
+    # for TimelineWindowPlanning, never hidden in the MaterialPack score or order.
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
     adapter = _adapter(object_store)
     adapter.repository.media_assets.clear()
     adapter.repository.annotations.clear()
-    _inject_video_asset(adapter.repository, "vid_used", [_talk_clip("talk_used", 0.0, 15.0)])
-    _inject_video_asset(adapter.repository, "vid_fresh", [_talk_clip("talk_fresh", 0.0, 15.0)])
-    # vid_used opened a prior run for this case.
+    _inject_video_asset(adapter.repository, "vid_a_used", [_talk_clip("talk_used", 0.0, 15.0)])
+    _inject_video_asset(
+        adapter.repository,
+        "vid_z_fresh",
+        [_talk_clip("talk_fresh", 0.0, 15.0)],
+    )
+    # vid_a_used opened a prior run for this case.
     adapter.repository.record_selection_ledger_entries(
         [
             SelectionLedgerEntry(
                 case_id="case_demo",
                 run_id="run_prev",
                 medium="portrait",
-                asset_id="vid_used",
+                asset_id="vid_a_used",
                 slot_phase="portrait_opening",
             )
         ]
@@ -251,12 +265,12 @@ def test_material_pack_is_single_point_for_portrait_recency_scoring(tmp_path, mo
     payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_material_pack)
 
     by_asset = {c["asset_id"]: c for c in payload["portrait_candidates"]}
-    used, fresh = by_asset["vid_used"], by_asset["vid_fresh"]
+    used, fresh = by_asset["vid_a_used"], by_asset["vid_z_fresh"]
 
-    # Scalar recency demotion (recency.py) is applied to the score + metadata.
+    # Scalar recency remains metadata only; eligibility score stays fixed.
     assert used["metadata"]["recency_penalty"] > 0.0
     assert fresh["metadata"]["recency_penalty"] == 0.0
-    assert used["score"] < fresh["score"]
+    assert used["score"] == fresh["score"] == 1.0
 
     # The full weighted recency/opening context (recency_context.py) is stamped on each
     # candidate so TimelineWindowPlanning never needs the ledger.
@@ -264,8 +278,11 @@ def test_material_pack_is_single_point_for_portrait_recency_scoring(tmp_path, mo
     assert used["metadata"]["recent_usage"]["recent_opening_use_count"] >= 1
     assert fresh["metadata"]["recent_usage"]["is_recently_used"] is False
 
-    # Ranking: the fresh template wins the portrait pool ordering.
-    assert payload["portrait_candidates"][0]["asset_id"] == "vid_fresh"
+    # Deterministic complete-pool order is by source identity, not recency freshness.
+    assert [c["asset_id"] for c in payload["portrait_candidates"]] == [
+        "vid_a_used",
+        "vid_z_fresh",
+    ]
 
 
 def test_material_pack_respects_active_reservations_from_parallel_run(tmp_path, monkeypatch):
@@ -310,6 +327,13 @@ def test_material_pack_respects_active_reservations_from_parallel_run(tmp_path, 
     assert {c["asset_id"] for c in payload["broll_candidates"]} == {"vid_fresh"}
     assert payload["diagnostics"]["portrait_active_reservations"] == 1
     assert payload["diagnostics"]["broll_active_reservations"] == 1
+    assert {
+        (item["medium"], item["asset_id"], item.get("clip_id"), item["reason"])
+        for item in payload["rejected_candidates"]
+    } >= {
+        ("portrait", "vid_reserved", None, "active_selection_reservation"),
+        ("broll", "vid_reserved", None, "active_selection_reservation"),
+    }
     owned = [
         reservation
         for reservation in adapter.repository.selection_reservations.values()
@@ -408,9 +432,38 @@ def test_material_pack_excludes_presenter_clip_from_broll_and_reports_it(tmp_pat
     broll_clip_ids = {(c["metadata"] or {}).get("clip_id") for c in payload["broll_candidates"]}
     assert "presenter" not in broll_clip_ids
     assert "scenery" in broll_clip_ids
+    assert {
+        (item["medium"], item["asset_id"], item["clip_id"], item["reason"])
+        for item in payload["rejected_candidates"]
+    } >= {
+        ("broll", "vid_template", "presenter", "broll_person_clip"),
+    }
     # Honest visibility: the person clip excluded from b-roll is reported so a
     # near-empty b-roll plan is not mistaken for an annotation error.
     assert payload["diagnostics"]["broll_person_excluded"] == 1
+
+
+def test_material_pack_reports_missing_annotation_as_rejected_candidate(tmp_path, monkeypatch):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    adapter.repository.media_assets.clear()
+    adapter.repository.annotations.clear()
+    _inject_video_asset(adapter.repository, "vid_unannotated", [_cover_clip("cover", 0.0, 5.0, [])])
+    adapter.repository.annotations.pop("vid_unannotated")
+
+    output = nodes.material_pack_planning.run(_ctx(adapter, _request(), "MaterialPackPlanning"))
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_material_pack)
+
+    assert payload["portrait_candidates"] == []
+    assert payload["broll_candidates"] == []
+    assert {
+        (item["medium"], item["asset_id"], item.get("clip_id"), item["reason"])
+        for item in payload["rejected_candidates"]
+    } >= {
+        ("portrait", "vid_unannotated", None, "annotation_missing"),
+        ("broll", "vid_unannotated", None, "annotation_missing"),
+    }
 
 
 def test_material_pack_video_without_talking_head_flags_no_lipsync(tmp_path, monkeypatch):
