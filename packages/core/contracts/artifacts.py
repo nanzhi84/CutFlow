@@ -219,7 +219,7 @@ class ClipEmbeddingRecord(ContractModel):
     embedding_dimension: int = 1024
     normalization: str = "l2"
     instruct: str = "video_clip_retrieval_v1"
-    index_version: str = "clip-vl-qwen3-v1"
+    index_version: str = "clip-video-qwen3-v2"
 
     @model_validator(mode="after")
     def validate_embedding_vector(self) -> "ClipEmbeddingRecord":
