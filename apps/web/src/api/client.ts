@@ -456,6 +456,13 @@ export const api = {
       fetchJson<JsonResponse<operations["list_media_assets_api_media_assets_get"]>>("/api/media/assets", { query }).then(
         (res) => ({ ...res, items: res.items.filter(isRealAssetCard) }),
       ),
+    annotationStatus: (
+      query: QueryParams<operations["media_asset_annotation_status_api_media_assets_annotation_status_get"]>,
+    ) =>
+      fetchJson<JsonResponse<operations["media_asset_annotation_status_api_media_assets_annotation_status_get"]>>(
+        "/api/media/assets/annotation-status",
+        { query },
+      ),
     usageRanking: (
       kind: "portrait" | "broll" | "bgm" | "font",
       query: QueryParams<operations["material_usage_ranking_api_library_assets__kind__usage_ranking_get"]> = {},
@@ -463,6 +470,24 @@ export const api = {
       fetchJson<JsonResponse<operations["material_usage_ranking_api_library_assets__kind__usage_ranking_get"]>>(
         `/api/library/assets/${enc(kind)}/usage-ranking`,
         { query },
+      ),
+    clipEmbeddingStatus: (
+      query: QueryParams<operations["clip_embedding_status_api_media_assets_clip_embeddings_status_get"]>,
+    ) =>
+      fetchJson<JsonResponse<operations["clip_embedding_status_api_media_assets_clip_embeddings_status_get"]>>(
+        "/api/media/assets/clip-embeddings/status",
+        { query },
+      ),
+    clipEmbeddingJobStatus: (jobId: string) =>
+      fetchJson<JsonResponse<operations["clip_embedding_job_status_api_media_assets_clip_embeddings_jobs__job_id__get"]>>(
+        `/api/media/assets/clip-embeddings/jobs/${enc(jobId)}`,
+      ),
+    indexClipEmbeddings: (
+      payload: JsonRequest<operations["index_clip_embeddings_api_media_assets_clip_embeddings_index_post"]>,
+    ) =>
+      fetchJson<JsonResponse<operations["index_clip_embeddings_api_media_assets_clip_embeddings_index_post"]>>(
+        "/api/media/assets/clip-embeddings/index",
+        { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("clip_embedding_index") },
       ),
     batchStabilize: (payload: JsonRequest<operations["batch_stabilize_assets_api_media_assets_batch_stabilize_post"]>) =>
       fetchJson<JsonResponse<operations["batch_stabilize_assets_api_media_assets_batch_stabilize_post"]>>(

@@ -5,6 +5,7 @@ import {
   Eye,
   FileVideo,
   Film,
+  Fingerprint,
   Loader2,
   Plus,
   RefreshCw,
@@ -54,6 +55,18 @@ type AnnotationForm = {
   segments: AnnotationTimelineSegment[];
   qualityEvents: AnnotationQualityEvent[];
 };
+
+type ClipEmbeddingStatusVm = Awaited<ReturnType<typeof api.mediaAssets.clipEmbeddingStatus>>;
+type ClipEmbeddingJobVm = Awaited<ReturnType<typeof api.mediaAssets.clipEmbeddingJobStatus>>;
+
+function isClipEmbeddingJobActive(status: string | undefined): boolean {
+  return status === "queued" || status === "running";
+}
+
+function embeddingPercent(done: number, total: number) {
+  if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+}
 
 const QUALITY_STATUS_LABELS: Record<string, string> = {
   usable: "可用",
@@ -178,6 +191,7 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
   const [previewPlayable, setPreviewPlayable] = useState<boolean | undefined>(undefined);
   const [form, setForm] = useState<AnnotationForm>({ qualityStatus: "usable", usable: true, segments: [], qualityEvents: [] });
   const [bgmForm, setBgmForm] = useState<BgmSegment[]>([]);
+  const [embeddingJobId, setEmbeddingJobId] = useState<string | null>(null);
 
   const editorQuery = useQuery({
     queryKey: ["library", "annotation", assetId],
@@ -188,6 +202,20 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
   const editor = editorQuery.data ?? null;
   const isPortrait = isPortraitKind(editor?.asset.kind);
   const isBgm = editor?.asset.kind === "bgm";
+
+  const embeddingStatusQuery = useQuery({
+    queryKey: ["library", "annotation", "clip-embedding-status", caseId, assetId],
+    queryFn: () => api.mediaAssets.clipEmbeddingStatus({ case_id: caseId!, asset_id: assetId!, namespace: "all" }),
+    enabled: Boolean(caseId && assetId && editor?.asset.kind === "video"),
+    refetchInterval: embeddingJobId ? 1_500 : 5_000,
+  });
+
+  const embeddingJobQuery = useQuery({
+    queryKey: ["library", "annotation", "clip-embedding-job", embeddingJobId],
+    queryFn: () => api.mediaAssets.clipEmbeddingJobStatus(embeddingJobId!),
+    enabled: Boolean(embeddingJobId),
+    refetchInterval: embeddingJobId ? 1_500 : false,
+  });
 
   useEffect(() => {
     if (!assetId) {
@@ -367,6 +395,45 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
     onError: (error) => toast.error("裁剪失败", error),
   });
 
+  const embeddingJobActive = Boolean(
+    isClipEmbeddingJobActive(embeddingJobQuery.data?.status) || (embeddingJobId && !embeddingJobQuery.data),
+  );
+
+  const embeddingMutation = useMutation({
+    mutationFn: () => {
+      if (!caseId || !assetId) throw new Error("素材未加载");
+      const pendingCount = embeddingStatusQuery.data?.pending_count ?? 1;
+      return api.mediaAssets.indexClipEmbeddings({
+        schema_version: "clip_embedding_index_request.v1",
+        case_id: caseId,
+        asset_ids: [assetId],
+        namespace: "all",
+        provider_profile_id: "dashscope.multimodal_embedding.prod",
+        limit: Math.max(1, pendingCount),
+        force: false,
+      });
+    },
+    onSuccess: async (response) => {
+      setEmbeddingJobId(response.job_id);
+      await queryClient.invalidateQueries({ queryKey: ["library", "annotation", "clip-embedding-status", caseId, assetId] });
+      toast.success("单素材嵌入已开始", `任务 ${shortId(response.job_id)} · 排队 ${response.queued_count} 条`);
+    },
+    onError: (error) => toast.error("单素材嵌入失败", error),
+  });
+
+  useEffect(() => {
+    const job = embeddingJobQuery.data;
+    if (!job || !embeddingJobId || !["succeeded", "failed"].includes(job.status)) return;
+    void queryClient.invalidateQueries({ queryKey: ["library", "annotation", "clip-embedding-status", caseId, assetId] });
+    void queryClient.invalidateQueries({ queryKey: ["library", "clip-embeddings", caseId] });
+    if (job.status === "failed") {
+      toast.warning("单素材嵌入结束，有失败项", `新增 ${job.indexed_now_count} 条，失败 ${job.failed_count} 条`);
+    } else {
+      toast.success("单素材嵌入完成", `新增 ${job.indexed_now_count} 条，剩余 ${job.remaining_count} 条`);
+    }
+    setEmbeddingJobId(null);
+  }, [assetId, caseId, embeddingJobId, embeddingJobQuery.data, queryClient, toast]);
+
   return (
     <Modal isOpen={Boolean(assetId)} onClose={onClose} title="标注编辑器" size="3xl">
       {editorQuery.isLoading ? (
@@ -482,6 +549,16 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
                     : `时间轴叠加 ${playerSegments.length} 个片段${playerEvents.length > 0 ? ` · ${playerEvents.length} 个质量事件` : ""}${evidenceFrames.length > 0 ? ` · ${evidenceFrames.length} 个证据帧` : ""}，点击可跳转并高亮。`
                   : isBgm ? "该 BGM 暂无音乐段落。" : "该标注暂无可视化片段。"}
               </p>
+
+              {!isBgm ? (
+                <EmbeddingStatusPanel
+                  status={embeddingStatusQuery.data}
+                  loading={embeddingStatusQuery.isFetching || embeddingJobQuery.isFetching}
+                  error={embeddingStatusQuery.error || embeddingJobQuery.error}
+                  active={embeddingJobActive || embeddingMutation.isPending}
+                  onEmbed={() => embeddingMutation.mutate()}
+                />
+              ) : null}
             </div>
 
             <div className="max-h-[72vh] overflow-y-auto pr-1">
@@ -533,6 +610,103 @@ export function AnnotationEditorModal({ assetId, caseId, onClose }: AnnotationEd
         </div>
       ) : null}
     </Modal>
+  );
+}
+
+function EmbeddingStatusPanel({
+  status,
+  loading,
+  error,
+  active,
+  onEmbed,
+}: {
+  status?: ClipEmbeddingStatusVm;
+  loading: boolean;
+  error: unknown;
+  active: boolean;
+  onEmbed: () => void;
+}) {
+  const candidateCount = status?.candidate_count ?? 0;
+  const indexedCount = status?.indexed_count ?? 0;
+  const pendingCount = status?.pending_count ?? 0;
+  const percent = embeddingPercent(indexedCount, candidateCount);
+  const hasError = Boolean(error);
+  const isComplete = candidateCount > 0 && pendingCount === 0 && !hasError;
+  const isEmpty = candidateCount === 0 && !loading && !hasError;
+  const canEmbed = !active && !hasError && pendingCount > 0;
+  const tone = hasError ? "danger" : isComplete ? "good" : isEmpty ? "neutral" : "warn";
+  const title = hasError
+    ? "嵌入状态读取失败"
+    : loading && !status
+      ? "读取嵌入状态"
+      : isComplete
+        ? "视频嵌入已齐"
+        : isEmpty
+          ? "暂无可嵌入片段"
+          : "视频嵌入待补";
+  const detail = status
+    ? `${indexedCount}/${candidateCount} 条 clip 已入库${pendingCount > 0 ? ` · 待补 ${pendingCount}` : ""}`
+    : hasError
+      ? "稍后会自动重试。"
+      : "正在计算当前素材的 clip 索引状态。";
+  const toneClass =
+    tone === "good"
+      ? "border-status-success/25 bg-status-success/10 text-status-success"
+      : tone === "danger"
+        ? "border-status-error/25 bg-status-error/10 text-status-error"
+        : tone === "warn"
+          ? "border-status-warning/25 bg-status-warning/10 text-status-warning"
+          : "border-border/80 bg-white/65 text-text-secondary";
+
+  return (
+    <section className="grid gap-3 rounded-2xl border border-border/80 bg-white/65 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Fingerprint className="h-4 w-4 shrink-0 text-accent" />
+          <div className="min-w-0">
+            <h4 className="text-sm font-semibold text-text-primary">Clip 视频嵌入</h4>
+            <p className="mt-0.5 truncate text-xs text-text-tertiary">
+              {status ? `${status.embedding_model} · ${status.embedding_dimension} 维` : "qwen3-vl-embedding"}
+            </p>
+          </div>
+        </div>
+        <button
+          className={isComplete ? "btn-secondary min-h-9 px-3 py-2 text-xs" : "btn-primary min-h-9 px-3 py-2 text-xs"}
+          type="button"
+          disabled={!canEmbed}
+          onClick={onEmbed}
+          title="只为当前素材的待补 clip 生成视频嵌入"
+        >
+          {active || loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Fingerprint className="h-3.5 w-3.5" />}
+          <span>{active ? "嵌入中" : isComplete ? "已齐全" : pendingCount > 0 ? `生成嵌入 (${pendingCount})` : "无片段"}</span>
+        </button>
+      </div>
+      <div className={`flex flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm font-semibold ${toneClass}`}>
+        <span>{title}</span>
+        {hasError ? <AlertTriangle className="h-4 w-4 shrink-0" /> : <span className="font-mono">{percent}%</span>}
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-surface-hover">
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${hasError ? "bg-status-error" : isComplete ? "bg-status-success" : "bg-accent"}`}
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-center">
+        <div className="rounded-xl border border-border/70 bg-white/55 px-2 py-2">
+          <p className="text-[11px] text-text-tertiary">候选</p>
+          <p className="mt-0.5 text-sm font-semibold text-text-primary">{candidateCount}</p>
+        </div>
+        <div className="rounded-xl border border-border/70 bg-white/55 px-2 py-2">
+          <p className="text-[11px] text-text-tertiary">已入库</p>
+          <p className="mt-0.5 text-sm font-semibold text-text-primary">{indexedCount}</p>
+        </div>
+        <div className="rounded-xl border border-border/70 bg-white/55 px-2 py-2">
+          <p className="text-[11px] text-text-tertiary">待补</p>
+          <p className={`mt-0.5 text-sm font-semibold ${pendingCount > 0 ? "text-status-warning" : "text-text-primary"}`}>{pendingCount}</p>
+        </div>
+      </div>
+      <p className="text-xs leading-5 text-text-secondary">{detail}</p>
+    </section>
   );
 }
 
