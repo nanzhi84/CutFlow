@@ -694,6 +694,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/media/assets/annotation-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Media Asset Annotation Status */
+        get: operations["media_asset_annotation_status_api_media_assets_annotation_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/library/assets/{kind}/usage-ranking": {
         parameters: {
             query?: never;
@@ -705,6 +722,57 @@ export interface paths {
         get: operations["material_usage_ranking_api_library_assets__kind__usage_ranking_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/media/assets/clip-embeddings/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Clip Embedding Status */
+        get: operations["clip_embedding_status_api_media_assets_clip_embeddings_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/media/assets/clip-embeddings/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Clip Embedding Job Status */
+        get: operations["clip_embedding_job_status_api_media_assets_clip_embeddings_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/media/assets/clip-embeddings/index": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Index Clip Embeddings */
+        post: operations["index_clip_embeddings_api_media_assets_clip_embeddings_index_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3675,6 +3743,379 @@ export interface components {
              */
             status: "active" | "archived";
         };
+        /** ClipEmbeddingIndexJobResponse */
+        ClipEmbeddingIndexJobResponse: {
+            /**
+             * Schema Version
+             * @default clip_embedding_index_job_response.v1
+             * @constant
+             */
+            schema_version: "clip_embedding_index_job_response.v1";
+            /** Job Id */
+            job_id: string;
+            /** Case Id */
+            case_id: string;
+            /**
+             * Namespace
+             * @default all
+             * @enum {string}
+             */
+            namespace: "all" | "portrait" | "broll";
+            /** @default queued */
+            status: components["schemas"]["JobStatus"];
+            /** Provider Profile Id */
+            provider_profile_id: string;
+            /** Limit */
+            limit: number;
+            /**
+             * Force
+             * @default false
+             */
+            force: boolean;
+            /**
+             * Queued Count
+             * @default 0
+             */
+            queued_count: number;
+            /**
+             * Candidate Count
+             * @default 0
+             */
+            candidate_count: number;
+            /**
+             * Pending Count
+             * @default 0
+             */
+            pending_count: number;
+            /**
+             * Processed Count
+             * @default 0
+             */
+            processed_count: number;
+            /**
+             * Indexed Now Count
+             * @default 0
+             */
+            indexed_now_count: number;
+            /**
+             * Failed Count
+             * @default 0
+             */
+            failed_count: number;
+            /**
+             * Remaining Count
+             * @default 0
+             */
+            remaining_count: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at?: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            result?: components["schemas"]["ClipEmbeddingIndexResponse"] | null;
+            /** Error Message */
+            error_message?: string | null;
+            /** Request Id */
+            request_id: string;
+        };
+        /** ClipEmbeddingIndexRequest */
+        ClipEmbeddingIndexRequest: {
+            /**
+             * Schema Version
+             * @default clip_embedding_index_request.v1
+             * @constant
+             */
+            schema_version: "clip_embedding_index_request.v1";
+            /** Case Id */
+            case_id: string;
+            /** Asset Ids */
+            asset_ids?: string[] | null;
+            /**
+             * Namespace
+             * @default all
+             * @enum {string}
+             */
+            namespace: "all" | "portrait" | "broll";
+            /**
+             * Provider Profile Id
+             * @default dashscope.multimodal_embedding.prod
+             */
+            provider_profile_id: string;
+            /**
+             * Limit
+             * @default 25
+             */
+            limit: number;
+            /**
+             * Force
+             * @default false
+             */
+            force: boolean;
+        };
+        /** ClipEmbeddingIndexResponse */
+        ClipEmbeddingIndexResponse: {
+            /** Case Id */
+            case_id: string;
+            /** Asset Id */
+            asset_id?: string | null;
+            /**
+             * Namespace
+             * @default all
+             * @enum {string}
+             */
+            namespace: "all" | "portrait" | "broll";
+            /**
+             * Candidate Count
+             * @default 0
+             */
+            candidate_count: number;
+            /**
+             * Indexed Count
+             * @default 0
+             */
+            indexed_count: number;
+            /**
+             * Pending Count
+             * @default 0
+             */
+            pending_count: number;
+            /**
+             * Annotated Asset Count
+             * @default 0
+             */
+            annotated_asset_count: number;
+            /**
+             * Skipped Asset Count
+             * @default 0
+             */
+            skipped_asset_count: number;
+            /**
+             * Embedding Model
+             * @default qwen3-vl-embedding
+             */
+            embedding_model: string;
+            /**
+             * Embedding Dimension
+             * @default 1024
+             */
+            embedding_dimension: number;
+            /**
+             * Embedding Input Type
+             * @default video_clip
+             * @constant
+             */
+            embedding_input_type: "video_clip";
+            /**
+             * Index Version
+             * @default clip-video-qwen3-v2
+             */
+            index_version: string;
+            /** Last Indexed At */
+            last_indexed_at?: string | null;
+            /** Request Id */
+            request_id: string;
+            /** Provider Profile Id */
+            provider_profile_id: string;
+            /**
+             * Processed Count
+             * @default 0
+             */
+            processed_count: number;
+            /**
+             * Indexed Now Count
+             * @default 0
+             */
+            indexed_now_count: number;
+            /**
+             * Failed Count
+             * @default 0
+             */
+            failed_count: number;
+            /**
+             * Remaining Count
+             * @default 0
+             */
+            remaining_count: number;
+            /** Results */
+            results?: components["schemas"]["ClipEmbeddingIndexResultItem"][];
+        };
+        /** ClipEmbeddingIndexResultItem */
+        ClipEmbeddingIndexResultItem: {
+            /** Asset Id */
+            asset_id: string;
+            /** Clip Id */
+            clip_id: string;
+            /**
+             * Namespace
+             * @enum {string}
+             */
+            namespace: "portrait" | "broll";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "indexed" | "failed" | "skipped";
+            /** Clip Embedding Key */
+            clip_embedding_key?: string | null;
+            /** Message */
+            message?: string | null;
+        };
+        /** ClipEmbeddingIndexStatusResponse */
+        ClipEmbeddingIndexStatusResponse: {
+            /** Case Id */
+            case_id: string;
+            /** Asset Id */
+            asset_id?: string | null;
+            /**
+             * Namespace
+             * @default all
+             * @enum {string}
+             */
+            namespace: "all" | "portrait" | "broll";
+            /**
+             * Candidate Count
+             * @default 0
+             */
+            candidate_count: number;
+            /**
+             * Indexed Count
+             * @default 0
+             */
+            indexed_count: number;
+            /**
+             * Pending Count
+             * @default 0
+             */
+            pending_count: number;
+            /**
+             * Annotated Asset Count
+             * @default 0
+             */
+            annotated_asset_count: number;
+            /**
+             * Skipped Asset Count
+             * @default 0
+             */
+            skipped_asset_count: number;
+            /**
+             * Embedding Model
+             * @default qwen3-vl-embedding
+             */
+            embedding_model: string;
+            /**
+             * Embedding Dimension
+             * @default 1024
+             */
+            embedding_dimension: number;
+            /**
+             * Embedding Input Type
+             * @default video_clip
+             * @constant
+             */
+            embedding_input_type: "video_clip";
+            /**
+             * Index Version
+             * @default clip-video-qwen3-v2
+             */
+            index_version: string;
+            /** Last Indexed At */
+            last_indexed_at?: string | null;
+            /** Request Id */
+            request_id: string;
+        };
+        /** ClipEmbeddingJobStatusResponse */
+        ClipEmbeddingJobStatusResponse: {
+            /**
+             * Schema Version
+             * @default clip_embedding_job_status.v1
+             * @constant
+             */
+            schema_version: "clip_embedding_job_status.v1";
+            /** Job Id */
+            job_id: string;
+            /** Case Id */
+            case_id: string;
+            /**
+             * Namespace
+             * @default all
+             * @enum {string}
+             */
+            namespace: "all" | "portrait" | "broll";
+            /** @default queued */
+            status: components["schemas"]["JobStatus"];
+            /** Provider Profile Id */
+            provider_profile_id: string;
+            /** Limit */
+            limit: number;
+            /**
+             * Force
+             * @default false
+             */
+            force: boolean;
+            /**
+             * Queued Count
+             * @default 0
+             */
+            queued_count: number;
+            /**
+             * Candidate Count
+             * @default 0
+             */
+            candidate_count: number;
+            /**
+             * Pending Count
+             * @default 0
+             */
+            pending_count: number;
+            /**
+             * Processed Count
+             * @default 0
+             */
+            processed_count: number;
+            /**
+             * Indexed Now Count
+             * @default 0
+             */
+            indexed_now_count: number;
+            /**
+             * Failed Count
+             * @default 0
+             */
+            failed_count: number;
+            /**
+             * Remaining Count
+             * @default 0
+             */
+            remaining_count: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at?: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            result?: components["schemas"]["ClipEmbeddingIndexResponse"] | null;
+            /** Error Message */
+            error_message?: string | null;
+            /** Request Id */
+            request_id: string;
+        };
         /**
          * ClipRetrievalV4
          * @description Clip retrieval view (the single canonical summary).
@@ -4925,6 +5366,37 @@ export interface components {
              * Request Id
              * @default req_local
              */
+            request_id: string;
+        };
+        /** MediaAssetAnnotationStatusResponse */
+        MediaAssetAnnotationStatusResponse: {
+            /** Case Id */
+            case_id?: string | null;
+            /** Kind */
+            kind?: string | null;
+            /**
+             * Total Count
+             * @default 0
+             */
+            total_count: number;
+            /**
+             * Annotated Count
+             * @default 0
+             */
+            annotated_count: number;
+            /**
+             * Pending Count
+             * @default 0
+             */
+            pending_count: number;
+            /**
+             * Failed Count
+             * @default 0
+             */
+            failed_count: number;
+            /** Last Annotated At */
+            last_annotated_at?: string | null;
+            /** Request Id */
             request_id: string;
         };
         /** MediaAssetCard */
@@ -10193,6 +10665,38 @@ export interface operations {
             };
         };
     };
+    media_asset_annotation_status_api_media_assets_annotation_status_get: {
+        parameters: {
+            query?: {
+                case_id?: string | null;
+                kind?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaAssetAnnotationStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     material_usage_ranking_api_library_assets__kind__usage_ranking_get: {
         parameters: {
             query?: {
@@ -10214,6 +10718,103 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MaterialUsageRankingReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clip_embedding_status_api_media_assets_clip_embeddings_status_get: {
+        parameters: {
+            query: {
+                case_id: string;
+                namespace?: "all" | "portrait" | "broll";
+                asset_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClipEmbeddingIndexStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clip_embedding_job_status_api_media_assets_clip_embeddings_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClipEmbeddingJobStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    index_clip_embeddings_api_media_assets_clip_embeddings_index_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClipEmbeddingIndexRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClipEmbeddingIndexJobResponse"];
                 };
             };
             /** @description Validation Error */

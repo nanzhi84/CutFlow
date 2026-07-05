@@ -178,22 +178,40 @@ class DashScopeMultimodalEmbeddingProvider:
             raise ProviderRuntimeError(
                 ErrorCode.provider_unsupported_option,
                 "DashScope embedding requires multimodal.embedding.",
-            )
+        )
         api_key = require_secret(context)
-        text = str(call.input.get("text") or call.input.get("retrieval_intent") or "")
-        if not text:
+        contents = _embedding_contents(call.input)
+        if not contents:
             raise ProviderRuntimeError(
                 ErrorCode.provider_unsupported_option,
-                "retrieval_intent text is required.",
+                "multimodal.embedding requires text, image_url, video_url, or contents.",
             )
         dimension = parse_multimodal_embedding_dimension(
             call.input.get("dimension"),
             context.profile.default_options.get("dimension"),
         )
+        parameters: dict[str, Any] = {"dimension": dimension}
+        instruct = call.input.get("instruct") or context.profile.default_options.get("instruct")
+        if instruct:
+            parameters["instruct"] = str(instruct)
+        for key in ("fps", "res_level", "max_video_frames"):
+            value = call.input.get(key) or context.profile.default_options.get(key)
+            if value is not None and value != "":
+                parameters[key] = value
+        enable_fusion = call.input.get("enable_fusion")
+        if enable_fusion is None:
+            enable_fusion = context.profile.default_options.get("enable_fusion")
+        if enable_fusion is not None:
+            parameters["enable_fusion"] = bool(enable_fusion)
+        if len(contents) > 1 and not bool(parameters.get("enable_fusion")):
+            raise ProviderRuntimeError(
+                ErrorCode.provider_unsupported_option,
+                "multiple multimodal.embedding contents require enable_fusion=true.",
+            )
         payload = {
             "model": context.profile.model_id,
-            "input": text,
-            "dimensions": dimension,
+            "input": {"contents": contents},
+            "parameters": parameters,
         }
         response = request(
             self.client,
@@ -232,12 +250,72 @@ class DashScopeMultimodalEmbeddingProvider:
                 "index_version": str(
                     call.input.get("index_version")
                     or context.profile.default_options.get("index_version")
-                    or "clip-vl-qwen3-v1"
+                    or "clip-video-qwen3-v2"
                 ),
             },
-            input_tokens=len(text),
+            input_tokens=(
+                _usage(result, "total_tokens")
+                or _usage(result, "input_tokens")
+                or _embedding_input_length(contents)
+            ),
             raw_usage={"provider_response": result},
         )
+
+
+def _embedding_contents(call_input: dict[str, Any]) -> list[dict[str, Any] | str]:
+    raw_contents = call_input.get("contents")
+    if isinstance(raw_contents, list):
+        return [
+            content
+            for item in raw_contents
+            if (content := _normalize_embedding_content(item)) is not None
+        ]
+
+    contents: list[dict[str, Any] | str] = []
+    text = _string_content(call_input.get("text") or call_input.get("retrieval_intent"))
+    video_url = _string_content(call_input.get("video_url") or call_input.get("video_uri"))
+    image_url = _string_content(call_input.get("image_url") or call_input.get("image_uri"))
+    if video_url:
+        contents.append({"video": video_url})
+    if image_url:
+        contents.append({"image": image_url})
+    if text:
+        contents.append({"text": text})
+    return contents
+
+
+def _normalize_embedding_content(value: Any) -> dict[str, Any] | str | None:
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if not isinstance(value, dict):
+        return None
+    normalized: dict[str, Any] = {}
+    for key in ("text", "image", "video", "multi_images"):
+        item = value.get(key)
+        if key == "multi_images" and isinstance(item, list):
+            images = [str(url).strip() for url in item if str(url).strip()]
+            if images:
+                normalized[key] = images
+            continue
+        text = _string_content(item)
+        if text:
+            normalized[key] = text
+    return normalized or None
+
+
+def _string_content(value: Any) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _embedding_input_length(contents: list[dict[str, Any] | str]) -> int:
+    total = 0
+    for content in contents:
+        if isinstance(content, str):
+            total += len(content)
+            continue
+        total += sum(len(str(value)) for value in content.values())
+    return total
 
 
 class DashScopeOmniProvider:
@@ -375,16 +453,32 @@ def _embedding_url(options: dict[str, Any]) -> str:
     explicit_url = options.get("embedding_url")
     if explicit_url:
         return str(explicit_url)
-    base_url = str(options.get("base_url") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
-    if base_url.endswith("/embeddings"):
+    endpoint = "/services/embeddings/multimodal-embedding/multimodal-embedding"
+    default_url = f"https://dashscope.aliyuncs.com/api/v1{endpoint}"
+    base_url = str(options.get("base_url") or "https://dashscope.aliyuncs.com/api/v1").rstrip("/")
+    if "compatible-mode" in base_url:
+        return default_url
+    if base_url.endswith(endpoint):
         return base_url
-    return f"{base_url}/embeddings"
+    if base_url.endswith("/services/embeddings/multimodal-embedding"):
+        return f"{base_url}/multimodal-embedding"
+    return f"{base_url}{endpoint}"
 
 
 def _embedding_from_response(result: dict[str, Any]) -> list[float]:
     output = result.get("output")
     if isinstance(output, dict):
-        value = output.get("embedding") or output.get("embeddings")
+        embeddings = output.get("embeddings")
+        if isinstance(embeddings, list):
+            for item in embeddings:
+                if isinstance(item, dict):
+                    parsed = _coerce_embedding(item.get("embedding"))
+                    if parsed:
+                        return parsed
+                parsed = _coerce_embedding(item)
+                if parsed:
+                    return parsed
+        value = output.get("embedding")
         parsed = _coerce_embedding(value)
         if parsed:
             return parsed

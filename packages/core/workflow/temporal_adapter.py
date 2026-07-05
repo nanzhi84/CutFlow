@@ -85,6 +85,7 @@ class TemporalActivityContext:
             gateway,
             registry,
             seed_media=False,
+            production_repository=self.production_repository,
         )
         return repository, runtime
 

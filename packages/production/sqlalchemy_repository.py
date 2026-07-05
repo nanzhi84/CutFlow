@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import Float, bindparam, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -88,6 +89,7 @@ from packages.core.storage.database import (
     SelectionLedgerRow,
     SelectionReservationRow,
     UsageMeterRecordRow,
+    Vector,
     VoiceProfileRow,
     WorkflowRunRow,
     VideoVersionRow,
@@ -263,13 +265,56 @@ def _clip_embedding_record_from_row(row: ClipEmbeddingIndexRow) -> ClipEmbedding
         embedding_input_ref=row.embedding_input_ref,
         sample_policy=row.sample_policy or {},
         embedding_id=row.embedding_id,
-        embedding=[float(value) for value in (row.embedding or [])],
+        embedding=_clip_embedding_values(row.embedding),
         provider_profile_id=row.provider_profile_id,
         embedding_model=row.embedding_model,
         embedding_dimension=row.embedding_dimension,
         normalization=row.normalization,
         instruct=row.instruct,
         index_version=row.index_version,
+    )
+
+
+def _clip_embedding_values(value: object | None) -> list[float]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text_value = value.strip()
+        if text_value.startswith("[") and text_value.endswith("]"):
+            inner = text_value[1:-1].strip()
+            if not inner:
+                return []
+            return [float(item) for item in inner.split(",")]
+    return [float(item) for item in value]  # type: ignore[union-attr]
+
+
+def _nearest_clip_embeddings_statement(
+    *,
+    clip_embedding_keys: Sequence[str],
+    namespace: str,
+    provider_profile_id: str,
+    embedding_model: str,
+    embedding_dimension: int,
+    normalization: str,
+    index_version: str,
+    min_source_frames_available: int,
+    limit: int,
+):
+    distance = ClipEmbeddingIndexRow.embedding.op("<=>", return_type=Float)(
+        bindparam("query_embedding", type_=Vector(1024))
+    ).label("distance")
+    return (
+        select(ClipEmbeddingIndexRow, distance)
+        .where(ClipEmbeddingIndexRow.clip_embedding_key.in_(list(clip_embedding_keys)))
+        .where(ClipEmbeddingIndexRow.index_namespace == namespace)
+        .where(ClipEmbeddingIndexRow.provider_profile_id == provider_profile_id)
+        .where(ClipEmbeddingIndexRow.embedding_model == embedding_model)
+        .where(ClipEmbeddingIndexRow.embedding_dimension == embedding_dimension)
+        .where(ClipEmbeddingIndexRow.normalization == normalization)
+        .where(ClipEmbeddingIndexRow.index_version == index_version)
+        .where(ClipEmbeddingIndexRow.source_frames_available >= min_source_frames_available)
+        .order_by(distance, ClipEmbeddingIndexRow.clip_embedding_key.asc())
+        .limit(limit)
     )
 
 
@@ -347,6 +392,46 @@ class SqlAlchemyProductionRepository(BaseRepository):
     def __init__(self, session_factory: sessionmaker[Session], object_store: ObjectStore | None = None) -> None:
         super().__init__(session_factory)
         self.object_store = object_store or get_object_store()
+
+    def nearest_clip_embeddings(
+        self,
+        *,
+        clip_embedding_keys: Sequence[str],
+        query_embedding: Sequence[float],
+        namespace: str,
+        provider_profile_id: str,
+        embedding_model: str,
+        embedding_dimension: int,
+        normalization: str,
+        index_version: str,
+        min_source_frames_available: int,
+        limit: int,
+    ) -> list[tuple[ClipEmbeddingRecord, float]]:
+        if not clip_embedding_keys or limit <= 0:
+            return []
+        statement = _nearest_clip_embeddings_statement(
+            clip_embedding_keys=clip_embedding_keys,
+            namespace=namespace,
+            provider_profile_id=provider_profile_id,
+            embedding_model=embedding_model,
+            embedding_dimension=embedding_dimension,
+            normalization=normalization,
+            index_version=index_version,
+            min_source_frames_available=min_source_frames_available,
+            limit=limit,
+        )
+        with self.session_factory() as session:
+            # Keep the nearest-neighbor query on the HNSW path even when small
+            # filtered candidate sets make a btree scan + explicit sort look cheap.
+            session.execute(text("set local enable_sort = off"))
+            rows = session.execute(
+                statement,
+                {"query_embedding": list(query_embedding)},
+            ).all()
+        return [
+            (_clip_embedding_record_from_row(row), float(distance))
+            for row, distance in rows
+        ]
 
     def persist_job(self, job: Job) -> None:
         """Persist a standalone Job (e.g. an annotation_batch job with no workflow run)."""

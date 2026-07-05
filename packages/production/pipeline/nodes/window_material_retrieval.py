@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from packages.ai.gateway import ProviderCall
@@ -20,7 +21,6 @@ from packages.planning.material import (
     CLIP_EMBEDDING_NORMALIZATION,
     CLIP_INDEX_VERSION,
     candidate_clip_embedding_key,
-    cosine_similarity,
     longest_clean_portrait_source_span,
     normalize_vector,
 )
@@ -28,6 +28,17 @@ from packages.production.pipeline._editing_agent import index_candidates
 from packages.production.pipeline._node_context import NodeContext
 
 _TOP_K = 12
+_SQL_RECALL_MULTIPLIER = 10
+_SQL_RECALL_MIN_EXTRA = 50
+
+
+@dataclass(frozen=True)
+class _RetrievalCandidate:
+    candidate_id: str
+    candidate: dict
+    clip_embedding_key: str
+    source_frames: int
+    index: int
 
 
 def run(ctx: NodeContext) -> NodeOutput:
@@ -47,7 +58,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         include_sandbox=allow_sandbox_fallback,
     )
     diagnostics: dict[str, Any] = {
-        "source": "offline_clip_embedding_index",
+        "source": "postgres_hnsw_clip_embedding_index",
         "top_k": _TOP_K,
         "provider_profile_id": getattr(profile, "id", None),
         "embedding_model": CLIP_EMBEDDING_MODEL,
@@ -171,7 +182,48 @@ def _retrieve_for_window(
 ) -> list[RetrievedWindowCandidate]:
     window_id = str(window.get("window_id") or "")
     required_frames = _required_frames(window)
-    ranked: list[RetrievedWindowCandidate] = []
+    eligible = _eligible_candidates(
+        ctx=ctx,
+        namespace=namespace,
+        window_id=window_id,
+        required_frames=required_frames,
+        candidate_pool=candidate_pool,
+        diagnostics=diagnostics,
+    )
+    if not eligible:
+        return []
+    production_repository = ctx.production_repository
+    if production_repository is None or not callable(
+        getattr(production_repository, "nearest_clip_embeddings", None)
+    ):
+        raise NodeExecutionError(
+            ErrorCode.validation_invalid_options,
+            "WindowMaterialRetrieval requires a SQL-backed clip embedding repository "
+            "with pgvector HNSW nearest-neighbor search.",
+            details={"required_backend": "postgres_hnsw"},
+        )
+    diagnostics["retrieval_backend"] = "postgres_hnsw"
+    return _retrieve_for_window_from_sql(
+        production_repository=production_repository,
+        namespace=namespace,
+        eligible=eligible,
+        query_embedding=query_embedding,
+        provider_profile_id=provider_profile_id,
+        required_frames=required_frames,
+    )
+
+
+def _eligible_candidates(
+    *,
+    ctx: NodeContext,
+    namespace: str,
+    window_id: str,
+    required_frames: int,
+    candidate_pool: dict[str, dict],
+    diagnostics: dict[str, Any],
+) -> list[_RetrievalCandidate]:
+    eligible: list[_RetrievalCandidate] = []
+    seen_keys: set[str] = set()
     for index, (candidate_id, candidate) in enumerate(candidate_pool.items()):
         source_frames = _source_frames_available(candidate, namespace=namespace)
         if source_frames < required_frames:
@@ -191,60 +243,60 @@ def _retrieve_for_window(
             asset=asset,
             namespace=namespace,
         )
-        record = ctx.repository.clip_embedding_index.get(key)
-        if record is None:
-            diagnostics["missing_clip_embeddings"].append(
-                {
-                    "window_id": window_id,
-                    "candidate_id": candidate_id,
-                    "clip_embedding_key": key,
-                    "reason": "missing_clip_embedding",
-                }
-            )
+        if key in seen_keys:
             continue
-        incompatibility = _record_incompatibility(
-            record,
-            namespace=namespace,
-            provider_profile_id=provider_profile_id,
-        )
-        if incompatibility:
-            diagnostics["rejected_candidates"].append(
-                {
-                    "window_id": window_id,
-                    "candidate_id": candidate_id,
-                    "clip_embedding_key": key,
-                    "reason": incompatibility,
-                }
-            )
-            continue
-        semantic_similarity = cosine_similarity(query_embedding, record.embedding)
-        recency_adjustment = _recency_adjustment(candidate)
-        deterministic_tiebreaker = -float(index) / 1_000_000.0
-        retrieval_score = semantic_similarity + recency_adjustment + deterministic_tiebreaker
-        ranked.append(
-            RetrievedWindowCandidate(
+        seen_keys.add(key)
+        eligible.append(
+            _RetrievalCandidate(
                 candidate_id=candidate_id,
-                clip_embedding_key=record.clip_embedding_key,
-                asset_id=record.asset_id,
-                clip_id=record.clip_id,
-                source_start=record.source_start,
-                source_end=record.source_end,
-                source_frames_available=source_frames,
+                candidate=candidate,
+                clip_embedding_key=key,
+                source_frames=source_frames,
+                index=index,
+            )
+        )
+    return eligible
+
+
+def _retrieve_for_window_from_sql(
+    *,
+    production_repository: Any,
+    namespace: str,
+    eligible: list[_RetrievalCandidate],
+    query_embedding: list[float],
+    provider_profile_id: str,
+    required_frames: int,
+) -> list[RetrievedWindowCandidate]:
+    candidate_by_key = {item.clip_embedding_key: item for item in eligible}
+    recall_limit = min(
+        len(eligible),
+        max(_TOP_K * _SQL_RECALL_MULTIPLIER, _TOP_K + _SQL_RECALL_MIN_EXTRA),
+    )
+    nearest = production_repository.nearest_clip_embeddings(
+        clip_embedding_keys=[item.clip_embedding_key for item in eligible],
+        query_embedding=query_embedding,
+        namespace=namespace,
+        provider_profile_id=provider_profile_id,
+        embedding_model=CLIP_EMBEDDING_MODEL,
+        embedding_dimension=CLIP_EMBEDDING_DIMENSION,
+        normalization=CLIP_EMBEDDING_NORMALIZATION,
+        index_version=CLIP_INDEX_VERSION,
+        min_source_frames_available=required_frames,
+        limit=recall_limit,
+    )
+    ranked: list[RetrievedWindowCandidate] = []
+    for record, distance in nearest:
+        candidate = candidate_by_key.get(record.clip_embedding_key)
+        if candidate is None:
+            continue
+        semantic_similarity = max(-1.0, min(1.0, 1.0 - float(distance)))
+        ranked.append(
+            _retrieved_candidate(
+                item=candidate,
+                record=record,
+                semantic_similarity=semantic_similarity,
                 required_frames=required_frames,
-                semantic_similarity=round(semantic_similarity, 6),
-                recency_adjustment=round(recency_adjustment, 6),
-                deterministic_tiebreaker=round(deterministic_tiebreaker, 9),
-                retrieval_score=round(retrieval_score, 6),
-                retrieval_trace={
-                    "source": "offline_clip_embedding_index",
-                    "provider_profile_id": record.provider_profile_id,
-                    "embedding_model": record.embedding_model,
-                    "embedding_dimension": record.embedding_dimension,
-                    "normalization": record.normalization,
-                    "instruct": record.instruct,
-                    "index_version": record.index_version,
-                    "sample_policy": record.sample_policy,
-                },
+                source="postgres_hnsw_clip_embedding_index",
             )
         )
     ranked.sort(
@@ -255,6 +307,43 @@ def _retrieve_for_window(
         )
     )
     return ranked[:_TOP_K]
+
+
+def _retrieved_candidate(
+    *,
+    item: _RetrievalCandidate,
+    record: ClipEmbeddingRecord,
+    semantic_similarity: float,
+    required_frames: int,
+    source: str,
+) -> RetrievedWindowCandidate:
+    recency_adjustment = _recency_adjustment(item.candidate)
+    deterministic_tiebreaker = -float(item.index) / 1_000_000.0
+    retrieval_score = semantic_similarity + recency_adjustment + deterministic_tiebreaker
+    return RetrievedWindowCandidate(
+        candidate_id=item.candidate_id,
+        clip_embedding_key=record.clip_embedding_key,
+        asset_id=record.asset_id,
+        clip_id=record.clip_id,
+        source_start=record.source_start,
+        source_end=record.source_end,
+        source_frames_available=item.source_frames,
+        required_frames=required_frames,
+        semantic_similarity=round(semantic_similarity, 6),
+        recency_adjustment=round(recency_adjustment, 6),
+        deterministic_tiebreaker=round(deterministic_tiebreaker, 9),
+        retrieval_score=round(retrieval_score, 6),
+        retrieval_trace={
+            "source": source,
+            "provider_profile_id": record.provider_profile_id,
+            "embedding_model": record.embedding_model,
+            "embedding_dimension": record.embedding_dimension,
+            "normalization": record.normalization,
+            "instruct": record.instruct,
+            "index_version": record.index_version,
+            "sample_policy": record.sample_policy,
+        },
+    )
 
 
 def _valid_query_embedding(output: Any) -> list[float] | None:
@@ -293,29 +382,6 @@ def _embedding_dimension(value: Any) -> int | None:
     return None
 
 
-def _record_incompatibility(
-    record: ClipEmbeddingRecord,
-    *,
-    namespace: str,
-    provider_profile_id: str,
-) -> str:
-    if record.index_namespace != namespace:
-        return "embedding_namespace_mismatch"
-    if record.provider_profile_id != provider_profile_id:
-        return "embedding_provider_profile_mismatch"
-    if record.embedding_model != CLIP_EMBEDDING_MODEL:
-        return "embedding_model_mismatch"
-    if record.embedding_dimension != CLIP_EMBEDDING_DIMENSION:
-        return "embedding_dimension_mismatch"
-    if record.normalization != CLIP_EMBEDDING_NORMALIZATION:
-        return "embedding_normalization_mismatch"
-    if record.index_version != CLIP_INDEX_VERSION:
-        return "embedding_index_version_mismatch"
-    if len(record.embedding) != CLIP_EMBEDDING_DIMENSION:
-        return "embedding_vector_dimension_mismatch"
-    return ""
-
-
 def _output(
     ctx: NodeContext,
     *,
@@ -327,10 +393,9 @@ def _output(
         candidates_by_window=candidates_by_window,
         diagnostics=diagnostics,
     )
-    degraded = bool(
-        diagnostics.get("query_embedding_provider_missing")
-        or diagnostics.get("missing_clip_embeddings")
-        or diagnostics.get("rejected_candidates")
+    degraded = _is_retrieval_degraded(
+        diagnostics=diagnostics,
+        candidates_by_window=candidates_by_window,
     )
     return NodeOutput(
         status=NodeStatus.degraded if degraded else NodeStatus.succeeded,
@@ -342,6 +407,24 @@ def _output(
             )
         ],
         provider_invocation_ids=provider_invocation_ids or [],
+    )
+
+
+def _is_retrieval_degraded(
+    *,
+    diagnostics: dict[str, Any],
+    candidates_by_window: dict[str, list[RetrievedWindowCandidate]],
+) -> bool:
+    if diagnostics.get("query_embedding_provider_missing") or diagnostics.get(
+        "missing_clip_embeddings"
+    ):
+        return True
+    if any(not candidates for candidates in candidates_by_window.values()):
+        return True
+    return any(
+        item.get("reason") != "source_too_short"
+        for item in diagnostics.get("rejected_candidates") or []
+        if isinstance(item, dict)
     )
 
 

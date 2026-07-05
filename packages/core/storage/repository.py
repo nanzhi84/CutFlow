@@ -389,7 +389,7 @@ class Repository:
             default_options={
                 "dimension": 1024,
                 "normalization": "l2",
-                "index_version": "clip-vl-qwen3-v1",
+                "index_version": "clip-video-qwen3-v2",
             },
         )
         self.provider_profiles["sandbox.video.default"] = ProviderProfile(

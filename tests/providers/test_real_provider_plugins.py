@@ -925,24 +925,27 @@ def test_dashscope_llm_uses_compatible_chat_base_url_and_ignores_legacy_max_toke
     assert result.output_tokens == 7
 
 
-def test_dashscope_multimodal_embedding_uses_compatible_embeddings_url(tmp_path):
+def test_dashscope_multimodal_embedding_uses_native_multimodal_embedding_url(tmp_path):
     embedding = [0.001] * 1024
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
-        assert request.url.path == "/compatible-mode/v1/embeddings"
+        assert request.url.path == (
+            "/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding"
+        )
         assert request.headers["authorization"] == "Bearer dashscope-key"
         body = __import__("json").loads(request.content)
         assert body == {
             "model": "qwen3-vl-embedding",
-            "input": "施工前现场细节",
-            "dimensions": 1024,
+            "input": {"contents": [{"text": "施工前现场细节"}]},
+            "parameters": {"dimension": 1024},
         }
         return httpx.Response(
             200,
             json={
-                "id": "emb_req_1",
-                "data": [{"embedding": embedding}],
+                "request_id": "emb_req_1",
+                "output": {"embeddings": [{"index": 0, "embedding": embedding, "type": "vl"}]},
+                "usage": {"input_tokens": 7, "total_tokens": 7},
             },
         )
 
@@ -958,7 +961,7 @@ def test_dashscope_multimodal_embedding_uses_compatible_embeddings_url(tmp_path)
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "dimension": 1024,
             "normalization": "l2",
-            "index_version": "clip-vl-qwen3-v1",
+            "index_version": "clip-video-qwen3-v2",
         },
     )
 
@@ -975,8 +978,58 @@ def test_dashscope_multimodal_embedding_uses_compatible_embeddings_url(tmp_path)
     assert result.output["embedding"] == embedding
     assert result.output["dimension"] == 1024
     assert result.output["model"] == "qwen3-vl-embedding"
+
+
+def test_dashscope_multimodal_embedding_accepts_video_url(tmp_path):
+    embedding = [0.002] * 1024
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = __import__("json").loads(request.content)
+        assert body == {
+            "model": "qwen3-vl-embedding",
+            "input": {"contents": [{"video": "https://oss.example/clip.mp4"}]},
+            "parameters": {
+                "dimension": 1024,
+                "instruct": "video_clip_retrieval_v1",
+            },
+        }
+        return httpx.Response(
+            200,
+            json={
+                "request_id": "emb_req_video_1",
+                "output": {"embeddings": [{"index": 0, "embedding": embedding, "type": "vl"}]},
+                "usage": {"input_tokens": 0, "image_tokens": 128, "total_tokens": 128},
+            },
+        )
+
+    repository, gateway = _gateway(tmp_path, httpx.MockTransport(handler))
+    secret_ref = gateway.secret_store.put("dashscope-key")  # type: ignore[union-attr]
+    profile = _profile(
+        repository,
+        provider_id="dashscope.multimodal_embedding",
+        capability="multimodal.embedding",
+        model_id="qwen3-vl-embedding",
+        secret_ref=secret_ref,
+        default_options={"dimension": 1024},
+    )
+
+    invocation, result = gateway.invoke(
+        ProviderCall(
+            provider_profile_id=profile.id,
+            capability_id="multimodal.embedding",
+            input={
+                "video_url": "https://oss.example/clip.mp4",
+                "instruct": "video_clip_retrieval_v1",
+            },
+        )
+    )
+
+    assert invocation.status == ProviderStatus.succeeded
+    assert result is not None
+    assert result.output["embedding"] == embedding
+    assert result.output["index_version"] == "clip-video-qwen3-v2"
     assert result.output["normalization"] == "l2"
-    assert result.input_tokens == len("施工前现场细节")
+    assert result.input_tokens == 128
 
 
 def test_dashscope_llm_invalid_json_returns_text_intent(tmp_path):

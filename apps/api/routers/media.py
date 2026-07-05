@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import FileResponse
 
 from apps.api.dependencies import require_role
@@ -21,6 +21,18 @@ def list_media_assets(
     return service.list_media_assets(request, limit, case_id, kind, annotation_status)
 
 
+@router.get(
+    "/api/media/assets/annotation-status",
+    response_model=c.MediaAssetAnnotationStatusResponse,
+)
+def media_asset_annotation_status(
+    request: Request,
+    case_id: str | None = None,
+    kind: str | None = None,
+) -> c.MediaAssetAnnotationStatusResponse:
+    return service.media_asset_annotation_status(request, case_id=case_id, kind=kind)
+
+
 @router.get("/api/library/assets/{kind}/usage-ranking", response_model=c.MaterialUsageRankingReport)
 def material_usage_ranking(
     request: Request,
@@ -29,6 +41,41 @@ def material_usage_ranking(
     top_n: int = 20,
 ) -> c.MaterialUsageRankingReport:
     return service.material_usage_ranking(request, kind, case_id, top_n)
+
+
+@router.get(
+    "/api/media/assets/clip-embeddings/status",
+    response_model=c.ClipEmbeddingIndexStatusResponse,
+)
+def clip_embedding_status(
+    request: Request,
+    case_id: str,
+    namespace: c.ClipEmbeddingNamespace = "all",
+    asset_id: str | None = None,
+) -> c.ClipEmbeddingIndexStatusResponse:
+    return service.clip_embedding_status(request, case_id, namespace, asset_id)
+
+
+@router.get(
+    "/api/media/assets/clip-embeddings/jobs/{job_id}",
+    response_model=c.ClipEmbeddingJobStatusResponse,
+)
+def clip_embedding_job_status(request: Request, job_id: str) -> c.ClipEmbeddingJobStatusResponse:
+    return service.clip_embedding_job_status(request, job_id)
+
+
+@router.post(
+    "/api/media/assets/clip-embeddings/index",
+    response_model=c.ClipEmbeddingIndexJobResponse,
+    status_code=202,
+)
+def index_clip_embeddings(
+    payload: c.ClipEmbeddingIndexRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> c.ClipEmbeddingIndexJobResponse:
+    require_role(request, c.UserRole.operator)
+    return service.index_clip_embeddings(payload, request, background_tasks)
 
 
 @router.post("/api/media/assets", response_model=c.MediaAssetRecord, status_code=201)

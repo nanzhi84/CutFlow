@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+import math
 
 from sqlalchemy import (
     Boolean,
@@ -45,6 +46,40 @@ class Vector(UserDefinedType):
 
     def get_col_spec(self, **_: object) -> str:
         return f"vector({self.dimensions})"
+
+    def bind_processor(self, dialect):
+        def process(value: object | None) -> str | None:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                return value
+            try:
+                vector = [float(item) for item in value]  # type: ignore[union-attr]
+            except TypeError as exc:
+                raise TypeError("vector value must be a sequence of floats") from exc
+            if len(vector) != self.dimensions:
+                raise ValueError(f"vector value must have {self.dimensions} dimensions")
+            if not all(math.isfinite(item) for item in vector):
+                raise ValueError("vector value must contain only finite floats")
+            return "[" + ",".join(format(item, ".12g") for item in vector) + "]"
+
+        return process
+
+    def result_processor(self, dialect, coltype):
+        def process(value: object | None) -> list[float] | None:
+            if value is None:
+                return None
+            if isinstance(value, (list, tuple)):
+                return [float(item) for item in value]
+            text_value = str(value).strip()
+            if text_value.startswith("[") and text_value.endswith("]"):
+                inner = text_value[1:-1].strip()
+                if not inner:
+                    return []
+                return [float(item) for item in inner.split(",")]
+            raise ValueError("database vector value must be returned as text or sequence")
+
+        return process
 
 
 class Base(DeclarativeBase):
@@ -355,7 +390,7 @@ class ClipEmbeddingIndexRow(TimestampMixin, Base):
     embedding_input_ref: Mapped[str] = mapped_column(String, nullable=False)
     sample_policy: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     embedding_id: Mapped[str] = mapped_column(String, nullable=False)
-    embedding: Mapped[list[float]] = mapped_column(JSONB, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(1024), nullable=False)
     provider_profile_id: Mapped[str] = mapped_column(String, nullable=False)
     embedding_model: Mapped[str] = mapped_column(String, nullable=False)
     embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -1126,6 +1161,13 @@ Index(
     ClipEmbeddingIndexRow.embedding_model,
     ClipEmbeddingIndexRow.embedding_dimension,
     ClipEmbeddingIndexRow.index_version,
+)
+Index(
+    "idx_clip_embedding_embedding_hnsw",
+    ClipEmbeddingIndexRow.embedding,
+    postgresql_using="hnsw",
+    postgresql_ops={"embedding": "vector_cosine_ops"},
+    postgresql_with={"m": 16, "ef_construction": 64},
 )
 Index(
     "uq_selection_reservations_active_slot",

@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from .base import ArtifactRef, ContractModel, EntityMeta, ErrorCode, utcnow
+from .base import ArtifactRef, ContractModel, EntityMeta, ErrorCode, JobStatus, utcnow
 from .publishing import PublishPackage
 
 
@@ -263,6 +263,17 @@ class MaterialUsageRankingReport(ContractModel):
     request_id: str = "req_local"
 
 
+class MediaAssetAnnotationStatusResponse(ContractModel):
+    case_id: str | None = None
+    kind: str | None = None
+    total_count: int = 0
+    annotated_count: int = 0
+    pending_count: int = 0
+    failed_count: int = 0
+    last_annotated_at: datetime | None = None
+    request_id: str
+
+
 class CreateMediaAssetFromUploadRequest(ContractModel):
     upload_session_id: str
     case_id: str | None = None
@@ -314,6 +325,83 @@ class MediaAssetProcessingResult(ContractModel):
 class BatchMediaProcessResponse(ContractModel):
     results: list[MediaAssetProcessingResult]
     request_id: str
+
+
+ClipEmbeddingNamespace = Literal["all", "portrait", "broll"]
+
+
+class ClipEmbeddingIndexRequest(ContractModel):
+    schema_version: Literal["clip_embedding_index_request.v1"] = "clip_embedding_index_request.v1"
+    case_id: str
+    asset_ids: list[str] | None = None
+    namespace: ClipEmbeddingNamespace = "all"
+    provider_profile_id: str = "dashscope.multimodal_embedding.prod"
+    limit: int = Field(25, ge=1, le=500)
+    force: bool = False
+
+
+class ClipEmbeddingIndexResultItem(ContractModel):
+    asset_id: str
+    clip_id: str
+    namespace: Literal["portrait", "broll"]
+    status: Literal["indexed", "failed", "skipped"]
+    clip_embedding_key: str | None = None
+    message: str | None = None
+
+
+class ClipEmbeddingIndexStatusResponse(ContractModel):
+    case_id: str
+    asset_id: str | None = None
+    namespace: ClipEmbeddingNamespace = "all"
+    candidate_count: int = 0
+    indexed_count: int = 0
+    pending_count: int = 0
+    annotated_asset_count: int = 0
+    skipped_asset_count: int = 0
+    embedding_model: str = "qwen3-vl-embedding"
+    embedding_dimension: int = 1024
+    embedding_input_type: Literal["video_clip"] = "video_clip"
+    index_version: str = "clip-video-qwen3-v2"
+    last_indexed_at: datetime | None = None
+    request_id: str
+
+
+class ClipEmbeddingIndexResponse(ClipEmbeddingIndexStatusResponse):
+    provider_profile_id: str
+    processed_count: int = 0
+    indexed_now_count: int = 0
+    failed_count: int = 0
+    remaining_count: int = 0
+    results: list[ClipEmbeddingIndexResultItem] = Field(default_factory=list)
+
+
+class ClipEmbeddingJobStatusResponse(ContractModel):
+    schema_version: Literal["clip_embedding_job_status.v1"] = "clip_embedding_job_status.v1"
+    job_id: str
+    case_id: str
+    namespace: ClipEmbeddingNamespace = "all"
+    status: JobStatus = JobStatus.queued
+    provider_profile_id: str
+    limit: int
+    force: bool = False
+    queued_count: int = 0
+    candidate_count: int = 0
+    pending_count: int = 0
+    processed_count: int = 0
+    indexed_now_count: int = 0
+    failed_count: int = 0
+    remaining_count: int = 0
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    result: ClipEmbeddingIndexResponse | None = None
+    error_message: str | None = None
+    request_id: str
+
+
+class ClipEmbeddingIndexJobResponse(ClipEmbeddingJobStatusResponse):
+    schema_version: Literal["clip_embedding_index_job_response.v1"] = "clip_embedding_index_job_response.v1"
 
 
 class TimelineSegment(ContractModel):

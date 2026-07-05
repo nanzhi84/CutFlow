@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from packages.ai.gateway import ProviderGateway
+from packages.ai.gateway import ProviderGateway, ProviderResult
 from packages.ai.gateway.provider_gateway import _deterministic_embedding
 from packages.ai.prompts import PromptRegistry
+from apps.api.services.clip_embeddings import _upsert_record
 from packages.core.contracts import (
     AnnotationEditorVm,
     AnnotationMetaV4,
@@ -20,12 +21,17 @@ from packages.core.contracts import (
     MediaAssetRecord,
     NodeRun,
     NodeStatus,
+    ProviderError,
+    ProviderInvocation,
+    ProviderStatus,
     RunStatus,
     UsageRole,
     UsageWindowV4,
     WarningCode,
     WorkflowRun,
 )
+from packages.core.contracts.artifacts import ClipEmbeddingRecord
+from packages.core.storage.database import MediaAssetRow
 from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
 from packages.core.workflow import NodeExecutionError
@@ -40,6 +46,7 @@ from packages.production.pipeline._editing_agent import (
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
+from packages.production.sqlalchemy_repository import SqlAlchemyProductionRepository
 
 
 def _adapter(tmp_path) -> LocalRuntimeAdapter:
@@ -288,6 +295,24 @@ def _ctx(adapter: LocalRuntimeAdapter, node_id: str, artifacts: dict[ArtifactKin
     )
 
 
+def _seed_clip_embedding_record(db_session_factory, record) -> None:
+    with db_session_factory() as session:
+        session.merge(
+            MediaAssetRow(
+                id=record.asset_id,
+                case_id=None,
+                title=record.asset_id,
+                kind="video",
+                tags=[],
+                annotation_status="annotated",
+                usable=True,
+            )
+        )
+        session.flush()
+        _upsert_record(session, record)
+        session.commit()
+
+
 def test_window_query_planning_emits_only_window_id_and_intent(tmp_path):
     adapter = _adapter(tmp_path)
     ctx = _ctx(
@@ -313,8 +338,12 @@ def test_window_query_planning_emits_only_window_id_and_intent(tmp_path):
     }
 
 
-def test_window_material_retrieval_uses_material_pack_pool_and_offline_index(tmp_path):
+def test_window_material_retrieval_uses_material_pack_pool_and_sql_hnsw_index(
+    tmp_path,
+    db_session_factory,
+):
     adapter = _adapter(tmp_path)
+    adapter.production_repository = SqlAlchemyProductionRepository(db_session_factory)
     material = _material()
     for asset_id in ("portrait_a", "broll_a", "broll_b"):
         adapter.repository.media_assets[asset_id] = MediaAssetRecord(
@@ -355,7 +384,7 @@ def test_window_material_retrieval_uses_material_pack_pool_and_offline_index(tmp
             dimension=1024,
         ),
     )
-    adapter.repository.clip_embedding_index[record.clip_embedding_key] = record
+    _seed_clip_embedding_record(db_session_factory, record)
     retrieval_ctx = _ctx(
         adapter,
         "WindowMaterialRetrieval",
@@ -379,10 +408,290 @@ def test_window_material_retrieval_uses_material_pack_pool_and_offline_index(tmp
     assert payload["candidates_by_window"]["bwin_000"][0]["candidate_id"] == "bc_000"
     assert "why_retrieved" not in payload["candidates_by_window"]["bwin_000"][0]
     trace = payload["candidates_by_window"]["bwin_000"][0]["retrieval_trace"]
+    assert trace["source"] == "postgres_hnsw_clip_embedding_index"
     assert trace["embedding_model"] == "qwen3-vl-embedding"
     assert trace["embedding_dimension"] == 1024
+    assert payload["diagnostics"]["retrieval_backend"] == "postgres_hnsw"
     assert payload["diagnostics"]["rejected_candidates"][0]["reason"] == "source_too_short"
-    assert payload["diagnostics"]["missing_clip_embeddings"]
+    assert adapter.repository.clip_embedding_index == {}
+
+
+def test_window_material_retrieval_status_ignores_normal_source_too_short_filtering():
+    assert (
+        nodes.window_material_retrieval._is_retrieval_degraded(
+            diagnostics={
+                "rejected_candidates": [],
+                "missing_clip_embeddings": ["clipemb_missing"],
+            },
+            candidates_by_window={"bwin_000": [object()]},
+        )
+        is True
+    )
+    assert (
+        nodes.window_material_retrieval._is_retrieval_degraded(
+            diagnostics={
+                "rejected_candidates": [{"reason": "source_too_short"}],
+                "missing_clip_embeddings": [],
+            },
+            candidates_by_window={"pwin_000": [object()], "bwin_000": [object()]},
+        )
+        is False
+    )
+    assert (
+        nodes.window_material_retrieval._is_retrieval_degraded(
+            diagnostics={
+                "rejected_candidates": [{"reason": "source_too_short"}],
+                "missing_clip_embeddings": [],
+            },
+            candidates_by_window={"pwin_000": []},
+        )
+        is True
+    )
+    assert (
+        nodes.window_material_retrieval._is_retrieval_degraded(
+            diagnostics={
+                "rejected_candidates": [{"reason": "query_embedding_failed"}],
+                "missing_clip_embeddings": [],
+            },
+            candidates_by_window={"pwin_000": [object()]},
+        )
+        is True
+    )
+
+
+def test_window_material_retrieval_query_embedding_validation_edges():
+    valid = nodes.window_material_retrieval._valid_query_embedding(
+        {
+            "dimension": "1024",
+            "embedding": [2.0, *([0.0] * 1023)],
+        }
+    )
+    assert valid is not None
+    assert valid[0] == 1.0
+    bad_outputs = [
+        None,
+        {"model": "other", "dimension": 1024, "embedding": [1.0, *([0.0] * 1023)]},
+        {"dimension": True, "embedding": [1.0, *([0.0] * 1023)]},
+        {"dimension": "1024x", "embedding": [1.0, *([0.0] * 1023)]},
+        {"dimension": 1024, "normalization": "raw", "embedding": [1.0, *([0.0] * 1023)]},
+        {"dimension": 1024, "index_version": "old", "embedding": [1.0, *([0.0] * 1023)]},
+        {"dimension": 1024, "embedding": "not-a-list"},
+        {"dimension": 1024, "embedding": ["oops", *([0.0] * 1023)]},
+        {"dimension": 1024, "embedding": [1.0, 0.0]},
+        {"dimension": 1024, "embedding": [0.0] * 1024},
+    ]
+    assert all(nodes.window_material_retrieval._valid_query_embedding(item) is None for item in bad_outputs)
+    assert nodes.window_material_retrieval._embedding_output_metadata("bad") == {"type": "str"}
+    assert nodes.window_material_retrieval._source_frames_available(
+        {"metadata": {}},
+        namespace="portrait",
+    ) == 0
+
+
+def test_window_material_retrieval_degrades_when_provider_profile_missing(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path)
+    monkeypatch.setattr(adapter.provider_profiles, "first_available", lambda *_args, **_kwargs: None)
+    ctx = _ctx(
+        adapter,
+        "WindowMaterialRetrieval",
+        {
+            ArtifactKind.plan_material_pack: _artifact(ArtifactKind.plan_material_pack, _material()),
+            ArtifactKind.plan_timeline_windows: _artifact(ArtifactKind.plan_timeline_windows, _windows()),
+            ArtifactKind.plan_window_queries: _artifact(
+                ArtifactKind.plan_window_queries,
+                {"window_queries": [{"window_id": "bwin_000", "retrieval_intent": "施工前现场"}]},
+            ),
+        },
+    )
+
+    output = nodes.window_material_retrieval.run(ctx)
+
+    assert output.status == NodeStatus.degraded
+    payload = output.artifacts[0].payload
+    assert payload["diagnostics"]["query_embedding_provider_missing"] is True
+    assert payload["candidates_by_window"] == {}
+
+
+def test_window_material_retrieval_degrades_missing_queries_without_provider_call(tmp_path):
+    adapter = _adapter(tmp_path)
+    ctx = _ctx(
+        adapter,
+        "WindowMaterialRetrieval",
+        {
+            ArtifactKind.plan_material_pack: _artifact(ArtifactKind.plan_material_pack, _material()),
+            ArtifactKind.plan_timeline_windows: _artifact(ArtifactKind.plan_timeline_windows, _windows()),
+            ArtifactKind.plan_window_queries: _artifact(
+                ArtifactKind.plan_window_queries,
+                {"window_queries": []},
+            ),
+        },
+    )
+
+    output = nodes.window_material_retrieval.run(ctx)
+
+    assert output.status == NodeStatus.degraded
+    payload = output.artifacts[0].payload
+    assert payload["candidates_by_window"] == {"pwin_000": [], "bwin_000": []}
+    assert {item["reason"] for item in payload["diagnostics"]["rejected_candidates"]} == {
+        "missing_window_query"
+    }
+
+
+def _failed_provider_invocation(message: str = "timeout") -> ProviderInvocation:
+    return ProviderInvocation(
+        id="pinv_failed",
+        provider_id="sandbox",
+        model_id="qwen3-vl-embedding",
+        provider_profile_id="sandbox.embedding.default",
+        capability_id="multimodal.embedding",
+        status=ProviderStatus.failed,
+        error=ProviderError(code=ErrorCode.provider_timeout, message=message),
+    )
+
+
+def test_window_material_retrieval_degrades_provider_error_and_bad_output(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path)
+    ctx = _ctx(
+        adapter,
+        "WindowMaterialRetrieval",
+        {
+            ArtifactKind.plan_material_pack: _artifact(ArtifactKind.plan_material_pack, _material()),
+            ArtifactKind.plan_timeline_windows: _artifact(ArtifactKind.plan_timeline_windows, _windows()),
+            ArtifactKind.plan_window_queries: _artifact(
+                ArtifactKind.plan_window_queries,
+                {
+                    "window_queries": [
+                        {"window_id": "pwin_000", "retrieval_intent": "口播主轨"},
+                        {"window_id": "bwin_000", "retrieval_intent": "施工前现场"},
+                    ]
+                },
+            ),
+        },
+    )
+    calls = {"count": 0}
+
+    def fake_invoke(_call):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return _failed_provider_invocation(), None
+        return (
+            ProviderInvocation(
+                id="pinv_bad_output",
+                provider_id="sandbox",
+                model_id="qwen3-vl-embedding",
+                provider_profile_id="sandbox.embedding.default",
+                capability_id="multimodal.embedding",
+                status=ProviderStatus.succeeded,
+            ),
+            ProviderResult(output={"dimension": 1024, "embedding": "not-a-vector"}),
+        )
+
+    monkeypatch.setattr(adapter.provider_gateway, "invoke", fake_invoke)
+
+    output = nodes.window_material_retrieval.run(ctx)
+
+    assert output.status == NodeStatus.degraded
+    payload = output.artifacts[0].payload
+    assert [item["reason"] for item in payload["diagnostics"]["rejected_candidates"]] == [
+        "query_embedding_failed",
+        "query_embedding_incompatible",
+    ]
+    assert output.provider_invocation_ids == ["pinv_failed", "pinv_bad_output"]
+
+
+def test_window_material_retrieval_sql_results_ignore_stale_embedding_keys():
+    known = nodes.window_material_retrieval._RetrievalCandidate(
+        candidate_id="bc_known",
+        candidate={
+            "asset_id": "broll_a",
+            "metadata": {"recency_penalty": 2.0, "recent_usage": {"recency_penalty": 3.0}},
+        },
+        clip_embedding_key="clipemb_known",
+        source_frames=90,
+        index=4,
+    )
+    known_record = ClipEmbeddingRecord(
+        clip_embedding_key="clipemb_known",
+        asset_id="broll_a",
+        asset_revision="asset:broll_a:v1:v1:test",
+        clip_id="clip_a",
+        source_start=0.0,
+        source_end=3.0,
+        source_frames_available=90,
+        index_namespace="broll",
+        embedding_input_ref="s3://bucket/clip.mp4",
+        embedding_id="emb_known",
+        embedding=[1.0, *([0.0] * 1023)],
+        provider_profile_id="sandbox.embedding.default",
+    )
+    stale_record = known_record.model_copy(
+        update={
+            "clip_embedding_key": "clipemb_stale",
+            "embedding_id": "emb_stale",
+        }
+    )
+
+    class FakeRepository:
+        def nearest_clip_embeddings(self, **kwargs):
+            assert kwargs["limit"] == 1
+            return [(stale_record, 0.01), (known_record, 0.2)]
+
+    ranked = nodes.window_material_retrieval._retrieve_for_window_from_sql(
+        production_repository=FakeRepository(),
+        namespace="broll",
+        eligible=[known],
+        query_embedding=[1.0, *([0.0] * 1023)],
+        provider_profile_id="sandbox.embedding.default",
+        required_frames=60,
+    )
+
+    assert [candidate.candidate_id for candidate in ranked] == ["bc_known"]
+    assert ranked[0].semantic_similarity == 0.8
+    assert ranked[0].recency_adjustment == -0.3
+
+
+def test_window_material_retrieval_requires_sql_hnsw_repository(tmp_path):
+    adapter = _adapter(tmp_path)
+    material = _material()
+    for asset_id in ("portrait_a", "broll_a", "broll_b"):
+        adapter.repository.media_assets[asset_id] = MediaAssetRecord(
+            id=asset_id,
+            case_id="case_demo",
+            title=asset_id,
+            kind="video",
+            annotation_status="annotated",
+            usable=True,
+        )
+    query_artifact = _artifact(
+        ArtifactKind.plan_window_queries,
+        {
+            "window_queries": [
+                {"window_id": "pwin_000", "retrieval_intent": "口播主轨"},
+                {"window_id": "bwin_000", "retrieval_intent": "施工前现场"},
+            ]
+        },
+    )
+    retrieval_ctx = _ctx(
+        adapter,
+        "WindowMaterialRetrieval",
+        {
+            ArtifactKind.plan_material_pack: _artifact(
+                ArtifactKind.plan_material_pack,
+                material,
+            ),
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                _windows(),
+            ),
+            ArtifactKind.plan_window_queries: query_artifact,
+        },
+    )
+
+    with pytest.raises(NodeExecutionError) as exc:
+        nodes.window_material_retrieval.run(retrieval_ctx)
+
+    assert exc.value.error.code == ErrorCode.validation_invalid_options
+    assert exc.value.error.details["required_backend"] == "postgres_hnsw"
 
 
 def test_deterministic_editing_planning_consumes_window_retrieval_topk(tmp_path):

@@ -21,7 +21,7 @@ CLIP_EMBEDDING_MODEL = "qwen3-vl-embedding"
 CLIP_EMBEDDING_DIMENSION = 1024
 CLIP_EMBEDDING_NORMALIZATION = "l2"
 CLIP_EMBEDDING_INSTRUCT = "video_clip_retrieval_v1"
-CLIP_INDEX_VERSION = "clip-vl-qwen3-v1"
+CLIP_INDEX_VERSION = "clip-video-qwen3-v2"
 CLIP_SAMPLE_POLICY = {
     "policy_id": "deterministic-trim-or-frames-v1",
     "clip_scope": "source_span",
@@ -128,6 +128,7 @@ def build_clip_embedding_record(
     provider_profile_id: str,
     embedding: list[float] | None = None,
     embedding_id: str | None = None,
+    embedding_input_ref: str | None = None,
     model: str = CLIP_EMBEDDING_MODEL,
     dimension: int = CLIP_EMBEDDING_DIMENSION,
     index_version: str = CLIP_INDEX_VERSION,
@@ -159,7 +160,9 @@ def build_clip_embedding_record(
         source_frames_available=max(0, frame_index(source_end) - frame_index(source_start)),
         index_namespace=namespace,  # type: ignore[arg-type]
         embedding_input_type="video_clip",
-        embedding_input_ref=f"{asset_id}:{clip_id}:{source_start:.6f}:{source_end:.6f}",
+        embedding_input_ref=(
+            embedding_input_ref or f"{asset_id}:{clip_id}:{source_start:.6f}:{source_end:.6f}"
+        ),
         sample_policy=sample_policy or CLIP_SAMPLE_POLICY,
         embedding_id=embedding_id or key,
         embedding=normalize_vector(vector, dimension=dimension),
@@ -209,18 +212,6 @@ def _validated_embedding_vector(values: list[float] | None, *, dimension: int) -
     if math.sqrt(sum(value * value for value in vector)) <= 0:
         raise ValueError("clip embedding must have non-zero norm")
     return vector
-
-
-def cosine_similarity(left: list[float], right: list[float]) -> float:
-    limit = min(len(left), len(right))
-    if limit <= 0:
-        return 0.0
-    left_norm = math.sqrt(sum(float(value) * float(value) for value in left[:limit]))
-    right_norm = math.sqrt(sum(float(value) * float(value) for value in right[:limit]))
-    if left_norm <= 0 or right_norm <= 0:
-        return 0.0
-    dot = sum(float(left[index]) * float(right[index]) for index in range(limit))
-    return dot / (left_norm * right_norm)
 
 
 def _required_finite_float(value: Any, *, field_name: str) -> float:

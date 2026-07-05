@@ -94,7 +94,7 @@ def seed_real_provider_configuration(repository) -> None:
             environment="prod",
             secret_ref="dashscope_prod.secret",
             concurrency_key="dashscope:llm.chat",
-            timeout_sec=60,
+            timeout_sec=120,
             options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.llm.options"),
         ),
         ProviderProfile(
@@ -123,10 +123,14 @@ def seed_real_provider_configuration(repository) -> None:
             timeout_sec=60,
             options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.embedding.options"),
             default_options={
-                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "base_url": "https://dashscope.aliyuncs.com/api/v1",
+                "embedding_url": (
+                    "https://dashscope.aliyuncs.com/api/v1/services/embeddings/"
+                    "multimodal-embedding/multimodal-embedding"
+                ),
                 "dimension": 1024,
                 "normalization": "l2",
-                "index_version": "clip-vl-qwen3-v1",
+                "index_version": "clip-video-qwen3-v2",
             },
         ),
         ProviderProfile(

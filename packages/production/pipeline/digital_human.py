@@ -18,6 +18,7 @@ from collections.abc import Callable
 from functools import cached_property
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from packages.ai.gateway import ProviderGateway
 from packages.ai.prompts import PromptRegistry
@@ -85,6 +86,9 @@ from packages.planning.editing import (
     build_narration_units_from_script_sentences,
     build_narration_units_without_asr,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from packages.production.sqlalchemy_repository import SqlAlchemyProductionRepository
 
 __all__ = [
     "NODE_SEQUENCE",
@@ -326,11 +330,13 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         *,
         seed_media: bool = True,
         snapshot_sync: Callable[[Job, WorkflowRun, Repository], None] | None = None,
+        production_repository: "SqlAlchemyProductionRepository | None" = None,
     ) -> None:
         self.repository = repository
         self.provider_gateway = provider_gateway
         self.prompt_registry = prompt_registry
         self._snapshot_sync = snapshot_sync
+        self.production_repository = production_repository
         # ``seed_media`` generates demo seed media via ffmpeg/object-store on
         # construction. The per-activity Temporal scoping (see
         # ``TemporalActivityContext.build_runtime``) rehydrates real media
@@ -1325,6 +1331,7 @@ def build_digital_human_workflow(
     prompt_registry: PromptRegistry | None = None,
     seed_media: bool = True,
     snapshot_sync: Callable[[Job, WorkflowRun, Repository], None] | None = None,
+    production_repository: "SqlAlchemyProductionRepository | None" = None,
 ) -> LocalRuntimeAdapter:
     return LocalRuntimeAdapter(
         repository,
@@ -1332,4 +1339,5 @@ def build_digital_human_workflow(
         prompt_registry or PromptRegistry(repository),
         seed_media=seed_media,
         snapshot_sync=snapshot_sync,
+        production_repository=production_repository,
     )

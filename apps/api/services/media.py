@@ -4,8 +4,9 @@ import mimetypes
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from fastapi import Request
+from fastapi import BackgroundTasks, Request
 from fastapi.responses import FileResponse
+from sqlalchemy import func, select
 
 from apps.api.common import (
     media_repository,
@@ -18,6 +19,8 @@ from packages.core import contracts as c
 from packages.core.workflow import NodeExecutionError
 from apps.api.services import annotation_batch as annotation_batch_service
 from apps.api.services import asset_annotation, media_processing
+from apps.api.services import clip_embeddings as clip_embedding_service
+from packages.core.storage.database import AnnotationRow, MediaAssetRow
 from packages.media.assets import local_object_path
 
 _PLAYABLE_MEDIA_TYPES = {"video", "audio"}
@@ -100,6 +103,71 @@ def material_usage_ranking(
         top_n=top_n,
     )
     return report.model_copy(update={"request_id": request_id()})
+
+
+def media_asset_annotation_status(
+    request: Request,
+    *,
+    case_id: str | None = None,
+    kind: str | None = None,
+) -> c.MediaAssetAnnotationStatusResponse:
+    session_factory = request.app.state.sqlalchemy_session_factory
+    with session_factory() as session:
+        base = select(MediaAssetRow.annotation_status).select_from(MediaAssetRow)
+        if case_id:
+            base = base.where(MediaAssetRow.case_id == case_id)
+        if kind:
+            base = base.where(MediaAssetRow.kind == kind)
+        statuses = list(session.scalars(base))
+
+        last_statement = select(func.max(AnnotationRow.updated_at)).join(
+            MediaAssetRow, AnnotationRow.asset_id == MediaAssetRow.id
+        )
+        if case_id:
+            last_statement = last_statement.where(MediaAssetRow.case_id == case_id)
+        if kind:
+            last_statement = last_statement.where(MediaAssetRow.kind == kind)
+        last_annotated_at = session.scalar(last_statement)
+
+    annotated = sum(1 for status in statuses if status == "annotated")
+    failed = sum(1 for status in statuses if status == "annotation_failed")
+    pending = sum(1 for status in statuses if status == "pending")
+    return c.MediaAssetAnnotationStatusResponse(
+        case_id=case_id,
+        kind=kind,
+        total_count=len(statuses),
+        annotated_count=annotated,
+        pending_count=pending,
+        failed_count=failed,
+        last_annotated_at=last_annotated_at,
+        request_id=request_id(),
+    )
+
+
+def clip_embedding_status(
+    request: Request,
+    case_id: str,
+    namespace: c.ClipEmbeddingNamespace = "all",
+    asset_id: str | None = None,
+) -> c.ClipEmbeddingIndexStatusResponse:
+    return clip_embedding_service.clip_embedding_status(
+        request,
+        case_id=case_id,
+        namespace=namespace,
+        asset_id=asset_id,
+    )
+
+
+def index_clip_embeddings(
+    payload: c.ClipEmbeddingIndexRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> c.ClipEmbeddingIndexJobResponse:
+    return clip_embedding_service.enqueue_clip_embeddings(payload, request, background_tasks)
+
+
+def clip_embedding_job_status(request: Request, job_id: str) -> c.ClipEmbeddingJobStatusResponse:
+    return clip_embedding_service.clip_embedding_job_status(request, job_id)
 
 
 def create_media_asset(payload: c.CreateMediaAssetFromUploadRequest, request: Request) -> c.MediaAssetRecord:

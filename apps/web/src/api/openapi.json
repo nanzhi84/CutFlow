@@ -1967,6 +1967,68 @@
         }
       }
     },
+    "/api/media/assets/annotation-status": {
+      "get": {
+        "summary": "Media Asset Annotation Status",
+        "operationId": "media_asset_annotation_status_api_media_assets_annotation_status_get",
+        "parameters": [
+          {
+            "name": "case_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Case Id"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaAssetAnnotationStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/library/assets/{kind}/usage-ranking": {
       "get": {
         "summary": "Material Usage Ranking",
@@ -2021,6 +2083,153 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MaterialUsageRankingReport"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media/assets/clip-embeddings/status": {
+      "get": {
+        "summary": "Clip Embedding Status",
+        "operationId": "clip_embedding_status_api_media_assets_clip_embeddings_status_get",
+        "parameters": [
+          {
+            "name": "case_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Case Id"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "all",
+                "portrait",
+                "broll"
+              ],
+              "type": "string",
+              "default": "all",
+              "title": "Namespace"
+            }
+          },
+          {
+            "name": "asset_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Asset Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClipEmbeddingIndexStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media/assets/clip-embeddings/jobs/{job_id}": {
+      "get": {
+        "summary": "Clip Embedding Job Status",
+        "operationId": "clip_embedding_job_status_api_media_assets_clip_embeddings_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClipEmbeddingJobStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media/assets/clip-embeddings/index": {
+      "post": {
+        "summary": "Index Clip Embeddings",
+        "operationId": "index_clip_embeddings_api_media_assets_clip_embeddings_index_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClipEmbeddingIndexRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClipEmbeddingIndexJobResponse"
                 }
               }
             }
@@ -10753,6 +10962,653 @@
         "title": "Client",
         "description": "A customer/brand whose platform accounts we publish on behalf of."
       },
+      "ClipEmbeddingIndexJobResponse": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "clip_embedding_index_job_response.v1",
+            "title": "Schema Version",
+            "default": "clip_embedding_index_job_response.v1"
+          },
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "case_id": {
+            "type": "string",
+            "title": "Case Id"
+          },
+          "namespace": {
+            "type": "string",
+            "enum": [
+              "all",
+              "portrait",
+              "broll"
+            ],
+            "title": "Namespace",
+            "default": "all"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus",
+            "default": "queued"
+          },
+          "provider_profile_id": {
+            "type": "string",
+            "title": "Provider Profile Id"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "force": {
+            "type": "boolean",
+            "title": "Force",
+            "default": false
+          },
+          "queued_count": {
+            "type": "integer",
+            "title": "Queued Count",
+            "default": 0
+          },
+          "candidate_count": {
+            "type": "integer",
+            "title": "Candidate Count",
+            "default": 0
+          },
+          "pending_count": {
+            "type": "integer",
+            "title": "Pending Count",
+            "default": 0
+          },
+          "processed_count": {
+            "type": "integer",
+            "title": "Processed Count",
+            "default": 0
+          },
+          "indexed_now_count": {
+            "type": "integer",
+            "title": "Indexed Now Count",
+            "default": 0
+          },
+          "failed_count": {
+            "type": "integer",
+            "title": "Failed Count",
+            "default": 0
+          },
+          "remaining_count": {
+            "type": "integer",
+            "title": "Remaining Count",
+            "default": 0
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClipEmbeddingIndexResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id",
+          "case_id",
+          "provider_profile_id",
+          "limit",
+          "request_id"
+        ],
+        "title": "ClipEmbeddingIndexJobResponse"
+      },
+      "ClipEmbeddingIndexRequest": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "clip_embedding_index_request.v1",
+            "title": "Schema Version",
+            "default": "clip_embedding_index_request.v1"
+          },
+          "case_id": {
+            "type": "string",
+            "title": "Case Id"
+          },
+          "asset_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Ids"
+          },
+          "namespace": {
+            "type": "string",
+            "enum": [
+              "all",
+              "portrait",
+              "broll"
+            ],
+            "title": "Namespace",
+            "default": "all"
+          },
+          "provider_profile_id": {
+            "type": "string",
+            "title": "Provider Profile Id",
+            "default": "dashscope.multimodal_embedding.prod"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 500.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 25
+          },
+          "force": {
+            "type": "boolean",
+            "title": "Force",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "case_id"
+        ],
+        "title": "ClipEmbeddingIndexRequest"
+      },
+      "ClipEmbeddingIndexResponse": {
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "title": "Case Id"
+          },
+          "asset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Id"
+          },
+          "namespace": {
+            "type": "string",
+            "enum": [
+              "all",
+              "portrait",
+              "broll"
+            ],
+            "title": "Namespace",
+            "default": "all"
+          },
+          "candidate_count": {
+            "type": "integer",
+            "title": "Candidate Count",
+            "default": 0
+          },
+          "indexed_count": {
+            "type": "integer",
+            "title": "Indexed Count",
+            "default": 0
+          },
+          "pending_count": {
+            "type": "integer",
+            "title": "Pending Count",
+            "default": 0
+          },
+          "annotated_asset_count": {
+            "type": "integer",
+            "title": "Annotated Asset Count",
+            "default": 0
+          },
+          "skipped_asset_count": {
+            "type": "integer",
+            "title": "Skipped Asset Count",
+            "default": 0
+          },
+          "embedding_model": {
+            "type": "string",
+            "title": "Embedding Model",
+            "default": "qwen3-vl-embedding"
+          },
+          "embedding_dimension": {
+            "type": "integer",
+            "title": "Embedding Dimension",
+            "default": 1024
+          },
+          "embedding_input_type": {
+            "type": "string",
+            "const": "video_clip",
+            "title": "Embedding Input Type",
+            "default": "video_clip"
+          },
+          "index_version": {
+            "type": "string",
+            "title": "Index Version",
+            "default": "clip-video-qwen3-v2"
+          },
+          "last_indexed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Indexed At"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "provider_profile_id": {
+            "type": "string",
+            "title": "Provider Profile Id"
+          },
+          "processed_count": {
+            "type": "integer",
+            "title": "Processed Count",
+            "default": 0
+          },
+          "indexed_now_count": {
+            "type": "integer",
+            "title": "Indexed Now Count",
+            "default": 0
+          },
+          "failed_count": {
+            "type": "integer",
+            "title": "Failed Count",
+            "default": 0
+          },
+          "remaining_count": {
+            "type": "integer",
+            "title": "Remaining Count",
+            "default": 0
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/ClipEmbeddingIndexResultItem"
+            },
+            "type": "array",
+            "title": "Results"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "case_id",
+          "request_id",
+          "provider_profile_id"
+        ],
+        "title": "ClipEmbeddingIndexResponse"
+      },
+      "ClipEmbeddingIndexResultItem": {
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "title": "Asset Id"
+          },
+          "clip_id": {
+            "type": "string",
+            "title": "Clip Id"
+          },
+          "namespace": {
+            "type": "string",
+            "enum": [
+              "portrait",
+              "broll"
+            ],
+            "title": "Namespace"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "indexed",
+              "failed",
+              "skipped"
+            ],
+            "title": "Status"
+          },
+          "clip_embedding_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clip Embedding Key"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "asset_id",
+          "clip_id",
+          "namespace",
+          "status"
+        ],
+        "title": "ClipEmbeddingIndexResultItem"
+      },
+      "ClipEmbeddingIndexStatusResponse": {
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "title": "Case Id"
+          },
+          "asset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Id"
+          },
+          "namespace": {
+            "type": "string",
+            "enum": [
+              "all",
+              "portrait",
+              "broll"
+            ],
+            "title": "Namespace",
+            "default": "all"
+          },
+          "candidate_count": {
+            "type": "integer",
+            "title": "Candidate Count",
+            "default": 0
+          },
+          "indexed_count": {
+            "type": "integer",
+            "title": "Indexed Count",
+            "default": 0
+          },
+          "pending_count": {
+            "type": "integer",
+            "title": "Pending Count",
+            "default": 0
+          },
+          "annotated_asset_count": {
+            "type": "integer",
+            "title": "Annotated Asset Count",
+            "default": 0
+          },
+          "skipped_asset_count": {
+            "type": "integer",
+            "title": "Skipped Asset Count",
+            "default": 0
+          },
+          "embedding_model": {
+            "type": "string",
+            "title": "Embedding Model",
+            "default": "qwen3-vl-embedding"
+          },
+          "embedding_dimension": {
+            "type": "integer",
+            "title": "Embedding Dimension",
+            "default": 1024
+          },
+          "embedding_input_type": {
+            "type": "string",
+            "const": "video_clip",
+            "title": "Embedding Input Type",
+            "default": "video_clip"
+          },
+          "index_version": {
+            "type": "string",
+            "title": "Index Version",
+            "default": "clip-video-qwen3-v2"
+          },
+          "last_indexed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Indexed At"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "case_id",
+          "request_id"
+        ],
+        "title": "ClipEmbeddingIndexStatusResponse"
+      },
+      "ClipEmbeddingJobStatusResponse": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "clip_embedding_job_status.v1",
+            "title": "Schema Version",
+            "default": "clip_embedding_job_status.v1"
+          },
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "case_id": {
+            "type": "string",
+            "title": "Case Id"
+          },
+          "namespace": {
+            "type": "string",
+            "enum": [
+              "all",
+              "portrait",
+              "broll"
+            ],
+            "title": "Namespace",
+            "default": "all"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus",
+            "default": "queued"
+          },
+          "provider_profile_id": {
+            "type": "string",
+            "title": "Provider Profile Id"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "force": {
+            "type": "boolean",
+            "title": "Force",
+            "default": false
+          },
+          "queued_count": {
+            "type": "integer",
+            "title": "Queued Count",
+            "default": 0
+          },
+          "candidate_count": {
+            "type": "integer",
+            "title": "Candidate Count",
+            "default": 0
+          },
+          "pending_count": {
+            "type": "integer",
+            "title": "Pending Count",
+            "default": 0
+          },
+          "processed_count": {
+            "type": "integer",
+            "title": "Processed Count",
+            "default": 0
+          },
+          "indexed_now_count": {
+            "type": "integer",
+            "title": "Indexed Now Count",
+            "default": 0
+          },
+          "failed_count": {
+            "type": "integer",
+            "title": "Failed Count",
+            "default": 0
+          },
+          "remaining_count": {
+            "type": "integer",
+            "title": "Remaining Count",
+            "default": 0
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClipEmbeddingIndexResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id",
+          "case_id",
+          "provider_profile_id",
+          "limit",
+          "request_id"
+        ],
+        "title": "ClipEmbeddingJobStatusResponse"
+      },
       "ClipRetrievalV4": {
         "properties": {
           "summary": {
@@ -14053,6 +14909,74 @@
           "kind"
         ],
         "title": "MaterialUsageRankingReport"
+      },
+      "MediaAssetAnnotationStatusResponse": {
+        "properties": {
+          "case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "total_count": {
+            "type": "integer",
+            "title": "Total Count",
+            "default": 0
+          },
+          "annotated_count": {
+            "type": "integer",
+            "title": "Annotated Count",
+            "default": 0
+          },
+          "pending_count": {
+            "type": "integer",
+            "title": "Pending Count",
+            "default": 0
+          },
+          "failed_count": {
+            "type": "integer",
+            "title": "Failed Count",
+            "default": 0
+          },
+          "last_annotated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Annotated At"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id"
+        ],
+        "title": "MediaAssetAnnotationStatusResponse"
       },
       "MediaAssetCard": {
         "properties": {

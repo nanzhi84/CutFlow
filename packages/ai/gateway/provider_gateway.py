@@ -211,7 +211,7 @@ class SandboxProvider:
                     "model": str(call.input.get("model") or "qwen3-vl-embedding"),
                     "dimension": dimension,
                     "normalization": str(call.input.get("normalization") or "l2"),
-                    "index_version": str(call.input.get("index_version") or "clip-vl-qwen3-v1"),
+                    "index_version": str(call.input.get("index_version") or "clip-video-qwen3-v2"),
                 },
                 input_tokens=len(text),
             )
