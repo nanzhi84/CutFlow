@@ -194,6 +194,62 @@ def test_hydrate_workflow_runtime_snapshot_loads_active_selection_reservations()
     ]
 
 
+def test_hydrate_loads_all_current_run_selection_reservations(db_session_factory):
+    job = _job_row()
+    run = _run_row(job.id)
+    now = utcnow()
+    current_run_reservations = [
+        SelectionReservationRow(
+            id=f"resv_current_{index:03d}",
+            case_id="case_demo",
+            run_id=run.id,
+            medium="portrait",
+            asset_id=f"asset_current_{index:03d}",
+            diversity_key=None,
+            status="reserved",
+            created_at=now - timedelta(minutes=10),
+            expires_at=now + timedelta(minutes=30),
+            committed_at=None,
+            released_at=None,
+        )
+        for index in range(110)
+    ]
+    newer_parallel_reservations = [
+        SelectionReservationRow(
+            id=f"resv_parallel_{index:03d}",
+            case_id="case_demo",
+            run_id="run_parallel",
+            medium="portrait",
+            asset_id=f"asset_parallel_{index:03d}",
+            diversity_key=None,
+            status="reserved",
+            created_at=now + timedelta(seconds=index),
+            expires_at=now + timedelta(minutes=30),
+            committed_at=None,
+            released_at=None,
+        )
+        for index in range(120)
+    ]
+    with db_session_factory() as session:
+        session.add(job)
+        session.add(run)
+        session.add_all(current_run_reservations)
+        session.add_all(newer_parallel_reservations)
+        session.commit()
+    production_repository = SqlAlchemyProductionRepository(db_session_factory)
+    runtime_repository = Repository()
+
+    production_repository.hydrate_workflow_runtime_snapshot(runtime_repository, run.id)
+
+    owned = [
+        item for item in runtime_repository.selection_reservations.values() if item.run_id == run.id
+    ]
+    assert len(owned) == 110
+    assert {item.asset_id for item in owned} == {
+        f"asset_current_{index:03d}" for index in range(110)
+    }
+
+
 def test_sync_workflow_snapshot_persists_run_selection_reservations():
     session = RecordingSyncSession()
     production_repository = SqlAlchemyProductionRepository(lambda: session)

@@ -145,6 +145,13 @@ from packages.production.sqlalchemy_mappers import (
 )
 
 
+_TERMINAL_RUN_STATUS_VALUES = {
+    RunStatus.succeeded.value,
+    RunStatus.failed.value,
+    RunStatus.cancelled.value,
+}
+
+
 SUPPORTED_IMPORT_TYPES = {
     "case",
     "script",
@@ -385,7 +392,11 @@ class SqlAlchemyProductionRepository(BaseRepository):
                 session.merge(artifact_to_row(artifact))
             session.flush()
 
-            session.merge(self._workflow_run_row(run))
+            run_to_sync = self._preserve_terminal_workflow_run(
+                session.get(WorkflowRunRow, run.id),
+                run,
+            )
+            session.merge(self._workflow_run_row(run_to_sync))
             session.flush()
 
             for node_run in repository.node_runs.get(run.id, []):
@@ -506,6 +517,33 @@ class SqlAlchemyProductionRepository(BaseRepository):
             "selection_reservations.case_id" in message
             and "selection_reservations.medium" in message
             and "selection_reservations.asset_id" in message
+        )
+
+    @staticmethod
+    def _preserve_terminal_workflow_run(
+        existing: WorkflowRunRow | None,
+        incoming: WorkflowRun,
+    ) -> WorkflowRun:
+        if existing is None:
+            return incoming
+        if existing.status not in _TERMINAL_RUN_STATUS_VALUES:
+            return incoming
+        if incoming.status.value == existing.status:
+            return incoming
+        try:
+            existing_status = RunStatus(existing.status)
+        except ValueError:
+            return incoming
+        return incoming.model_copy(
+            update={
+                "status": existing_status,
+                "finished_at": existing.finished_at or incoming.finished_at,
+                "public_report_artifact_id": existing.public_report_artifact_id
+                or incoming.public_report_artifact_id,
+                "debug_report_artifact_id": existing.debug_report_artifact_id
+                or incoming.debug_report_artifact_id,
+                "updated_at": existing.updated_at or incoming.updated_at,
+            }
         )
 
     @staticmethod
@@ -704,6 +742,14 @@ class SqlAlchemyProductionRepository(BaseRepository):
                     .limit(100)
                 )
                 for reservation_row in session.scalars(reservation_statement):
+                    reservation = _selection_reservation_from_row(reservation_row)
+                    repository.selection_reservations[reservation.id] = reservation
+                run_reservation_statement = (
+                    select(SelectionReservationRow)
+                    .where(SelectionReservationRow.run_id == run.id)
+                    .where(SelectionReservationRow.status.in_(("reserved", "committed")))
+                )
+                for reservation_row in session.scalars(run_reservation_statement):
                     reservation = _selection_reservation_from_row(reservation_row)
                     repository.selection_reservations[reservation.id] = reservation
             run_ids = {run_id}

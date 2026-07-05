@@ -258,6 +258,69 @@ def test_sync_workflow_snapshot_backfills_finished_video_owner_from_run_job():
     assert runtime.finished_videos["fv_sync"].owner_user_id == owner
 
 
+def test_sync_workflow_snapshot_preserves_terminal_run_from_stale_snapshot():
+    factory = _session_factory()
+    finished_at = utcnow()
+    with factory() as session:
+        session.add(
+            JobRow(
+                id="job_stale",
+                type="digital_human_video",
+                status="running",
+                case_id="case_1",
+                created_by=None,
+                request_schema="DigitalHumanVideoRequest.v1",
+                request={},
+            )
+        )
+        session.add(
+            WorkflowRunRow(
+                id="run_stale",
+                job_id="job_stale",
+                case_id="case_1",
+                workflow_template_id="digital_human_v2",
+                workflow_version="v1",
+                status="cancelled",
+                finished_at=finished_at,
+            )
+        )
+        session.commit()
+
+    job = Job(
+        id="job_stale",
+        type=JobType.digital_human_video,
+        status=JobStatus.running,
+        case_id="case_1",
+        request_schema="DigitalHumanVideoRequest.v1",
+        request=DigitalHumanVideoRequest(
+            case_id="case_1",
+            script="hello",
+            voice={"voice_id": "voice_sandbox"},
+        ),
+    )
+    stale_run = WorkflowRun(
+        id="run_stale",
+        job_id=job.id,
+        case_id="case_1",
+        workflow_template_id="digital_human_v2",
+        workflow_version="v1",
+        status=RunStatus.running,
+        finished_at=None,
+    )
+    runtime = Repository()
+    SqlAlchemyProductionRepository(factory).sync_workflow_snapshot(
+        job=job,
+        run=stale_run,
+        repository=runtime,
+    )
+
+    with factory() as session:
+        row = session.get(WorkflowRunRow, "run_stale")
+        assert row is not None
+        assert row.status == "cancelled"
+        assert row.finished_at == finished_at.replace(tzinfo=None)
+
+
 def test_export_node_sets_owner_from_run_requested_by():
     from packages.production.pipeline.nodes import export_finished_video
 

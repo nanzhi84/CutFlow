@@ -107,6 +107,13 @@ def test_mark_run_failed_completes_cancellation_when_cancelling():
     assert result.status == RunStatus.cancelled
 
 
+def test_cancel_run_is_idempotent_when_already_cancelled():
+    adapter, run, job, _ = _adapter_with_run(RunStatus.cancelled)
+    result = adapter.cancel_run(run.id)
+    assert result.status == RunStatus.cancelled
+    assert adapter.repository.jobs[job.id].status == JobStatus.running
+
+
 def test_mark_run_failed_synthesizes_next_node_when_none_running():
     # Worker died mid-LipSync: the running node was never synced, so only the
     # completed prefix is persisted. mark_run_failed must synthesize a retryable
