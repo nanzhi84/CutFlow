@@ -107,6 +107,10 @@ def test_warning_code_is_single_spec_enum_and_degradation_notice_shape():
         # Editing-agent (issue #136) falls back to a deterministic selection when no
         # real llm.chat provider is armed; surfaced visibly, never a silent downgrade.
         "editing_agent.deterministic_fallback",
+        # Editing-agent repair paths are visible as warnings instead of being hidden
+        # only in debug diagnostics.
+        "editing_agent.llm_repair",
+        "editing_agent.local_constraint_repair",
         # Editing-agent drops B-roll inserts that cannot satisfy the shared geometry
         # policy; surfaced visibly instead of silently losing overlays.
         "broll.insertions_dropped_geometry",

@@ -33,6 +33,7 @@ from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
 from packages.core.workflow import NodeExecutionError
 from packages.production.pipeline import nodes
+from packages.production.pipeline._editing_agent import BrollChoice, EditingSelection, PortraitChoice
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
@@ -377,6 +378,190 @@ def test_build_editing_agent_context_is_independent_from_provider():
         "broll": {"raw": 1, "eligible": 1, "exposed": 1, "dropped": 0},
     }
     assert context.candidates.portrait_by_id
+
+
+def test_build_context_limits_llm_input_to_retrieval_topk_candidates():
+    state = _state()
+    retrieval = {
+        "candidates_by_window": {
+            "pslot_000": [{"candidate_id": "pc_001"}],
+            "pslot_001": [{"candidate_id": "pc_001"}],
+            "bslot_000": [{"candidate_id": "bc_000"}],
+        }
+    }
+    context = nodes.editing_agent_planning.build_editing_agent_context(
+        request=state.request,
+        material=state.artifacts[ArtifactKind.plan_material_pack].payload,
+        narration=state.artifacts[ArtifactKind.narration_units].payload,
+        boundary=state.artifacts[ArtifactKind.plan_narration_boundary].payload,
+        windows=state.artifacts[ArtifactKind.plan_timeline_windows].payload,
+        retrieval=retrieval,
+    )
+
+    assert set(context.candidates.portrait_by_id) == {"pc_000", "pc_001"}
+    assert [item["candidate_id"] for item in context.agent_input["portrait_candidates"]] == [
+        "pc_001"
+    ]
+    assert [item["candidate_id"] for item in context.agent_input["broll_candidates"]] == [
+        "bc_000"
+    ]
+    assert context.agent_input["portrait_slots"][0]["retrieval_topk_candidate_ids"] == [
+        "pc_001"
+    ]
+
+
+def test_compact_prompt_input_keeps_only_llm_decision_fields():
+    context = _agent_context(_state())
+    agent_input = dict(context.agent_input)
+    retrieval_ids = [f"pc_{index:03d}" for index in range(8)]
+    broll_ids = [f"bc_{index:03d}" for index in range(8)]
+    agent_input["safe_cut_boundaries"] = [{"cut_id": "cut_001", "frame": 120}]
+    agent_input["portrait_slots"] = [
+        {
+            **context.agent_input["portrait_slots"][0],
+            "legal_window_ids": retrieval_ids,
+            "retrieval_topk_candidate_ids": retrieval_ids,
+        }
+    ]
+    agent_input["broll_slots"] = [
+        {
+            **context.agent_input["broll_slots"][0],
+            "retrieval_topk_candidate_ids": broll_ids,
+        }
+    ]
+    agent_input["bgm_candidates"] = [
+        {"bgm_id": f"bgm_{index:03d}", "score": float(index), "script_fit": ["a", "b", "c"]}
+        for index in range(8)
+    ]
+
+    compact = nodes.editing_agent_planning._compact_prompt_input(agent_input)
+
+    assert compact["safe_cut_boundaries"] == []
+    assert compact["portrait_slots"][0]["retrieval_topk_candidate_ids"] == retrieval_ids[:6]
+    assert compact["portrait_slots"][0]["legal_window_ids"] == retrieval_ids[:6]
+    assert compact["broll_slots"][0]["retrieval_topk_candidate_ids"] == broll_ids[:6]
+    assert "source_start" not in compact["portrait_candidates"][0]
+    assert "source_end" not in compact["broll_candidates"][0]
+    assert compact["broll_candidates"][0]["allowed_slot_ids"] == ["bslot_000"]
+    assert "diversity_key" in compact["broll_candidates"][0]
+    assert [candidate["bgm_id"] for candidate in compact["bgm_candidates"]] == [
+        "bgm_007",
+        "bgm_006",
+        "bgm_005",
+        "bgm_004",
+        "bgm_003",
+        "bgm_002",
+    ]
+
+
+def test_local_broll_constraint_repair_replaces_invalid_candidate():
+    state = _state()
+    material = state.artifacts[ArtifactKind.plan_material_pack].payload
+    material["broll_candidates"] = [
+        {
+            "asset_id": "broll_bad",
+            "score": 100.0,
+            "metadata": {
+                "clip_id": "bad",
+                "source_start": 0.0,
+                "source_end": 4.0,
+                "scene_name": "detail_showcase",
+                "diversity_key": "measuring",
+                "matched_keywords": ["measuring", "precision"],
+            },
+        },
+        {
+            "asset_id": "broll_ok",
+            "score": 90.0,
+            "metadata": {
+                "clip_id": "ok",
+                "source_start": 0.0,
+                "source_end": 4.0,
+                "scene_name": "detail_showcase",
+                "diversity_key": "measuring_alt",
+                "matched_keywords": ["measuring", "car"],
+            },
+        },
+    ]
+    context = _agent_context(state)
+    selection = EditingSelection(
+        portrait=[
+            PortraitChoice(
+                slot_id="pslot_000",
+                window_id="pc_000",
+            ),
+            PortraitChoice(
+                slot_id="pslot_001",
+                window_id="pc_001",
+            ),
+        ],
+        broll=[
+            BrollChoice(
+                slot_id="bslot_000",
+                candidate_id="bc_000",
+                reason="semantic best but not retrieved",
+                confidence=0.9,
+                matched_keywords=("measuring",),
+            )
+        ],
+        font_id="font_yst",
+        bgm_id="bgm_001",
+    )
+
+    repaired, actions, errors = nodes.editing_agent_planning._repair_broll_selection_to_constraints(
+        selection=selection,
+        boundary=context.agent_boundary,
+        candidates=context.candidates,
+        bgm_enabled=state.request.bgm.enabled,
+        max_inserts=state.request.broll.max_inserts,
+        retrieval_topk_by_window={"bslot_000": ["bc_001"]},
+    )
+
+    assert errors == []
+    assert repaired.broll[0].candidate_id == "bc_001"
+    assert actions == [
+        {
+            "slot_id": "bslot_000",
+            "original_candidate_id": "bc_000",
+            "repaired_candidate_id": "bc_001",
+            "action": "replaced",
+            "reason": "matched nearest legal retrieval/diversity candidate",
+        }
+    ]
+
+
+def test_llm_repair_path_is_visible(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    adapter.provider_gateway.register(
+        _FakeEditingLlmProvider(
+            [
+                {"intent": {"portrait_plan": [{"slot_id": "pslot_000", "window_id": "pc_999"}]}},
+                {
+                    "intent": {
+                        "portrait_plan": [
+                            {"slot_id": "pslot_000", "window_id": "pc_000"},
+                            {"slot_id": "pslot_001", "window_id": "pc_001"},
+                        ],
+                        "broll_plan": [{"slot_id": "bslot_000", "candidate_id": "bc_000"}],
+                        "font_plan": {"font_id": "font_yst"},
+                        "bgm_plan": {"bgm_id": "bgm_001"},
+                    }
+                },
+            ]
+        )
+    )
+
+    output = _run_node(adapter, _state())
+
+    assert output.status == NodeStatus.succeeded
+    assert WarningCode.editing_agent_llm_repair in output.warnings
+    assert output.degradations == []
+    assert len(output.provider_invocation_ids) == 2
+    assignment = _payload(output, ArtifactKind.plan_media_assignment)
+    assert assignment["engine"] == "editing_agent_llm"
+    assert assignment["diagnostics"]["repair_trace"][0]["error_count"] > 0
+    assert assignment["diagnostics"]["repair_trace"][1]["error_count"] == 0
 
 
 def test_select_editing_assignment_runs_before_materialization(tmp_path):
