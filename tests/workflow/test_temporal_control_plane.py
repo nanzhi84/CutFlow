@@ -220,7 +220,9 @@ def test_cancel_run_signals_or_force_terminates_and_updates_local_state(monkeypa
     monkeypatch.setattr(adapter, "_cancel_workflow", fake_cancel)
     monkeypatch.setattr(adapter, "_run", lambda coro: asyncio.run(coro))
 
-    assert adapter.cancel_run(run.id, reason="operator").status == c.RunStatus.running
+    assert adapter.cancel_run(run.id, reason="operator").status == c.RunStatus.cancelled
+    assert repo.jobs[job.id].status == c.JobStatus.running
+    repo.runs[run.id] = run
     forced = adapter.cancel_run(run.id, force=True, reason="operator")
 
     assert calls == [

@@ -422,6 +422,8 @@ class TemporalRuntimeAdapter:
         self._run(self._cancel_workflow(run_id, force=force, reason=reason))
         if force:
             self._mark_local_force_cancelled(run_id)
+        else:
+            self._mark_local_cancelled(run_id)
         return self.repository.runs.get(run_id) if self.repository is not None else None
 
     async def _client(self) -> Client:
@@ -544,6 +546,23 @@ class TemporalRuntimeAdapter:
             self.repository.jobs[job.id] = job.model_copy(
                 update={"status": JobStatus.cancelled, "updated_at": utcnow()}
             )
+
+    def _mark_local_cancelled(self, run_id: str) -> None:
+        if self.repository is None or run_id not in self.repository.runs:
+            return
+        from packages.core.contracts import utcnow
+
+        run = self.repository.runs[run_id]
+        if run.status in {RunStatus.succeeded, RunStatus.failed, RunStatus.cancelled}:
+            return
+        now = utcnow()
+        self.repository.runs[run_id] = run.model_copy(
+            update={"status": RunStatus.cancelled, "finished_at": now, "updated_at": now}
+        )
+        try:
+            self.repository.release_run_reservations(run_id=run_id, only_uncommitted=True)
+        except Exception:
+            return
 
 
 def _workflow_payload(

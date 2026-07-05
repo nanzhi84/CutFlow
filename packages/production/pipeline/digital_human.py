@@ -444,7 +444,9 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
 
     def cancel_run(self, run_id: str, *, force: bool = False, reason: str | None = None) -> WorkflowRun:
         run = self.repository.runs[run_id]
-        if run.status not in {RunStatus.created, RunStatus.admitted, RunStatus.running}:
+        if run.status == RunStatus.cancelled:
+            return run
+        if run.status not in {RunStatus.created, RunStatus.admitted, RunStatus.running, RunStatus.cancelling}:
             raise NodeExecutionError(
                 ErrorCode.workflow_invalid_transition,
                 f"Run {run_id} cannot be cancelled from {run.status}.",
