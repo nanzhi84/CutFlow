@@ -17,7 +17,7 @@ import hashlib
 import json
 from typing import Any
 
-from packages.core.contracts import ArtifactKind
+from packages.core.contracts import ArtifactKind, ErrorCode
 from packages.core.contracts.artifacts import MaterialCandidate, MaterialPackArtifact
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.planning.editing.frame_grid import frame_index
@@ -184,9 +184,16 @@ def run(ctx: NodeContext) -> NodeOutput:
     # filtered before eligibility; the reservation ids surfaced here are the ones
     # THIS run owns, wiring the previously-stubbed ``reservations`` contract field
     # for real.
-    reservation_ids = _reserve_candidate_assets(
+    reservation_ids, owned_asset_ids_by_medium = _reserve_candidate_assets(
         ctx,
         case_id=request.case_id,
+        portrait_candidates=portrait_candidates,
+        broll_candidates=broll_candidates,
+        bgm_candidates=bgm_candidates,
+        font_candidates=font_candidates,
+    )
+    _assert_candidate_assets_reserved(
+        owned_asset_ids_by_medium,
         portrait_candidates=portrait_candidates,
         broll_candidates=broll_candidates,
         bgm_candidates=bgm_candidates,
@@ -415,11 +422,14 @@ def _asset_cache_signature(repo, asset) -> dict[str, Any]:
     annotation = repo.annotations.get(asset.id)
     source = repo.artifacts.get(asset.source_artifact_id) if asset.source_artifact_id else None
     media_info = getattr(source, "media_info", None)
+    source_uri = getattr(source, "uri", None)
     return {
         "id": asset.id,
         "case_id": asset.case_id,
         "kind": asset.kind,
         "source_artifact_id": asset.source_artifact_id,
+        "source_artifact_uri": source_uri,
+        "source_resolvable": bool(source_uri),
         "duration_sec": asset.duration_sec,
         "source_duration_sec": getattr(media_info, "duration_sec", None),
         "tags": sorted(getattr(asset, "tags", None) or []),
@@ -951,14 +961,16 @@ def _reserve_candidate_assets(
     broll_candidates: list[MaterialCandidate],
     bgm_candidates: list[MaterialCandidate],
     font_candidates: list[MaterialCandidate],
-) -> list[str]:
+) -> tuple[list[str], dict[str, set[str]]]:
     reservation_ids: list[str] = []
+    owned_asset_ids_by_medium: dict[str, set[str]] = {}
     for medium, candidates in (
         ("portrait", portrait_candidates),
         ("broll", broll_candidates),
         ("bgm", bgm_candidates),
         ("font", font_candidates),
     ):
+        owned_asset_ids_by_medium[medium] = set()
         asset_ids = list(dict.fromkeys(c.asset_id for c in candidates if c.asset_id))
         if not asset_ids:
             continue
@@ -975,7 +987,36 @@ def _reserve_candidate_assets(
             diversity_keys=diversity_keys,
         )
         reservation_ids.extend(reservation.id for reservation in owned)
-    return reservation_ids
+        owned_asset_ids_by_medium[medium].update(reservation.asset_id for reservation in owned)
+    return reservation_ids, owned_asset_ids_by_medium
+
+
+def _assert_candidate_assets_reserved(
+    owned_asset_ids_by_medium: dict[str, set[str]],
+    *,
+    portrait_candidates: list[MaterialCandidate],
+    broll_candidates: list[MaterialCandidate],
+    bgm_candidates: list[MaterialCandidate],
+    font_candidates: list[MaterialCandidate],
+) -> None:
+    conflicts: dict[str, list[str]] = {}
+    for medium, candidates in (
+        ("portrait", portrait_candidates),
+        ("broll", broll_candidates),
+        ("bgm", bgm_candidates),
+        ("font", font_candidates),
+    ):
+        requested = set(c.asset_id for c in candidates if c.asset_id)
+        missing = sorted(requested - owned_asset_ids_by_medium.get(medium, set()))
+        if missing:
+            conflicts[medium] = missing
+    if conflicts:
+        raise NodeExecutionError(
+            ErrorCode.validation_conflict,
+            "Material candidate reservation was claimed by a concurrent run.",
+            retryable=True,
+            details={"conflicts": conflicts},
+        )
 
 
 def _simple_candidates(assets, medium_label, ledger_entries) -> list[MaterialCandidate]:
