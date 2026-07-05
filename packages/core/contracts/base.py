@@ -85,6 +85,8 @@ class WarningCode(str, Enum):
     font_resolution_failed = "font.resolution_failed"
     subtitle_burn_skipped = "subtitle.burn_skipped"
     editing_agent_deterministic_fallback = "editing_agent.deterministic_fallback"
+    editing_agent_llm_repair = "editing_agent.llm_repair"
+    editing_agent_local_constraint_repair = "editing_agent.local_constraint_repair"
     broll_insertions_dropped_geometry = "broll.insertions_dropped_geometry"
 
 

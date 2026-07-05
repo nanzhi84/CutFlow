@@ -38,6 +38,7 @@ from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.planning.editing.frame_grid import frame_index
 from packages.planning.material import longest_clean_portrait_source_span, shortlist_for_windows
 from packages.production.pipeline._editing_agent import (
+    BrollChoice,
     EditingSelection,
     IndexedCandidates,
     build_agent_input,
@@ -70,6 +71,8 @@ _JSON_VARS = frozenset(
         "bgm_candidates",
     }
 )
+_PROMPT_RETRIEVAL_TOPK_LIMIT = 6
+_PROMPT_BGM_CANDIDATE_LIMIT = 6
 
 
 @dataclass(frozen=True)
@@ -220,11 +223,17 @@ def _portrait_slot_from_window(window: dict) -> dict:
 def _broll_slot_from_window(window: dict) -> dict:
     start_frame = int(window.get("start_frame", 0) or 0)
     end_frame = int(window.get("end_frame", 0) or 0)
+    source_length_frames = int(
+        window.get("source_length_frames") or max(0, end_frame - start_frame)
+    )
     return {
         "slot_id": str(window.get("window_id") or ""),
         "start_frame": start_frame,
         "end_frame": end_frame,
         "length_frames": int(window.get("length_frames") or max(0, end_frame - start_frame)),
+        "source_length_frames": source_length_frames,
+        "pad_start": float(window.get("pad_start", 0) or 0),
+        "pad_end": float(window.get("pad_end", 0) or 0),
         "unit_ids": list(window.get("host_unit_ids") or window.get("unit_ids") or []),
         "boundary_source": window.get("boundary_source"),
         "text": str(window.get("text") or ""),
@@ -348,6 +357,317 @@ def _record_llm_request_artifact(
     )
 
 
+def _limited_ids(values: list[str] | None, *, limit: int = _PROMPT_RETRIEVAL_TOPK_LIMIT) -> list[str]:
+    ids: list[str] = []
+    for value in values or []:
+        text = str(value or "").strip()
+        if text and text not in ids:
+            ids.append(text)
+        if len(ids) >= limit:
+            break
+    return ids
+
+
+def _compact_prompt_slot(slot: dict, *, broll: bool) -> dict:
+    topk = _limited_ids(slot.get("retrieval_topk_candidate_ids") or [])
+    raw_legal_ids = _limited_ids(slot.get("legal_window_ids") or [], limit=10_000)
+    legal_ids = _limited_ids(raw_legal_ids)
+    if topk and not broll:
+        legal_ids = [candidate_id for candidate_id in topk if candidate_id in set(raw_legal_ids)]
+        topk = legal_ids
+    payload = {
+        "slot_id": str(slot.get("slot_id") or ""),
+        "required_seconds": slot.get("required_seconds"),
+    }
+    if broll:
+        payload["text"] = str(slot.get("text") or "")
+    else:
+        payload["legal_window_ids"] = legal_ids
+    if topk:
+        payload["retrieval_topk_candidate_ids"] = topk
+    return payload
+
+
+def _compact_prompt_input(agent_input: dict) -> dict:
+    """Shrink the LLM prompt to ID-decision fields only.
+
+    The full candidate objects stay in ``EditingAgentContext.candidates`` for
+    validation and materialization. This payload is only for the model prompt,
+    so it omits frame/source bookkeeping that local code owns.
+    """
+
+    compact_broll_slots = [
+        _compact_prompt_slot(slot, broll=True)
+        for slot in agent_input.get("broll_slots", [])
+        if isinstance(slot, dict)
+    ]
+    broll_allowed_slot_ids: dict[str, list[str]] = {}
+    for slot in compact_broll_slots:
+        slot_id = str(slot.get("slot_id") or "")
+        for candidate_id in slot.get("retrieval_topk_candidate_ids") or []:
+            text = str(candidate_id or "")
+            if not text:
+                continue
+            broll_allowed_slot_ids.setdefault(text, []).append(slot_id)
+    bgm_candidates = sorted(
+        [item for item in agent_input.get("bgm_candidates", []) if isinstance(item, dict)],
+        key=lambda item: float(item.get("score") or 0.0),
+        reverse=True,
+    )[:_PROMPT_BGM_CANDIDATE_LIMIT]
+    return {
+        **agent_input,
+        "narration_units": [
+            {
+                "unit_id": str(unit.get("unit_id") or ""),
+                "text": str(unit.get("text") or ""),
+                "start": unit.get("start"),
+                "end": unit.get("end"),
+            }
+            for unit in agent_input.get("narration_units", [])
+            if isinstance(unit, dict)
+        ],
+        "safe_cut_boundaries": [],
+        "portrait_slots": [
+            _compact_prompt_slot(slot, broll=False)
+            for slot in agent_input.get("portrait_slots", [])
+            if isinstance(slot, dict)
+        ],
+        "broll_slots": compact_broll_slots,
+        "portrait_candidates": [
+            {
+                "candidate_id": str(candidate.get("candidate_id") or ""),
+                "asset_id": str(candidate.get("asset_id") or ""),
+                "available_seconds": candidate.get("available_seconds"),
+                "reason": str(candidate.get("reason") or ""),
+            }
+            for candidate in agent_input.get("portrait_candidates", [])
+            if isinstance(candidate, dict)
+        ],
+        "broll_candidates": [
+            {
+                "candidate_id": str(candidate.get("candidate_id") or ""),
+                "asset_id": str(candidate.get("asset_id") or ""),
+                "scene_name": str(candidate.get("scene_name") or ""),
+                "diversity_key": str(candidate.get("diversity_key") or ""),
+                "allowed_slot_ids": broll_allowed_slot_ids.get(
+                    str(candidate.get("candidate_id") or ""),
+                    [],
+                ),
+                "matched_keywords": list(candidate.get("matched_keywords") or [])[:6],
+                "available_seconds": candidate.get("available_seconds"),
+            }
+            for candidate in agent_input.get("broll_candidates", [])
+            if isinstance(candidate, dict)
+            and broll_allowed_slot_ids.get(str(candidate.get("candidate_id") or ""))
+        ],
+        "bgm_candidates": [
+            {
+                "bgm_id": str(candidate.get("bgm_id") or ""),
+                "mood": str(candidate.get("mood") or ""),
+                "energy_profile": str(candidate.get("energy_profile") or ""),
+                "script_fit": list(candidate.get("script_fit") or [])[:2],
+                "scene_fit": list(candidate.get("scene_fit") or [])[:2],
+            }
+            for candidate in bgm_candidates
+        ],
+    }
+
+
+def _local_str(value) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _local_meta(candidate: dict) -> dict:
+    meta = candidate.get("metadata")
+    return meta if isinstance(meta, dict) else {}
+
+
+def _local_list(value) -> list[str]:
+    if isinstance(value, list):
+        return [_local_str(item) for item in value if _local_str(item)]
+    if value:
+        return [_local_str(value)]
+    return []
+
+
+def _broll_source_frames(candidate: dict) -> int:
+    meta = _local_meta(candidate)
+    start = float(meta.get("source_start", 0.0) or 0.0)
+    end = float(meta.get("source_end", 0.0) or 0.0)
+    return max(0, frame_index(end) - frame_index(start))
+
+
+def _slot_source_required_frames(slot: dict) -> int:
+    if slot.get("source_length_frames") is not None:
+        return max(0, int(slot.get("source_length_frames", 0) or 0))
+    return max(
+        0,
+        int(slot.get("end_frame", 0) or 0) - int(slot.get("start_frame", 0) or 0),
+    )
+
+
+def _broll_candidate_similarity(candidate: dict, desired: dict | None) -> tuple[int, int, int]:
+    if desired is None:
+        return (0, 0, 0)
+    candidate_meta = _local_meta(candidate)
+    desired_meta = _local_meta(desired)
+    candidate_keywords = set(_local_list(candidate_meta.get("matched_keywords")))
+    desired_keywords = set(_local_list(desired_meta.get("matched_keywords")))
+    overlap = len(candidate_keywords & desired_keywords)
+    same_scene = int(
+        bool(candidate_meta.get("scene_name"))
+        and candidate_meta.get("scene_name") == desired_meta.get("scene_name")
+    )
+    same_diversity = int(
+        bool(candidate_meta.get("diversity_key"))
+        and candidate_meta.get("diversity_key") == desired_meta.get("diversity_key")
+    )
+    return (overlap, same_scene, same_diversity)
+
+
+def _repair_broll_selection_to_constraints(
+    *,
+    selection: EditingSelection,
+    boundary: dict,
+    candidates: IndexedCandidates,
+    bgm_enabled: bool,
+    max_inserts: int,
+    retrieval_topk_by_window: dict[str, list[str]],
+) -> tuple[EditingSelection, list[dict], list[str]]:
+    broll_slots = {
+        _local_str(slot.get("slot_id")): slot
+        for slot in (boundary.get("broll_slots") or [])
+        if isinstance(slot, dict)
+    }
+    used_slots: set[str] = set()
+    used_candidates: set[str] = set()
+    used_assets: set[str] = set()
+    used_diversity: set[str] = set()
+    repaired_broll: list[BrollChoice] = []
+    actions: list[dict] = []
+
+    def usable(candidate_id: str, slot: dict) -> bool:
+        candidate = candidates.broll_by_id.get(candidate_id)
+        if candidate is None:
+            return False
+        topk = {
+            _local_str(item)
+            for item in retrieval_topk_by_window.get(_local_str(slot.get("slot_id")), [])
+            if _local_str(item)
+        }
+        if topk and candidate_id not in topk:
+            return False
+        if candidate_id in used_candidates:
+            return False
+        asset_id = _local_str(candidate.get("asset_id"))
+        if asset_id and asset_id in used_assets:
+            return False
+        diversity_key = _local_str(_local_meta(candidate).get("diversity_key"))
+        if diversity_key and diversity_key in used_diversity:
+            return False
+        return _broll_source_frames(candidate) >= _slot_source_required_frames(slot)
+
+    def reserve(candidate_id: str) -> None:
+        candidate = candidates.broll_by_id[candidate_id]
+        used_candidates.add(candidate_id)
+        asset_id = _local_str(candidate.get("asset_id"))
+        if asset_id:
+            used_assets.add(asset_id)
+        diversity_key = _local_str(_local_meta(candidate).get("diversity_key"))
+        if diversity_key:
+            used_diversity.add(diversity_key)
+
+    for choice in selection.broll:
+        if len(repaired_broll) >= max(0, max_inserts):
+            actions.append(
+                {
+                    "slot_id": choice.slot_id,
+                    "original_candidate_id": choice.candidate_id,
+                    "action": "dropped",
+                    "reason": "max_broll_inserts reached",
+                }
+            )
+            continue
+        slot = broll_slots.get(choice.slot_id)
+        if slot is None or choice.slot_id in used_slots:
+            actions.append(
+                {
+                    "slot_id": choice.slot_id,
+                    "original_candidate_id": choice.candidate_id,
+                    "action": "dropped",
+                    "reason": "unknown or duplicate slot",
+                }
+            )
+            continue
+        desired = candidates.broll_by_id.get(choice.candidate_id)
+        pool = [
+            candidate_id
+            for candidate_id in retrieval_topk_by_window.get(choice.slot_id, [])
+            if candidate_id in candidates.broll_by_id
+        ] or list(candidates.broll_by_id)
+        ranked_pool = sorted(
+            enumerate(pool),
+            key=lambda item: (
+                -int(item[1] == choice.candidate_id),
+                -_broll_candidate_similarity(candidates.broll_by_id[item[1]], desired)[0],
+                -_broll_candidate_similarity(candidates.broll_by_id[item[1]], desired)[1],
+                -_broll_candidate_similarity(candidates.broll_by_id[item[1]], desired)[2],
+                item[0],
+            ),
+        )
+        candidate_id = next((candidate_id for _, candidate_id in ranked_pool if usable(candidate_id, slot)), "")
+        if not candidate_id:
+            actions.append(
+                {
+                    "slot_id": choice.slot_id,
+                    "original_candidate_id": choice.candidate_id,
+                    "action": "dropped",
+                    "reason": "no legal broll candidate remains",
+                }
+            )
+            used_slots.add(choice.slot_id)
+            continue
+        used_slots.add(choice.slot_id)
+        reserve(candidate_id)
+        repaired_broll.append(
+            BrollChoice(
+                slot_id=choice.slot_id,
+                candidate_id=candidate_id,
+                reason=choice.reason
+                if candidate_id == choice.candidate_id
+                else f"{choice.reason}（本地约束修正：{choice.candidate_id} -> {candidate_id}）",
+                confidence=choice.confidence,
+                matched_keywords=choice.matched_keywords,
+            )
+        )
+        if candidate_id != choice.candidate_id:
+            actions.append(
+                {
+                    "slot_id": choice.slot_id,
+                    "original_candidate_id": choice.candidate_id,
+                    "repaired_candidate_id": candidate_id,
+                    "action": "replaced",
+                    "reason": "matched nearest legal retrieval/diversity candidate",
+                }
+            )
+
+    repaired = EditingSelection(
+        portrait=selection.portrait,
+        broll=repaired_broll,
+        font_id=selection.font_id,
+        bgm_id=selection.bgm_id,
+        analysis=selection.analysis,
+    )
+    errors = validate_selection(
+        repaired,
+        boundary=boundary,
+        candidates=candidates,
+        bgm_enabled=bgm_enabled,
+        retrieval_topk_by_window=retrieval_topk_by_window,
+    )
+    return repaired, actions, errors
+
+
 def _record_llm_response_artifact(
     *,
     ctx: NodeContext,
@@ -421,10 +741,15 @@ def build_editing_agent_context(
                     retrieval_topk_by_window.setdefault(slot_id, [])
     candidate_material = material if retrieval is not None else shortlisted_material
     candidates = index_candidates(candidate_material)
+    prompt_candidates = (
+        _prompt_candidates_for_retrieval(candidates, retrieval_topk_by_window)
+        if retrieval is not None
+        else candidates
+    )
     agent_input = build_agent_input(
         request=request,
         boundary=agent_boundary,
-        candidates=candidates,
+        candidates=prompt_candidates,
         narration_units=raw_units,
         duration=duration,
         retrieval_topk_by_window=retrieval_topk_by_window,
@@ -451,6 +776,31 @@ def build_editing_agent_context(
         candidates=candidates,
         retrieval_topk_by_window=retrieval_topk_by_window,
         agent_input=agent_input,
+    )
+
+
+def _prompt_candidates_for_retrieval(
+    candidates: IndexedCandidates,
+    retrieval_topk_by_window: dict[str, list[str]],
+) -> IndexedCandidates:
+    allowed_ids = {
+        candidate_id
+        for candidate_ids in retrieval_topk_by_window.values()
+        for candidate_id in candidate_ids
+    }
+    return IndexedCandidates(
+        portrait_by_id={
+            candidate_id: candidate
+            for candidate_id, candidate in candidates.portrait_by_id.items()
+            if candidate_id in allowed_ids
+        },
+        broll_by_id={
+            candidate_id: candidate
+            for candidate_id, candidate in candidates.broll_by_id.items()
+            if candidate_id in allowed_ids
+        },
+        font_by_id=candidates.font_by_id,
+        bgm_by_id=candidates.bgm_by_id,
     )
 
 
@@ -522,12 +872,13 @@ def select_editing_assignment(
         warnings.append(WarningCode.editing_agent_deterministic_fallback)
     else:
         engine = "editing_agent_llm"
+        prompt_input = _compact_prompt_input(agent_context.agent_input)
 
         def _invoke(previous_errors: list[str]):
             attempt = len(provider_invocation_ids)
             prompt_invocation, rendered = ctx.prompt_registry.render(
                 node_id="EditingAgentPlanning",
-                variables=_prompt_variables(agent_context.agent_input, previous_errors),
+                variables=_prompt_variables(prompt_input, previous_errors),
                 case_id=run.case_id,
                 run_id=run.id,
                 node_run_id=node_run.id,
@@ -593,6 +944,35 @@ def select_editing_assignment(
             max_repair_attempts=state.request.edit.max_repair_attempts,
             retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
         )
+        llm_repair_used = any(
+            isinstance(item.get("attempt"), int) and int(item.get("error_count") or 0) > 0
+            for item in repair_trace
+            if isinstance(item, dict)
+        )
+        if errors:
+            repaired_selection, local_repair_actions, local_repair_errors = (
+                _repair_broll_selection_to_constraints(
+                    selection=selection,
+                    boundary=agent_context.agent_boundary,
+                    candidates=agent_context.candidates,
+                    bgm_enabled=state.request.bgm.enabled,
+                    max_inserts=state.request.broll.max_inserts,
+                    retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
+                )
+            )
+            if local_repair_actions:
+                repair_trace.append(
+                    {
+                        "attempt": "local_constraint_repair",
+                        "error_count": len(local_repair_errors),
+                        "errors": local_repair_errors,
+                        "actions": local_repair_actions,
+                    }
+                )
+            if not local_repair_errors:
+                selection = repaired_selection
+                errors = []
+                warnings.append(WarningCode.editing_agent_local_constraint_repair)
         if errors:
             if not sandbox_fallback_allowed():
                 raise NodeExecutionError(
@@ -621,6 +1001,8 @@ def select_editing_assignment(
                 )
             )
             warnings.append(WarningCode.editing_agent_deterministic_fallback)
+        elif llm_repair_used:
+            warnings.append(WarningCode.editing_agent_llm_repair)
 
     return EditingAgentSelectionResult(
         selection=selection,
