@@ -285,6 +285,77 @@ def test_material_pack_carries_portrait_recency_without_ranking_pool(tmp_path, m
     ]
 
 
+def test_material_pack_cache_reuses_stable_pool_but_refreshes_run_state(
+    tmp_path,
+    monkeypatch,
+):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    adapter.repository.media_assets.clear()
+    adapter.repository.annotations.clear()
+    _inject_video_asset(
+        adapter.repository,
+        "vid_cache_fresh",
+        [
+            _talk_clip("talk_cache", 0.0, 8.0),
+            _cover_clip("cover_cache", 8.0, 13.0, ["打磨", "工艺"]),
+        ],
+    )
+    _inject_video_asset(
+        adapter.repository,
+        "vid_cache_locked",
+        [
+            _talk_clip("talk_locked", 0.0, 8.0),
+            _cover_clip("cover_locked", 8.0, 13.0, ["补漆", "效果"]),
+        ],
+    )
+
+    first = nodes.material_pack_planning.run(_ctx(adapter, _request(), "MaterialPackPlanning"))
+    first_payload = next(a.payload for a in first.artifacts if a.kind == ArtifactKind.plan_material_pack)
+    assert first_payload["diagnostics"]["materialpack_eligibility_cache"]["hit"] is False
+
+    adapter.repository.release_run_reservations(run_id="run_1")
+    adapter.repository.record_selection_ledger_entries(
+        [
+            SelectionLedgerEntry(
+                case_id="case_demo",
+                run_id="run_prev",
+                medium="portrait",
+                asset_id="vid_cache_fresh",
+                slot_phase="portrait_opening",
+            )
+        ]
+    )
+    adapter.repository.reserve_selections(
+        case_id="case_demo",
+        run_id="run_parallel",
+        medium="portrait",
+        asset_ids=["vid_cache_locked"],
+    )
+    adapter.repository.reserve_selections(
+        case_id="case_demo",
+        run_id="run_parallel",
+        medium="broll",
+        asset_ids=["vid_cache_locked"],
+    )
+
+    second = nodes.material_pack_planning.run(_ctx(adapter, _request(), "MaterialPackPlanning"))
+    payload = next(a.payload for a in second.artifacts if a.kind == ArtifactKind.plan_material_pack)
+
+    assert payload["diagnostics"]["materialpack_eligibility_cache"]["hit"] is True
+    assert {c["asset_id"] for c in payload["portrait_candidates"]} == {"vid_cache_fresh"}
+    assert {c["asset_id"] for c in payload["broll_candidates"]} == {"vid_cache_fresh"}
+    assert payload["portrait_candidates"][0]["metadata"]["recency_penalty"] > 0.0
+    assert {
+        (item["medium"], item["asset_id"], item.get("clip_id"), item["reason"])
+        for item in payload["rejected_candidates"]
+    } >= {
+        ("portrait", "vid_cache_locked", None, "active_selection_reservation"),
+        ("broll", "vid_cache_locked", None, "active_selection_reservation"),
+    }
+
+
 def test_material_pack_respects_active_reservations_from_parallel_run(tmp_path, monkeypatch):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
