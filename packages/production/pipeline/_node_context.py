@@ -35,6 +35,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from packages.ai.prompts import PromptRegistry
     from packages.core.storage import Repository
     from packages.production.pipeline.digital_human import LocalRuntimeAdapter
+    from packages.production.sqlalchemy_repository import SqlAlchemyProductionRepository
 
 
 @dataclass
@@ -50,6 +51,10 @@ class NodeContext:
     @property
     def repository(self) -> "Repository":
         return self.adapter.repository
+
+    @property
+    def production_repository(self) -> "SqlAlchemyProductionRepository | None":
+        return getattr(self.adapter, "production_repository", None)
 
     @property
     def provider_gateway(self) -> "ProviderGateway":

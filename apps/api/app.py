@@ -210,6 +210,7 @@ def configure_app_state(app: FastAPI, *, session_factory=None) -> None:
         provider_gateway=app.state.provider_gateway,
         prompt_registry=app.state.prompt_registry,
         snapshot_sync=_sync_local_workflow_snapshot,
+        production_repository=app.state.sqlalchemy_production_repository,
     )
     if app.state.workflow_runtime_settings.runtime == "temporal":
         from packages.core.workflow.temporal_adapter import TemporalRuntimeAdapter

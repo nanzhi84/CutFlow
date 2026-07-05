@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import io
 import os
 import shutil
@@ -10,6 +12,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlencode, urlsplit
 from uuid import uuid4
 
 from packages.core.contracts import SignedUrlResponse, utcnow
@@ -75,7 +78,13 @@ class ObjectStore:
     def get_bytes(self, ref: ObjectRef) -> bytes:
         raise NotImplementedError
 
-    def upload_file(self, local_path: Path, ref: ObjectRef) -> StoredObject:
+    def upload_file(
+        self,
+        local_path: Path,
+        ref: ObjectRef,
+        *,
+        content_type: str | None = None,
+    ) -> StoredObject:
         """Store a file by path. Default falls back to a full read; streaming
         backends (S3) override this to avoid buffering whole objects in RAM."""
         return self.put_bytes(ref, Path(local_path).read_bytes())
@@ -237,6 +246,8 @@ class S3ObjectStore(ObjectStore):
 
         self.endpoint_url = endpoint_url
         self.bucket = bucket
+        self._access_key = access_key
+        self._secret_key = secret_key
         # Buckets this store may READ from: the write bucket plus any read-only
         # source/materials buckets. Writes always target self.bucket only.
         self._read_buckets = frozenset({bucket, *read_buckets})
@@ -297,16 +308,25 @@ class S3ObjectStore(ObjectStore):
         self._client.download_fileobj(ref.bucket, ref.key, buf, Config=self._transfer_config)
         return buf.getvalue()
 
-    def upload_file(self, local_path: Path, ref: ObjectRef) -> StoredObject:
+    def upload_file(
+        self,
+        local_path: Path,
+        ref: ObjectRef,
+        *,
+        content_type: str | None = None,
+    ) -> StoredObject:
         # Streaming, multipart upload by path: boto3's upload_file never reads the
         # whole object into RAM (it streams from disk in multipart chunks).
         self._validate_write_ref(ref)
+        extra_args = {"ContentType": content_type} if content_type else None
+        kwargs = {"ExtraArgs": extra_args} if extra_args else {}
         source = Path(local_path)
         self._client.upload_file(
             str(source),
             ref.bucket,
             ref.key,
             Config=self._transfer_config,
+            **kwargs,
         )
         cache_path = self._cache_path(ref)
         if source.resolve() != cache_path.resolve():
@@ -360,6 +380,13 @@ class S3ObjectStore(ObjectStore):
     def signed_url(self, uri: str, *, expires_in: timedelta = timedelta(minutes=15)) -> SignedUrlResponse:
         ref = parse_object_uri(uri)
         self._validate_read_ref(ref)
+        native_oss_url = self._native_oss_signed_url(ref, expires_in=expires_in)
+        if native_oss_url is not None:
+            return SignedUrlResponse(
+                url=native_oss_url,
+                expires_at=utcnow() + expires_in,
+                request_id="req_oss",
+            )
         url = self._client.generate_presigned_url(
             "get_object",
             Params={"Bucket": ref.bucket, "Key": ref.key},
@@ -447,6 +474,36 @@ class S3ObjectStore(ObjectStore):
             if not _is_bucket_absent_error(exc):
                 raise
             self._client.create_bucket(Bucket=self.bucket)
+
+    def _native_oss_signed_url(
+        self,
+        ref: ObjectRef,
+        *,
+        expires_in: timedelta,
+    ) -> str | None:
+        endpoint = urlsplit(self.endpoint_url)
+        if endpoint.scheme not in {"http", "https"} or "aliyuncs.com" not in endpoint.netloc:
+            return None
+        expires = int(time.time() + expires_in.total_seconds())
+        canonical_resource = f"/{ref.bucket}/{ref.key}"
+        string_to_sign = f"GET\n\n\n{expires}\n{canonical_resource}"
+        signature = base64.b64encode(
+            hmac.new(
+                self._secret_key.encode("utf-8"),
+                string_to_sign.encode("utf-8"),
+                hashlib.sha1,
+            ).digest()
+        ).decode("ascii")
+        query = urlencode(
+            {
+                "OSSAccessKeyId": self._access_key,
+                "Expires": str(expires),
+                "Signature": signature,
+            }
+        )
+        host = f"{ref.bucket}.{endpoint.netloc}"
+        path = "/" + quote(ref.key, safe="/")
+        return f"{endpoint.scheme}://{host}{path}?{query}"
 
     def _validate_write_ref(self, ref: ObjectRef) -> None:
         if ref.bucket != self.bucket:

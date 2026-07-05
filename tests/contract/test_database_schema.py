@@ -237,7 +237,9 @@ def test_selection_reservation_active_slot_unique_index_exists():
 def test_clip_embedding_index_keys_and_lookup_indexes_exist():
     clip_index = Base.metadata.tables["clip_embedding_index"]
     indexes = {idx.name: [col.name for col in idx.columns] for idx in clip_index.indexes}
+    by_name = {idx.name: idx for idx in clip_index.indexes}
     assert set(clip_index.primary_key.columns.keys()) == {"clip_embedding_key"}
+    assert clip_index.c.embedding.type.get_col_spec() == "vector(1024)"
     assert indexes["idx_clip_embedding_asset"] == ["asset_id", "index_namespace"]
     assert indexes["idx_clip_embedding_model_version"] == [
         "index_namespace",
@@ -245,6 +247,16 @@ def test_clip_embedding_index_keys_and_lookup_indexes_exist():
         "embedding_dimension",
         "index_version",
     ]
+    assert indexes["idx_clip_embedding_embedding_hnsw"] == ["embedding"]
+    hnsw = by_name["idx_clip_embedding_embedding_hnsw"]
+    assert hnsw.dialect_options["postgresql"]["using"] == "hnsw"
+    assert hnsw.dialect_options["postgresql"]["ops"] == {
+        "embedding": "vector_cosine_ops"
+    }
+    assert hnsw.dialect_options["postgresql"]["with"] == {
+        "m": 16,
+        "ef_construction": 64,
+    }
 
 
 def test_case_rubric_indexes_and_uniques_exist():
@@ -379,6 +391,18 @@ def test_alembic_selection_reservation_active_slot_revision_exists():
     assert 'revision = "0020_resv_active_slot"' in text
     assert 'down_revision = "0019_user_generation_defaults"' in text
     assert "uq_selection_reservations_active_slot" in text
+
+
+def test_alembic_clip_embedding_pgvector_hnsw_revision_exists():
+    migration = Path(
+        "packages/core/storage/alembic/versions/0037_clip_emb_vector_hnsw.py"
+    )
+    assert migration.exists()
+    text = migration.read_text(encoding="utf-8")
+    assert 'revision = "0037_clip_emb_vector_hnsw"' in text
+    assert 'down_revision = "0036_clip_embedding_index"' in text
+    assert "alter column embedding type vector(1024)" in text
+    assert "using hnsw (embedding vector_cosine_ops)" in text
 
 
 def test_alembic_revision_ids_fit_version_table_limit():

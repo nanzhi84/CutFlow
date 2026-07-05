@@ -28,13 +28,14 @@ def store_file(
     purpose: str,
     addressed: bool = False,
     tier: str = "durable",
+    content_type: str | None = None,
 ):
     # Stream the sha256 off disk instead of read_bytes() to avoid buffering the
     # whole (potentially minutes-long video) object in RAM for content addressing.
     content_key = sha256_file(path) if addressed else None
     ref = object_store.prepare_upload(path.name, purpose, content_key=content_key, tier=tier)
-    if addressed and content_key is not None and object_store.exists(ref):
+    if addressed and content_key is not None and object_store.exists(ref) and not content_type:
         return StoredObject(ref=ref, size_bytes=path.stat().st_size, sha256=content_key)
     # Path-based upload: S3 streams a multipart upload from disk; Local falls back
     # to a bytes read via the ObjectStore.upload_file default.
-    return object_store.upload_file(path, ref)
+    return object_store.upload_file(path, ref, content_type=content_type)

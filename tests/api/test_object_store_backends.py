@@ -6,6 +6,7 @@ import tempfile
 from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 import pytest
@@ -220,6 +221,32 @@ def test_s3_object_store_put_get_exists_signed_url_and_bucket_creation(tmp_path)
     assert fake_client.delete_calls == [(ref.bucket, ref.key)]
     assert (tmp_path / "cache" / ref.bucket / ref.key).exists() is False
     assert store.exists(ref) is False
+
+
+def test_s3_object_store_uses_native_oss_signed_get_url_for_aliyun_endpoint(tmp_path):
+    fake_client = FakeS3Client()
+    store = S3ObjectStore(
+        endpoint_url="https://oss-cn-shanghai.aliyuncs.com",
+        bucket="cutagent-demo",
+        access_key="oss-key",
+        secret_key="oss-secret",
+        region_name="oss-cn-shanghai",
+        addressing_style="virtual",
+        client=fake_client,
+        cache_root=tmp_path / "cache",
+    )
+    ref = store.prepare_upload("clip space.mp4", "clip-embeddings", content_key="sha")
+
+    signed = store.signed_url(ref.uri, expires_in=timedelta(minutes=7))
+    parsed = urlsplit(signed.url)
+    query = parse_qs(parsed.query)
+
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "cutagent-demo.oss-cn-shanghai.aliyuncs.com"
+    assert parsed.path == "/clip-embeddings/sha/clip%20space.mp4"
+    assert set(query) == {"OSSAccessKeyId", "Expires", "Signature"}
+    assert query["OSSAccessKeyId"] == ["oss-key"]
+    assert fake_client.presign_calls == []
 
 
 def test_s3_object_store_passes_addressing_style_and_checksum_config_to_client_factory(tmp_path):
