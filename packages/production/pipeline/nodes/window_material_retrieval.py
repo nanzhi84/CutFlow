@@ -27,7 +27,7 @@ from packages.planning.material import (
 from packages.production.pipeline._editing_agent import index_candidates
 from packages.production.pipeline._node_context import NodeContext
 
-_TOP_K = 8
+_TOP_K = 12
 
 
 def run(ctx: NodeContext) -> NodeOutput:

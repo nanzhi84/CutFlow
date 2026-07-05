@@ -11,7 +11,13 @@ emits diagnostics instead of fabricating picks.
 
 from __future__ import annotations
 
-from packages.core.contracts import ArtifactKind
+from collections import OrderedDict
+from copy import deepcopy
+import hashlib
+import json
+from typing import Any
+
+from packages.core.contracts import ArtifactKind, ErrorCode
 from packages.core.contracts.artifacts import MaterialCandidate, MaterialPackArtifact
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.planning.editing.frame_grid import frame_index
@@ -38,6 +44,9 @@ _BROLL_RECENT_SELECTION_LIMIT = 80
 _PORTRAIT_MIN_CLEAN_SPAN_SEC = 0.08
 _VISUAL_ELIGIBILITY_SCORE = 1.0
 _VISUAL_ELIGIBILITY_POLICY_VERSION = "visual_hard_eligibility_v1"
+_ELIGIBILITY_CACHE_SCHEMA_VERSION = "material_pack_eligibility_cache_v1"
+_ELIGIBILITY_CACHE_MAX_ENTRIES = 32
+_ELIGIBILITY_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
 
 def run(ctx: NodeContext) -> NodeOutput:
@@ -45,32 +54,25 @@ def run(ctx: NodeContext) -> NodeOutput:
     repo = ctx.repository
     assets = list(repo.media_assets.values())
 
-    # Visual assets are one unified ``video`` bucket (#99/#129/#133); A-roll vs
-    # B-roll is a per-clip AnnotationV4 decision, not an ``asset.kind`` split. The
-    # legacy ``portrait``/``broll`` kinds no longer exist (migration 0026/0033).
-    visual_material_kinds = {"video"}
+    # Unified visual planning: every visual asset is split per clip into A-roll
+    # (lip-sync-usable) vs B-roll (cover/backup) through one hard eligibility path.
+    visual_assets = [asset for asset in assets if _eligible_visual_asset(asset, request)]
+    broll_scoped_visual_assets = [
+        asset
+        for asset in visual_assets
+        if request.broll.case_id is None or asset.case_id == request.broll.case_id
+    ]
+    eligible_bgm_assets = [asset for asset in assets if _eligible_asset(asset, "bgm", request)]
+    eligible_font_assets = [asset for asset in assets if _eligible_asset(asset, "font", request)]
 
-    def _is_ai_reference(asset) -> bool:
-        # AI素材 (Seedance reference uploads) are case-scoped media assets tagged
-        # ai_material. They must NEVER enter the digital-human / b-roll material
-        # pools — they are reference inputs for generation, not footage to cut in.
-        return "ai_material" in (getattr(asset, "tags", None) or [])
-
-    def _eligible(asset, kind: str) -> bool:
-        return (
-            asset.usable
-            and asset.kind == kind
-            and asset.case_id in {None, request.case_id}
-            and not _is_ai_reference(asset)
-        )
-
-    def _eligible_visual(asset) -> bool:
-        return (
-            asset.usable
-            and asset.kind in visual_material_kinds
-            and asset.case_id in {None, request.case_id}
-            and not _is_ai_reference(asset)
-        )
+    stable, cache_hit, cache_key = _stable_eligibility_snapshot(
+        ctx,
+        assets=assets,
+        visual_assets=visual_assets,
+        broll_scoped_visual_assets=broll_scoped_visual_assets,
+        eligible_bgm_assets=eligible_bgm_assets,
+        eligible_font_assets=eligible_font_assets,
+    )
 
     portrait_reserved = _active_reserved_asset_ids(
         repo, case_id=request.case_id, run_id=ctx.run.id, medium="portrait"
@@ -85,14 +87,6 @@ def run(ctx: NodeContext) -> NodeOutput:
         repo, case_id=request.case_id, run_id=ctx.run.id, medium="font"
     )
 
-    # Unified visual planning: every visual asset is split per clip into A-roll
-    # (lip-sync-usable) vs B-roll (cover/backup) through one hard eligibility path.
-    visual_assets = [asset for asset in assets if _eligible_visual(asset)]
-    broll_scoped_visual_assets = [
-        asset
-        for asset in visual_assets
-        if request.broll.case_id is None or asset.case_id == request.broll.case_id
-    ]
     portrait_reservation_rejections = _reserved_asset_rejections(
         visual_assets,
         reserved_asset_ids=portrait_reserved,
@@ -103,18 +97,6 @@ def run(ctx: NodeContext) -> NodeOutput:
         reserved_asset_ids=broll_reserved,
         medium="broll",
     )
-    portrait_visual_assets = [
-        asset
-        for asset in visual_assets
-        if asset.id not in portrait_reserved
-    ]
-    broll_visual_assets = [
-        asset
-        for asset in broll_scoped_visual_assets
-        if asset.id not in broll_reserved
-    ]
-    eligible_bgm_assets = [asset for asset in assets if _eligible(asset, "bgm")]
-    eligible_font_assets = [asset for asset in assets if _eligible(asset, "font")]
     bgm_reservation_rejections = _reserved_asset_rejections(
         eligible_bgm_assets,
         reserved_asset_ids=bgm_reserved,
@@ -125,102 +107,75 @@ def run(ctx: NodeContext) -> NodeOutput:
         reserved_asset_ids=font_reserved,
         medium="font",
     )
-    bgm_assets = [asset for asset in eligible_bgm_assets if asset.id not in bgm_reserved]
-    font_assets = [
-        asset for asset in eligible_font_assets if asset.id not in font_reserved
-    ]
 
-    # --- portrait (coverage enforced later; here: lip-sync + recency metadata)
     portrait_ledger = repo.recent_selections(case_id=request.case_id, medium="portrait")
-    portrait_candidates: list[MaterialCandidate] = []
-    # Clip-level lip-sync candidates from the unified visual bucket: one candidate per
-    # usable talking-head clip, carrying its source window so TimelineWindowPlanning cuts
-    # the exact clip span. Coverage/capacity is still gated downstream.
-    portrait_annotations = {
-        asset.id: annotation
-        for asset in portrait_visual_assets
-        if (annotation := repo.annotation_v4_for_asset(asset.id)) is not None
-    }
-    portrait_annotation_rejections = _missing_annotation_rejections(
-        portrait_visual_assets,
-        annotations=portrait_annotations,
-        medium="portrait",
-    )
-    portrait_candidates, portrait_clip_rejections = _eligible_portrait_candidates(
-        ctx,
-        annotations=portrait_annotations,
+    portrait_candidates = _apply_portrait_recency(
+        _candidate_models(stable["portrait_candidates"], reserved_asset_ids=portrait_reserved),
         ledger_entries=portrait_ledger,
     )
     portrait_rejections = [
         *portrait_reservation_rejections,
-        *portrait_annotation_rejections,
-        *portrait_clip_rejections,
+        *_filter_rejections(stable["portrait_rejections"], reserved_asset_ids=portrait_reserved),
     ]
     _portrait_from_video_count = sum(
         1 for c in portrait_candidates if (c.metadata or {}).get("clip_id")
     )
-    portrait_motion_excluded = _portrait_motion_excluded_count(portrait_annotations)
 
-    # --- b-roll (hard eligibility only; retrieval/ranking happens downstream) -
     broll_ledger = repo.recent_selections(
         case_id=request.case_id,
         medium="broll",
         limit=_BROLL_RECENT_SELECTION_LIMIT,
     )
-    broll_annotations = {
-        asset.id: annotation
-        for asset in broll_visual_assets
-        if (annotation := repo.annotation_v4_for_asset(asset.id)) is not None
-    }
-    broll_annotation_rejections = _missing_annotation_rejections(
-        broll_visual_assets,
-        annotations=broll_annotations,
-        medium="broll",
-    )
-    # Person-centric clips (presenter / talking-head / 出镜人物) that are not
-    # lip-sync usable are kept OUT of the b-roll pool — they belong to neither A-roll
-    # nor clean cover. Count them so a sparse/empty b-roll plan reads as "person
-    # clips were filtered", not as an annotation error.
-    broll_person_excluded = sum(
-        1
-        for annotation in broll_annotations.values()
-        for clip in annotation.clips
-        if clip.usage.role.value != "avoid"
-        and not clip_is_lip_sync_usable(clip)
-        and clip_shows_person(clip)
-    )
-    broll_motion_excluded = _broll_motion_excluded_count(
-        broll_annotations,
-    )
-    broll_candidates, broll_clip_rejections = _eligible_broll_candidates(
-        annotations=broll_annotations,
+    broll_candidates = _apply_broll_recency(
+        _candidate_models(stable["broll_candidates"], reserved_asset_ids=broll_reserved),
         ledger_entries=broll_ledger,
     )
     broll_rejections = [
         *broll_reservation_rejections,
-        *broll_annotation_rejections,
-        *broll_clip_rejections,
+        *_filter_rejections(stable["broll_rejections"], reserved_asset_ids=broll_reserved),
     ]
 
-    # --- bgm / font (availability + recency) ---------------------------------
     bgm_ledger = repo.recent_selections(case_id=request.case_id, medium="bgm")
     font_ledger = repo.recent_selections(case_id=request.case_id, medium="font")
-    bgm_annotations = {
-        asset.id: annotation
-        for asset in bgm_assets
-        if (annotation := repo.annotation_v4_for_asset(asset.id)) is not None
+    bgm_candidates = _apply_simple_recency(
+        _candidate_models(stable["bgm_candidates"], reserved_asset_ids=bgm_reserved),
+        ledger_entries=bgm_ledger,
+        use_clip_id=True,
+    )
+    font_candidates = _apply_simple_recency(
+        _candidate_models(stable["font_candidates"], reserved_asset_ids=font_reserved),
+        ledger_entries=font_ledger,
+        use_clip_id=False,
+    )
+    bgm_rejections = [
+        *bgm_reservation_rejections,
+        *_filter_rejections(stable["bgm_rejections"], reserved_asset_ids=bgm_reserved),
+    ]
+    font_rejections = [*font_reservation_rejections]
+
+    portrait_visual_asset_ids = {
+        asset_id for asset_id in stable["visual_asset_ids"] if asset_id not in portrait_reserved
     }
-    bgm_annotation_rejections = _missing_annotation_rejections(
-        bgm_assets,
-        annotations=bgm_annotations,
-        medium="bgm",
+    broll_visual_asset_ids = {
+        asset_id for asset_id in stable["broll_visual_asset_ids"] if asset_id not in broll_reserved
+    }
+    broll_annotation_asset_ids = {
+        asset_id
+        for asset_id in stable["broll_annotation_asset_ids"]
+        if asset_id not in broll_reserved
+    }
+    broll_person_excluded = _sum_counts_excluding(
+        stable["broll_person_excluded_by_asset"],
+        reserved_asset_ids=broll_reserved,
     )
-    bgm_candidates, bgm_segment_rejections = _bgm_segment_candidates(
-        bgm_assets,
-        bgm_annotations,
-        bgm_ledger,
+    broll_motion_excluded = _sum_counts_excluding(
+        stable["broll_motion_excluded_by_asset"],
+        reserved_asset_ids=broll_reserved,
     )
-    font_candidates = _simple_candidates(font_assets, "font", font_ledger)
+    portrait_motion_excluded = _sum_counts_excluding(
+        stable["portrait_motion_excluded_by_asset"],
+        reserved_asset_ids=portrait_reserved,
+    )
 
     # §6.6 reserve: claim a TTL lease over every eligible asset that downstream
     # planners may choose so a concurrent same-case run does not silently collide.
@@ -229,9 +184,16 @@ def run(ctx: NodeContext) -> NodeOutput:
     # filtered before eligibility; the reservation ids surfaced here are the ones
     # THIS run owns, wiring the previously-stubbed ``reservations`` contract field
     # for real.
-    reservation_ids = _reserve_candidate_assets(
+    reservation_ids, owned_asset_ids_by_medium = _reserve_candidate_assets(
         ctx,
         case_id=request.case_id,
+        portrait_candidates=portrait_candidates,
+        broll_candidates=broll_candidates,
+        bgm_candidates=bgm_candidates,
+        font_candidates=font_candidates,
+    )
+    _assert_candidate_assets_reserved(
+        owned_asset_ids_by_medium,
         portrait_candidates=portrait_candidates,
         broll_candidates=broll_candidates,
         bgm_candidates=bgm_candidates,
@@ -241,10 +203,8 @@ def run(ctx: NodeContext) -> NodeOutput:
     rejected_candidates = [
         *portrait_rejections,
         *broll_rejections,
-        *bgm_reservation_rejections,
-        *bgm_annotation_rejections,
-        *bgm_segment_rejections,
-        *font_reservation_rejections,
+        *bgm_rejections,
+        *font_rejections,
     ]
     payload = MaterialPackArtifact(
         case_id=request.case_id,
@@ -256,6 +216,13 @@ def run(ctx: NodeContext) -> NodeOutput:
         diagnostics={
             "visual_eligibility_policy_version": _VISUAL_ELIGIBILITY_POLICY_VERSION,
             "visual_eligibility_mode": "hard_gate_complete_pool",
+            "materialpack_eligibility_cache": {
+                "mode": "process_memory_lru",
+                "schema_version": _ELIGIBILITY_CACHE_SCHEMA_VERSION,
+                "hit": cache_hit,
+                "key": cache_key,
+                "entries": len(_ELIGIBILITY_CACHE),
+            },
             "materialpack_ranking_disabled": {
                 "portrait": True,
                 "broll": True,
@@ -266,8 +233,8 @@ def run(ctx: NodeContext) -> NodeOutput:
             "portrait_missing": not portrait_candidates,
             "broll_missing": request.broll.enabled and not broll_candidates,
             "broll_unannotated": request.broll.enabled
-            and bool(broll_visual_assets)
-            and not broll_annotations,
+            and bool(broll_visual_asset_ids)
+            and not broll_annotation_asset_ids,
             "portrait_rejected": len(portrait_rejections),
             "broll_rejected": len(broll_rejections),
             "rejected_candidates": rejected_candidates,
@@ -285,7 +252,8 @@ def run(ctx: NodeContext) -> NodeOutput:
             # early warning; TimelineWindowPlanning still enforces the hard coverage gate
             # downstream). Key names stay stable for downstream consumers.
             "portrait_from_video": _portrait_from_video_count,
-            "video_no_lipsync": bool(portrait_visual_assets) and _portrait_from_video_count == 0,
+            "video_no_lipsync": bool(portrait_visual_asset_ids)
+            and _portrait_from_video_count == 0,
         },
         reservations=reservation_ids,
     ).model_dump(mode="json")
@@ -293,6 +261,308 @@ def run(ctx: NodeContext) -> NodeOutput:
         artifacts=[
             ctx.artifact(ArtifactKind.plan_material_pack, payload, "MaterialPackPlanArtifact.v1")
         ]
+    )
+
+
+def _is_ai_reference(asset) -> bool:
+    # AI素材 (Seedance reference uploads) are case-scoped media assets tagged
+    # ai_material. They must NEVER enter the digital-human / b-roll material
+    # pools — they are reference inputs for generation, not footage to cut in.
+    return "ai_material" in (getattr(asset, "tags", None) or [])
+
+
+def _eligible_asset(asset, kind: str, request) -> bool:
+    return (
+        asset.usable
+        and asset.kind == kind
+        and asset.case_id in {None, request.case_id}
+        and not _is_ai_reference(asset)
+    )
+
+
+def _eligible_visual_asset(asset, request) -> bool:
+    # Visual assets are one unified ``video`` bucket (#99/#129/#133); A-roll vs
+    # B-roll is a per-clip AnnotationV4 decision, not an ``asset.kind`` split. The
+    # legacy ``portrait``/``broll`` kinds no longer exist (migration 0026/0033).
+    return (
+        asset.usable
+        and asset.kind == "video"
+        and asset.case_id in {None, request.case_id}
+        and not _is_ai_reference(asset)
+    )
+
+
+def _stable_eligibility_snapshot(
+    ctx: NodeContext,
+    *,
+    assets,
+    visual_assets,
+    broll_scoped_visual_assets,
+    eligible_bgm_assets,
+    eligible_font_assets,
+) -> tuple[dict[str, Any], bool, str]:
+    cache_key = _eligibility_cache_key(
+        ctx,
+        assets=assets,
+        request=ctx.state.request,
+    )
+    cached = _ELIGIBILITY_CACHE.get(cache_key)
+    if cached is not None:
+        _ELIGIBILITY_CACHE.move_to_end(cache_key)
+        return deepcopy(cached), True, cache_key
+
+    repo = ctx.repository
+    portrait_annotations = {
+        asset.id: annotation
+        for asset in visual_assets
+        if (annotation := repo.annotation_v4_for_asset(asset.id)) is not None
+    }
+    portrait_annotation_rejections = _missing_annotation_rejections(
+        visual_assets,
+        annotations=portrait_annotations,
+        medium="portrait",
+    )
+    portrait_candidates, portrait_clip_rejections = _eligible_portrait_candidates(
+        ctx,
+        annotations=portrait_annotations,
+        ledger_entries=(),
+    )
+
+    broll_annotations = {
+        asset.id: annotation
+        for asset in broll_scoped_visual_assets
+        if (annotation := repo.annotation_v4_for_asset(asset.id)) is not None
+    }
+    broll_annotation_rejections = _missing_annotation_rejections(
+        broll_scoped_visual_assets,
+        annotations=broll_annotations,
+        medium="broll",
+    )
+    broll_candidates, broll_clip_rejections = _eligible_broll_candidates(
+        annotations=broll_annotations,
+        ledger_entries=(),
+    )
+
+    bgm_annotations = {
+        asset.id: annotation
+        for asset in eligible_bgm_assets
+        if (annotation := repo.annotation_v4_for_asset(asset.id)) is not None
+    }
+    bgm_annotation_rejections = _missing_annotation_rejections(
+        eligible_bgm_assets,
+        annotations=bgm_annotations,
+        medium="bgm",
+    )
+    bgm_candidates, bgm_segment_rejections = _bgm_segment_candidates(
+        eligible_bgm_assets,
+        bgm_annotations,
+        ledger_entries=(),
+    )
+    font_candidates = _simple_candidates(eligible_font_assets, "font", ledger_entries=())
+
+    snapshot = {
+        "portrait_candidates": _candidate_payloads(portrait_candidates),
+        "broll_candidates": _candidate_payloads(broll_candidates),
+        "bgm_candidates": _candidate_payloads(bgm_candidates),
+        "font_candidates": _candidate_payloads(font_candidates),
+        "portrait_rejections": [
+            *portrait_annotation_rejections,
+            *portrait_clip_rejections,
+        ],
+        "broll_rejections": [
+            *broll_annotation_rejections,
+            *broll_clip_rejections,
+        ],
+        "bgm_rejections": [
+            *bgm_annotation_rejections,
+            *bgm_segment_rejections,
+        ],
+        "visual_asset_ids": [asset.id for asset in visual_assets],
+        "broll_visual_asset_ids": [asset.id for asset in broll_scoped_visual_assets],
+        "broll_annotation_asset_ids": sorted(broll_annotations),
+        "broll_person_excluded_by_asset": _broll_person_excluded_counts(broll_annotations),
+        "broll_motion_excluded_by_asset": _broll_motion_excluded_counts(broll_annotations),
+        "portrait_motion_excluded_by_asset": _portrait_motion_excluded_counts(
+            portrait_annotations
+        ),
+    }
+    _ELIGIBILITY_CACHE[cache_key] = deepcopy(snapshot)
+    _ELIGIBILITY_CACHE.move_to_end(cache_key)
+    while len(_ELIGIBILITY_CACHE) > _ELIGIBILITY_CACHE_MAX_ENTRIES:
+        _ELIGIBILITY_CACHE.popitem(last=False)
+    return deepcopy(snapshot), False, cache_key
+
+
+def _eligibility_cache_key(ctx: NodeContext, *, assets, request) -> str:
+    repo = ctx.repository
+    scoped_assets = [
+        asset
+        for asset in assets
+        if (
+            _eligible_visual_asset(asset, request)
+            or _eligible_asset(asset, "bgm", request)
+            or _eligible_asset(asset, "font", request)
+        )
+    ]
+    payload = {
+        "schema_version": _ELIGIBILITY_CACHE_SCHEMA_VERSION,
+        "case_id": request.case_id,
+        "broll_case_id": request.broll.case_id,
+        "visual_eligibility_policy_version": _VISUAL_ELIGIBILITY_POLICY_VERSION,
+        "assets": [
+            _asset_cache_signature(repo, asset)
+            for asset in sorted(scoped_assets, key=lambda item: item.id)
+        ],
+    }
+    raw = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return f"mpelig_{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
+
+
+def _asset_cache_signature(repo, asset) -> dict[str, Any]:
+    annotation = repo.annotations.get(asset.id)
+    source = repo.artifacts.get(asset.source_artifact_id) if asset.source_artifact_id else None
+    media_info = getattr(source, "media_info", None)
+    source_uri = getattr(source, "uri", None)
+    return {
+        "id": asset.id,
+        "case_id": asset.case_id,
+        "kind": asset.kind,
+        "source_artifact_id": asset.source_artifact_id,
+        "source_artifact_uri": source_uri,
+        "source_resolvable": bool(source_uri),
+        "duration_sec": asset.duration_sec,
+        "source_duration_sec": getattr(media_info, "duration_sec", None),
+        "tags": sorted(getattr(asset, "tags", None) or []),
+        "usable": asset.usable,
+        "version": asset.version,
+        "schema_version": asset.schema_version,
+        "updated_at": asset.updated_at.isoformat() if asset.updated_at else None,
+        "annotation_etag": getattr(annotation, "etag", None),
+        "annotation_hash": _annotation_hash(annotation),
+    }
+
+
+def _annotation_hash(annotation) -> str | None:
+    if annotation is None:
+        return None
+    canonical = getattr(annotation, "canonical", None)
+    if hasattr(canonical, "model_dump"):
+        payload = canonical.model_dump(mode="json")
+    elif isinstance(canonical, dict):
+        payload = canonical
+    else:
+        payload = None
+    raw = json.dumps(payload, ensure_ascii=True, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _candidate_payloads(candidates: list[MaterialCandidate]) -> list[dict[str, Any]]:
+    return [candidate.model_dump(mode="json") for candidate in candidates]
+
+
+def _candidate_models(
+    candidates: list[dict[str, Any]],
+    *,
+    reserved_asset_ids: set[str],
+) -> list[MaterialCandidate]:
+    return [
+        MaterialCandidate.model_validate(candidate)
+        for candidate in candidates
+        if str(candidate.get("asset_id") or "") not in reserved_asset_ids
+    ]
+
+
+def _filter_rejections(
+    rejections: list[dict[str, Any]],
+    *,
+    reserved_asset_ids: set[str],
+) -> list[dict[str, Any]]:
+    return [
+        dict(rejection)
+        for rejection in rejections
+        if str(rejection.get("asset_id") or "") not in reserved_asset_ids
+    ]
+
+
+def _apply_portrait_recency(
+    candidates: list[MaterialCandidate],
+    *,
+    ledger_entries,
+) -> list[MaterialCandidate]:
+    recent_usage_cache: dict[str, dict] = {}
+    updated: list[MaterialCandidate] = []
+    for candidate in candidates:
+        recent_usage = recent_usage_cache.get(candidate.asset_id)
+        if recent_usage is None:
+            recent_usage = build_portrait_recency_context_from_ledger(
+                entries=ledger_entries,
+                template_id=candidate.asset_id,
+                diversity_key=None,
+            )
+            recent_usage_cache[candidate.asset_id] = recent_usage
+        metadata = dict(candidate.metadata or {})
+        metadata["recency_penalty"] = round(float(recent_usage.get("recency_penalty") or 0.0), 3)
+        metadata["recent_usage"] = recent_usage
+        updated.append(candidate.model_copy(update={"metadata": metadata}))
+    return updated
+
+
+def _apply_broll_recency(
+    candidates: list[MaterialCandidate],
+    *,
+    ledger_entries,
+) -> list[MaterialCandidate]:
+    updated: list[MaterialCandidate] = []
+    for candidate in candidates:
+        metadata = dict(candidate.metadata or {})
+        penalty = round(
+            recency_penalty_for(
+                ledger_entries,
+                asset_id=candidate.asset_id,
+                diversity_key=metadata.get("diversity_key"),
+            ),
+            3,
+        )
+        metadata["recency_penalty"] = penalty
+        metadata["recent_usage"] = {
+            "is_recently_used": penalty > 0.0,
+            "recency_penalty": penalty,
+        }
+        updated.append(candidate.model_copy(update={"metadata": metadata}))
+    return updated
+
+
+def _apply_simple_recency(
+    candidates: list[MaterialCandidate],
+    *,
+    ledger_entries,
+    use_clip_id: bool,
+) -> list[MaterialCandidate]:
+    updated: list[MaterialCandidate] = []
+    for candidate in candidates:
+        metadata = dict(candidate.metadata or {})
+        penalty = round(
+            recency_penalty_for(
+                ledger_entries,
+                asset_id=candidate.asset_id,
+                clip_id=str(metadata.get("clip_id") or "") if use_clip_id else None,
+            ),
+            3,
+        )
+        metadata["recency_penalty"] = penalty
+        metadata["recent_usage"] = {
+            "is_recently_used": penalty > 0.0,
+            "recency_penalty": penalty,
+        }
+        updated.append(candidate.model_copy(update={"metadata": metadata}))
+    return updated
+
+
+def _sum_counts_excluding(counts_by_asset: dict[str, int], *, reserved_asset_ids: set[str]) -> int:
+    return sum(
+        int(count)
+        for asset_id, count in counts_by_asset.items()
+        if asset_id not in reserved_asset_ids
     )
 
 
@@ -595,9 +865,26 @@ def _source_frames_available(source_start: float, source_end: float) -> int:
     return max(0, frame_index(source_end) - frame_index(source_start))
 
 
-def _broll_motion_excluded_count(annotations) -> int:
-    excluded = 0
+def _broll_person_excluded_counts(annotations) -> dict[str, int]:
+    excluded: dict[str, int] = {}
     for asset_id, annotation in annotations.items():
+        count = 0
+        for clip in annotation.clips:
+            if (
+                clip.usage.role.value != "avoid"
+                and not clip_is_lip_sync_usable(clip)
+                and clip_shows_person(clip)
+            ):
+                count += 1
+        if count:
+            excluded[asset_id] = count
+    return excluded
+
+
+def _broll_motion_excluded_counts(annotations) -> dict[str, int]:
+    excluded: dict[str, int] = {}
+    for asset_id, annotation in annotations.items():
+        count = 0
         bad_spans = avoid_intervals(annotation)
         if not bad_spans:
             continue
@@ -618,13 +905,20 @@ def _broll_motion_excluded_count(annotations) -> int:
             )
             original_span = (round(float(clip.start), 3), round(float(clip.end), 3))
             if not clean_spans or clean_spans != [original_span]:
-                excluded += 1
+                count += 1
+        if count:
+            excluded[asset_id] = count
     return excluded
 
 
-def _portrait_motion_excluded_count(annotations) -> int:
-    excluded = 0
-    for annotation in annotations.values():
+def _broll_motion_excluded_count(annotations) -> int:
+    return sum(_broll_motion_excluded_counts(annotations).values())
+
+
+def _portrait_motion_excluded_counts(annotations) -> dict[str, int]:
+    excluded: dict[str, int] = {}
+    for asset_id, annotation in annotations.items():
+        count = 0
         bad_spans = avoid_intervals(annotation)
         if not bad_spans:
             continue
@@ -643,8 +937,14 @@ def _portrait_motion_excluded_count(annotations) -> int:
             )
             original_span = (round(float(clip.start), 3), round(float(clip.end), 3))
             if not clean_spans or clean_spans != [original_span]:
-                excluded += 1
+                count += 1
+        if count:
+            excluded[asset_id] = count
     return excluded
+
+
+def _portrait_motion_excluded_count(annotations) -> int:
+    return sum(_portrait_motion_excluded_counts(annotations).values())
 
 
 def _clip_overlaps_bad_span(clip, bad_spans: list[tuple[float, float]]) -> bool:
@@ -661,14 +961,16 @@ def _reserve_candidate_assets(
     broll_candidates: list[MaterialCandidate],
     bgm_candidates: list[MaterialCandidate],
     font_candidates: list[MaterialCandidate],
-) -> list[str]:
+) -> tuple[list[str], dict[str, set[str]]]:
     reservation_ids: list[str] = []
+    owned_asset_ids_by_medium: dict[str, set[str]] = {}
     for medium, candidates in (
         ("portrait", portrait_candidates),
         ("broll", broll_candidates),
         ("bgm", bgm_candidates),
         ("font", font_candidates),
     ):
+        owned_asset_ids_by_medium[medium] = set()
         asset_ids = list(dict.fromkeys(c.asset_id for c in candidates if c.asset_id))
         if not asset_ids:
             continue
@@ -685,7 +987,36 @@ def _reserve_candidate_assets(
             diversity_keys=diversity_keys,
         )
         reservation_ids.extend(reservation.id for reservation in owned)
-    return reservation_ids
+        owned_asset_ids_by_medium[medium].update(reservation.asset_id for reservation in owned)
+    return reservation_ids, owned_asset_ids_by_medium
+
+
+def _assert_candidate_assets_reserved(
+    owned_asset_ids_by_medium: dict[str, set[str]],
+    *,
+    portrait_candidates: list[MaterialCandidate],
+    broll_candidates: list[MaterialCandidate],
+    bgm_candidates: list[MaterialCandidate],
+    font_candidates: list[MaterialCandidate],
+) -> None:
+    conflicts: dict[str, list[str]] = {}
+    for medium, candidates in (
+        ("portrait", portrait_candidates),
+        ("broll", broll_candidates),
+        ("bgm", bgm_candidates),
+        ("font", font_candidates),
+    ):
+        requested = set(c.asset_id for c in candidates if c.asset_id)
+        missing = sorted(requested - owned_asset_ids_by_medium.get(medium, set()))
+        if missing:
+            conflicts[medium] = missing
+    if conflicts:
+        raise NodeExecutionError(
+            ErrorCode.validation_conflict,
+            "Material candidate reservation was claimed by a concurrent run.",
+            retryable=True,
+            details={"conflicts": conflicts},
+        )
 
 
 def _simple_candidates(assets, medium_label, ledger_entries) -> list[MaterialCandidate]:
