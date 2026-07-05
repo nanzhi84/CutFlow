@@ -225,6 +225,24 @@ def _legal_portrait_window_ids(slot: dict, candidates: IndexedCandidates) -> lis
     ]
 
 
+def _topk_for_slot(slot: dict, retrieval_topk_by_window: dict[str, list[str]] | None) -> list[str]:
+    if not retrieval_topk_by_window:
+        return []
+    return [
+        _as_str(candidate_id)
+        for candidate_id in retrieval_topk_by_window.get(_as_str(slot.get("slot_id")), [])
+        if _as_str(candidate_id)
+    ]
+
+
+def _slot_has_retrieval_constraint(
+    slot: dict, retrieval_topk_by_window: dict[str, list[str]] | None
+) -> bool:
+    if retrieval_topk_by_window is None:
+        return False
+    return _as_str(slot.get("slot_id")) in retrieval_topk_by_window
+
+
 def _portrait_asset_key(candidate: dict) -> str:
     return _as_str(candidate.get("asset_id"))
 
@@ -236,6 +254,7 @@ def build_agent_input(
     candidates: IndexedCandidates,
     narration_units: list[dict],
     duration: float,
+    retrieval_topk_by_window: dict[str, list[str]] | None = None,
 ) -> dict:
     """Assemble the numbered, frame-free structure handed to the LLM.
 
@@ -250,27 +269,35 @@ def build_agent_input(
         if not isinstance(slot, dict):
             continue
         need = _slot_required_frames(slot)
-        portrait_slots.append(
-            {
-                **slot,
-                "required_frames": need,
-                "required_seconds": round(to_seconds(need), 3),
-                "legal_window_ids": _legal_portrait_window_ids(slot, candidates),
-            }
-        )
+        payload = {
+            **slot,
+            "required_frames": need,
+            "required_seconds": round(to_seconds(need), 3),
+            "legal_window_ids": _legal_portrait_window_ids(slot, candidates),
+        }
+        if _slot_has_retrieval_constraint(slot, retrieval_topk_by_window):
+            payload["retrieval_topk_candidate_ids"] = _topk_for_slot(
+                slot,
+                retrieval_topk_by_window,
+            )
+        portrait_slots.append(payload)
 
     broll_slots = []
     for slot in (boundary.get("broll_slots") or []):
         if not isinstance(slot, dict):
             continue
         need = _slot_required_frames(slot)
-        broll_slots.append(
-            {
-                **slot,
-                "required_frames": need,
-                "required_seconds": round(to_seconds(need), 3),
-            }
-        )
+        payload = {
+            **slot,
+            "required_frames": need,
+            "required_seconds": round(to_seconds(need), 3),
+        }
+        if _slot_has_retrieval_constraint(slot, retrieval_topk_by_window):
+            payload["retrieval_topk_candidate_ids"] = _topk_for_slot(
+                slot,
+                retrieval_topk_by_window,
+            )
+        broll_slots.append(payload)
 
     return {
         "script": request.script,
@@ -345,6 +372,7 @@ def validate_selection(
     boundary: dict,
     candidates: IndexedCandidates,
     bgm_enabled: bool,
+    retrieval_topk_by_window: dict[str, list[str]] | None = None,
 ) -> list[str]:
     """Local hard constraints on the LLM's ID-only selection.
 
@@ -380,6 +408,16 @@ def validate_selection(
         if cand is None:
             errors.append(f"portrait window_id '{choice.window_id}' is not a known candidate")
             continue
+        retrieval_topk = set(_topk_for_slot(portrait_slots[choice.slot_id], retrieval_topk_by_window))
+        if (
+            _slot_has_retrieval_constraint(portrait_slots[choice.slot_id], retrieval_topk_by_window)
+            and choice.window_id not in retrieval_topk
+        ):
+            legal_hint = ", ".join(sorted(retrieval_topk)[:20]) if retrieval_topk else "none"
+            errors.append(
+                f"portrait window_id '{choice.window_id}' is not in retrieval_topk_candidate_ids "
+                f"for slot '{choice.slot_id}'; choose one of: {legal_hint}"
+            )
         slot = portrait_slots[choice.slot_id]
         need = _slot_required_frames(slot)
         available = _source_frames_available(cand)
@@ -424,6 +462,16 @@ def validate_selection(
         if cand is None:
             errors.append(f"broll candidate_id '{choice.candidate_id}' is not a known candidate")
             continue
+        retrieval_topk = set(_topk_for_slot(broll_slots[choice.slot_id], retrieval_topk_by_window))
+        if (
+            _slot_has_retrieval_constraint(broll_slots[choice.slot_id], retrieval_topk_by_window)
+            and choice.candidate_id not in retrieval_topk
+        ):
+            legal_hint = ", ".join(sorted(retrieval_topk)[:20]) if retrieval_topk else "none"
+            errors.append(
+                f"broll candidate_id '{choice.candidate_id}' is not in retrieval_topk_candidate_ids "
+                f"for slot '{choice.slot_id}'; choose one of: {legal_hint}"
+            )
         if choice.candidate_id in seen_broll_candidates:
             errors.append(f"broll candidate_id '{choice.candidate_id}' is assigned more than once")
             continue
@@ -486,6 +534,7 @@ def deterministic_selection(
     candidates: IndexedCandidates,
     bgm_enabled: bool,
     max_inserts: int,
+    retrieval_topk_by_window: dict[str, list[str]] | None = None,
 ) -> EditingSelection:
     """Score-ranked default selection equivalent to the deterministic nodes.
 
@@ -504,10 +553,15 @@ def deterministic_selection(
     used_assets: set[str] = set()
     for slot in portrait_slots:
         need = _slot_required_frames(slot)
+        if _slot_has_retrieval_constraint(slot, retrieval_topk_by_window):
+            portrait_pool = _topk_for_slot(slot, retrieval_topk_by_window)
+        else:
+            portrait_pool = ranked_portrait
         window_id = next(
             (
                 cid
-                for cid in ranked_portrait
+                for cid in portrait_pool
+                if cid in candidates.portrait_by_id
                 if _source_frames_available(candidates.portrait_by_id[cid]) >= need
                 and _portrait_asset_key(candidates.portrait_by_id[cid]) not in used_assets
             ),
@@ -535,10 +589,15 @@ def deterministic_selection(
             if len(broll) >= max(0, max_inserts):
                 break
             need = _slot_required_frames(slot)
+            if _slot_has_retrieval_constraint(slot, retrieval_topk_by_window):
+                broll_pool = _topk_for_slot(slot, retrieval_topk_by_window)
+            else:
+                broll_pool = ranked_broll
             candidate_id = next(
                 (
                     cid
-                    for cid in ranked_broll
+                    for cid in broll_pool
+                    if cid in candidates.broll_by_id
                     if cid not in used_broll_candidates
                     and _broll_source_frames_available(candidates.broll_by_id[cid]) >= need
                     and _as_str(candidates.broll_by_id[cid].get("asset_id"))
@@ -587,6 +646,7 @@ def select_with_repair(
     candidates: IndexedCandidates,
     bgm_enabled: bool,
     max_repair_attempts: int,
+    retrieval_topk_by_window: dict[str, list[str]] | None = None,
 ) -> tuple[EditingSelection, list[dict], list[str]]:
     """Drive one LLM selection + up to ``max_repair_attempts`` local repairs.
 
@@ -609,6 +669,7 @@ def select_with_repair(
             boundary=boundary,
             candidates=candidates,
             bgm_enabled=bgm_enabled,
+            retrieval_topk_by_window=retrieval_topk_by_window,
         )
         trace.append({"attempt": attempt, "error_count": len(errors), "errors": errors})
         if not errors:

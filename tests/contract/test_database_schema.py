@@ -20,6 +20,7 @@ REQUIRED_TABLES = {
     "artifacts",
     "media_assets",
     "annotations",
+    "clip_embedding_index",
     "voice_profiles",
     "provider_profiles",
     "provider_capabilities",
@@ -231,6 +232,19 @@ def test_selection_reservation_active_slot_unique_index_exists():
     )
     assert "reserved" in where_sql
     assert "committed" not in where_sql
+
+
+def test_clip_embedding_index_keys_and_lookup_indexes_exist():
+    clip_index = Base.metadata.tables["clip_embedding_index"]
+    indexes = {idx.name: [col.name for col in idx.columns] for idx in clip_index.indexes}
+    assert set(clip_index.primary_key.columns.keys()) == {"clip_embedding_key"}
+    assert indexes["idx_clip_embedding_asset"] == ["asset_id", "index_namespace"]
+    assert indexes["idx_clip_embedding_model_version"] == [
+        "index_namespace",
+        "embedding_model",
+        "embedding_dimension",
+        "index_version",
+    ]
 
 
 def test_case_rubric_indexes_and_uniques_exist():

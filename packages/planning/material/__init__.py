@@ -40,6 +40,21 @@ from packages.planning.material.portrait_source import (
     longest_clean_portrait_source_span,
 )
 from packages.planning.material.shortlist import shortlist_for_windows
+from packages.planning.material.clip_embedding import (
+    CLIP_EMBEDDING_DIMENSION,
+    CLIP_EMBEDDING_MODEL,
+    CLIP_EMBEDDING_NORMALIZATION,
+    CLIP_INDEX_VERSION,
+    CLIP_SAMPLE_POLICY,
+    asset_revision_token,
+    build_clip_embedding_record,
+    candidate_clip_embedding_key,
+    clip_embedding_key,
+    cosine_similarity,
+    deterministic_dense_embedding,
+    normalize_vector,
+    sample_policy_hash,
+)
 
 __all__ = [
     "avoid_intervals",
@@ -65,4 +80,17 @@ __all__ = [
     "clean_portrait_source_windows",
     "longest_clean_portrait_source_span",
     "shortlist_for_windows",
+    "CLIP_EMBEDDING_DIMENSION",
+    "CLIP_EMBEDDING_MODEL",
+    "CLIP_EMBEDDING_NORMALIZATION",
+    "CLIP_INDEX_VERSION",
+    "CLIP_SAMPLE_POLICY",
+    "asset_revision_token",
+    "build_clip_embedding_record",
+    "candidate_clip_embedding_key",
+    "clip_embedding_key",
+    "cosine_similarity",
+    "deterministic_dense_embedding",
+    "normalize_vector",
+    "sample_policy_hash",
 ]

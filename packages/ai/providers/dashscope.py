@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from typing import Any
 
@@ -10,6 +11,7 @@ from packages.ai.gateway.provider_gateway import (
     ProviderCall,
     ProviderResult,
     ProviderRuntimeError,
+    parse_multimodal_embedding_dimension,
 )
 from packages.ai.gateway.provider_context import ProviderInvocationContext
 from packages.ai.providers.common import (
@@ -163,6 +165,81 @@ class DashScopeLLMProvider:
         )
 
 
+class DashScopeMultimodalEmbeddingProvider:
+    provider_id = "dashscope.multimodal_embedding"
+
+    def __init__(self, client: httpx.Client) -> None:
+        self.client = client
+
+    def invoke_with_context(
+        self, call: ProviderCall, context: ProviderInvocationContext
+    ) -> ProviderResult:
+        if call.capability_id != "multimodal.embedding":
+            raise ProviderRuntimeError(
+                ErrorCode.provider_unsupported_option,
+                "DashScope embedding requires multimodal.embedding.",
+            )
+        api_key = require_secret(context)
+        text = str(call.input.get("text") or call.input.get("retrieval_intent") or "")
+        if not text:
+            raise ProviderRuntimeError(
+                ErrorCode.provider_unsupported_option,
+                "retrieval_intent text is required.",
+            )
+        dimension = parse_multimodal_embedding_dimension(
+            call.input.get("dimension"),
+            context.profile.default_options.get("dimension"),
+        )
+        payload = {
+            "model": context.profile.model_id,
+            "input": text,
+            "dimensions": dimension,
+        }
+        response = request(
+            self.client,
+            "POST",
+            _embedding_url(context.profile.default_options),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json_body=payload,
+            timeout=float(context.profile.timeout_sec),
+        )
+        result = response_json(response)
+        embedding = _embedding_from_response(result)
+        if not embedding:
+            raise ProviderRuntimeError(
+                ErrorCode.provider_remote_failed,
+                "DashScope embedding response missing embedding vector.",
+            )
+        if len(embedding) != dimension:
+            raise ProviderRuntimeError(
+                ErrorCode.provider_remote_failed,
+                (
+                    "DashScope embedding response dimension mismatch: "
+                    f"expected {dimension}, got {len(embedding)}."
+                ),
+            )
+        return ProviderResult(
+            output={
+                "embedding": embedding,
+                "embedding_id": str(first_value(result, "id", "request_id") or ""),
+                "model": context.profile.model_id,
+                "dimension": dimension,
+                "normalization": str(
+                    call.input.get("normalization")
+                    or context.profile.default_options.get("normalization")
+                    or "l2"
+                ),
+                "index_version": str(
+                    call.input.get("index_version")
+                    or context.profile.default_options.get("index_version")
+                    or "clip-vl-qwen3-v1"
+                ),
+            },
+            input_tokens=len(text),
+            raw_usage={"provider_response": result},
+        )
+
+
 class DashScopeOmniProvider:
     provider_id = "dashscope.omni"
 
@@ -292,6 +369,48 @@ def _chat_url(options: dict[str, Any]) -> str:
     if base_url.endswith("/chat/completions"):
         return base_url
     return f"{base_url}/chat/completions"
+
+
+def _embedding_url(options: dict[str, Any]) -> str:
+    explicit_url = options.get("embedding_url")
+    if explicit_url:
+        return str(explicit_url)
+    base_url = str(options.get("base_url") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
+    if base_url.endswith("/embeddings"):
+        return base_url
+    return f"{base_url}/embeddings"
+
+
+def _embedding_from_response(result: dict[str, Any]) -> list[float]:
+    output = result.get("output")
+    if isinstance(output, dict):
+        value = output.get("embedding") or output.get("embeddings")
+        parsed = _coerce_embedding(value)
+        if parsed:
+            return parsed
+    data = result.get("data")
+    if isinstance(data, list) and data:
+        item = data[0]
+        if isinstance(item, dict):
+            parsed = _coerce_embedding(item.get("embedding"))
+            if parsed:
+                return parsed
+    return _coerce_embedding(result.get("embedding"))
+
+
+def _coerce_embedding(value: Any) -> list[float]:
+    if not isinstance(value, list):
+        return []
+    vector: list[float] = []
+    for item in value:
+        try:
+            component = float(item)
+        except (TypeError, ValueError):
+            return []
+        if not math.isfinite(component):
+            return []
+        vector.append(component)
+    return vector
 
 
 def _chat_parameters(call: ProviderCall, context: ProviderInvocationContext) -> dict[str, Any]:

@@ -335,6 +335,35 @@ class AnnotationRow(TimestampMixin, Base):
     editable_paths: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
 
 
+class ClipEmbeddingIndexRow(TimestampMixin, Base):
+    __tablename__ = "clip_embedding_index"
+
+    clip_embedding_key: Mapped[str] = mapped_column(String, primary_key=True)
+    asset_id: Mapped[str] = mapped_column(
+        ForeignKey("media_assets.id", ondelete="CASCADE"), nullable=False
+    )
+    asset_revision: Mapped[str] = mapped_column(String, nullable=False)
+    clip_id: Mapped[str] = mapped_column(String, nullable=False)
+    source_start: Mapped[float] = mapped_column(Float, nullable=False)
+    source_end: Mapped[float] = mapped_column(Float, nullable=False)
+    source_frames_available: Mapped[int] = mapped_column(Integer, nullable=False)
+    index_namespace: Mapped[str] = mapped_column(String, nullable=False)
+    embedding_scope: Mapped[str] = mapped_column(String, nullable=False, server_default="clip")
+    embedding_input_type: Mapped[str] = mapped_column(
+        String, nullable=False, server_default="video_clip"
+    )
+    embedding_input_ref: Mapped[str] = mapped_column(String, nullable=False)
+    sample_policy: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    embedding_id: Mapped[str] = mapped_column(String, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(JSONB, nullable=False)
+    provider_profile_id: Mapped[str] = mapped_column(String, nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String, nullable=False)
+    embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    normalization: Mapped[str] = mapped_column(String, nullable=False)
+    instruct: Mapped[str] = mapped_column(String, nullable=False)
+    index_version: Mapped[str] = mapped_column(String, nullable=False)
+
+
 class VoiceProfileRow(TimestampMixin, Base):
     __tablename__ = "voice_profiles"
 
@@ -1090,6 +1119,14 @@ Index(
     SelectionReservationRow.status,
 )
 Index("idx_selection_reservations_ttl", SelectionReservationRow.status, SelectionReservationRow.expires_at)
+Index("idx_clip_embedding_asset", ClipEmbeddingIndexRow.asset_id, ClipEmbeddingIndexRow.index_namespace)
+Index(
+    "idx_clip_embedding_model_version",
+    ClipEmbeddingIndexRow.index_namespace,
+    ClipEmbeddingIndexRow.embedding_model,
+    ClipEmbeddingIndexRow.embedding_dimension,
+    ClipEmbeddingIndexRow.index_version,
+)
 Index(
     "uq_selection_reservations_active_slot",
     SelectionReservationRow.case_id,

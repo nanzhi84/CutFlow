@@ -25,10 +25,12 @@ def test_provider_capability_schema_is_registered():
     assert ("sandbox", "tts.speech") in capabilities
     assert ("sandbox", "lipsync.video") in capabilities
     assert ("sandbox", "llm.chat") in capabilities
+    assert ("sandbox", "multimodal.embedding") in capabilities
     assert ("minimax.tts", "tts.speech") in capabilities
     assert ("dashscope.asr", "asr.transcribe") in capabilities
     assert ("dashscope.vlm", "vlm.annotation") in capabilities
     assert ("dashscope.llm", "llm.chat") in capabilities
+    assert ("dashscope.multimodal_embedding", "multimodal.embedding") in capabilities
     assert ("runninghub.heygem", "lipsync.video") in capabilities
 
 

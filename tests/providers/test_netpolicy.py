@@ -47,10 +47,13 @@ def test_assert_options_hosts_allowed_checks_every_url_key():
     netpolicy.assert_options_hosts_allowed(
         {
             "base_url": "https://dashscope.aliyuncs.com/api/v1",
+            "embedding_url": "https://dashscope.aliyuncs.com/api/v1/services/embeddings/multimodal-embedding",
             "transcription_url": "https://dashscope.aliyuncs.com/services/audio/asr",
             "chat_completions_url": "https://api.openai.com/v1/chat/completions",
         }
     )
+    with pytest.raises(ValueError):
+        netpolicy.assert_options_hosts_allowed({"embedding_url": "https://evil.example.com/embed"})
     with pytest.raises(ValueError):
         netpolicy.assert_options_hosts_allowed({"transcription_url": "https://evil.example.com"})
 

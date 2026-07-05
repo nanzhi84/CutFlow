@@ -1,10 +1,11 @@
 """Resume re-runs the frame-grid planning nodes — never reuses a stale plan.
 
 The window-authority refactor deliberately does NOT version every artifact schema or bump
-all node versions. That is only safe because TimelineWindowPlanning / BrollPlanning /
+all node versions. That is only safe because TimelineWindowPlanning /
+WindowQueryPlanning / WindowMaterialRetrieval / DeterministicEditingPlanning /
 TimelinePlanning all carry ``reuse_policy="never"``: on resume their old artifacts are
-discarded and the nodes re-run, so a run cannot resume onto a pre-window-contract B-roll
-plan. This test pins that invariant.
+discarded and the nodes re-run, so a run cannot resume onto a pre-window-contract
+B-roll plan. This test pins that invariant.
 """
 
 from __future__ import annotations
@@ -17,7 +18,9 @@ def test_frame_grid_planning_nodes_never_reuse_on_resume():
     by_id = {node.node_id: node for node in template.nodes}
     for node_id in (
         "TimelineWindowPlanning",
-        "BrollPlanning",
+        "WindowQueryPlanning",
+        "WindowMaterialRetrieval",
+        "DeterministicEditingPlanning",
         "TimelinePlanning",
     ):
         assert node_id in by_id, f"{node_id} missing from digital_human_v2 template"

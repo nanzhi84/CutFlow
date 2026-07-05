@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
+import hashlib
+import math
 from time import perf_counter
 from typing import Protocol
 from uuid import uuid4
@@ -112,6 +114,39 @@ class ProviderRuntimeError(Exception):
         self.message = message
 
 
+SUPPORTED_MULTIMODAL_EMBEDDING_DIMENSIONS = {1024}
+
+
+def parse_multimodal_embedding_dimension(*values: object, default: int = 1024) -> int:
+    dimension_value: object = default
+    for value in values:
+        if value is None or value == "":
+            continue
+        dimension_value = value
+        break
+    if isinstance(dimension_value, bool):
+        dimension: int | None = None
+    elif isinstance(dimension_value, int):
+        dimension = dimension_value
+    elif isinstance(dimension_value, str):
+        stripped = dimension_value.strip()
+        dimension = int(stripped) if stripped.isdecimal() else None
+    else:
+        dimension = None
+    if dimension is None:
+        raise ProviderRuntimeError(
+            ErrorCode.provider_unsupported_option,
+            "multimodal.embedding dimension must be a supported integer value.",
+        )
+    if dimension not in SUPPORTED_MULTIMODAL_EMBEDDING_DIMENSIONS:
+        supported = ", ".join(str(value) for value in sorted(SUPPORTED_MULTIMODAL_EMBEDDING_DIMENSIONS))
+        raise ProviderRuntimeError(
+            ErrorCode.provider_unsupported_option,
+            f"multimodal.embedding dimension must be one of: {supported}.",
+        )
+    return dimension
+
+
 class SandboxProvider:
     provider_id = "sandbox"
 
@@ -163,7 +198,41 @@ class SandboxProvider:
                 },
                 video_seconds=float(call.input.get("duration_sec", 15) or 15),
             )
+        if call.capability_id == "multimodal.embedding":
+            text = str(call.input.get("text") or call.input.get("retrieval_intent") or "")
+            dimension = parse_multimodal_embedding_dimension(call.input.get("dimension"))
+            embedding = _deterministic_embedding(
+                f"{call.provider_profile_id}:{call.capability_id}:{text}", dimension=dimension
+            )
+            return ProviderResult(
+                output={
+                    "embedding": embedding,
+                    "embedding_id": f"sandbox-emb-{uuid4().hex[:12]}",
+                    "model": str(call.input.get("model") or "qwen3-vl-embedding"),
+                    "dimension": dimension,
+                    "normalization": str(call.input.get("normalization") or "l2"),
+                    "index_version": str(call.input.get("index_version") or "clip-vl-qwen3-v1"),
+                },
+                input_tokens=len(text),
+            )
         return ProviderResult(output={"ok": True, "capability": call.capability_id})
+
+
+def _deterministic_embedding(seed: str, *, dimension: int) -> list[float]:
+    values: list[float] = []
+    counter = 0
+    while len(values) < dimension:
+        digest = hashlib.sha256(f"{seed}:{counter}".encode("utf-8")).digest()
+        for index in range(0, len(digest), 2):
+            if len(values) >= dimension:
+                break
+            raw = int.from_bytes(digest[index : index + 2], "big")
+            values.append((raw / 65535.0) * 2.0 - 1.0)
+        counter += 1
+    norm = math.sqrt(sum(value * value for value in values))
+    if norm <= 0:
+        return [1.0, *([0.0] * (dimension - 1))]
+    return [value / norm for value in values]
 
 
 @dataclass

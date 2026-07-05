@@ -159,6 +159,8 @@ class ArtifactKind(str, Enum):
     plan_material_pack = "plan.material_pack"
     plan_narration_boundary = "plan.narration_boundary"
     plan_timeline_windows = "plan.timeline_windows"
+    plan_window_queries = "plan.window_queries"
+    plan_window_material_retrieval = "plan.window_material_retrieval"
     plan_media_assignment = "plan.media_assignment"
     plan_portrait = "plan.portrait"
     plan_broll = "plan.broll"
