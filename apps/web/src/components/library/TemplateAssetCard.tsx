@@ -1,4 +1,4 @@
-import { Clock, Download, Eye, Loader2, Maximize2, Play, RefreshCw, Upload } from "lucide-react";
+import { Clock, Download, Eye, Loader2, Maximize2, Play, RefreshCw, Trash2 } from "lucide-react";
 import type { MaterialUsageRankingItem, MediaAssetCard } from "../../api/client";
 import { formatDuration, formatRelativeTime, shortId } from "../../lib/format";
 import { annotationStatusLabels, annotationTone, readAssetDurationSec } from "./libraryModel";
@@ -10,7 +10,7 @@ type TemplateAssetCardProps = {
   batchMode: boolean;
   selected: boolean;
   isAnalyzing: boolean;
-  isReplacing: boolean;
+  isDownloading: boolean;
   isPreviewLoading: boolean;
   usage?: MaterialUsageRankingItem;
   domId?: string;
@@ -18,8 +18,9 @@ type TemplateAssetCardProps = {
   onToggleSelected: () => void;
   onPreview: () => void;
   onAnalyze: () => void;
-  onReplaceSource: () => void;
   onOpenAnnotation: () => void;
+  onDownload: () => void;
+  onDelete: () => void;
 };
 
 export function TemplateAssetCard({
@@ -28,7 +29,7 @@ export function TemplateAssetCard({
   batchMode,
   selected,
   isAnalyzing,
-  isReplacing,
+  isDownloading,
   isPreviewLoading,
   usage,
   domId,
@@ -36,8 +37,9 @@ export function TemplateAssetCard({
   onToggleSelected,
   onPreview,
   onAnalyze,
-  onReplaceSource,
   onOpenAnnotation,
+  onDownload,
+  onDelete,
 }: TemplateAssetCardProps) {
   const asset = card.asset;
   const thumbnailUrl = readCardThumbnailUrl(card);
@@ -128,26 +130,32 @@ export function TemplateAssetCard({
           type="button"
           onClick={onAnalyze}
           disabled={isAnalyzing}
-          title={isAnalyzing ? "分析中…" : "重新分析"}
-          aria-label={isAnalyzing ? "分析中" : "重新分析"}
+          title={isAnalyzing ? "处理中…" : "重新标注并重建嵌入"}
+          aria-label={isAnalyzing ? "处理中" : "重新标注并重建嵌入"}
         >
           {isAnalyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
         </button>
         <button className="icon-button w-full" type="button" onClick={onOpenAnnotation} title="查看标注" aria-label="查看标注">
           <Eye className="h-4 w-4" />
         </button>
-        <a className={`icon-button w-full ${previewUrl ? "" : "pointer-events-none opacity-50"}`} href={previewUrl ?? undefined} download title="下载" aria-label="下载">
-          <Download className="h-4 w-4" />
-        </a>
         <button
           className="icon-button w-full"
           type="button"
-          onClick={onReplaceSource}
-          disabled={isReplacing}
-          title={isReplacing ? "替换中…" : "替换原视频"}
-          aria-label={isReplacing ? "替换中" : "替换原视频"}
+          onClick={onDownload}
+          disabled={isDownloading}
+          title={isDownloading ? "准备下载…" : previewUrl ? "下载原视频" : "获取下载地址并下载"}
+          aria-label={isDownloading ? "准备下载" : "下载原视频"}
         >
-          {isReplacing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+          {isDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+        </button>
+        <button
+          className="icon-button w-full text-status-error hover:border-status-error/40 hover:bg-status-error/10"
+          type="button"
+          onClick={onDelete}
+          title="删除素材"
+          aria-label="删除素材"
+        >
+          <Trash2 className="h-4 w-4" />
         </button>
       </div>
     </article>

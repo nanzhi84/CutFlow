@@ -1,5 +1,17 @@
-import { ArrowLeft, ArrowRight, CheckCircle2, FolderUp, Loader2, Video, Wand2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Activity,
+  AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
+  CheckCircle2,
+  Database,
+  Fingerprint,
+  FolderUp,
+  Loader2,
+  Video,
+  Wand2,
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type MediaAssetRecord } from "../../api/client";
 import { AnnotationEditorModal } from "../../components/annotation/AnnotationEditorModal";
@@ -22,15 +34,40 @@ import { useToast } from "../../components/ui/Toast";
 import { InfiniteScrollSentinel } from "../../components/ui/InfiniteScrollSentinel";
 import { EmptyState, ErrorState, LoadingState } from "../../components/ui/State";
 import { usePageVisible } from "../../hooks/usePageVisible";
-import { useUpload } from "../../hooks/useUpload";
 import { formatRelativeTime, shortId } from "../../lib/format";
+
+const EMBEDDING_BATCH_LIMIT = 500;
+
+type ClipEmbeddingStatusVm = Awaited<ReturnType<typeof api.mediaAssets.clipEmbeddingStatus>>;
+type ClipEmbeddingJobVm = Awaited<ReturnType<typeof api.mediaAssets.clipEmbeddingJobStatus>>;
+type AnnotationStatusVm = Awaited<ReturnType<typeof api.mediaAssets.annotationStatus>>;
+
+function isClipEmbeddingJobActive(status: string | undefined): boolean {
+  return status === "queued" || status === "running";
+}
+
+function clampPercent(done: number, total: number) {
+  if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+}
+
+function safeDownloadFilename(title: string | undefined, fallback: string) {
+  const base = (title?.trim() || fallback).replace(/[\\/:*?"<>|]+/g, "_").slice(0, 120) || fallback;
+  return /\.[a-z0-9]{2,5}$/i.test(base) ? base : `${base}.mp4`;
+}
+
+function clipEmbeddingJobLabel(status: string | undefined) {
+  if (status === "queued") return "排队中";
+  if (status === "running") return "运行中";
+  if (status === "succeeded") return "已完成";
+  if (status === "failed") return "有失败";
+  return "待启动";
+}
 
 export function TemplatesTab() {
   const toast = useToast();
   const pageVisible = usePageVisible();
   const queryClient = useQueryClient();
-  const replaceUpload = useUpload();
-  const replaceInputRef = useRef<HTMLInputElement>(null);
   const [caseSearch, setCaseSearch] = useState("");
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [assetLimit, setAssetLimit] = useState(50);
@@ -43,18 +80,21 @@ export function TemplatesTab() {
   // both the batch bar (selected ids) and the header 智能标注 (auto-collected
   // unannotated ids).
   const [annotateTargetIds, setAnnotateTargetIds] = useState<string[] | null>(null);
-  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [embeddingConfirmOpen, setEmbeddingConfirmOpen] = useState(false);
+  const [embeddingJobId, setEmbeddingJobId] = useState<string | null>(null);
+  const [lastEmbeddingJob, setLastEmbeddingJob] = useState<ClipEmbeddingJobVm | null>(null);
+  const [deleteTargetIds, setDeleteTargetIds] = useState<string[] | null>(null);
   // Asset highlighted (ring) after a usage-ranking click jumped to it.
   const [highlightAssetId, setHighlightAssetId] = useState<string | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [annotationAssetId, setAnnotationAssetId] = useState<string | null>(null);
-  const [replaceTargetAssetId, setReplaceTargetAssetId] = useState<string | null>(null);
   const [placeholders, setPlaceholders] = useState<UploadPlaceholder[]>([]);
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
   // Per-asset playability flag from the preview-url response (true/false; absent => unknown).
   const [previewPlayable, setPreviewPlayable] = useState<Record<string, boolean>>({});
   const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
   const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null);
+  const [downloadingAssetId, setDownloadingAssetId] = useState<string | null>(null);
   const [analyzingAssetIds, setAnalyzingAssetIds] = useState<Set<string>>(() => new Set());
   const [batchAnnotationPending, setBatchAnnotationPending] = useState(false);
 
@@ -94,6 +134,27 @@ export function TemplatesTab() {
     queryFn: () => api.mediaAssets.usageRanking("broll", { case_id: selectedCaseId, top_n: 20 }),
     enabled: Boolean(selectedCaseId),
     refetchInterval: pageVisible ? 10_000 : false,
+  });
+
+  const annotationStatusQuery = useQuery({
+    queryKey: ["library", "annotation-status", selectedCaseId, "video"],
+    queryFn: () => api.mediaAssets.annotationStatus({ case_id: selectedCaseId!, kind: "video" }),
+    enabled: Boolean(selectedCaseId),
+    refetchInterval: pageVisible ? (batchAnnotationPending || analyzingAssetIds.size > 0 ? 1_500 : 10_000) : false,
+  });
+
+  const embeddingStatusQuery = useQuery({
+    queryKey: ["library", "clip-embeddings", selectedCaseId, "all"],
+    queryFn: () => api.mediaAssets.clipEmbeddingStatus({ case_id: selectedCaseId!, namespace: "all" }),
+    enabled: Boolean(selectedCaseId),
+    refetchInterval: pageVisible ? (embeddingJobId ? 1_500 : 10_000) : false,
+  });
+
+  const embeddingJobQuery = useQuery({
+    queryKey: ["library", "clip-embedding-job", embeddingJobId],
+    queryFn: () => api.mediaAssets.clipEmbeddingJobStatus(embeddingJobId!),
+    enabled: Boolean(embeddingJobId),
+    refetchInterval: pageVisible && embeddingJobId ? 1_500 : false,
   });
 
   const activeItems = useMemo(() => {
@@ -187,24 +248,78 @@ export function TemplatesTab() {
       ).length,
     [activeItems, annotateTargetIds, analyzingAssetIds],
   );
+  const embeddingPendingCount = embeddingStatusQuery.data?.pending_count ?? 0;
+  const embeddingCandidateCount = embeddingStatusQuery.data?.candidate_count ?? 0;
+  const embeddingBatchSize = Math.max(1, Math.min(embeddingPendingCount || EMBEDDING_BATCH_LIMIT, EMBEDDING_BATCH_LIMIT));
+  const embeddingJobStatus = embeddingJobQuery.data?.status;
+  const embeddingJobActive = Boolean(isClipEmbeddingJobActive(embeddingJobStatus) || (embeddingJobId && !embeddingJobQuery.data));
+
+  const embeddingMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedCaseId) throw new Error("请选择案例");
+      return api.mediaAssets.indexClipEmbeddings({
+        schema_version: "clip_embedding_index_request.v1",
+        case_id: selectedCaseId,
+        namespace: "all",
+        provider_profile_id: "dashscope.multimodal_embedding.prod",
+        limit: embeddingBatchSize,
+        force: false,
+      });
+    },
+    onSuccess: async (response) => {
+      setEmbeddingConfirmOpen(false);
+      setLastEmbeddingJob(null);
+      setEmbeddingJobId(response.job_id);
+      await queryClient.invalidateQueries({ queryKey: ["library", "clip-embeddings", selectedCaseId] });
+      toast.success("视频嵌入任务已开始", `任务 ${shortId(response.job_id)} · 本次排队 ${response.queued_count} 条`);
+    },
+    onError: (error) => {
+      setEmbeddingConfirmOpen(false);
+      toast.error("生成视频嵌入失败", error);
+    },
+  });
+
+  useEffect(() => {
+    const job = embeddingJobQuery.data;
+    if (!job || !embeddingJobId || !["succeeded", "failed"].includes(job.status)) return;
+    setLastEmbeddingJob(job);
+    void queryClient.invalidateQueries({ queryKey: ["library", "clip-embeddings", job.case_id] });
+    void queryClient.invalidateQueries({ queryKey: ["library", "media", job.case_id] });
+    if (job.status === "failed") {
+      toast.warning(
+        "视频嵌入任务结束，有失败项",
+        `新增 ${job.indexed_now_count} 条，失败 ${job.failed_count} 条，剩余 ${job.remaining_count} 条`,
+      );
+    } else if (job.indexed_now_count > 0) {
+      toast.success("视频嵌入已完成", `新增 ${job.indexed_now_count} 条，剩余 ${job.remaining_count} 条`);
+    } else {
+      toast.info("无需生成", "当前可用片段已有 clip 视频嵌入。");
+    }
+    setEmbeddingJobId(null);
+  }, [embeddingJobId, embeddingJobQuery.data, queryClient, toast]);
+
+  const isEmbeddingBusy = embeddingMutation.isPending || embeddingJobActive;
+  const displayedEmbeddingJob = embeddingJobQuery.data ?? lastEmbeddingJob;
 
   // Batch delete: the backend exposes per-asset DELETE, so fan out one call per
   // selected asset.
   const deleteMutation = useMutation({
     mutationFn: async (assetIds: string[]) => {
       await Promise.all(assetIds.map((id) => api.mediaAssets.delete(id)));
-      return assetIds.length;
+      return assetIds;
     },
-    onSuccess: async (count) => {
+    onSuccess: async (assetIds) => {
       await queryClient.invalidateQueries({ queryKey: ["library", "media", selectedCaseId] });
+      await queryClient.invalidateQueries({ queryKey: ["library", "annotation-status", selectedCaseId] });
+      await queryClient.invalidateQueries({ queryKey: ["library", "clip-embeddings", selectedCaseId] });
       await queryClient.invalidateQueries({ queryKey: ["library", "usage-ranking", selectedCaseId] });
-      toast.success("批量删除完成", `已删除 ${count} 个素材`);
-      setSelectedAssetIds([]);
-      setDeleteConfirmOpen(false);
+      toast.success(assetIds.length === 1 ? "素材已删除" : "批量删除完成", `已删除 ${assetIds.length} 个素材`);
+      setSelectedAssetIds((current) => current.filter((id) => !assetIds.includes(id)));
+      setDeleteTargetIds(null);
     },
     onError: (error) => {
-      toast.error("批量删除失败", error);
-      setDeleteConfirmOpen(false);
+      toast.error("删除失败", error);
+      setDeleteTargetIds(null);
     },
   });
 
@@ -227,14 +342,39 @@ export function TemplatesTab() {
 
   function runAnnotation(assetId: string) {
     if (analyzingAssetIds.has(assetId)) return;
+    if (!selectedCaseId) {
+      toast.error("重新标注失败", "请选择案例后再操作。");
+      return;
+    }
     setAnalyzingAssetIds((current) => addPendingIds(current, [assetId]));
-    void api.annotations
-      .rerun(assetId, { force: false })
-      .then(async (response) => {
-        await queryClient.invalidateQueries({ queryKey: ["library", "media", selectedCaseId] });
-        toast.success("分析任务已提交", response.run_id ? `运行 ID：${shortId(response.run_id)}` : "已更新标注状态");
-      })
-      .catch((error) => toast.error("分析失败", error))
+    void (async () => {
+      const response = await api.annotations.rerun(assetId, { force: true });
+      await queryClient.invalidateQueries({ queryKey: ["library", "annotation", assetId] });
+      await queryClient.invalidateQueries({ queryKey: ["library", "media", selectedCaseId] });
+      await queryClient.invalidateQueries({ queryKey: ["library", "annotation-status", selectedCaseId] });
+      try {
+        const job = await api.mediaAssets.indexClipEmbeddings({
+          schema_version: "clip_embedding_index_request.v1",
+          case_id: selectedCaseId,
+          asset_ids: [assetId],
+          namespace: "all",
+          provider_profile_id: "dashscope.multimodal_embedding.prod",
+          limit: EMBEDDING_BATCH_LIMIT,
+          force: true,
+        });
+        setLastEmbeddingJob(null);
+        setEmbeddingJobId(job.job_id);
+        await queryClient.invalidateQueries({ queryKey: ["library", "clip-embeddings", selectedCaseId] });
+        const annotationText = response.run_id ? `标注 ${shortId(response.run_id)} · ` : "";
+        toast.success(
+          "重新标注与嵌入已提交",
+          `${annotationText}嵌入任务 ${shortId(job.job_id)} · 排队 ${job.queued_count} 条`,
+        );
+      } catch (error) {
+        toast.error("嵌入重建失败", error);
+      }
+    })()
+      .catch((error) => toast.error("重新标注失败", error))
       .finally(() => {
         setAnalyzingAssetIds((current) => removePendingId(current, assetId));
       });
@@ -263,6 +403,7 @@ export function TemplatesTab() {
       .batch({ schema_version: "annotation_batch_request.v1", asset_ids: targetIds, force: false })
       .then(async (response) => {
         await queryClient.invalidateQueries({ queryKey: ["library", "media", selectedCaseId] });
+        await queryClient.invalidateQueries({ queryKey: ["library", "annotation-status", selectedCaseId] });
         toast.success(
           "批量标注已提交",
           `新标注 ${response.completed_count} 个 · 跳过 ${response.skipped_count} 个已标注 · 失败 ${response.failed_count} 个`,
@@ -275,28 +416,6 @@ export function TemplatesTab() {
       });
   }
 
-  const replaceMutation = useMutation({
-    mutationFn: async ({ assetId, file }: { assetId: string; file: File }) => {
-      const result = await replaceUpload.uploadFile({
-        file,
-        kind: "video",
-        caseId: selectedCaseId,
-        metadata: { title: file.name, template_mode: "replace" },
-      });
-      return api.mediaAssets.replaceSource(assetId, { upload_session_id: result.upload_session.id });
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["library", "media", selectedCaseId] });
-      toast.success("素材原视频已替换", "标注和卡片位置已保留。");
-    },
-    onError: (error) => toast.error("替换失败", error),
-    onSettled: () => {
-      setReplaceTargetAssetId(null);
-      if (replaceInputRef.current) replaceInputRef.current.value = "";
-      replaceUpload.reset();
-    },
-  });
-
   async function autoReplaceUploads(uploadSessionIds: string[]) {
     const response = await api.mediaAssets.autoMatchReplace({
       case_id: selectedCaseId,
@@ -304,6 +423,7 @@ export function TemplatesTab() {
       upload_session_ids: uploadSessionIds,
     });
     await queryClient.invalidateQueries({ queryKey: ["library", "media", selectedCaseId] });
+    await queryClient.invalidateQueries({ queryKey: ["library", "annotation-status", selectedCaseId] });
     const matched = response.results.filter((item) => item.status === "matched").length;
     const pending = response.results.length - matched;
     if (pending > 0) {
@@ -311,16 +431,6 @@ export function TemplatesTab() {
     } else {
       toast.success("自动匹配替换完成", `已替换 ${matched} 个素材。`);
     }
-  }
-
-  function openReplacePicker(assetId: string) {
-    setReplaceTargetAssetId(assetId);
-    replaceInputRef.current?.click();
-  }
-
-  function handleReplaceFile(file: File | undefined) {
-    if (!file || !replaceTargetAssetId) return;
-    replaceMutation.mutate({ assetId: replaceTargetAssetId, file });
   }
 
   async function ensurePreview(assetId: string) {
@@ -354,6 +464,25 @@ export function TemplatesTab() {
       setPreviewLoadingId((current) => (current === assetId ? null : current));
     }
     setPreviewAssetId(assetId);
+  }
+
+  async function downloadAsset(assetId: string) {
+    if (downloadingAssetId) return;
+    setDownloadingAssetId(assetId);
+    try {
+      const url = await ensurePreview(assetId);
+      if (!url) return;
+      const card = activeItems.find((item) => item.asset.id === assetId);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = safeDownloadFilename(card?.asset.title, assetId);
+      link.rel = "noopener";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } finally {
+      setDownloadingAssetId((current) => (current === assetId ? null : current));
+    }
   }
 
   function setPlaceholder(update: UploadPlaceholder) {
@@ -451,16 +580,6 @@ export function TemplatesTab() {
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button
-              className="btn-secondary"
-              type="button"
-              disabled={!selectedCaseId || unannotatedAssetIds.length === 0 || batchAnnotationPending}
-              onClick={() => setAnnotateTargetIds(unannotatedAssetIds)}
-              title="自动选择未标注的素材并发起 VLM 标注"
-            >
-              {batchAnnotationPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
-              <span>{batchAnnotationPending ? "标注中" : `智能标注${unannotatedAssetIds.length > 0 ? ` (${unannotatedAssetIds.length})` : ""}`}</span>
-            </button>
             <button className="btn-secondary" type="button" onClick={() => setBatchMode((value) => !value)}>
               <CheckCircle2 className="h-4 w-4" />
               <span>{batchMode ? "退出批量" : "批量操作"}</span>
@@ -471,6 +590,31 @@ export function TemplatesTab() {
             </button>
           </div>
         </div>
+
+        <AnnotationProgressPanel
+          status={annotationStatusQuery.data}
+          loading={annotationStatusQuery.isFetching}
+          active={batchAnnotationPending || analyzingAssetIds.size > 0}
+          loadedPendingCount={unannotatedAssetIds.length}
+          disabled={!selectedCaseId || unannotatedAssetIds.length === 0 || batchAnnotationPending}
+          onStart={() => setAnnotateTargetIds(unannotatedAssetIds)}
+        />
+
+        <ClipEmbeddingProgressPanel
+          status={embeddingStatusQuery.data}
+          job={displayedEmbeddingJob}
+          loading={embeddingStatusQuery.isFetching || embeddingJobQuery.isFetching}
+          error={embeddingStatusQuery.error || embeddingJobQuery.error}
+          active={embeddingJobActive}
+          starting={embeddingMutation.isPending}
+          batchSize={embeddingBatchSize}
+          disabled={
+            !selectedCaseId ||
+            isEmbeddingBusy ||
+            Boolean(embeddingStatusQuery.data && embeddingPendingCount === 0)
+          }
+          onStart={() => setEmbeddingConfirmOpen(true)}
+        />
 
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="flex items-center gap-2 text-base font-semibold text-text-primary">
@@ -508,7 +652,7 @@ export function TemplatesTab() {
             onSelectAll={() => setSelectedAssetIds(filteredItems.map((card) => card.asset.id))}
             onStabilize={() => stabilizeMutation.mutate(selectedAssetIds)}
             onAnnotate={() => setAnnotateTargetIds(selectedAssetIds)}
-            onDelete={() => setDeleteConfirmOpen(true)}
+            onDelete={() => setDeleteTargetIds(selectedAssetIds)}
             onClear={() => setSelectedAssetIds([])}
           />
         ) : null}
@@ -530,7 +674,7 @@ export function TemplatesTab() {
               batchMode={batchMode}
               selected={selectedAssetIds.includes(card.asset.id)}
               isAnalyzing={analyzingAssetIds.has(card.asset.id)}
-              isReplacing={replaceMutation.isPending && replaceMutation.variables?.assetId === card.asset.id}
+              isDownloading={downloadingAssetId === card.asset.id}
               isPreviewLoading={previewLoadingId === card.asset.id}
               usage={usageByAssetId.get(card.asset.id)}
               onToggleSelected={() =>
@@ -540,8 +684,9 @@ export function TemplatesTab() {
               }
               onPreview={() => void openPreview(card.asset.id)}
               onAnalyze={() => runAnnotation(card.asset.id)}
-              onReplaceSource={() => openReplacePicker(card.asset.id)}
               onOpenAnnotation={() => setAnnotationAssetId(card.asset.id)}
+              onDownload={() => void downloadAsset(card.asset.id)}
+              onDelete={() => setDeleteTargetIds([card.asset.id])}
             />
           ))}
         </div>
@@ -586,16 +731,10 @@ export function TemplatesTab() {
         onPlaceholder={setPlaceholder}
         onSuccess={async (placeholderId) => {
           await queryClient.invalidateQueries({ queryKey: ["library", "media", selectedCaseId] });
+          await queryClient.invalidateQueries({ queryKey: ["library", "annotation-status", selectedCaseId] });
           clearSuccessfulPlaceholder(placeholderId);
         }}
         onAutoReplace={autoReplaceUploads}
-      />
-      <input
-        ref={replaceInputRef}
-        className="hidden"
-        type="file"
-        accept=".mp4,.mov,.m4v,.webm,.avi,.mkv"
-        onChange={(event) => handleReplaceFile(event.currentTarget.files?.[0])}
       />
       <ConfirmDialog
         isOpen={annotateTargetIds !== null}
@@ -613,11 +752,26 @@ export function TemplatesTab() {
         isLoading={batchAnnotationPending}
       />
       <ConfirmDialog
-        isOpen={deleteConfirmOpen}
-        onClose={() => setDeleteConfirmOpen(false)}
-        onConfirm={() => deleteMutation.mutate(selectedAssetIds)}
-        title="批量删除素材"
-        message={`确定删除选中的 ${selectedAssetIds.length} 个素材吗？`}
+        isOpen={embeddingConfirmOpen}
+        onClose={() => setEmbeddingConfirmOpen(false)}
+        onConfirm={() => embeddingMutation.mutate()}
+        title="生成 clip 视频嵌入"
+        message="将为当前案例已标注片段裁出 clip，上传 OSS 后调用百炼视频 embedding；已有新版本索引会跳过。"
+        consequences={[
+          `当前可用片段 ${embeddingCandidateCount} 条，待补 ${embeddingPendingCount} 条`,
+          `本次最多排队 ${embeddingBatchSize} 条，可继续点击补齐剩余片段`,
+          "会调用百炼 qwen3-vl-embedding 的 video 输入",
+        ]}
+        confirmText="生成视频嵌入"
+        type="warning"
+        isLoading={isEmbeddingBusy}
+      />
+      <ConfirmDialog
+        isOpen={deleteTargetIds !== null}
+        onClose={() => setDeleteTargetIds(null)}
+        onConfirm={() => deleteMutation.mutate(deleteTargetIds ?? [])}
+        title={(deleteTargetIds?.length ?? 0) === 1 ? "删除素材" : "批量删除素材"}
+        message={`确定删除 ${deleteTargetIds?.length ?? 0} 个素材吗？`}
         consequences={[
           "素材记录与其标注会被删除，操作不可撤销",
           "已用于历史成片的产物不受影响",
@@ -642,6 +796,260 @@ export function TemplatesTab() {
             : undefined
         }
       />
+    </section>
+  );
+}
+
+function AnnotationProgressPanel({
+  status,
+  loading,
+  active,
+  loadedPendingCount,
+  disabled,
+  onStart,
+}: {
+  status?: AnnotationStatusVm;
+  loading: boolean;
+  active: boolean;
+  loadedPendingCount: number;
+  disabled: boolean;
+  onStart: () => void;
+}) {
+  const totalCount = status?.total_count ?? 0;
+  const annotatedCount = status?.annotated_count ?? 0;
+  const pendingCount = status?.pending_count ?? 0;
+  const failedCount = status?.failed_count ?? 0;
+  const percent = clampPercent(annotatedCount, totalCount);
+  const complete = totalCount > 0 && pendingCount === 0 && failedCount === 0 && !active;
+  const label = active ? "标注中" : complete ? "已齐全" : pendingCount > 0 ? "待标注" : failedCount > 0 ? "有失败" : "无素材";
+  const chipClass = active
+    ? "bg-status-info/12 text-status-info"
+    : complete
+      ? "bg-status-success/15 text-status-success"
+      : failedCount > 0
+        ? "bg-status-error/12 text-status-error"
+        : pendingCount > 0
+          ? "bg-status-warning/12 text-status-warning"
+          : "bg-white/70 text-text-secondary";
+  const updatedText = status?.last_annotated_at ? formatRelativeTime(status.last_annotated_at) : "尚无标注";
+  const buttonText = active
+    ? "标注中"
+    : complete
+      ? "已齐全"
+      : loadedPendingCount > 0
+        ? `智能标注 (${loadedPendingCount})`
+        : pendingCount > 0
+          ? "加载待标注素材"
+          : "已齐全";
+
+  return (
+    <section className="grid gap-3 rounded-2xl border border-border/80 bg-white/60 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent">
+            <Wand2 className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-semibold text-text-primary">素材标注进度</h3>
+              <span className={`badge ${chipClass}`}>{label}</span>
+              {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin text-text-tertiary" /> : null}
+            </div>
+            <p className="mt-1 truncate text-xs text-text-tertiary">VLM 结构化文字标注</p>
+          </div>
+        </div>
+        <button className={complete ? "btn-secondary" : "btn-primary"} type="button" onClick={onStart} disabled={disabled}>
+          {active ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
+          <span>{buttonText}</span>
+        </button>
+      </div>
+
+      <div className="grid gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-text-secondary">
+          <span>总覆盖 {annotatedCount}/{totalCount} 个素材</span>
+          <span className="font-mono text-text-primary">{percent}%</span>
+        </div>
+        <div className="h-2 overflow-hidden rounded-full bg-surface-hover">
+          <div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${percent}%` }} />
+        </div>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-4">
+        <div className="flex min-w-0 items-center gap-2 rounded-xl border border-border/70 bg-white/55 px-3 py-2">
+          <Database className="h-4 w-4 shrink-0 text-text-tertiary" />
+          <div className="min-w-0">
+            <p className="text-[11px] text-text-tertiary">已标注</p>
+            <p className="truncate text-sm font-semibold text-text-primary">{annotatedCount}</p>
+          </div>
+        </div>
+        <div className="flex min-w-0 items-center gap-2 rounded-xl border border-border/70 bg-white/55 px-3 py-2">
+          <Activity className="h-4 w-4 shrink-0 text-text-tertiary" />
+          <div className="min-w-0">
+            <p className="text-[11px] text-text-tertiary">待标注</p>
+            <p className="truncate text-sm font-semibold text-text-primary">{pendingCount}</p>
+          </div>
+        </div>
+        <div className="flex min-w-0 items-center gap-2 rounded-xl border border-border/70 bg-white/55 px-3 py-2">
+          <AlertTriangle className={`h-4 w-4 shrink-0 ${failedCount > 0 ? "text-status-error" : "text-text-tertiary"}`} />
+          <div className="min-w-0">
+            <p className="text-[11px] text-text-tertiary">失败</p>
+            <p className={`truncate text-sm font-semibold ${failedCount > 0 ? "text-status-error" : "text-text-primary"}`}>{failedCount}</p>
+          </div>
+        </div>
+        <div className="flex min-w-0 items-center gap-2 rounded-xl border border-border/70 bg-white/55 px-3 py-2">
+          <Loader2 className={`h-4 w-4 shrink-0 ${loading || active ? "animate-spin text-status-info" : "text-text-tertiary"}`} />
+          <div className="min-w-0">
+            <p className="text-[11px] text-text-tertiary">更新</p>
+            <p className="truncate text-sm font-semibold text-text-primary">{updatedText}</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ClipEmbeddingProgressPanel({
+  status,
+  job,
+  loading,
+  error,
+  active,
+  starting,
+  batchSize,
+  disabled,
+  onStart,
+}: {
+  status?: ClipEmbeddingStatusVm;
+  job?: ClipEmbeddingJobVm | null;
+  loading: boolean;
+  error: unknown;
+  active: boolean;
+  starting: boolean;
+  batchSize: number;
+  disabled: boolean;
+  onStart: () => void;
+}) {
+  const candidateCount = status?.candidate_count ?? job?.candidate_count ?? 0;
+  const indexedCount = status?.indexed_count ?? Math.max(0, candidateCount - (job?.pending_count ?? candidateCount));
+  const pendingCount = status?.pending_count ?? job?.pending_count ?? 0;
+  const coveragePercent = clampPercent(indexedCount, candidateCount);
+  const queuedCount = job?.queued_count ?? 0;
+  const processedCount = job?.processed_count ?? 0;
+  const batchTotal = Math.max(queuedCount, processedCount, 0);
+  const batchDone = Math.min(processedCount, batchTotal);
+  const batchPercent = clampPercent(batchDone, batchTotal);
+  const batchRemaining = Math.max(0, queuedCount - processedCount);
+  const failedCount = job?.failed_count ?? 0;
+  const hasError = Boolean(error) || job?.status === "failed";
+  const complete = Boolean(status && candidateCount > 0 && pendingCount === 0 && !active && !hasError);
+  const empty = Boolean(status && candidateCount === 0 && !active && !hasError);
+  const label = hasError
+    ? "有失败"
+    : active || starting
+      ? clipEmbeddingJobLabel(job?.status ?? "running")
+      : complete
+        ? "已齐全"
+        : empty
+          ? "无片段"
+          : "待补齐";
+  const chipClass = hasError
+    ? "bg-status-error/12 text-status-error"
+    : active || starting
+      ? "bg-status-info/12 text-status-info"
+      : complete
+        ? "bg-status-success/15 text-status-success"
+        : empty
+          ? "bg-white/70 text-text-secondary"
+          : "bg-status-warning/12 text-status-warning";
+  const buttonText = starting
+    ? "启动中"
+    : active
+      ? "嵌入中"
+      : complete
+        ? "已齐全"
+        : `生成嵌入${pendingCount > 0 ? ` (${Math.min(pendingCount, batchSize)})` : ""}`;
+  const modelText = status ? `${status.embedding_model} · ${status.embedding_dimension} 维` : "qwen3-vl-embedding · 1024 维";
+  const updatedText = status?.last_indexed_at ? formatRelativeTime(status.last_indexed_at) : "尚无嵌入";
+
+  return (
+    <section className="grid gap-3 rounded-2xl border border-border/80 bg-white/60 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent">
+            <Fingerprint className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-semibold text-text-primary">Clip 视频嵌入索引</h3>
+              <span className={`badge ${chipClass}`}>{label}</span>
+              {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin text-text-tertiary" /> : null}
+            </div>
+            <p className="mt-1 truncate text-xs text-text-tertiary">
+              {modelText}
+              {job?.job_id ? ` · ${shortId(job.job_id)}` : ""}
+            </p>
+          </div>
+        </div>
+        <button className={complete ? "btn-secondary" : "btn-primary"} type="button" onClick={onStart} disabled={disabled}>
+          {starting || active ? <Loader2 className="h-4 w-4 animate-spin" /> : <Fingerprint className="h-4 w-4" />}
+          <span>{buttonText}</span>
+        </button>
+      </div>
+
+      <div className="grid gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-text-secondary">
+          <span>总覆盖 {indexedCount}/{candidateCount} clip</span>
+          <span className="font-mono text-text-primary">{coveragePercent}%</span>
+        </div>
+        <div className="h-2 overflow-hidden rounded-full bg-surface-hover">
+          <div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${coveragePercent}%` }} />
+        </div>
+      </div>
+
+      {active || starting || job ? (
+        <div className="grid gap-2 rounded-xl border border-border/70 bg-white/55 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-text-secondary">
+            <span>本批 {processedCount}/{queuedCount || batchTotal} clip</span>
+            <span>{active || starting ? `剩余 ${batchRemaining} 个` : clipEmbeddingJobLabel(job?.status)}</span>
+          </div>
+          <div className="h-1.5 overflow-hidden rounded-full bg-surface-hover">
+            <div className="h-full rounded-full bg-status-info transition-all duration-500" style={{ width: `${batchPercent}%` }} />
+          </div>
+        </div>
+      ) : null}
+
+      <div className="grid gap-2 sm:grid-cols-4">
+        <div className="flex min-w-0 items-center gap-2 rounded-xl border border-border/70 bg-white/55 px-3 py-2">
+          <Database className="h-4 w-4 shrink-0 text-text-tertiary" />
+          <div className="min-w-0">
+            <p className="text-[11px] text-text-tertiary">已入库</p>
+            <p className="truncate text-sm font-semibold text-text-primary">{indexedCount}</p>
+          </div>
+        </div>
+        <div className="flex min-w-0 items-center gap-2 rounded-xl border border-border/70 bg-white/55 px-3 py-2">
+          <Activity className="h-4 w-4 shrink-0 text-text-tertiary" />
+          <div className="min-w-0">
+            <p className="text-[11px] text-text-tertiary">待补</p>
+            <p className="truncate text-sm font-semibold text-text-primary">{pendingCount}</p>
+          </div>
+        </div>
+        <div className="flex min-w-0 items-center gap-2 rounded-xl border border-border/70 bg-white/55 px-3 py-2">
+          <AlertTriangle className={`h-4 w-4 shrink-0 ${failedCount > 0 || hasError ? "text-status-error" : "text-text-tertiary"}`} />
+          <div className="min-w-0">
+            <p className="text-[11px] text-text-tertiary">失败</p>
+            <p className={`truncate text-sm font-semibold ${failedCount > 0 || hasError ? "text-status-error" : "text-text-primary"}`}>
+              {failedCount}
+            </p>
+          </div>
+        </div>
+        <div className="flex min-w-0 items-center gap-2 rounded-xl border border-border/70 bg-white/55 px-3 py-2">
+          <Loader2 className={`h-4 w-4 shrink-0 ${loading || active || starting ? "animate-spin text-status-info" : "text-text-tertiary"}`} />
+          <div className="min-w-0">
+            <p className="text-[11px] text-text-tertiary">更新</p>
+            <p className="truncate text-sm font-semibold text-text-primary">{updatedText}</p>
+          </div>
+        </div>
+      </div>
     </section>
   );
 }
