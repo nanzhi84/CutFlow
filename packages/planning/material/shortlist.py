@@ -151,6 +151,8 @@ def _broll_eligible(window: dict, candidate: dict) -> bool:
 
 
 def _window_required_frames(window: dict) -> int:
+    if window.get("source_length_frames") is not None:
+        return max(0, int(window.get("source_length_frames", 0) or 0))
     return max(0, int(window.get("end_frame", 0) or 0) - int(window.get("start_frame", 0) or 0))
 
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 from packages.core.contracts.artifacts import NarrationUnit
 from packages.planning.material import (
     align_insertions_to_portrait_cuts,
+    legalize_broll_window_frames,
     place_insertion_safely,
     plan_insertions,
 )
@@ -158,6 +159,52 @@ def test_frames_always_populated_even_without_any_cut_grid():
     [r] = align_insertions_to_portrait_cuts([_ins(1.0, 3.0, 0.0, 2.0)], fps=30, portrait_cut_frames=[])
     assert (r.timeline_start_frame, r.timeline_end_frame) == (30, 90)
     assert (r.source_start_frame, r.source_end_frame) == (0, 60)
+
+
+def test_legalize_broll_window_frames_rejects_unsnappable_short_head_gap():
+    cuts = [0, 360]
+
+    assert legalize_broll_window_frames(
+        start_frame=7,
+        end_frame=70,
+        fps=30,
+        portrait_cut_frames=cuts,
+    ) is None
+
+    snapped = legalize_broll_window_frames(
+        start_frame=4,
+        end_frame=70,
+        fps=30,
+        portrait_cut_frames=cuts,
+    )
+
+    assert snapped is not None
+    assert (snapped.start_frame, snapped.end_frame) == (0, 70)
+    assert snapped.source_length_frames == 66
+    assert round(snapped.pad_start, 3) == 0.133
+
+
+def test_legalize_broll_window_frames_rejects_unsnappable_short_tail_gap():
+    cuts = [0, 360]
+
+    assert legalize_broll_window_frames(
+        start_frame=75,
+        end_frame=350,
+        fps=30,
+        portrait_cut_frames=cuts,
+    ) is None
+
+    snapped = legalize_broll_window_frames(
+        start_frame=75,
+        end_frame=356,
+        fps=30,
+        portrait_cut_frames=cuts,
+    )
+
+    assert snapped is not None
+    assert (snapped.start_frame, snapped.end_frame) == (75, 360)
+    assert snapped.source_length_frames == 281
+    assert round(snapped.pad_end, 3) == 0.133
 
 
 def test_aligned_inserts_never_invert_or_overlap_on_track():

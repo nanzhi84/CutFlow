@@ -232,6 +232,9 @@ def _agent_boundary_from_windows(payload: dict) -> dict:
                 "start_frame": window["start_frame"],
                 "end_frame": window["end_frame"],
                 "length_frames": window["length_frames"],
+                "source_length_frames": window.get("source_length_frames"),
+                "pad_start": window.get("pad_start", 0.0),
+                "pad_end": window.get("pad_end", 0.0),
                 "unit_ids": list(window.get("host_unit_ids") or []),
                 "boundary_source": window.get("boundary_source"),
                 "text": window.get("text") or "",
@@ -290,8 +293,8 @@ def test_broll_windows_are_authoritative_optional_slots(monkeypatch, tmp_path):
         candidate_ids=["asset_portrait_demo", "asset_portrait_b", "asset_portrait_c"],
         broll_slots=[
             {
-                "start_frame": 45,
-                "end_frame": 120,
+                "start_frame": 75,
+                "end_frame": 150,
                 "unit_ids": ["unit_1"],
                 "text": "展示施工细节。",
                 "boundary_source": "narration_unit",
@@ -303,8 +306,8 @@ def test_broll_windows_are_authoritative_optional_slots(monkeypatch, tmp_path):
 
     [window] = payload["broll_windows"]
     assert window["window_id"] == "bwin_000"
-    assert window["start_frame"] == 45
-    assert window["end_frame"] == 120
+    assert window["start_frame"] == 75
+    assert window["end_frame"] == 150
     assert window["length_frames"] == 75
     assert window["host_unit_ids"] == ["unit_1"]
     assert payload["geometry_policy"]["broll_window_contract"] == {
@@ -313,6 +316,92 @@ def test_broll_windows_are_authoritative_optional_slots(monkeypatch, tmp_path):
         "downstream_may_skip": True,
         "downstream_may_resize": False,
     }
+
+
+def test_broll_windows_reject_unsnappable_short_aroll_gaps(monkeypatch, tmp_path):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    state = _state(
+        adapter,
+        candidate_ids=["asset_portrait_demo", "asset_portrait_b", "asset_portrait_c"],
+        broll_slots=[
+            {
+                "start_frame": 7,
+                "end_frame": 70,
+                "unit_ids": ["unit_1"],
+                "text": "0.23 秒开头残缝必须丢弃。",
+                "boundary_source": "narration_unit",
+            },
+            {
+                "start_frame": 4,
+                "end_frame": 140,
+                "unit_ids": ["unit_2"],
+                "text": "0.13 秒开头残缝可以吸附。",
+                "boundary_source": "narration_unit",
+            },
+            {
+                "start_frame": 60,
+                "end_frame": 150,
+                "unit_ids": ["unit_3"],
+                "text": "正好 2 秒可读 A-roll 后的画面。",
+                "boundary_source": "narration_unit",
+            },
+        ],
+    )
+
+    payload = _payload(_run_node(adapter, state), ArtifactKind.plan_timeline_windows)
+
+    assert len(payload["broll_windows"]) == 2
+    first, second = payload["broll_windows"]
+    assert first["window_id"] == "bwin_001"
+    assert first["start_frame"] == 0
+    assert first["end_frame"] == 140
+    assert first["length_frames"] == 140
+    assert first["source_length_frames"] == 136
+    assert round(first["pad_start"], 3) == 0.133
+    assert round(first["pad_end"], 3) == 0.0
+    assert second["window_id"] == "bwin_002"
+    assert second["start_frame"] == 60
+    assert second["end_frame"] == 150
+    assert second["length_frames"] == 90
+
+
+def test_broll_windows_snap_short_tail_gap_to_boundary(monkeypatch, tmp_path):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    state = _state(
+        adapter,
+        candidate_ids=["asset_portrait_demo", "asset_portrait_b", "asset_portrait_c"],
+        broll_slots=[
+            {
+                "start_frame": 75,
+                "end_frame": 350,
+                "unit_ids": ["unit_1"],
+                "text": "0.33 秒尾部残缝必须丢弃。",
+                "boundary_source": "narration_unit",
+            },
+            {
+                "start_frame": 75,
+                "end_frame": 356,
+                "unit_ids": ["unit_2"],
+                "text": "0.13 秒尾部残缝可以吸附。",
+                "boundary_source": "narration_unit",
+            },
+        ],
+    )
+
+    payload = _payload(_run_node(adapter, state), ArtifactKind.plan_timeline_windows)
+
+    [window] = payload["broll_windows"]
+    assert window["window_id"] == "bwin_001"
+    assert window["start_frame"] == 75
+    assert window["end_frame"] == payload["total_frames"]
+    assert window["length_frames"] == payload["total_frames"] - 75
+    assert window["source_length_frames"] == 281
+    assert round(window["pad_start"], 3) == 0.0
+    assert round(window["pad_end"], 3) == 0.133
 
 
 def test_v2_portrait_plan_is_published_from_windows_split(monkeypatch, tmp_path):

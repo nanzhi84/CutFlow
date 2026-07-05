@@ -201,12 +201,18 @@ def materialize_broll_from_assignment(
 
         start_frame = int(window_data.get("start_frame", 0) or 0)
         end_frame = int(window_data.get("end_frame", 0) or 0)
-        required_frames = int(window_data.get("length_frames") or max(0, end_frame - start_frame))
-        if end_frame <= start_frame or required_frames <= 0:
+        timeline_frames = int(window_data.get("length_frames") or max(0, end_frame - start_frame))
+        source_required_frames = int(window_data.get("source_length_frames") or timeline_frames)
+        pad_start = float(window_data.get("pad_start", 0) or 0)
+        pad_end = float(window_data.get("pad_end", 0) or 0)
+        if end_frame <= start_frame or timeline_frames <= 0 or source_required_frames <= 0:
             drop_diagnostics.append({**drop_base, "reason": "invalid_window"})
             continue
-        if end_frame - start_frame != required_frames:
+        if end_frame - start_frame != timeline_frames:
             drop_diagnostics.append({**drop_base, "reason": "window_length_mismatch"})
+            continue
+        if source_required_frames > timeline_frames:
+            drop_diagnostics.append({**drop_base, "reason": "source_length_mismatch"})
             continue
 
         source_start = _as_float(meta.get("source_start"))
@@ -214,7 +220,7 @@ def materialize_broll_from_assignment(
         source_start_frame = _frame_index_at_fps(source_start, fps=fps)
         source_end_frame_limit = _frame_index_at_fps(source_end, fps=fps)
         source_frames_available = max(0, source_end_frame_limit - source_start_frame)
-        if source_frames_available < required_frames:
+        if source_frames_available < source_required_frames:
             drop_diagnostics.append({**drop_base, "reason": "source_too_short"})
             continue
 
@@ -224,7 +230,7 @@ def materialize_broll_from_assignment(
             timeline_start=to_seconds(start_frame),
             timeline_end=to_seconds(end_frame),
             source_start=to_seconds(source_start_frame),
-            source_end=to_seconds(source_start_frame + required_frames),
+            source_end=to_seconds(source_start_frame + source_required_frames),
             confidence=_as_float(choice.get("confidence")),
             matched_keywords=tuple(
                 _as_str(keyword)
@@ -237,9 +243,9 @@ def materialize_broll_from_assignment(
             timeline_start_frame=start_frame,
             timeline_end_frame=end_frame,
             source_start_frame=source_start_frame,
-            source_end_frame=source_start_frame + required_frames,
-            pad_start=0.0,
-            pad_end=0.0,
+            source_end_frame=source_start_frame + source_required_frames,
+            pad_start=pad_start,
+            pad_end=pad_end,
         )
         accepted.append((window_id, insert))
         used_candidate_ids.add(candidate_id)

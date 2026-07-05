@@ -105,6 +105,15 @@ class BrollInsertion:
     pad_end: float = 0.0
 
 
+@dataclass(frozen=True)
+class BrollWindowPlacement:
+    start_frame: int
+    end_frame: int
+    source_length_frames: int
+    pad_start: float = 0.0
+    pad_end: float = 0.0
+
+
 def _coverage_reason(candidate: BrollCandidate, units: Sequence[NarrationUnit]) -> str:
     if candidate.best_segment is not None:
         return f"cover full narration near '{candidate.best_segment.text[:24]}'"
@@ -760,6 +769,78 @@ def place_insertion_safely(
         min_visible_residual_frames=min_visible_residual_frames,
         max_gap_frames=policy.snap_max_frames,
         max_pad_seconds=policy.max_pad_seconds,
+    )
+
+
+def legalize_broll_window_frames(
+    *,
+    start_frame: int,
+    end_frame: int,
+    fps: int,
+    portrait_cut_frames: Sequence[int],
+    policy: BrollGeometryPolicy = BROLL_GEOMETRY_POLICY,
+) -> BrollWindowPlacement | None:
+    """Apply the shared B-roll sliver/snap legality gate to a frame window.
+
+    Legal windows either leave at least ``min_visible_aroll_seconds`` of portrait
+    around an interior boundary, or snap a sub-``max_pad_seconds`` residual to the
+    portrait cut. Any remaining in-between residual is an illegal flash frame.
+    """
+    fps = max(1, int(fps))
+    start_frame = int(start_frame)
+    end_frame = int(end_frame)
+    source_length_frames = end_frame - start_frame
+    min_insert_frames = _seconds_to_frame(policy.min_insert_seconds, fps)
+    if source_length_frames < min_insert_frames:
+        return None
+
+    insert = BrollInsertion(
+        asset_id="window",
+        clip_id="window",
+        timeline_start=round(start_frame / fps, 6),
+        timeline_end=round(end_frame / fps, 6),
+        source_start=0.0,
+        source_end=round(source_length_frames / fps, 6),
+        confidence=1.0,
+        matched_keywords=(),
+        scene_name="",
+        reason="window legality",
+    )
+    min_visible_residual_frames = _seconds_to_frame(policy.min_visible_aroll_seconds, fps)
+    aligned = align_insertions_to_portrait_cuts(
+        [insert],
+        fps=fps,
+        portrait_cut_frames=portrait_cut_frames,
+        min_visible_residual_frames=min_visible_residual_frames,
+        max_gap_frames=policy.snap_max_frames,
+        max_pad_seconds=policy.max_pad_seconds,
+    )
+    if _has_short_visible_portrait_gap(
+        aligned,
+        fps=fps,
+        portrait_cut_frames=portrait_cut_frames,
+        min_visible_residual_frames=min_visible_residual_frames,
+    ):
+        return None
+    [placement] = aligned
+    legalized_start, legalized_end = _frame_bounds(placement, fps=fps)
+    source_start = placement.source_start_frame
+    source_end = placement.source_end_frame
+    legalized_source_length = (
+        max(0, int(source_end) - int(source_start))
+        if source_start is not None and source_end is not None
+        else source_length_frames
+    )
+    if legalized_end - legalized_start < min_insert_frames:
+        return None
+    if legalized_source_length < min_insert_frames:
+        return None
+    return BrollWindowPlacement(
+        start_frame=legalized_start,
+        end_frame=legalized_end,
+        source_length_frames=legalized_source_length,
+        pad_start=placement.pad_start,
+        pad_end=placement.pad_end,
     )
 
 

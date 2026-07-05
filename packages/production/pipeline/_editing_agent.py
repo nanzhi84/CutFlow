@@ -213,6 +213,8 @@ def _portrait_candidate_payload(cid: str, cand: dict) -> dict:
 
 
 def _slot_required_frames(slot: dict) -> int:
+    if slot.get("source_length_frames") is not None:
+        return max(0, int(slot.get("source_length_frames", 0) or 0))
     return max(0, int(slot.get("end_frame", 0)) - int(slot.get("start_frame", 0)))
 
 
