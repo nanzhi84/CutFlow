@@ -213,6 +213,12 @@ def _windows(boundary: dict) -> dict:
                 "start_frame": slot["start_frame"],
                 "end_frame": slot["end_frame"],
                 "length_frames": slot["end_frame"] - slot["start_frame"],
+                "source_length_frames": slot.get(
+                    "source_length_frames",
+                    slot["end_frame"] - slot["start_frame"],
+                ),
+                "pad_start": slot.get("pad_start", 0.0),
+                "pad_end": slot.get("pad_end", 0.0),
                 "host_unit_ids": list(slot.get("unit_ids") or []),
                 "host_portrait_window_ids": [],
                 "text": slot.get("text") or "",
@@ -779,6 +785,53 @@ def test_agent_broll_uses_window_frames_without_repositioning():
     assert (overlay["timeline_start_frame"], overlay["timeline_end_frame"]) == (81, 150)
     assert round(overlay["timeline_start"], 3) == 2.7
     assert round(overlay["timeline_end"], 3) == 5.0
+
+
+def test_agent_broll_carries_snap_padding_without_requiring_extra_source_frames():
+    material = _material()
+    material["broll_candidates"] = [
+        {
+            "asset_id": "broll_snap",
+            "score": 90.0,
+            "metadata": {
+                "clip_id": "snap_clip",
+                "source_start": 0.0,
+                "source_end": 66 / 30,
+                "scene_name": "snap",
+            },
+        }
+    ]
+    boundary = {
+        "broll_slots": [
+            {
+                "slot_id": "bslot_snap",
+                "start_frame": 0,
+                "end_frame": 70,
+                "source_length_frames": 66,
+                "pad_start": 4 / 30,
+                "pad_end": 0.0,
+            }
+        ]
+    }
+    selection = EditingSelection(
+        broll=[BrollChoice(slot_id="bslot_snap", candidate_id="bc_000")]
+    )
+
+    payload, drops = materialize_broll_from_assignment(
+        windows=_windows(boundary),
+        assignment=_assignment(selection),
+        candidates=index_candidates(material),
+        cut_frames=[0, 360],
+        enabled=True,
+        max_inserts=4,
+    )
+
+    assert drops == []
+    [overlay] = payload["overlays"]
+    assert (overlay["timeline_start_frame"], overlay["timeline_end_frame"]) == (0, 70)
+    assert (overlay["source_start_frame"], overlay["source_end_frame"]) == (0, 66)
+    assert round(overlay["pad_start"], 3) == 0.133
+    assert round(overlay["pad_end"], 3) == 0.0
 
 
 def test_agent_broll_uses_full_authoritative_window_length():

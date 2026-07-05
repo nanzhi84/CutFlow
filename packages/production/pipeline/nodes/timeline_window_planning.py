@@ -12,7 +12,11 @@ from packages.planning.editing import (
     BoundaryConstraints,
     plan_boundary_timeline,
 )
-from packages.planning.material import BROLL_GEOMETRY_POLICY, clean_portrait_source_windows
+from packages.planning.material import (
+    BROLL_GEOMETRY_POLICY,
+    clean_portrait_source_windows,
+    legalize_broll_window_frames,
+)
 from packages.production.pipeline._narration_units import build_planner_narration_units
 from packages.production.pipeline._node_context import NodeContext
 
@@ -347,9 +351,20 @@ def _portrait_windows(segments) -> list[dict]:
 
 def _broll_windows(broll_slots: list[dict], portrait_windows: list[dict]) -> list[dict]:
     windows: list[dict] = []
+    portrait_cut_frames = _portrait_cut_frames(portrait_windows)
     for index, slot in enumerate(s for s in broll_slots if isinstance(s, dict)):
         start_frame = int(slot.get("start_frame", 0) or 0)
         end_frame = int(slot.get("end_frame", 0) or 0)
+        placement = legalize_broll_window_frames(
+            start_frame=start_frame,
+            end_frame=end_frame,
+            fps=TIMELINE_FPS,
+            portrait_cut_frames=portrait_cut_frames,
+        )
+        if placement is None:
+            continue
+        start_frame = placement.start_frame
+        end_frame = placement.end_frame
         host_portrait_window_ids = [
             str(window.get("window_id") or "")
             for window in portrait_windows
@@ -362,6 +377,9 @@ def _broll_windows(broll_slots: list[dict], portrait_windows: list[dict]) -> lis
                 "start_frame": start_frame,
                 "end_frame": end_frame,
                 "length_frames": max(0, end_frame - start_frame),
+                "source_length_frames": placement.source_length_frames,
+                "pad_start": placement.pad_start,
+                "pad_end": placement.pad_end,
                 "host_unit_ids": list(slot.get("unit_ids") or []),
                 "host_portrait_window_ids": host_portrait_window_ids,
                 "text": str(slot.get("text") or ""),
@@ -369,3 +387,14 @@ def _broll_windows(broll_slots: list[dict], portrait_windows: list[dict]) -> lis
             }
         )
     return windows
+
+
+def _portrait_cut_frames(portrait_windows: list[dict]) -> list[int]:
+    return sorted(
+        {
+            int(frame)
+            for window in portrait_windows
+            for frame in (window.get("start_frame"), window.get("end_frame"))
+            if frame is not None
+        }
+    )

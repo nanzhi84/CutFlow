@@ -243,6 +243,8 @@ def _assign_candidates_to_windows(
 
 
 def _window_required_frames(window: dict) -> int:
+    if window.get("source_length_frames") is not None:
+        return max(0, int(window.get("source_length_frames", 0) or 0))
     start = int(window.get("start_frame", 0) or 0)
     end = int(window.get("end_frame", 0) or 0)
     return int(window.get("length_frames") or max(0, end - start))
