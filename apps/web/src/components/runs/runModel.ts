@@ -2,7 +2,7 @@ import type { NodeRun, RunCard } from "../../api/client";
 
 export type RunAction = "cancel" | "forceCancel" | "retry" | "resume" | "delete";
 
-// 原始流水线节点 → 中文标签（用于折叠的高级节点时间线）。
+// 原始流水线节点 → 中文说明（节点流水线里作为英文名的补充副标题）。
 const NODE_LABELS: Record<string, string> = {
   ValidateRequest: "校验请求",
   LoadCaseContext: "加载案例上下文",
@@ -12,6 +12,9 @@ const NODE_LABELS: Record<string, string> = {
   NarrationAlignment: "对齐旁白时间轴",
   NarrationBoundaryPlanning: "规划旁白边界",
   TimelineWindowPlanning: "编译时间线窗口",
+  WindowQueryPlanning: "生成窗口检索 query",
+  WindowMaterialRetrieval: "向量检索窗口候选",
+  DeterministicEditingPlanning: "确定性剪辑指派",
   // 历史 run 兼容：#158 后 active 模板不再调度 PortraitPlanning。
   PortraitPlanning: "规划数字人镜头",
   BrollPlanning: "规划 B-roll 插入",
@@ -24,10 +27,109 @@ const NODE_LABELS: Record<string, string> = {
   SubtitleAndBgmMix: "混合字幕与配乐",
   ExportFinishedVideo: "导出成片",
   FinalizeRunReport: "生成运行报告",
+  BrollCoveragePlanning: "规划 B-roll 覆盖",
+  BrollTimelinePlanning: "编排 B-roll 时间线",
+  BrollRenderBase: "渲染 B-roll 底片",
+  SeedanceGenerateVideo: "Seedance 文生视频",
+  ExportSeedanceVideo: "导出 Seedance 成片",
 };
 
 export function nodeLabel(id: string): string {
   return NODE_LABELS[id] ?? id;
+}
+
+// 各工作流模板的节点顺序，镜像 packages/production/pipeline/node_sequence.py。
+// 节点流水线用它补齐"尚未创建 NodeRun 的待执行节点"（后端 node runs 是懒创建的）。
+const TEMPLATE_NODE_SEQUENCES: Record<string, string[]> = {
+  digital_human_v2: [
+    "ValidateRequest",
+    "LoadCaseContext",
+    "ResolveCreativeIntent",
+    "TTS",
+    "MaterialPackPlanning",
+    "NarrationAlignment",
+    "NarrationBoundaryPlanning",
+    "TimelineWindowPlanning",
+    "WindowQueryPlanning",
+    "WindowMaterialRetrieval",
+    "DeterministicEditingPlanning",
+    "TimelinePlanning",
+    "PortraitTrackBuild",
+    "LipSync",
+    "RenderFinalTimeline",
+    "SubtitleAndBgmMix",
+    "ExportFinishedVideo",
+    "FinalizeRunReport",
+  ],
+  digital_human_editing_agent_v1: [
+    "ValidateRequest",
+    "LoadCaseContext",
+    "ResolveCreativeIntent",
+    "TTS",
+    "MaterialPackPlanning",
+    "NarrationAlignment",
+    "NarrationBoundaryPlanning",
+    "TimelineWindowPlanning",
+    "WindowQueryPlanning",
+    "WindowMaterialRetrieval",
+    "EditingAgentPlanning",
+    "TimelinePlanning",
+    "PortraitTrackBuild",
+    "LipSync",
+    "RenderFinalTimeline",
+    "SubtitleAndBgmMix",
+    "ExportFinishedVideo",
+    "FinalizeRunReport",
+  ],
+  broll_only_v1: [
+    "ValidateRequest",
+    "LoadCaseContext",
+    "ResolveCreativeIntent",
+    "TTS",
+    "MaterialPackPlanning",
+    "NarrationAlignment",
+    "BrollCoveragePlanning",
+    "StylePlanning",
+    "BrollTimelinePlanning",
+    "BrollRenderBase",
+    "SubtitleAndBgmMix",
+    "ExportFinishedVideo",
+    "FinalizeRunReport",
+  ],
+  seedance_t2v_v1: [
+    "ValidateRequest",
+    "LoadCaseContext",
+    "SeedanceGenerateVideo",
+    "ExportSeedanceVideo",
+    "FinalizeRunReport",
+  ],
+};
+
+export type NodeTimelineItem = {
+  nodeId: string;
+  status: string;
+  node?: NodeRun;
+};
+
+/** 模板期望序列 ⊕ 实际 NodeRun：未创建的节点补成 pending，模板外的历史节点按实际顺序追加。
+ *  run 已成功时不再补 pending（老模板 run 的节点集合可能与现行序列不同，补出来是噪音）。 */
+export function buildNodeTimeline(
+  templateId: string | null | undefined,
+  nodes: NodeRun[],
+  runStatus?: string,
+): NodeTimelineItem[] {
+  const byId = new Map(nodes.map((node) => [node.node_id, node]));
+  const sequence = TEMPLATE_NODE_SEQUENCES[templateId ?? ""] ?? [];
+  const items: NodeTimelineItem[] = sequence.flatMap((nodeId) => {
+    const node = byId.get(nodeId);
+    if (!node && runStatus === "succeeded") return [];
+    return [{ nodeId, status: node?.status ?? "pending", node }];
+  });
+  const known = new Set(sequence);
+  for (const node of nodes) {
+    if (!known.has(node.node_id)) items.push({ nodeId: node.node_id, status: node.status, node });
+  }
+  return items;
 }
 
 // 把原始节点聚合成 5 个用户可理解的生产阶段。
@@ -35,7 +137,7 @@ type StageDef = { key: string; label: string; detail: string; nodes: string[] };
 const STAGE_DEFS: StageDef[] = [
   { key: "script", label: "脚本与意图", detail: "校验请求、加载案例、解析创作意图", nodes: ["ValidateRequest", "LoadCaseContext", "ResolveCreativeIntent"] },
   { key: "voice", label: "配音合成", detail: "生成数字人配音并对齐时间轴", nodes: ["TTS", "NarrationAlignment"] },
-  { key: "material", label: "素材匹配与编排", detail: "匹配 B-roll、数字人镜头、字幕样式与时间线", nodes: ["MaterialPackPlanning", "NarrationBoundaryPlanning", "TimelineWindowPlanning", "PortraitPlanning", "BrollPlanning", "StylePlanning", "EditingAgentPlanning", "TimelinePlanning"] },
+  { key: "material", label: "素材匹配与编排", detail: "匹配 B-roll、数字人镜头、字幕样式与时间线", nodes: ["MaterialPackPlanning", "NarrationBoundaryPlanning", "TimelineWindowPlanning", "WindowQueryPlanning", "WindowMaterialRetrieval", "DeterministicEditingPlanning", "PortraitPlanning", "BrollPlanning", "StylePlanning", "EditingAgentPlanning", "TimelinePlanning"] },
   { key: "lipsync", label: "口型同步", detail: "生成数字人轨道并做唇形同步", nodes: ["PortraitTrackBuild", "LipSync"] },
   { key: "compose", label: "合成出片", detail: "渲染时间线、混合字幕配乐、导出成片", nodes: ["RenderFinalTimeline", "SubtitleAndBgmMix", "ExportFinishedVideo", "FinalizeRunReport"] },
 ];
@@ -144,16 +246,4 @@ export function lipsyncProviderLabel(providerId: string | null | undefined, fall
   if (providerId.startsWith("runninghub.heygem")) return "由 HeyGem 生成";
   if (providerId.startsWith("dashscope.videoretalk")) return "由 VideoReTalk 生成";
   return `由 ${providerId} 生成`;
-}
-
-export function artifactLabel(value: string) {
-  if (value === "video.final" || value === "video.finished") return "最终视频";
-  if (value === "video.rendered") return "渲染视频";
-  if (value === "subtitle.ass") return "字幕文件";
-  if (value === "cover.image") return "封面图片";
-  if (value === "audio.tts") return "配音音频";
-  if (value === "publish.package") return "发布包";
-  if (value === "run.report.public") return "公开报告";
-  if (value === "run.report.debug") return "调试报告";
-  return "运行产物";
 }

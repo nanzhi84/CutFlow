@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, Download, OctagonX, Play, RotateCw, Trash2 } from "lucide-react";
+import { OctagonX, Play, RotateCw, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { api, type FinishedVideo, type NodeRun, type RunCard, type RunDetailResponse } from "../../api/client";
+import { api, type FinishedVideo, type RunCard, type RunDetailResponse } from "../../api/client";
 import { EmptyState, ErrorState, LoadingState } from "../ui/State";
 import { StatusPill } from "../ui/StatusPill";
 import { TimeText } from "../TimeText";
@@ -9,11 +9,13 @@ import { EditorHandoffActions } from "../editor-handoff/EditorHandoffActions";
 import { Modal } from "../ui/Modal";
 import { VideoPlayer } from "../ui/VideoPlayer";
 import { EditTimelinePreview, buildEditClips } from "./EditTimelinePreview";
+import { NodePipeline } from "./NodePipeline";
 import { RunConfigPanel } from "./RunConfigPanel";
 import { StageProgress } from "./StageProgress";
+import { WindowPlanBoard, buildWindowBoard } from "./WindowPlanBoard";
 import { shortId } from "../../lib/format";
 import { toDisplayUrl } from "../../lib/url";
-import { artifactLabel, buildStages, canResumeRun, lipsyncProviderLabel, nodeLabel, severityLabel, warningLabel, type RunAction } from "./runModel";
+import { buildStages, canResumeRun, lipsyncProviderLabel, type RunAction } from "./runModel";
 
 export function RunDetailModal({
   isOpen,
@@ -35,9 +37,9 @@ export function RunDetailModal({
   onAction: (type: RunAction, run: RunCard) => void;
 }) {
   const nodes = detail?.node_runs ?? [];
-  const artifacts = detail?.artifacts ?? [];
   const stages = buildStages(nodes);
   const editClips = buildEditClips(detail);
+  const windowBoard = buildWindowBoard(detail, editClips);
   const coverSource = coverSourceInfo(detail, card);
   const [activeClipId, setActiveClipId] = useState<string | null>(null);
 
@@ -142,72 +144,30 @@ export function RunDetailModal({
             <StageProgress stages={stages} />
           </section>
 
-          <EditTimelinePreview clips={editClips} activeClipId={activeClipId} onSelect={setActiveClipId} />
+          {/* 剪辑时间线：优先窗口规划看板（窗口 + 检索 query + 候选 + 选择理由），老 run 回退片段列表 */}
+          {windowBoard ? (
+            <WindowPlanBoard board={windowBoard} activeClipId={activeClipId} onSelect={setActiveClipId} />
+          ) : (
+            <EditTimelinePreview clips={editClips} activeClipId={activeClipId} onSelect={setActiveClipId} />
+          )}
 
-          {/* 高级（开发者）：原始节点时间线 + 产物清单 */}
-          <details className="overflow-hidden rounded-2xl border border-border/70">
-            <summary className="flex cursor-pointer items-center gap-2 px-4 py-3 text-sm font-semibold text-text-primary transition-colors hover:bg-surface-hover">
-              <ChevronDown className="h-4 w-4 text-accent" />
-              高级（开发者）：节点时间线 · 产物清单
-            </summary>
-            <div className="grid gap-5 border-t border-border/70 p-4">
+          {/* 节点时间线：按工作流模板顺序平铺全部节点（保留英文节点名） */}
+          <section className="grid gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h4 className="text-base font-semibold text-text-primary">节点时间线</h4>
               {detail?.config?.workflow_template_id ? (
-                <div className="flex flex-wrap items-center gap-2 text-sm">
-                  <span className="text-text-tertiary">工作流模板</span>
-                  <span className="font-mono text-xs text-text-secondary">{detail.config.workflow_template_id}</span>
-                </div>
+                <span className="flex items-center gap-1.5 text-xs text-text-tertiary">
+                  工作流模板
+                  <span className="badge bg-white/70 font-mono text-text-secondary">{detail.config.workflow_template_id}</span>
+                </span>
               ) : null}
-
-              <section className="grid gap-3">
-                <h5 className="text-sm font-semibold text-text-secondary">节点时间线</h5>
-                {nodes.length === 0 && !isLoading ? <EmptyState title="暂无节点" /> : null}
-                <div className="grid gap-3">
-                  {nodes.map((node) => (
-                    <NodeDetail key={node.id} node={node} />
-                  ))}
-                </div>
-              </section>
-
-              <section className="grid gap-3">
-                <h5 className="text-sm font-semibold text-text-secondary">产物清单</h5>
-                {artifacts.length === 0 ? <EmptyState title="暂无产物" detail="节点完成后会显示可下载产物。" /> : null}
-                <div className="grid gap-2">
-                  {artifacts.map((artifact) => {
-                    const safeUrl = toDisplayUrl(artifact.uri);
-                    const content = (
-                      <>
-                        <div className="min-w-0">
-                          <p className="truncate font-medium text-text-primary">{artifactLabel(artifact.kind)}</p>
-                          <p className="truncate font-mono text-xs text-text-tertiary">
-                            {shortId(artifact.artifact_id, 12)} · {artifact.schema_version}
-                          </p>
-                        </div>
-                        {safeUrl ? <Download className="h-4 w-4 text-accent" /> : <span className="text-xs text-text-tertiary">内部产物 URI</span>}
-                      </>
-                    );
-                    if (!safeUrl) {
-                      return (
-                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/70 bg-white/60 p-3" key={artifact.artifact_id}>
-                          {content}
-                        </div>
-                      );
-                    }
-                    return (
-                      <a
-                        className="flex items-center justify-between gap-3 rounded-2xl border border-border/70 bg-white/60 p-3 no-underline hover:bg-white/80"
-                        href={safeUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        key={artifact.artifact_id}
-                      >
-                        {content}
-                      </a>
-                    );
-                  })}
-                </div>
-              </section>
             </div>
-          </details>
+            {nodes.length === 0 && !detail && !isLoading ? (
+              <EmptyState title="暂无节点" />
+            ) : (
+              <NodePipeline templateId={detail?.config?.workflow_template_id} nodes={nodes} runStatus={card.status} />
+            )}
+          </section>
         </div>
       ) : null}
     </Modal>
@@ -319,41 +279,4 @@ function coverProviderName(providerId: string | undefined, providerLabel: string
 function compactDetail(values: Array<string | undefined>): string | undefined {
   const detail = values.filter(Boolean).join(" · ");
   return detail || undefined;
-}
-
-function NodeDetail({ node }: { node: NodeRun }) {
-  const warnings = [...(node.warnings ?? []), ...(node.degradations ?? []).map((item) => item.code)];
-  return (
-    <div className="grid gap-3 rounded-[20px] border border-border/70 bg-white/60 p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="font-semibold text-text-primary">{nodeLabel(node.node_id)}</p>
-          <p className="font-mono text-[11px] text-text-tertiary">{node.node_id}</p>
-          <p className="text-xs text-text-secondary">
-            <TimeText value={node.started_at} /> - <TimeText value={node.finished_at} />
-          </p>
-        </div>
-        <StatusPill status={node.status} />
-      </div>
-      {warnings.length > 0 ? (
-        <div className="grid gap-1 rounded-2xl border border-status-warning/20 bg-status-warning/10 p-3 text-sm text-status-warning">
-          {warnings.map((warning) => (
-            <p key={warning}>{warningLabel(warning)}</p>
-          ))}
-          {(node.degradations ?? []).map((notice) => (
-            <p key={`${notice.code}-${notice.node_id ?? ""}`}>{notice.message || warningLabel(notice.code)}</p>
-          ))}
-        </div>
-      ) : null}
-      {node.error ? (
-        <div className="grid gap-1 rounded-2xl border border-status-error/25 bg-status-error/10 p-3 text-sm text-status-error">
-          <p className="font-medium">{node.error.message}</p>
-          <p>
-            严重级别：{severityLabel(node.error.severity)} · {node.error.retryable ? "可重试" : "不可重试"}
-          </p>
-          {node.error.request_id ? <p className="font-mono text-xs">request_id: {node.error.request_id}</p> : null}
-        </div>
-      ) : null}
-    </div>
-  );
 }
