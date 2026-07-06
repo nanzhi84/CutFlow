@@ -10,13 +10,17 @@ def _read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_run_detail_places_jianying_export_before_developer_details() -> None:
+def test_run_detail_places_jianying_export_before_runtime_diagnostics() -> None:
     modal = _read("apps/web/src/components/runs/RunDetailModal.tsx")
 
-    before_developer, developer_section = modal.split("高级（开发者）", 1)
-    assert "EditorHandoffActions" in before_developer
-    assert "EditorHandoffActions" not in developer_section
-    assert "交接包" not in developer_section
+    action_index = modal.index("<EditorHandoffActions")
+    node_timeline_index = modal.index("节点时间线")
+    artifact_list_index = modal.index("产物清单")
+
+    assert action_index < node_timeline_index < artifact_list_index
+    runtime_sections = modal[node_timeline_index:]
+    assert "EditorHandoffActions" not in runtime_sections
+    assert "交接包" not in runtime_sections
     assert '<h4 className="text-base font-semibold text-text-primary">剪映工程包</h4>' not in modal
     assert "finishedVideoId={finishedVideo?.id}" in modal
 
