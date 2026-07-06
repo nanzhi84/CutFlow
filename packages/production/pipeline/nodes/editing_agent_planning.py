@@ -41,6 +41,11 @@ from packages.production.pipeline._editing_agent import (
     BrollChoice,
     EditingSelection,
     IndexedCandidates,
+    PortraitChoice,
+    _slot_has_retrieval_constraint as _agent_slot_has_retrieval_constraint,
+    _slot_required_frames as _agent_slot_required_frames,
+    _source_frames_available as _agent_source_frames_available,
+    _topk_for_slot as _agent_topk_for_slot,
     build_agent_input,
     deterministic_selection,
     index_candidates,
@@ -525,6 +530,116 @@ def _broll_candidate_similarity(candidate: dict, desired: dict | None) -> tuple[
     return (overlap, same_scene, same_diversity)
 
 
+def _repair_portrait_selection_to_constraints(
+    *,
+    selection: EditingSelection,
+    boundary: dict,
+    candidates: IndexedCandidates,
+    bgm_enabled: bool,
+    retrieval_topk_by_window: dict[str, list[str]],
+) -> tuple[EditingSelection, list[dict], list[str]]:
+    portrait_slots = {
+        _local_str(slot.get("slot_id")): slot
+        for slot in (boundary.get("portrait_slots") or [])
+        if isinstance(slot, dict)
+    }
+    used_slots: set[str] = set()
+    used_assets: set[str] = set()
+    repaired_portrait: list[PortraitChoice] = []
+    actions: list[dict] = []
+
+    def asset_id(candidate_id: str) -> str:
+        candidate = candidates.portrait_by_id.get(candidate_id)
+        return _local_str(candidate.get("asset_id")) if candidate is not None else ""
+
+    def usable(candidate_id: str, slot: dict) -> bool:
+        candidate = candidates.portrait_by_id.get(candidate_id)
+        if candidate is None:
+            return False
+        if (
+            _agent_slot_has_retrieval_constraint(slot, retrieval_topk_by_window)
+            and candidate_id not in set(_agent_topk_for_slot(slot, retrieval_topk_by_window))
+        ):
+            return False
+        if _agent_source_frames_available(candidate) < _agent_slot_required_frames(slot):
+            return False
+        asset = asset_id(candidate_id)
+        return not (asset and asset in used_assets)
+
+    for choice in selection.portrait:
+        slot = portrait_slots.get(choice.slot_id)
+        choice_is_valid = (
+            slot is not None
+            and choice.slot_id not in used_slots
+            and usable(choice.window_id, slot)
+        )
+        if choice_is_valid:
+            used_slots.add(choice.slot_id)
+            asset = asset_id(choice.window_id)
+            if asset:
+                used_assets.add(asset)
+            repaired_portrait.append(choice)
+            continue
+        if slot is None or choice.slot_id in used_slots:
+            repaired_portrait.append(choice)
+            continue
+
+        topk = _agent_topk_for_slot(slot, retrieval_topk_by_window)
+        legal_pool = [candidate_id for candidate_id in topk if usable(candidate_id, slot)]
+        original_asset = asset_id(choice.window_id)
+        replacement_id = next(
+            (
+                candidate_id
+                for candidate_id in legal_pool
+                if original_asset and asset_id(candidate_id) == original_asset
+            ),
+            "",
+        ) or next(iter(legal_pool), "")
+        if not replacement_id:
+            repaired_portrait.append(choice)
+            continue
+
+        used_slots.add(choice.slot_id)
+        asset = asset_id(replacement_id)
+        if asset:
+            used_assets.add(asset)
+        repaired_portrait.append(
+            PortraitChoice(
+                slot_id=choice.slot_id,
+                window_id=replacement_id,
+                source_mode=choice.source_mode,
+                reason=choice.reason
+                if replacement_id == choice.window_id
+                else f"{choice.reason}（本地约束修正：{choice.window_id} -> {replacement_id}）",
+            )
+        )
+        actions.append(
+            {
+                "slot_id": choice.slot_id,
+                "original_window_id": choice.window_id,
+                "repaired_window_id": replacement_id,
+                "action": "replaced",
+                "reason": "matched legal portrait retrieval candidate",
+            }
+        )
+
+    repaired = EditingSelection(
+        portrait=repaired_portrait,
+        broll=selection.broll,
+        font_id=selection.font_id,
+        bgm_id=selection.bgm_id,
+        analysis=selection.analysis,
+    )
+    errors = validate_selection(
+        repaired,
+        boundary=boundary,
+        candidates=candidates,
+        bgm_enabled=bgm_enabled,
+        retrieval_topk_by_window=retrieval_topk_by_window,
+    )
+    return repaired, actions, errors
+
+
 def _repair_broll_selection_to_constraints(
     *,
     selection: EditingSelection,
@@ -950,9 +1065,27 @@ def select_editing_assignment(
             if isinstance(item, dict)
         )
         if errors:
+            repaired_selection, portrait_repair_actions, portrait_repair_errors = (
+                _repair_portrait_selection_to_constraints(
+                    selection=selection,
+                    boundary=agent_context.agent_boundary,
+                    candidates=agent_context.candidates,
+                    bgm_enabled=state.request.bgm.enabled,
+                    retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
+                )
+            )
+            if portrait_repair_actions:
+                repair_trace.append(
+                    {
+                        "attempt": "local_constraint_repair_portrait",
+                        "error_count": len(portrait_repair_errors),
+                        "errors": portrait_repair_errors,
+                        "actions": portrait_repair_actions,
+                    }
+                )
             repaired_selection, local_repair_actions, local_repair_errors = (
                 _repair_broll_selection_to_constraints(
-                    selection=selection,
+                    selection=repaired_selection,
                     boundary=agent_context.agent_boundary,
                     candidates=agent_context.candidates,
                     bgm_enabled=state.request.bgm.enabled,
@@ -969,10 +1102,12 @@ def select_editing_assignment(
                         "actions": local_repair_actions,
                     }
                 )
+            errors = local_repair_errors
             if not local_repair_errors:
                 selection = repaired_selection
                 errors = []
-                warnings.append(WarningCode.editing_agent_local_constraint_repair)
+                if WarningCode.editing_agent_local_constraint_repair not in warnings:
+                    warnings.append(WarningCode.editing_agent_local_constraint_repair)
         if errors:
             if not sandbox_fallback_allowed():
                 raise NodeExecutionError(

@@ -367,6 +367,32 @@ def _agent_context(state: RunState):
     )
 
 
+def _disable_llm_reprompt(state: RunState) -> None:
+    state.request = state.request.model_copy(
+        update={
+            "edit": state.request.edit.model_copy(update={"max_repair_attempts": 0}),
+        }
+    )
+
+
+def _attach_retrieval(state: RunState, topk_by_window: dict[str, list[str]]) -> None:
+    state.artifacts[ArtifactKind.plan_window_material_retrieval] = Artifact(
+        id="art_retrieval",
+        case_id="case_demo",
+        run_id="run_1",
+        node_run_id="nr_retrieval",
+        kind=ArtifactKind.plan_window_material_retrieval,
+        payload={
+            "candidates_by_window": {
+                window_id: [{"candidate_id": candidate_id} for candidate_id in candidate_ids]
+                for window_id, candidate_ids in topk_by_window.items()
+            },
+            "diagnostics": {},
+        },
+        payload_schema="WindowMaterialRetrievalArtifact.v1",
+    )
+
+
 def test_build_editing_agent_context_is_independent_from_provider():
     state = _state()
     context = _agent_context(state)
@@ -528,6 +554,154 @@ def test_local_broll_constraint_repair_replaces_invalid_candidate():
             "reason": "matched nearest legal retrieval/diversity candidate",
         }
     ]
+
+
+def test_local_portrait_constraint_repair_replaces_topk_hallucination(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    adapter.provider_gateway.register(
+        _FakeEditingLlmProvider(
+            [
+                {
+                    "intent": {
+                        "portrait_plan": [
+                            {"slot_id": "pslot_000", "window_id": "pc_000"},
+                            {"slot_id": "pslot_001", "window_id": "pc_001"},
+                        ],
+                        "broll_plan": [{"slot_id": "bslot_000", "candidate_id": "bc_000"}],
+                        "font_plan": {"font_id": "font_yst"},
+                        "bgm_plan": {"bgm_id": "bgm_001"},
+                    }
+                }
+            ]
+        )
+    )
+    state = _state()
+    _disable_llm_reprompt(state)
+    _attach_retrieval(
+        state,
+        {
+            "pslot_000": ["pc_001"],
+            "pslot_001": ["pc_000"],
+            "bslot_000": ["bc_000"],
+        },
+    )
+
+    output = _run_node(adapter, state)
+
+    assert output.status == NodeStatus.succeeded
+    assert output.provider_invocation_ids and len(output.provider_invocation_ids) == 1
+    assert WarningCode.editing_agent_local_constraint_repair in output.warnings
+    assignment = _payload(output, ArtifactKind.plan_media_assignment)
+    assert assignment["engine"] == "editing_agent_llm"
+    assert assignment["portrait"] == [
+        {
+            "window_id": "pslot_000",
+            "candidate_id": "pc_001",
+            "source_mode": "lipsynced",
+            "reason": "（本地约束修正：pc_000 -> pc_001）",
+        },
+        {
+            "window_id": "pslot_001",
+            "candidate_id": "pc_000",
+            "source_mode": "lipsynced",
+            "reason": "（本地约束修正：pc_001 -> pc_000）",
+        },
+    ]
+    repair_trace = assignment["diagnostics"]["repair_trace"]
+    assert repair_trace[0]["error_count"] > 0
+    assert repair_trace[1]["attempt"] == "local_constraint_repair_portrait"
+    assert repair_trace[1]["error_count"] == 0
+
+
+def test_local_portrait_constraint_repair_replaces_second_asset_conflict(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    adapter.provider_gateway.register(
+        _FakeEditingLlmProvider(
+            [
+                {
+                    "intent": {
+                        "portrait_plan": [
+                            {"slot_id": "pslot_000", "window_id": "pc_000"},
+                            {"slot_id": "pslot_001", "window_id": "pc_000"},
+                        ],
+                        "broll_plan": [{"slot_id": "bslot_000", "candidate_id": "bc_000"}],
+                        "font_plan": {"font_id": "font_yst"},
+                        "bgm_plan": {"bgm_id": "bgm_001"},
+                    }
+                }
+            ]
+        )
+    )
+    state = _state()
+    _disable_llm_reprompt(state)
+    _attach_retrieval(
+        state,
+        {
+            "pslot_000": ["pc_000"],
+            "pslot_001": ["pc_000", "pc_001"],
+            "bslot_000": ["bc_000"],
+        },
+    )
+
+    output = _run_node(adapter, state)
+
+    assignment = _payload(output, ArtifactKind.plan_media_assignment)
+    assert output.provider_invocation_ids and len(output.provider_invocation_ids) == 1
+    assert WarningCode.editing_agent_local_constraint_repair in output.warnings
+    assert [item["candidate_id"] for item in assignment["portrait"]] == ["pc_000", "pc_001"]
+    assert assignment["diagnostics"]["repair_trace"][1]["actions"] == [
+        {
+            "slot_id": "pslot_001",
+            "original_window_id": "pc_000",
+            "repaired_window_id": "pc_001",
+            "action": "replaced",
+            "reason": "matched legal portrait retrieval candidate",
+        }
+    ]
+
+
+def test_local_portrait_constraint_repair_without_replacement_keeps_failure_path(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("CUTAGENT_ALLOW_SANDBOX_FALLBACK", "0")
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    adapter.provider_gateway.register(
+        _FakeEditingLlmProvider(
+            [
+                {
+                    "intent": {
+                        "portrait_plan": [
+                            {"slot_id": "pslot_000", "window_id": "pc_000"},
+                            {"slot_id": "pslot_001", "window_id": "pc_000"},
+                        ],
+                        "broll_plan": [{"slot_id": "bslot_000", "candidate_id": "bc_000"}],
+                        "font_plan": {"font_id": "font_yst"},
+                        "bgm_plan": {"bgm_id": "bgm_001"},
+                    }
+                }
+            ]
+        )
+    )
+    state = _state()
+    _disable_llm_reprompt(state)
+    _attach_retrieval(
+        state,
+        {
+            "pslot_000": ["pc_000"],
+            "pslot_001": ["pc_000"],
+            "bslot_000": ["bc_000"],
+        },
+    )
+
+    with pytest.raises(NodeExecutionError) as exc:
+        _run_node(adapter, state)
+
+    assert exc.value.error.code == ErrorCode.prompt_output_invalid
+    assert len(adapter.repository.provider_invocations) == 1
 
 
 def test_llm_repair_path_is_visible(tmp_path):

@@ -399,6 +399,16 @@ class ClipEmbeddingIndexRow(TimestampMixin, Base):
     index_version: Mapped[str] = mapped_column(String, nullable=False)
 
 
+class ClipEmbeddingJobRow(TimestampMixin, Base):
+    __tablename__ = "clip_embedding_jobs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    case_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    namespace: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
 class VoiceProfileRow(TimestampMixin, Base):
     __tablename__ = "voice_profiles"
 

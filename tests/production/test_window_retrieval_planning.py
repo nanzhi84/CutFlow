@@ -94,13 +94,22 @@ def _artifact(kind: ArtifactKind, payload: dict) -> Artifact:
     )
 
 
-def _request() -> DigitalHumanVideoRequest:
+def _request(
+    *,
+    script: str = "今天看施工前后变化。第一步先看施工前现场。",
+    instruction: str | None = None,
+) -> DigitalHumanVideoRequest:
+    payload = {
+        "case_id": "case_demo",
+        "script": script,
+        "title": "案例",
+        "voice": {"voice_id": "voice_sandbox"},
+        "broll": {"enabled": True, "max_inserts": 2},
+    }
+    if instruction is not None:
+        payload["edit"] = {"instruction": instruction}
     return DigitalHumanVideoRequest(
-        case_id="case_demo",
-        script="今天看施工前后变化。第一步先看施工前现场。",
-        title="案例",
-        voice={"voice_id": "voice_sandbox"},
-        broll={"enabled": True, "max_inserts": 2},
+        **payload,
     )
 
 
@@ -286,12 +295,18 @@ def _annotate_broll(repository: Repository, *, asset_id: str = "broll_a") -> Non
     )
 
 
-def _ctx(adapter: LocalRuntimeAdapter, node_id: str, artifacts: dict[ArtifactKind, Artifact]):
+def _ctx(
+    adapter: LocalRuntimeAdapter,
+    node_id: str,
+    artifacts: dict[ArtifactKind, Artifact],
+    *,
+    request: DigitalHumanVideoRequest | None = None,
+):
     return NodeContext(
         adapter=adapter,
         run=_run(),
         node_run=_node_run(node_id),
-        state=RunState(request=_request(), artifacts=artifacts),
+        state=RunState(request=request or _request(), artifacts=artifacts),
     )
 
 
@@ -311,6 +326,29 @@ def _seed_clip_embedding_record(db_session_factory, record) -> None:
         session.flush()
         _upsert_record(session, record)
         session.commit()
+
+
+def _clip_embedding_record(
+    *,
+    key: str,
+    asset_id: str,
+    clip_id: str,
+    namespace: str = "broll",
+) -> ClipEmbeddingRecord:
+    return ClipEmbeddingRecord(
+        clip_embedding_key=key,
+        asset_id=asset_id,
+        asset_revision=f"asset:{asset_id}:v1:v1:test",
+        clip_id=clip_id,
+        source_start=0.0,
+        source_end=4.0,
+        source_frames_available=120,
+        index_namespace=namespace,
+        embedding_input_ref=f"{asset_id}:{clip_id}:0.000000:4.000000",
+        embedding_id=f"emb_{key}",
+        embedding=[1.0, *([0.0] * 1023)],
+        provider_profile_id="sandbox.embedding.default",
+    )
 
 
 def test_window_query_planning_emits_only_window_id_and_intent(tmp_path):
@@ -336,6 +374,71 @@ def test_window_query_planning_emits_only_window_id_and_intent(tmp_path):
         "pwin_000",
         "bwin_000",
     }
+
+
+def test_window_query_planning_keeps_instruction_when_narration_is_trimmed(tmp_path):
+    adapter = _adapter(tmp_path)
+    instruction = "必须保留这个检索指令"
+    long_text = "超长旁白" * 260
+    narration = _narration()
+    narration["units"][0]["text"] = long_text
+    windows = _windows()
+    windows["broll_windows"][0]["text"] = long_text
+    ctx = _ctx(
+        adapter,
+        "WindowQueryPlanning",
+        {
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                windows,
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, narration),
+        },
+        request=_request(instruction=instruction),
+    )
+
+    output = nodes.window_query_planning.run(ctx)
+
+    query_by_window = {
+        item["window_id"]: item["retrieval_intent"]
+        for item in output.artifacts[0].payload["window_queries"]
+    }
+    assert instruction in query_by_window["pwin_000"]
+    assert instruction in query_by_window["bwin_000"]
+    assert len(query_by_window["pwin_000"]) <= 900
+    assert len(query_by_window["bwin_000"]) <= 900
+
+
+def test_window_query_planning_omits_portrait_narration_when_unit_text_missing(tmp_path):
+    adapter = _adapter(tmp_path)
+    instruction = "优先稳定正脸"
+    script = "SCRIPT_SENTINEL_" + ("整段脚本" * 200)
+    windows = _windows()
+    windows["portrait_windows"][0]["unit_ids"] = ["missing_unit"]
+    ctx = _ctx(
+        adapter,
+        "WindowQueryPlanning",
+        {
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                windows,
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+        },
+        request=_request(script=script, instruction=instruction),
+    )
+
+    output = nodes.window_query_planning.run(ctx)
+
+    portrait_query = next(
+        item["retrieval_intent"]
+        for item in output.artifacts[0].payload["window_queries"]
+        if item["window_id"] == "pwin_000"
+    )
+    assert portrait_query.startswith("A-roll portrait talking-head source clip")
+    assert instruction in portrait_query
+    assert "SCRIPT_SENTINEL" not in portrait_query
+    assert "Narration:" not in portrait_query
 
 
 def test_window_material_retrieval_uses_material_pack_pool_and_sql_hnsw_index(
@@ -414,6 +517,94 @@ def test_window_material_retrieval_uses_material_pack_pool_and_sql_hnsw_index(
     assert payload["diagnostics"]["retrieval_backend"] == "postgres_hnsw"
     assert payload["diagnostics"]["rejected_candidates"][0]["reason"] == "source_too_short"
     assert adapter.repository.clip_embedding_index == {}
+
+
+def test_window_material_retrieval_keyword_fusion_breaks_close_semantic_tie():
+    candidate_plain = nodes.window_material_retrieval._RetrievalCandidate(
+        candidate_id="bc_000",
+        candidate={
+            "asset_id": "broll_plain",
+            "metadata": {"source_start": 0.0, "source_end": 4.0},
+        },
+        clip_embedding_key="clipemb_plain",
+        source_frames=120,
+        index=0,
+    )
+    candidate_keyword = nodes.window_material_retrieval._RetrievalCandidate(
+        candidate_id="bc_001",
+        candidate={
+            "asset_id": "broll_keyword",
+            "metadata": {
+                "source_start": 0.0,
+                "source_end": 4.0,
+                "matched_keywords": ["施工前"],
+            },
+        },
+        clip_embedding_key="clipemb_keyword",
+        source_frames=120,
+        index=1,
+    )
+
+    class FakeProductionRepository:
+        def nearest_clip_embeddings(self, **_kwargs):
+            return [
+                (
+                    _clip_embedding_record(
+                        key="clipemb_plain",
+                        asset_id="broll_plain",
+                        clip_id="plain",
+                    ),
+                    0.2,
+                ),
+                (
+                    _clip_embedding_record(
+                        key="clipemb_keyword",
+                        asset_id="broll_keyword",
+                        clip_id="keyword",
+                    ),
+                    0.2,
+                ),
+            ]
+
+    ranked = nodes.window_material_retrieval._retrieve_for_window_from_sql(
+        production_repository=FakeProductionRepository(),
+        namespace="broll",
+        eligible=[candidate_plain, candidate_keyword],
+        query_embedding=[1.0, *([0.0] * 1023)],
+        query_keywords=["施工前", "现场"],
+        provider_profile_id="sandbox.embedding.default",
+        required_frames=60,
+    )
+
+    assert [candidate.candidate_id for candidate in ranked[:2]] == ["bc_001", "bc_000"]
+    assert ranked[0].retrieval_trace["keyword_adjustment"] == 0.075
+    assert ranked[0].retrieval_trace["keyword_matched"] == ["施工前"]
+
+
+def test_window_material_retrieval_without_keywords_preserves_legacy_score_formula():
+    item = nodes.window_material_retrieval._RetrievalCandidate(
+        candidate_id="bc_000",
+        candidate={
+            "asset_id": "broll_plain",
+            "metadata": {"source_start": 0.0, "source_end": 4.0, "recency_penalty": 0.2},
+        },
+        clip_embedding_key="clipemb_plain",
+        source_frames=120,
+        index=3,
+    )
+
+    candidate = nodes.window_material_retrieval._retrieved_candidate(
+        item=item,
+        record=_clip_embedding_record(key="clipemb_plain", asset_id="broll_plain", clip_id="plain"),
+        semantic_similarity=0.8,
+        query_keywords=["施工前"],
+        required_frames=60,
+        source="postgres_hnsw_clip_embedding_index",
+    )
+
+    assert candidate.retrieval_score == round(0.8 - 0.02 - 0.000003, 6)
+    assert candidate.retrieval_trace["keyword_adjustment"] == 0.0
+    assert candidate.retrieval_trace["keyword_matched"] == []
 
 
 def test_window_material_retrieval_status_ignores_normal_source_too_short_filtering():
@@ -641,6 +832,7 @@ def test_window_material_retrieval_sql_results_ignore_stale_embedding_keys():
         namespace="broll",
         eligible=[known],
         query_embedding=[1.0, *([0.0] * 1023)],
+        query_keywords=[],
         provider_profile_id="sandbox.embedding.default",
         required_frames=60,
     )

@@ -3,7 +3,6 @@ from __future__ import annotations
 import ipaddress
 import logging
 import math
-import threading
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -13,7 +12,7 @@ from typing import Any, Callable, Literal
 from urllib.parse import urlsplit
 
 from fastapi import BackgroundTasks, Request
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -24,6 +23,7 @@ from packages.core.contracts.artifacts import ClipEmbeddingRecord
 from packages.core.storage.database import (
     AnnotationRow,
     ArtifactRow,
+    ClipEmbeddingJobRow,
     ClipEmbeddingIndexRow,
     MediaAssetRow,
 )
@@ -57,6 +57,7 @@ _EMBEDDING_VIDEO_BUDGET_MB = 49.0
 _EMBEDDING_SIGNED_URL_TTL = timedelta(hours=1)
 
 logger = logging.getLogger("apps.api.services.clip_embeddings")
+_TERMINAL_JOB_STATUSES = {c.JobStatus.succeeded.value, c.JobStatus.failed.value}
 
 
 @dataclass(frozen=True)
@@ -521,28 +522,28 @@ def _status_response(
     )
 
 
-def _job_registry(app: Any) -> tuple[dict[str, c.ClipEmbeddingJobStatusResponse], threading.Lock]:
-    jobs = getattr(app.state, "clip_embedding_jobs", None)
-    if jobs is None:
-        jobs = {}
-        app.state.clip_embedding_jobs = jobs
-    lock = getattr(app.state, "clip_embedding_jobs_lock", None)
-    if lock is None:
-        lock = threading.Lock()
-        app.state.clip_embedding_jobs_lock = lock
-    return jobs, lock
-
-
 def _store_job(app: Any, job: c.ClipEmbeddingJobStatusResponse) -> None:
-    jobs, lock = _job_registry(app)
-    with lock:
-        jobs[job.job_id] = job
+    session_factory = app.state.sqlalchemy_session_factory
+    with session_factory() as session:
+        session.merge(
+            ClipEmbeddingJobRow(
+                id=job.job_id,
+                case_id=job.case_id,
+                namespace=job.namespace,
+                status=job.status.value,
+                payload=job.model_dump(mode="json"),
+            )
+        )
+        session.commit()
 
 
 def _read_job(app: Any, job_id: str) -> c.ClipEmbeddingJobStatusResponse | None:
-    jobs, lock = _job_registry(app)
-    with lock:
-        return jobs.get(job_id)
+    session_factory = app.state.sqlalchemy_session_factory
+    with session_factory() as session:
+        row = session.get(ClipEmbeddingJobRow, job_id)
+        if row is None:
+            return None
+        return c.ClipEmbeddingJobStatusResponse.model_validate(row.payload)
 
 
 def _update_job(
@@ -550,22 +551,81 @@ def _update_job(
     job_id: str,
     **updates: Any,
 ) -> c.ClipEmbeddingJobStatusResponse | None:
-    jobs, lock = _job_registry(app)
-    with lock:
-        current = jobs.get(job_id)
-        if current is None:
+    session_factory = app.state.sqlalchemy_session_factory
+    with session_factory() as session:
+        row = session.scalar(
+            select(ClipEmbeddingJobRow)
+            .where(ClipEmbeddingJobRow.id == job_id)
+            .with_for_update()
+        )
+        if row is None:
             return None
-        jobs[job_id] = current.model_copy(update={**updates, "updated_at": c.utcnow()})
-        return jobs[job_id]
+        current = c.ClipEmbeddingJobStatusResponse.model_validate(row.payload)
+        next_status = updates.get("status")
+        if (
+            current.status.value in _TERMINAL_JOB_STATUSES
+            and next_status is not None
+            and _job_status_value(next_status) not in _TERMINAL_JOB_STATUSES
+        ):
+            return current
+        updated = current.model_copy(update={**updates, "updated_at": c.utcnow()})
+        payload = updated.model_dump(mode="json")
+        row.case_id = updated.case_id
+        row.namespace = updated.namespace
+        row.status = _job_status_value(updated.status)
+        row.payload = payload
+        session.commit()
+        return c.ClipEmbeddingJobStatusResponse.model_validate(payload)
+
+
+def reconcile_interrupted_clip_embedding_jobs(app: Any) -> None:
+    session_factory = app.state.sqlalchemy_session_factory
+    now = c.utcnow()
+    now_payload = now.isoformat()
+    message = "API 重启中断，请重新发起索引"
+    with session_factory() as session:
+        session.execute(
+            text(
+                """
+                update clip_embedding_jobs
+                set status = :failed_status,
+                    payload = payload || jsonb_build_object(
+                        'status', cast(:failed_payload as text),
+                        'error_message', cast(:message as text),
+                        'finished_at', cast(:finished_at as text),
+                        'updated_at', cast(:updated_at as text)
+                    ),
+                    updated_at = :updated_at_ts
+                where status in (:queued, :running)
+                """
+            ),
+            {
+                "failed_status": c.JobStatus.failed.value,
+                "failed_payload": c.JobStatus.failed.value,
+                "message": message,
+                "finished_at": now_payload,
+                "updated_at": now_payload,
+                "updated_at_ts": now,
+                "queued": c.JobStatus.queued.value,
+                "running": c.JobStatus.running.value,
+            },
+        )
+        session.commit()
+
+
+def _job_status_value(status: Any) -> str:
+    return status.value if hasattr(status, "value") else str(status)
 
 
 def _run_clip_embedding_job(app: Any, job_id: str, payload: c.ClipEmbeddingIndexRequest) -> None:
-    _update_job(
+    started_job = _update_job(
         app,
         job_id,
         status=c.JobStatus.running,
         started_at=c.utcnow(),
     )
+    if started_job is None or started_job.status != c.JobStatus.running:
+        return
     try:
         response = index_clip_embeddings(
             payload,

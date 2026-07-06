@@ -39,9 +39,13 @@ def run(ctx: NodeContext) -> NodeOutput:
             WindowRetrievalQuery(
                 window_id=window_id,
                 retrieval_intent=_trim_intent(
-                    "A-roll portrait talking-head source clip for this narration window. "
-                    f"Use natural presenter delivery, stable face visibility, and lip-syncable speech. "
-                    f"Narration: {unit_text or state.request.script}. {context_text}"
+                    _join_intent(
+                        "A-roll portrait talking-head source clip for this narration window. "
+                        "Use natural presenter delivery, stable face visibility, and "
+                        "lip-syncable speech.",
+                        context_text,
+                        f"Narration: {unit_text}" if unit_text else "",
+                    )
                 ),
             )
         )
@@ -59,9 +63,13 @@ def run(ctx: NodeContext) -> NodeOutput:
             WindowRetrievalQuery(
                 window_id=window_id,
                 retrieval_intent=_trim_intent(
-                    "B-roll insert clip for this exact narration window. "
-                    "Prefer concrete visual evidence, scene detail, product/process/action, "
-                    f"and avoid presenter talking-head footage. Narration: {unit_text}. {context_text}"
+                    _join_intent(
+                        "B-roll insert clip for this exact narration window. "
+                        "Prefer concrete visual evidence, scene detail, "
+                        "product/process/action, and avoid presenter talking-head footage.",
+                        context_text,
+                        f"Narration: {unit_text}" if unit_text else "",
+                    )
                 ),
             )
         )
@@ -95,6 +103,10 @@ def _unit_text(unit_ids, units_by_id: dict[str, dict]) -> str:
         if text:
             parts.append(text)
     return " ".join(parts).strip()
+
+
+def _join_intent(*parts: str) -> str:
+    return " ".join(str(part or "").strip() for part in parts if str(part or "").strip())
 
 
 def _context_text(*, request, case_context: dict, creative_intent: dict) -> str:

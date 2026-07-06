@@ -21,6 +21,7 @@ from packages.planning.material import (
     CLIP_EMBEDDING_NORMALIZATION,
     CLIP_INDEX_VERSION,
     candidate_clip_embedding_key,
+    extract_keywords,
     longest_clean_portrait_source_span,
     normalize_vector,
 )
@@ -30,6 +31,7 @@ from packages.production.pipeline._node_context import NodeContext
 _TOP_K = 12
 _SQL_RECALL_MULTIPLIER = 10
 _SQL_RECALL_MIN_EXTRA = 50
+_KEYWORD_FUSION_WEIGHT = 0.15
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             )
             candidates_by_window[window_id] = []
             continue
+        query_keywords = extract_keywords(retrieval_intent)
         invocation, result = ctx.provider_gateway.invoke(
             ProviderCall(
                 case_id=ctx.run.case_id,
@@ -158,6 +161,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             window=window,
             candidate_pool=candidate_pool,
             query_embedding=query_embedding,
+            query_keywords=query_keywords,
             provider_profile_id=profile.id,
             diagnostics=diagnostics,
         )
@@ -177,6 +181,7 @@ def _retrieve_for_window(
     window: dict,
     candidate_pool: dict[str, dict],
     query_embedding: list[float],
+    query_keywords: list[str],
     provider_profile_id: str,
     diagnostics: dict[str, Any],
 ) -> list[RetrievedWindowCandidate]:
@@ -208,6 +213,7 @@ def _retrieve_for_window(
         namespace=namespace,
         eligible=eligible,
         query_embedding=query_embedding,
+        query_keywords=query_keywords,
         provider_profile_id=provider_profile_id,
         required_frames=required_frames,
     )
@@ -264,6 +270,7 @@ def _retrieve_for_window_from_sql(
     namespace: str,
     eligible: list[_RetrievalCandidate],
     query_embedding: list[float],
+    query_keywords: list[str],
     provider_profile_id: str,
     required_frames: int,
 ) -> list[RetrievedWindowCandidate]:
@@ -295,6 +302,7 @@ def _retrieve_for_window_from_sql(
                 item=candidate,
                 record=record,
                 semantic_similarity=semantic_similarity,
+                query_keywords=query_keywords,
                 required_frames=required_frames,
                 source="postgres_hnsw_clip_embedding_index",
             )
@@ -314,12 +322,22 @@ def _retrieved_candidate(
     item: _RetrievalCandidate,
     record: ClipEmbeddingRecord,
     semantic_similarity: float,
+    query_keywords: list[str],
     required_frames: int,
     source: str,
 ) -> RetrievedWindowCandidate:
     recency_adjustment = _recency_adjustment(item.candidate)
+    keyword_adjustment, keyword_matched = _keyword_adjustment(
+        item.candidate,
+        query_keywords=query_keywords,
+    )
     deterministic_tiebreaker = -float(item.index) / 1_000_000.0
-    retrieval_score = semantic_similarity + recency_adjustment + deterministic_tiebreaker
+    retrieval_score = (
+        semantic_similarity
+        + recency_adjustment
+        + keyword_adjustment
+        + deterministic_tiebreaker
+    )
     return RetrievedWindowCandidate(
         candidate_id=item.candidate_id,
         clip_embedding_key=record.clip_embedding_key,
@@ -342,6 +360,8 @@ def _retrieved_candidate(
             "instruct": record.instruct,
             "index_version": record.index_version,
             "sample_policy": record.sample_policy,
+            "keyword_adjustment": round(keyword_adjustment, 6),
+            "keyword_matched": keyword_matched,
         },
     )
 
@@ -453,6 +473,26 @@ def _recency_adjustment(candidate: dict) -> float:
     recent_usage = metadata.get("recent_usage") if isinstance(metadata.get("recent_usage"), dict) else {}
     penalty = max(penalty, _as_float(recent_usage.get("recency_penalty")))
     return -0.1 * penalty
+
+
+def _keyword_adjustment(candidate: dict, *, query_keywords: list[str]) -> tuple[float, list[str]]:
+    query = [_clean_keyword(item) for item in query_keywords]
+    query = [item for item in query if item]
+    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    raw_candidate_keywords = metadata.get("keywords") or metadata.get("matched_keywords") or []
+    if isinstance(raw_candidate_keywords, list):
+        candidate_keywords = {_clean_keyword(item) for item in raw_candidate_keywords}
+    else:
+        candidate_keywords = {_clean_keyword(raw_candidate_keywords)}
+    candidate_keywords.discard("")
+    matched = [keyword for keyword in query if keyword in candidate_keywords]
+    keyword_score = len(matched) / max(len(query), 1)
+    keyword_score = max(0.0, min(1.0, keyword_score))
+    return _KEYWORD_FUSION_WEIGHT * keyword_score, matched
+
+
+def _clean_keyword(value: Any) -> str:
+    return str(value or "").strip()
 
 
 def _embedding_output_metadata(output: Any) -> dict[str, Any]:

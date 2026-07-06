@@ -11,7 +11,13 @@ from apps.api.services import clip_embeddings
 from packages.ai.gateway import ProviderResult
 from packages.core import contracts as c
 from packages.core.contracts.artifacts import ClipEmbeddingRecord
-from packages.core.storage.database import AnnotationRow, ArtifactRow, CaseRow, MediaAssetRow
+from packages.core.storage.database import (
+    AnnotationRow,
+    ArtifactRow,
+    CaseRow,
+    ClipEmbeddingJobRow,
+    MediaAssetRow,
+)
 from packages.core.workflow import NodeExecutionError
 from packages.planning.material.clip_embedding import (
     asset_revision_token,
@@ -538,8 +544,12 @@ def test_clip_embedding_video_preparation_helpers(monkeypatch, tmp_path):
     assert clip_embeddings._fit_embedding_video_budget(large, tmp_path) == compressed
 
 
-def test_enqueue_clip_embeddings_returns_job_status(monkeypatch):
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+def test_enqueue_clip_embeddings_returns_job_status(monkeypatch, db_session_factory):
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(sqlalchemy_session_factory=db_session_factory),
+        )
+    )
     payload = c.ClipEmbeddingIndexRequest(
         case_id="case_test",
         asset_ids=["asset_1"],
@@ -583,10 +593,23 @@ def test_enqueue_clip_embeddings_returns_job_status(monkeypatch):
     stored = clip_embeddings.clip_embedding_job_status(request, response.job_id)
     assert stored.schema_version == "clip_embedding_job_status.v1"
     assert stored.job_id == response.job_id
+    with db_session_factory() as session:
+        row = session.get(ClipEmbeddingJobRow, response.job_id)
+        assert row is not None
+        assert row.status == c.JobStatus.queued.value
+        assert row.payload["job_id"] == response.job_id
+    restarted_request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(sqlalchemy_session_factory=db_session_factory),
+        )
+    )
+    assert clip_embeddings.clip_embedding_job_status(restarted_request, response.job_id).job_id == (
+        response.job_id
+    )
 
 
-def test_run_clip_embedding_job_publishes_incremental_progress(monkeypatch):
-    app = SimpleNamespace(state=SimpleNamespace())
+def test_run_clip_embedding_job_publishes_incremental_progress(monkeypatch, db_session_factory):
+    app = SimpleNamespace(state=SimpleNamespace(sqlalchemy_session_factory=db_session_factory))
     request = SimpleNamespace(app=app)
     payload = c.ClipEmbeddingIndexRequest(
         case_id="case_test",
@@ -665,6 +688,72 @@ def test_run_clip_embedding_job_publishes_incremental_progress(monkeypatch):
     assert any(snapshot.status == c.JobStatus.running for snapshot in snapshots)
     assert any(snapshot.processed_count == 1 and snapshot.remaining_count == 1 for snapshot in snapshots)
     stored = clip_embeddings.clip_embedding_job_status(request, job.job_id)
+    assert stored.status == c.JobStatus.succeeded
+    assert stored.processed_count == 2
+    assert stored.remaining_count == 0
+
+
+def test_clip_embedding_job_reconcile_marks_interrupted_jobs_failed(db_session_factory):
+    app = SimpleNamespace(state=SimpleNamespace(sqlalchemy_session_factory=db_session_factory))
+    for job_id, status in [
+        ("embjob_queued", c.JobStatus.queued),
+        ("embjob_running", c.JobStatus.running),
+        ("embjob_succeeded", c.JobStatus.succeeded),
+    ]:
+        clip_embeddings._store_job(
+            app,
+            c.ClipEmbeddingJobStatusResponse(
+                job_id=job_id,
+                case_id="case_test",
+                namespace="all",
+                status=status,
+                provider_profile_id="dashscope.multimodal_embedding.prod",
+                limit=5,
+                request_id=f"req_{job_id}",
+            ),
+        )
+
+    clip_embeddings.reconcile_interrupted_clip_embedding_jobs(app)
+
+    queued = clip_embeddings._read_job(app, "embjob_queued")
+    running = clip_embeddings._read_job(app, "embjob_running")
+    succeeded = clip_embeddings._read_job(app, "embjob_succeeded")
+    assert queued is not None and queued.status == c.JobStatus.failed
+    assert running is not None and running.status == c.JobStatus.failed
+    assert queued.error_message == "API 重启中断，请重新发起索引"
+    assert running.finished_at is not None
+    assert succeeded is not None and succeeded.status == c.JobStatus.succeeded
+
+
+def test_clip_embedding_job_late_progress_cannot_overwrite_terminal_status(db_session_factory):
+    app = SimpleNamespace(state=SimpleNamespace(sqlalchemy_session_factory=db_session_factory))
+    clip_embeddings._store_job(
+        app,
+        c.ClipEmbeddingJobStatusResponse(
+            job_id="embjob_terminal",
+            case_id="case_test",
+            namespace="all",
+            status=c.JobStatus.succeeded,
+            provider_profile_id="dashscope.multimodal_embedding.prod",
+            limit=5,
+            processed_count=2,
+            remaining_count=0,
+            request_id="req_terminal",
+        ),
+    )
+
+    updated = clip_embeddings._update_job(
+        app,
+        "embjob_terminal",
+        status=c.JobStatus.running,
+        processed_count=1,
+        remaining_count=1,
+    )
+
+    assert updated is not None
+    assert updated.status == c.JobStatus.succeeded
+    stored = clip_embeddings._read_job(app, "embjob_terminal")
+    assert stored is not None
     assert stored.status == c.JobStatus.succeeded
     assert stored.processed_count == 2
     assert stored.remaining_count == 0
