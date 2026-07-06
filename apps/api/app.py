@@ -110,6 +110,9 @@ async def lifespan(app: FastAPI):
     bootstrap_sqlalchemy_storage()
     session_factory = get_sqlalchemy_session_factory()
     configure_app_state(app, session_factory=session_factory)
+    from apps.api.services.clip_embeddings import reconcile_interrupted_clip_embedding_jobs
+
+    reconcile_interrupted_clip_embedding_jobs(app)
     dispatcher_task = None
     if not app.state.settings.api.disable_background_dispatcher:
         dispatcher_task = asyncio.create_task(app.state.outbox_dispatcher.run())

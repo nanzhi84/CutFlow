@@ -130,7 +130,7 @@ def seed_real_provider_configuration(repository) -> None:
                 ),
                 "dimension": 1024,
                 "normalization": "l2",
-                "index_version": "clip-video-qwen3-v2",
+                "index_version": "clip-video-qwen3-v3",
             },
         ),
         ProviderProfile(

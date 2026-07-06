@@ -961,7 +961,7 @@ def test_dashscope_multimodal_embedding_uses_native_multimodal_embedding_url(tmp
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "dimension": 1024,
             "normalization": "l2",
-            "index_version": "clip-video-qwen3-v2",
+            "index_version": "clip-video-qwen3-v3",
         },
     )
 
@@ -1027,7 +1027,7 @@ def test_dashscope_multimodal_embedding_accepts_video_url(tmp_path):
     assert invocation.status == ProviderStatus.succeeded
     assert result is not None
     assert result.output["embedding"] == embedding
-    assert result.output["index_version"] == "clip-video-qwen3-v2"
+    assert result.output["index_version"] == "clip-video-qwen3-v3"
     assert result.output["normalization"] == "l2"
     assert result.input_tokens == 128
 

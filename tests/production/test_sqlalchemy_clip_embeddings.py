@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -11,9 +12,16 @@ from apps.api.services import clip_embeddings
 from packages.ai.gateway import ProviderResult
 from packages.core import contracts as c
 from packages.core.contracts.artifacts import ClipEmbeddingRecord
-from packages.core.storage.database import AnnotationRow, ArtifactRow, CaseRow, MediaAssetRow
+from packages.core.storage.database import (
+    AnnotationRow,
+    ArtifactRow,
+    CaseRow,
+    ClipEmbeddingJobRow,
+    MediaAssetRow,
+)
 from packages.core.workflow import NodeExecutionError
 from packages.planning.material.clip_embedding import (
+    CLIP_INDEX_VERSION,
     asset_revision_token,
     build_clip_embedding_record,
     candidate_clip_embedding_key,
@@ -49,7 +57,7 @@ def test_clip_embedding_row_mapper_preserves_index_contract():
         embedding_dimension=1024,
         normalization="l2",
         instruct="video_clip_retrieval_v1",
-        index_version="clip-video-qwen3-v2",
+        index_version=CLIP_INDEX_VERSION,
     )
 
     record = _clip_embedding_record_from_row(row)
@@ -82,7 +90,7 @@ def test_clip_embedding_row_mapper_accepts_pgvector_text():
         embedding_dimension=1024,
         normalization="l2",
         instruct="video_clip_retrieval_v1",
-        index_version="clip-video-qwen3-v2",
+        index_version=CLIP_INDEX_VERSION,
     )
 
     record = _clip_embedding_record_from_row(row)
@@ -147,7 +155,7 @@ def test_clip_embedding_helpers_validate_keys_vectors_and_source_spans():
         provider_profile_id="sandbox.embedding.default",
         embedding=[1.0, *([0.0] * 1023)],
     )
-    assert record.index_version == "clip-video-qwen3-v2"
+    assert record.index_version == CLIP_INDEX_VERSION
     assert record.source_frames_available == 60
 
     for bad_candidate, message in (
@@ -207,7 +215,7 @@ def test_nearest_clip_embeddings_statement_orders_by_pgvector_cosine_distance():
         embedding_model="qwen3-vl-embedding",
         embedding_dimension=1024,
         normalization="l2",
-        index_version="clip-video-qwen3-v2",
+        index_version=CLIP_INDEX_VERSION,
         min_source_frames_available=60,
         limit=12,
     )
@@ -219,6 +227,31 @@ def test_nearest_clip_embeddings_statement_orders_by_pgvector_cosine_distance():
     assert "clip_embedding_index.embedding_model = %(embedding_model_1)s" in sql
     assert "clip_embedding_index.index_version = %(index_version_1)s" in sql
     assert "clip_embedding_index.source_frames_available >= %(source_frames_available_1)s" in sql
+    compiled = statement.compile(dialect=postgresql.dialect())
+    assert compiled.params["index_version_1"] == CLIP_INDEX_VERSION
+
+
+def test_asset_revision_token_prefers_source_artifact_over_annotation_timestamp():
+    base_time = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+    asset = c.MediaAssetRecord(
+        id="asset_broll",
+        title="施工前现场",
+        kind="video",
+        source_artifact_id="artifact_source_a",
+        updated_at=base_time,
+        version=7,
+        schema_version="v4",
+    )
+    retagged = asset.model_copy(update={"updated_at": base_time + timedelta(hours=1)})
+    replaced_source = asset.model_copy(update={"source_artifact_id": "artifact_source_b"})
+    legacy = asset.model_copy(update={"source_artifact_id": None})
+    legacy_retagged = legacy.model_copy(update={"updated_at": base_time + timedelta(hours=1)})
+
+    assert asset_revision_token(asset) == "asset:asset_broll:v7:v4:src:artifact_source_a"
+    assert asset_revision_token(retagged) == asset_revision_token(asset)
+    assert asset_revision_token(replaced_source) != asset_revision_token(asset)
+    assert asset_revision_token(legacy) != asset_revision_token(legacy_retagged)
+    assert asset_revision_token(legacy).endswith(base_time.isoformat())
 
 
 def _annotation(asset_id: str) -> c.AnnotationV4:
@@ -429,7 +462,17 @@ def test_index_clip_embeddings_indexes_pending_records_and_reports_progress(
     assert {item.status for item in response.results} == {"indexed"}
     assert snapshots[0].processed_count == 0
     assert snapshots[-1].processed_count == 2
-    assert gateway.calls[0].input["video_url"] == "https://oss.example.com/clip.mp4"
+    assert gateway.calls[0].input == {
+        "video_url": "https://oss.example.com/clip.mp4",
+        "model": "qwen3-vl-embedding",
+        "dimension": 1024,
+        "normalization": "l2",
+        "instruct": "video_clip_retrieval_v1",
+        "index_version": CLIP_INDEX_VERSION,
+    }
+    assert "text" not in gateway.calls[0].input
+    assert "retrieval_intent" not in gateway.calls[0].input
+    assert "contents" not in gateway.calls[0].input
     with db_session_factory() as session:
         existing, last_indexed_at = clip_embeddings._existing_index_snapshot(
             session,
@@ -463,6 +506,36 @@ def test_call_embedding_provider_classifies_failures(monkeypatch):
         "_prepare_clip_video",
         lambda *_args, **_kwargs: ("s3://bucket/clip.mp4", "https://oss.example.com/clip.mp4"),
     )
+    success_gateway = _FakeEmbeddingGateway(
+        {"embedding": [1.0, *([0.0] * 1023)], "embedding_id": "emb_ok"}
+    )
+    success_request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(provider_gateway=success_gateway))
+    )
+
+    prepared, message, fatal = clip_embeddings._call_embedding_provider(
+        success_request,
+        provider_profile_id="dashscope.multimodal_embedding.prod",
+        case_id="case_test",
+        candidate=candidate,
+    )
+
+    assert prepared is not None
+    assert prepared.input_ref == "s3://bucket/clip.mp4"
+    assert message is None
+    assert fatal is False
+    assert success_gateway.calls[0].input == {
+        "video_url": "https://oss.example.com/clip.mp4",
+        "model": "qwen3-vl-embedding",
+        "dimension": 1024,
+        "normalization": "l2",
+        "instruct": "video_clip_retrieval_v1",
+        "index_version": CLIP_INDEX_VERSION,
+    }
+    assert "text" not in success_gateway.calls[0].input
+    assert "retrieval_intent" not in success_gateway.calls[0].input
+    assert "contents" not in success_gateway.calls[0].input
+
     auth_request = SimpleNamespace(
         app=SimpleNamespace(
             state=SimpleNamespace(
@@ -538,8 +611,12 @@ def test_clip_embedding_video_preparation_helpers(monkeypatch, tmp_path):
     assert clip_embeddings._fit_embedding_video_budget(large, tmp_path) == compressed
 
 
-def test_enqueue_clip_embeddings_returns_job_status(monkeypatch):
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+def test_enqueue_clip_embeddings_returns_job_status(monkeypatch, db_session_factory):
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(sqlalchemy_session_factory=db_session_factory),
+        )
+    )
     payload = c.ClipEmbeddingIndexRequest(
         case_id="case_test",
         asset_ids=["asset_1"],
@@ -583,10 +660,23 @@ def test_enqueue_clip_embeddings_returns_job_status(monkeypatch):
     stored = clip_embeddings.clip_embedding_job_status(request, response.job_id)
     assert stored.schema_version == "clip_embedding_job_status.v1"
     assert stored.job_id == response.job_id
+    with db_session_factory() as session:
+        row = session.get(ClipEmbeddingJobRow, response.job_id)
+        assert row is not None
+        assert row.status == c.JobStatus.queued.value
+        assert row.payload["job_id"] == response.job_id
+    restarted_request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(sqlalchemy_session_factory=db_session_factory),
+        )
+    )
+    assert clip_embeddings.clip_embedding_job_status(restarted_request, response.job_id).job_id == (
+        response.job_id
+    )
 
 
-def test_run_clip_embedding_job_publishes_incremental_progress(monkeypatch):
-    app = SimpleNamespace(state=SimpleNamespace())
+def test_run_clip_embedding_job_publishes_incremental_progress(monkeypatch, db_session_factory):
+    app = SimpleNamespace(state=SimpleNamespace(sqlalchemy_session_factory=db_session_factory))
     request = SimpleNamespace(app=app)
     payload = c.ClipEmbeddingIndexRequest(
         case_id="case_test",
@@ -668,3 +758,102 @@ def test_run_clip_embedding_job_publishes_incremental_progress(monkeypatch):
     assert stored.status == c.JobStatus.succeeded
     assert stored.processed_count == 2
     assert stored.remaining_count == 0
+
+
+def test_clip_embedding_job_reconcile_marks_interrupted_jobs_failed(db_session_factory):
+    app = SimpleNamespace(state=SimpleNamespace(sqlalchemy_session_factory=db_session_factory))
+    for job_id, status in [
+        ("embjob_queued", c.JobStatus.queued),
+        ("embjob_running", c.JobStatus.running),
+        ("embjob_succeeded", c.JobStatus.succeeded),
+    ]:
+        clip_embeddings._store_job(
+            app,
+            c.ClipEmbeddingJobStatusResponse(
+                job_id=job_id,
+                case_id="case_test",
+                namespace="all",
+                status=status,
+                provider_profile_id="dashscope.multimodal_embedding.prod",
+                limit=5,
+                request_id=f"req_{job_id}",
+            ),
+        )
+
+    clip_embeddings.reconcile_interrupted_clip_embedding_jobs(app)
+
+    queued = clip_embeddings._read_job(app, "embjob_queued")
+    running = clip_embeddings._read_job(app, "embjob_running")
+    succeeded = clip_embeddings._read_job(app, "embjob_succeeded")
+    assert queued is not None and queued.status == c.JobStatus.failed
+    assert running is not None and running.status == c.JobStatus.failed
+    assert queued.error_message == "API 重启中断，请重新发起索引"
+    assert running.finished_at is not None
+    assert succeeded is not None and succeeded.status == c.JobStatus.succeeded
+
+
+def test_clip_embedding_job_late_progress_cannot_overwrite_terminal_status(db_session_factory):
+    app = SimpleNamespace(state=SimpleNamespace(sqlalchemy_session_factory=db_session_factory))
+    clip_embeddings._store_job(
+        app,
+        c.ClipEmbeddingJobStatusResponse(
+            job_id="embjob_terminal",
+            case_id="case_test",
+            namespace="all",
+            status=c.JobStatus.succeeded,
+            provider_profile_id="dashscope.multimodal_embedding.prod",
+            limit=5,
+            processed_count=2,
+            remaining_count=0,
+            request_id="req_terminal",
+        ),
+    )
+
+    updated = clip_embeddings._update_job(
+        app,
+        "embjob_terminal",
+        status=c.JobStatus.running,
+        processed_count=1,
+        remaining_count=1,
+    )
+
+    assert updated is not None
+    assert updated.status == c.JobStatus.succeeded
+    stored = clip_embeddings._read_job(app, "embjob_terminal")
+    assert stored is not None
+    assert stored.status == c.JobStatus.succeeded
+    assert stored.processed_count == 2
+    assert stored.remaining_count == 0
+
+
+def test_clip_embedding_job_terminal_status_cannot_be_replaced_by_another_terminal(
+    db_session_factory,
+):
+    app = SimpleNamespace(state=SimpleNamespace(sqlalchemy_session_factory=db_session_factory))
+    clip_embeddings._store_job(
+        app,
+        c.ClipEmbeddingJobStatusResponse(
+            job_id="embjob_reconciled",
+            case_id="case_test",
+            namespace="all",
+            status=c.JobStatus.failed,
+            provider_profile_id="dashscope.multimodal_embedding.prod",
+            limit=5,
+            error_message="API 重启中断，请重新发起索引",
+            request_id="req_reconciled",
+        ),
+    )
+
+    updated = clip_embeddings._update_job(
+        app,
+        "embjob_reconciled",
+        status=c.JobStatus.succeeded,
+        processed_count=5,
+    )
+
+    assert updated is not None
+    assert updated.status == c.JobStatus.failed
+    stored = clip_embeddings._read_job(app, "embjob_reconciled")
+    assert stored is not None
+    assert stored.status == c.JobStatus.failed
+    assert stored.error_message == "API 重启中断，请重新发起索引"

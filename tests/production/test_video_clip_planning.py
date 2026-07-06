@@ -216,8 +216,14 @@ def test_material_pack_splits_one_video_into_portrait_and_broll(tmp_path, monkey
     talk = next(c for c in portrait if (c["metadata"] or {}).get("clip_id") == "talk")
     assert talk["metadata"]["source_start"] == 2.0
     assert talk["metadata"]["source_end"] == 9.0
+    assert talk["metadata"]["description"] == "口播"
+    assert talk["metadata"]["keywords"] == ["口播"]
 
     # B-roll pool: the cover clip is offered; the talking-head clip never leaks in.
+    cover = next(
+        c for c in payload["broll_candidates"] if (c["metadata"] or {}).get("clip_id") == "cover"
+    )
+    assert cover["metadata"]["description"] == "打磨 工艺"
     broll_clip_ids = {(c["metadata"] or {}).get("clip_id") for c in payload["broll_candidates"]}
     assert "cover" in broll_clip_ids
     assert "unrelated" in broll_clip_ids

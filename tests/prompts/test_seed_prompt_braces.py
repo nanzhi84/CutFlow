@@ -34,6 +34,7 @@ EXPECTED_PROMPT_GROUPS = {
         # EditingAgentPlanning; the steady/balanced/fast rhythm variants were
         # dropped (no rhythm presets exposed).
         "prompt_editing_agent": "prompt.editing.agent",
+        "prompt_window_query": "prompt.window_query.planning",
     },
 }
 
@@ -118,6 +119,17 @@ def test_seeded_cover_reference_style_prompt_requests_chinese_style_guide():
     assert "中文风格说明" in content
     assert "商业包装感" in content
     assert "English style guide" not in content
+
+
+def test_editing_agent_seed_prompt_documents_line_candidate_format_and_json_output():
+    content = Repository().prompt_versions["prompt_editing_agent_v1"].content
+
+    assert "JSON" in content
+    assert "candidate_id | asset_id | available_seconds | description | reason" in content
+    assert (
+        "candidate_id | asset_id | scene_name | allowed_slot_ids | matched_keywords | "
+        "available_seconds | description"
+    ) in content
 
 
 def test_prompt_template_view_exposes_seed_variable_hints():

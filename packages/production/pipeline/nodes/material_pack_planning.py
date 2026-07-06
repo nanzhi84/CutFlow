@@ -673,6 +673,7 @@ def _eligible_portrait_candidates(
             for clean_index, (clean_start, clean_end) in enumerate(clean_windows):
                 source_window_id = clip_id if clean_index == 0 else f"{clip_id}:m{clean_index}"
                 clean_duration = round(clean_end - clean_start, 3)
+                retrieval = clip.retrieval
                 candidates.append(
                     MaterialCandidate(
                         asset_id=asset_id,
@@ -689,6 +690,10 @@ def _eligible_portrait_candidates(
                                 clean_start,
                                 clean_end,
                             ),
+                            "description": (
+                                retrieval.retrieval_sentence or retrieval.summary or ""
+                            ).strip()[:200],
+                            "keywords": [kw for kw in retrieval.keywords if kw.strip()],
                             "duration": clean_duration,
                             "lip_sync_confidence": float(getattr(clip, "confidence", 0.0) or 0.0),
                             "recency_penalty": round(
@@ -793,6 +798,7 @@ def _eligible_broll_candidates(
                             "clip_id": candidate_clip_id,
                             "matched_keywords": list(scene.keywords),
                             "scene_name": scene.name,
+                            "description": scene.description,
                             "source_start": source_start,
                             "source_end": source_end,
                             "source_frames_available": _source_frames_available(

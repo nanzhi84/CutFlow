@@ -26,7 +26,7 @@ from packages.core.storage.repository import Repository
 
 LOCAL_AUTH_SEED_USER_IDS = {"usr_admin", "usr_viewer"}
 LOCAL_AUTH_SEED_REGISTRATION_CODE_IDS = {"reg_seed_local_admin"}
-_SYNCABLE_PROMPT_VERSION_IDS = {"prompt_editing_agent_v1"}
+_SYNCABLE_PROMPT_VERSION_IDS = {"prompt_editing_agent_v1", "prompt_window_query_v1"}
 _LEGACY_EDITING_AGENT_MARKERS = (
     "{asr_segments}",
     "{portrait_slot_plan}",
@@ -34,6 +34,11 @@ _LEGACY_EDITING_AGENT_MARKERS = (
     "{portrait_draft_plan}",
     '"broll_overrides"',
     '"subtitle_style_plan"',
+)
+_EDITING_AGENT_LINE_FORMAT_MARKERS = (
+    "candidate_id | asset_id | available_seconds | description | reason",
+    "candidate_id | asset_id | scene_name | allowed_slot_ids | matched_keywords | "
+    "available_seconds | description",
 )
 
 
@@ -347,7 +352,7 @@ def _sync_existing_seed_row(existing: object, seed: object) -> bool:
             return False
         existing.content = seed.content
         existing.status = seed.status
-        existing.changelog = "Synced built-in EditingAgentPlanning prompt contract."
+        existing.changelog = _prompt_sync_changelog(existing.id)
         existing.approved_at = seed.approved_at
         existing.published_at = seed.published_at
         return True
@@ -360,8 +365,28 @@ def _needs_prompt_version_sync(existing: PromptVersionRow) -> bool:
         return (
             any(marker in content for marker in _LEGACY_EDITING_AGENT_MARKERS)
             or "legal_window_ids" not in content
-            or "available_frames" not in content
+            or any(marker not in content for marker in _EDITING_AGENT_LINE_FORMAT_MARKERS)
             or "允许重复使用同一素材" in content
             or "{portrait_uniqueness_rule}" not in content
         )
+    if existing.id == "prompt_window_query_v1":
+        content = existing.content or ""
+        return any(
+            marker not in content
+            for marker in (
+                "{script}",
+                "{edit_instruction}",
+                "{case_context}",
+                "{creative_beats}",
+                "{windows}",
+                '"window_queries"',
+                '"retrieval_intent"',
+            )
+        )
     return False
+
+
+def _prompt_sync_changelog(version_id: str) -> str:
+    if version_id == "prompt_window_query_v1":
+        return "Synced built-in WindowQueryPlanning prompt contract."
+    return "Synced built-in EditingAgentPlanning prompt contract."

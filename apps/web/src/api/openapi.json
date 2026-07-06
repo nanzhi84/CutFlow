@@ -11243,7 +11243,7 @@
           "index_version": {
             "type": "string",
             "title": "Index Version",
-            "default": "clip-video-qwen3-v2"
+            "default": "clip-video-qwen3-v3"
           },
           "last_indexed_at": {
             "anyOf": [
@@ -11433,7 +11433,7 @@
           "index_version": {
             "type": "string",
             "title": "Index Version",
-            "default": "clip-video-qwen3-v2"
+            "default": "clip-video-qwen3-v3"
           },
           "last_indexed_at": {
             "anyOf": [
@@ -13399,7 +13399,10 @@
           "lipsync.fallback_used",
           "bgm.loudness_probe_failed",
           "font.resolution_failed",
-          "subtitle.burn_skipped"
+          "subtitle.burn_skipped",
+          "broll.insertions_dropped_geometry",
+          "editing_agent.deterministic_fallback",
+          "window_query.template_fallback"
         ],
         "title": "DegradationCode"
       },
@@ -24554,7 +24557,8 @@
           "editing_agent.deterministic_fallback",
           "editing_agent.llm_repair",
           "editing_agent.local_constraint_repair",
-          "broll.insertions_dropped_geometry"
+          "broll.insertions_dropped_geometry",
+          "window_query.template_fallback"
         ],
         "title": "WarningCode"
       },

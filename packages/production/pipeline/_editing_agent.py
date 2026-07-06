@@ -207,6 +207,7 @@ def _portrait_candidate_payload(cid: str, cand: dict) -> dict:
         "source_end": clean_end,
         "available_frames": available_frames,
         "available_seconds": round(to_seconds(available_frames), 3),
+        "description": _as_str(_meta(cand).get("description")),
         "score": _as_float(cand.get("score")),
         "reason": _as_str(cand.get("reason")),
     }
@@ -339,6 +340,7 @@ def build_agent_input(
                 "available_seconds": round(to_seconds(_broll_source_frames_available(cand)), 3),
                 "matched_keywords": _meta(cand).get("matched_keywords") or [],
                 "scene_name": _as_str(_meta(cand).get("scene_name")),
+                "description": _as_str(_meta(cand).get("description")),
                 "score": _as_float(cand.get("score")),
             }
             for cid, cand in candidates.broll_by_id.items()

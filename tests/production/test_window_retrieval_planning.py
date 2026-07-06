@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from packages.ai.gateway import ProviderGateway, ProviderResult
@@ -23,6 +25,8 @@ from packages.core.contracts import (
     NodeStatus,
     ProviderError,
     ProviderInvocation,
+    ProviderOptionsSchemaRef,
+    ProviderProfile,
     ProviderStatus,
     RunStatus,
     UsageRole,
@@ -35,7 +39,7 @@ from packages.core.storage.database import MediaAssetRow
 from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
 from packages.core.workflow import NodeExecutionError
-from packages.planning.material import build_clip_embedding_record
+from packages.planning.material import CLIP_INDEX_VERSION, build_clip_embedding_record
 from packages.production.pipeline import nodes
 from packages.production.pipeline._editing_agent import (
     BrollChoice,
@@ -58,6 +62,44 @@ def _adapter(tmp_path) -> LocalRuntimeAdapter:
         prompt_registry=PromptRegistry(repository),
         seed_media=False,
     )
+
+
+class _FakeWindowQueryLlmProvider:
+    provider_id = "fake.window_query_llm"
+
+    def __init__(self, outputs: list[dict]) -> None:
+        self.outputs = list(outputs)
+        self.calls = []
+
+    def invoke(self, call):
+        self.calls.append(call)
+        output = self.outputs.pop(0)
+        return ProviderResult(output=output, input_tokens=100, output_tokens=20)
+
+
+class _SpyPromptRegistry(PromptRegistry):
+    def __init__(self, repository: Repository) -> None:
+        super().__init__(repository)
+        self.render_calls = []
+
+    def render(self, **kwargs):
+        self.render_calls.append(kwargs)
+        return super().render(**kwargs)
+
+
+def _seed_fake_window_query_llm(adapter: LocalRuntimeAdapter) -> _FakeWindowQueryLlmProvider:
+    adapter.repository.provider_profiles["fake.window_query_llm.prod"] = ProviderProfile(
+        id="fake.window_query_llm.prod",
+        provider_id="fake.window_query_llm",
+        model_id="qwen3.7-plus",
+        capability="llm.chat",
+        display_name="Fake Window Query LLM",
+        environment="prod",
+        options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.llm.options"),
+    )
+    provider = _FakeWindowQueryLlmProvider([])
+    adapter.provider_gateway.register(provider)
+    return provider
 
 
 def _run(template_id: str = "digital_human_v2") -> WorkflowRun:
@@ -94,13 +136,22 @@ def _artifact(kind: ArtifactKind, payload: dict) -> Artifact:
     )
 
 
-def _request() -> DigitalHumanVideoRequest:
+def _request(
+    *,
+    script: str = "今天看施工前后变化。第一步先看施工前现场。",
+    instruction: str | None = None,
+) -> DigitalHumanVideoRequest:
+    payload = {
+        "case_id": "case_demo",
+        "script": script,
+        "title": "案例",
+        "voice": {"voice_id": "voice_sandbox"},
+        "broll": {"enabled": True, "max_inserts": 2},
+    }
+    if instruction is not None:
+        payload["edit"] = {"instruction": instruction}
     return DigitalHumanVideoRequest(
-        case_id="case_demo",
-        script="今天看施工前后变化。第一步先看施工前现场。",
-        title="案例",
-        voice={"voice_id": "voice_sandbox"},
-        broll={"enabled": True, "max_inserts": 2},
+        **payload,
     )
 
 
@@ -286,12 +337,18 @@ def _annotate_broll(repository: Repository, *, asset_id: str = "broll_a") -> Non
     )
 
 
-def _ctx(adapter: LocalRuntimeAdapter, node_id: str, artifacts: dict[ArtifactKind, Artifact]):
+def _ctx(
+    adapter: LocalRuntimeAdapter,
+    node_id: str,
+    artifacts: dict[ArtifactKind, Artifact],
+    *,
+    request: DigitalHumanVideoRequest | None = None,
+):
     return NodeContext(
         adapter=adapter,
         run=_run(),
         node_run=_node_run(node_id),
-        state=RunState(request=_request(), artifacts=artifacts),
+        state=RunState(request=request or _request(), artifacts=artifacts),
     )
 
 
@@ -311,6 +368,29 @@ def _seed_clip_embedding_record(db_session_factory, record) -> None:
         session.flush()
         _upsert_record(session, record)
         session.commit()
+
+
+def _clip_embedding_record(
+    *,
+    key: str,
+    asset_id: str,
+    clip_id: str,
+    namespace: str = "broll",
+) -> ClipEmbeddingRecord:
+    return ClipEmbeddingRecord(
+        clip_embedding_key=key,
+        asset_id=asset_id,
+        asset_revision=f"asset:{asset_id}:v1:v1:test",
+        clip_id=clip_id,
+        source_start=0.0,
+        source_end=4.0,
+        source_frames_available=120,
+        index_namespace=namespace,
+        embedding_input_ref=f"{asset_id}:{clip_id}:0.000000:4.000000",
+        embedding_id=f"emb_{key}",
+        embedding=[1.0, *([0.0] * 1023)],
+        provider_profile_id="sandbox.embedding.default",
+    )
 
 
 def test_window_query_planning_emits_only_window_id_and_intent(tmp_path):
@@ -336,6 +416,276 @@ def test_window_query_planning_emits_only_window_id_and_intent(tmp_path):
         "pwin_000",
         "bwin_000",
     }
+
+
+def test_window_query_planning_keeps_instruction_when_narration_is_trimmed(tmp_path):
+    adapter = _adapter(tmp_path)
+    instruction = "必须保留这个检索指令"
+    long_text = "超长旁白" * 260
+    narration = _narration()
+    narration["units"][0]["text"] = long_text
+    windows = _windows()
+    windows["broll_windows"][0]["text"] = long_text
+    ctx = _ctx(
+        adapter,
+        "WindowQueryPlanning",
+        {
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                windows,
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, narration),
+        },
+        request=_request(instruction=instruction),
+    )
+
+    output = nodes.window_query_planning.run(ctx)
+
+    query_by_window = {
+        item["window_id"]: item["retrieval_intent"]
+        for item in output.artifacts[0].payload["window_queries"]
+    }
+    assert instruction in query_by_window["pwin_000"]
+    assert instruction in query_by_window["bwin_000"]
+    assert len(query_by_window["pwin_000"]) <= 900
+    assert len(query_by_window["bwin_000"]) <= 900
+
+
+def test_window_query_planning_omits_portrait_narration_when_unit_text_missing(tmp_path):
+    adapter = _adapter(tmp_path)
+    instruction = "优先稳定正脸"
+    script = "SCRIPT_SENTINEL_" + ("整段脚本" * 200)
+    windows = _windows()
+    windows["portrait_windows"][0]["unit_ids"] = ["missing_unit"]
+    ctx = _ctx(
+        adapter,
+        "WindowQueryPlanning",
+        {
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                windows,
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+        },
+        request=_request(script=script, instruction=instruction),
+    )
+
+    output = nodes.window_query_planning.run(ctx)
+
+    portrait_query = next(
+        item["retrieval_intent"]
+        for item in output.artifacts[0].payload["window_queries"]
+        if item["window_id"] == "pwin_000"
+    )
+    assert portrait_query.startswith("A-roll portrait talking-head source clip")
+    assert instruction in portrait_query
+    assert "SCRIPT_SENTINEL" not in portrait_query
+    assert "Narration:" not in portrait_query
+
+
+def test_window_query_planning_uses_llm_queries_and_unwraps_intent(tmp_path):
+    adapter = _adapter(tmp_path)
+    provider = _seed_fake_window_query_llm(adapter)
+    provider.outputs.append(
+        {
+            "intent": {
+                "window_queries": [
+                    {
+                        "window_id": "pwin_000",
+                        "retrieval_intent": "稳定正脸口播，白色上衣，口型清晰",
+                    },
+                    {
+                        "window_id": "bwin_000",
+                        "retrieval_intent": "施工前现场墙面细节和工具摆放",
+                    },
+                    {"window_id": "extra_window", "retrieval_intent": "应被丢弃"},
+                ]
+            }
+        }
+    )
+    spy_registry = _SpyPromptRegistry(adapter.repository)
+    adapter.prompt_registry = spy_registry
+    ctx = _ctx(
+        adapter,
+        "WindowQueryPlanning",
+        {
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                _windows(),
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+            ArtifactKind.case_context: _artifact(
+                ArtifactKind.case_context,
+                {"case_profile": {"product": "旧房翻新", "target_audience": "业主"}},
+            ),
+            ArtifactKind.creative_intent: _artifact(
+                ArtifactKind.creative_intent,
+                {"intent": {"tone": "可信", "beats": ["施工前", "施工后"]}},
+            ),
+        },
+        request=_request(instruction="人像穿搭尽量一致"),
+    )
+
+    output = nodes.window_query_planning.run(ctx)
+
+    payload = output.artifacts[0].payload
+    query_by_window = {
+        item["window_id"]: item["retrieval_intent"] for item in payload["window_queries"]
+    }
+    assert output.status == NodeStatus.succeeded
+    assert output.warnings == []
+    assert output.degradations == []
+    assert len(output.provider_invocation_ids) == 1
+    assert set(query_by_window) == {"pwin_000", "bwin_000"}
+    assert query_by_window["pwin_000"] == "稳定正脸口播，白色上衣，口型清晰"
+    assert query_by_window["bwin_000"] == "施工前现场墙面细节和工具摆放"
+    assert payload["diagnostics"]["source"] == "llm_window_queries"
+    call = provider.calls[0]
+    assert call.input["response_format"] == {"type": "json_object"}
+    assert call.idempotency_key == "run_window_retrieval:nr_WindowQueryPlanning:window_query_llm"
+    render_variables = spy_registry.render_calls[0]["variables"]
+    assert set(render_variables) == {
+        "script",
+        "edit_instruction",
+        "case_context",
+        "creative_beats",
+        "windows",
+    }
+    assert render_variables["script"] == ctx.state.request.script
+    assert render_variables["edit_instruction"] == "人像穿搭尽量一致"
+    assert "旧房翻新" in render_variables["case_context"]
+    assert "施工前" in render_variables["creative_beats"]
+    prompt_windows = json.loads(render_variables["windows"])
+    assert prompt_windows == [
+        {
+            "window_id": "pwin_000",
+            "kind": "portrait",
+            "narration_text": "今天看施工前后变化，第一步先看施工前现场。",
+        },
+        {"window_id": "bwin_000", "kind": "broll", "narration_text": "施工前现场"},
+    ]
+
+
+def test_window_query_planning_backfills_missing_llm_window_with_template(tmp_path):
+    adapter = _adapter(tmp_path)
+    provider = _seed_fake_window_query_llm(adapter)
+    provider.outputs.append(
+        {
+            "intent": {
+                "window_queries": [
+                    {
+                        "window_id": "pwin_000",
+                        "retrieval_intent": "稳定口播人像，正脸清楚",
+                    }
+                ]
+            }
+        }
+    )
+    ctx = _ctx(
+        adapter,
+        "WindowQueryPlanning",
+        {
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                _windows(),
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+        },
+    )
+
+    output = nodes.window_query_planning.run(ctx)
+
+    payload = output.artifacts[0].payload
+    query_by_window = {
+        item["window_id"]: item["retrieval_intent"] for item in payload["window_queries"]
+    }
+    assert output.status == NodeStatus.degraded
+    assert WarningCode.window_query_template_fallback in output.warnings
+    assert [notice.code for notice in output.degradations] == [
+        WarningCode.window_query_template_fallback
+    ]
+    assert query_by_window["pwin_000"] == "稳定口播人像，正脸清楚"
+    assert query_by_window["bwin_000"].startswith("B-roll insert clip")
+    assert "Narration: 施工前现场" in query_by_window["bwin_000"]
+    assert payload["diagnostics"]["source"] == "llm_window_queries"
+    assert payload["diagnostics"]["template_backfilled_windows"] == ["bwin_000"]
+
+
+def test_window_query_planning_falls_back_when_gateway_fails(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path)
+    _seed_fake_window_query_llm(adapter)
+    ctx = _ctx(
+        adapter,
+        "WindowQueryPlanning",
+        {
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                _windows(),
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+        },
+    )
+
+    def fake_invoke(_call):
+        return (
+            ProviderInvocation(
+                id="pinv_window_query_failed",
+                provider_id="fake.window_query_llm",
+                model_id="qwen3.7-plus",
+                provider_profile_id="fake.window_query_llm.prod",
+                capability_id="llm.chat",
+                status=ProviderStatus.failed,
+                error=ProviderError(code=ErrorCode.provider_timeout, message="timeout"),
+            ),
+            None,
+        )
+
+    monkeypatch.setattr(adapter.provider_gateway, "invoke", fake_invoke)
+
+    output = nodes.window_query_planning.run(ctx)
+
+    payload = output.artifacts[0].payload
+    query_by_window = {
+        item["window_id"]: item["retrieval_intent"] for item in payload["window_queries"]
+    }
+    assert output.status == NodeStatus.degraded
+    assert output.warnings == [WarningCode.window_query_template_fallback]
+    assert [notice.code for notice in output.degradations] == [
+        WarningCode.window_query_template_fallback
+    ]
+    assert output.provider_invocation_ids == ["pinv_window_query_failed"]
+    assert query_by_window["pwin_000"].startswith("A-roll portrait talking-head")
+    assert query_by_window["bwin_000"].startswith("B-roll insert clip")
+    assert payload["diagnostics"]["source"] == "template_fallback"
+    assert payload["diagnostics"]["fallback_reason"] == "provider_error"
+    assert payload["diagnostics"]["error"]["code"] == ErrorCode.provider_timeout.value
+
+
+def test_window_query_planning_falls_back_without_provider(tmp_path):
+    adapter = _adapter(tmp_path)
+    ctx = _ctx(
+        adapter,
+        "WindowQueryPlanning",
+        {
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                _windows(),
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+        },
+    )
+
+    output = nodes.window_query_planning.run(ctx)
+
+    payload = output.artifacts[0].payload
+    assert output.status == NodeStatus.degraded
+    assert output.warnings == [WarningCode.window_query_template_fallback]
+    assert [notice.code for notice in output.degradations] == [
+        WarningCode.window_query_template_fallback
+    ]
+    assert output.provider_invocation_ids == []
+    assert payload["diagnostics"]["source"] == "template_fallback"
+    assert payload["diagnostics"]["fallback_reason"] == "no_provider"
 
 
 def test_window_material_retrieval_uses_material_pack_pool_and_sql_hnsw_index(
@@ -414,6 +764,158 @@ def test_window_material_retrieval_uses_material_pack_pool_and_sql_hnsw_index(
     assert payload["diagnostics"]["retrieval_backend"] == "postgres_hnsw"
     assert payload["diagnostics"]["rejected_candidates"][0]["reason"] == "source_too_short"
     assert adapter.repository.clip_embedding_index == {}
+
+
+def test_window_material_retrieval_keyword_fusion_breaks_close_semantic_tie():
+    candidate_plain = nodes.window_material_retrieval._RetrievalCandidate(
+        candidate_id="bc_000",
+        candidate={
+            "asset_id": "broll_plain",
+            "metadata": {"source_start": 0.0, "source_end": 4.0},
+        },
+        clip_embedding_key="clipemb_plain",
+        source_frames=120,
+        index=0,
+    )
+    candidate_keyword = nodes.window_material_retrieval._RetrievalCandidate(
+        candidate_id="bc_001",
+        candidate={
+            "asset_id": "broll_keyword",
+            "metadata": {
+                "source_start": 0.0,
+                "source_end": 4.0,
+                "matched_keywords": ["施工前"],
+            },
+        },
+        clip_embedding_key="clipemb_keyword",
+        source_frames=120,
+        index=1,
+    )
+
+    class FakeProductionRepository:
+        def nearest_clip_embeddings(self, **_kwargs):
+            return [
+                (
+                    _clip_embedding_record(
+                        key="clipemb_plain",
+                        asset_id="broll_plain",
+                        clip_id="plain",
+                    ),
+                    0.2,
+                ),
+                (
+                    _clip_embedding_record(
+                        key="clipemb_keyword",
+                        asset_id="broll_keyword",
+                        clip_id="keyword",
+                    ),
+                    0.2,
+                ),
+            ]
+
+    ranked = nodes.window_material_retrieval._retrieve_for_window_from_sql(
+        production_repository=FakeProductionRepository(),
+        namespace="broll",
+        eligible=[candidate_plain, candidate_keyword],
+        query_embedding=[1.0, *([0.0] * 1023)],
+        query_keywords=["施工前", "现场"],
+        provider_profile_id="sandbox.embedding.default",
+        required_frames=60,
+    )
+
+    assert [candidate.candidate_id for candidate in ranked[:2]] == ["bc_001", "bc_000"]
+    assert ranked[0].retrieval_trace["keyword_adjustment"] == 0.075
+    assert ranked[0].retrieval_trace["keyword_matched"] == ["施工前"]
+
+
+def test_window_material_retrieval_uses_portrait_metadata_keywords_for_fusion():
+    candidate_plain = nodes.window_material_retrieval._RetrievalCandidate(
+        candidate_id="pc_000",
+        candidate={
+            "asset_id": "portrait_plain",
+            "metadata": {"source_start": 0.0, "source_end": 4.0},
+        },
+        clip_embedding_key="clipemb_plain",
+        source_frames=120,
+        index=0,
+    )
+    candidate_keyword = nodes.window_material_retrieval._RetrievalCandidate(
+        candidate_id="pc_001",
+        candidate={
+            "asset_id": "portrait_keyword",
+            "metadata": {
+                "source_start": 0.0,
+                "source_end": 4.0,
+                "keywords": ["稳定口播"],
+            },
+        },
+        clip_embedding_key="clipemb_keyword",
+        source_frames=120,
+        index=1,
+    )
+
+    class FakeProductionRepository:
+        def nearest_clip_embeddings(self, **_kwargs):
+            return [
+                (
+                    _clip_embedding_record(
+                        key="clipemb_plain",
+                        asset_id="portrait_plain",
+                        clip_id="plain",
+                        namespace="portrait",
+                    ),
+                    0.2,
+                ),
+                (
+                    _clip_embedding_record(
+                        key="clipemb_keyword",
+                        asset_id="portrait_keyword",
+                        clip_id="keyword",
+                        namespace="portrait",
+                    ),
+                    0.2,
+                ),
+            ]
+
+    ranked = nodes.window_material_retrieval._retrieve_for_window_from_sql(
+        production_repository=FakeProductionRepository(),
+        namespace="portrait",
+        eligible=[candidate_plain, candidate_keyword],
+        query_embedding=[1.0, *([0.0] * 1023)],
+        query_keywords=["稳定口播", "现场"],
+        provider_profile_id="sandbox.embedding.default",
+        required_frames=60,
+    )
+
+    assert [candidate.candidate_id for candidate in ranked[:2]] == ["pc_001", "pc_000"]
+    assert ranked[0].retrieval_trace["keyword_adjustment"] == 0.075
+    assert ranked[0].retrieval_trace["keyword_matched"] == ["稳定口播"]
+
+
+def test_window_material_retrieval_without_keywords_preserves_legacy_score_formula():
+    item = nodes.window_material_retrieval._RetrievalCandidate(
+        candidate_id="bc_000",
+        candidate={
+            "asset_id": "broll_plain",
+            "metadata": {"source_start": 0.0, "source_end": 4.0, "recency_penalty": 0.2},
+        },
+        clip_embedding_key="clipemb_plain",
+        source_frames=120,
+        index=3,
+    )
+
+    candidate = nodes.window_material_retrieval._retrieved_candidate(
+        item=item,
+        record=_clip_embedding_record(key="clipemb_plain", asset_id="broll_plain", clip_id="plain"),
+        semantic_similarity=0.8,
+        query_keywords=["施工前"],
+        required_frames=60,
+        source="postgres_hnsw_clip_embedding_index",
+    )
+
+    assert candidate.retrieval_score == round(0.8 - 0.02 - 0.000003, 6)
+    assert candidate.retrieval_trace["keyword_adjustment"] == 0.0
+    assert candidate.retrieval_trace["keyword_matched"] == []
 
 
 def test_window_material_retrieval_status_ignores_normal_source_too_short_filtering():
@@ -641,6 +1143,7 @@ def test_window_material_retrieval_sql_results_ignore_stale_embedding_keys():
         namespace="broll",
         eligible=[known],
         query_embedding=[1.0, *([0.0] * 1023)],
+        query_keywords=[],
         provider_profile_id="sandbox.embedding.default",
         required_frames=60,
     )
@@ -648,6 +1151,56 @@ def test_window_material_retrieval_sql_results_ignore_stale_embedding_keys():
     assert [candidate.candidate_id for candidate in ranked] == ["bc_known"]
     assert ranked[0].semantic_similarity == 0.8
     assert ranked[0].recency_adjustment == -0.3
+
+
+def test_window_material_retrieval_uses_shared_clip_index_version():
+    candidate_payload = {
+        "asset_id": "broll_a",
+        "metadata": {"clip_id": "clip_a", "source_start": 0.0, "source_end": 4.0},
+    }
+    record = build_clip_embedding_record(
+        candidate=candidate_payload,
+        asset=MediaAssetRecord(
+            id="broll_a",
+            title="施工现场",
+            kind="video",
+            source_artifact_id="artifact_broll_a",
+        ),
+        namespace="broll",
+        provider_profile_id="sandbox.embedding.default",
+        embedding=[1.0, *([0.0] * 1023)],
+    )
+    eligible = nodes.window_material_retrieval._RetrievalCandidate(
+        candidate_id="bc_000",
+        candidate=candidate_payload,
+        clip_embedding_key=record.clip_embedding_key,
+        source_frames=120,
+        index=0,
+    )
+
+    class FakeRepository:
+        def __init__(self) -> None:
+            self.kwargs = {}
+
+        def nearest_clip_embeddings(self, **kwargs):
+            self.kwargs = kwargs
+            return [(record, 0.1)]
+
+    repository = FakeRepository()
+
+    ranked = nodes.window_material_retrieval._retrieve_for_window_from_sql(
+        production_repository=repository,
+        namespace="broll",
+        eligible=[eligible],
+        query_embedding=[1.0, *([0.0] * 1023)],
+        query_keywords=[],
+        provider_profile_id="sandbox.embedding.default",
+        required_frames=60,
+    )
+
+    assert record.index_version == CLIP_INDEX_VERSION
+    assert repository.kwargs["index_version"] == CLIP_INDEX_VERSION
+    assert ranked[0].retrieval_trace["index_version"] == CLIP_INDEX_VERSION
 
 
 def test_window_material_retrieval_requires_sql_hnsw_repository(tmp_path):

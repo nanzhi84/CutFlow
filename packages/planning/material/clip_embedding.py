@@ -21,7 +21,7 @@ CLIP_EMBEDDING_MODEL = "qwen3-vl-embedding"
 CLIP_EMBEDDING_DIMENSION = 1024
 CLIP_EMBEDDING_NORMALIZATION = "l2"
 CLIP_EMBEDDING_INSTRUCT = "video_clip_retrieval_v1"
-CLIP_INDEX_VERSION = "clip-video-qwen3-v2"
+CLIP_INDEX_VERSION = "clip-video-qwen3-v3"
 CLIP_SAMPLE_POLICY = {
     "policy_id": "deterministic-trim-or-frames-v1",
     "clip_scope": "source_span",
@@ -43,6 +43,11 @@ def sample_policy_hash(sample_policy: dict[str, Any] | None = None) -> str:
 def asset_revision_token(asset: MediaAssetRecord | None) -> str:
     if asset is None:
         return "asset:unknown"
+    source_artifact_id = getattr(asset, "source_artifact_id", None)
+    if source_artifact_id:
+        return (
+            f"asset:{asset.id}:v{asset.version}:{asset.schema_version}:src:{source_artifact_id}"
+        )
     updated = getattr(asset, "updated_at", None)
     updated_token = updated.isoformat() if updated is not None else ""
     return f"asset:{asset.id}:v{asset.version}:{asset.schema_version}:{updated_token}"

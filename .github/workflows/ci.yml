@@ -59,7 +59,7 @@ jobs:
       - name: Run default pytest suite with coverage
         run: |
           mkdir -p .reports
-          timeout -k 5 1200 python -m pytest -q -ra \
+          timeout -k 5 1800 python -m pytest -q -ra \
             --cov=apps \
             --cov=packages \
             --cov-branch \

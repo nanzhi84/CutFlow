@@ -84,9 +84,11 @@ def test_seed_provider_profiles_and_prompt_binding_are_ready_for_workflow():
     assert "prompt_creative_intent_v1" in prompt_versions
     assert "prompt_case_agent_script_v1" in prompt_versions
     assert "prompt_vlm_annotation_v1" in prompt_versions
+    assert "prompt_window_query_v1" in prompt_versions
     assert any(row.node_id == "ResolveCreativeIntent" for row in bindings)
     assert any(row.node_id == "CaseAgentScriptGenerate" for row in bindings)
     assert any(row.node_id == "MediaAssetAnnotation" for row in bindings)
+    assert any(row.node_id == "WindowQueryPlanning" for row in bindings)
 
 
 class _FakeSeedSession:
@@ -137,7 +139,7 @@ def test_seed_database_syncs_editing_agent_prompt_missing_slot_constraints():
         id="prompt_editing_agent_v1",
         prompt_template_id="prompt_editing_agent",
         content=current.content.replace("legal_window_ids", "candidate_ids")
-        .replace("available_frames", "duration_frames")
+        .replace("available_seconds | description", "duration | description")
         .replace("同一个 asset_id 最多只能", "允许重复使用同一素材，同一个 asset_id 可以"),
         status="published",
     )
@@ -148,5 +150,5 @@ def test_seed_database_syncs_editing_agent_prompt_missing_slot_constraints():
     assert inserted == 0
     assert stale.content == current.content
     assert "legal_window_ids" in stale.content
-    assert "available_frames" in stale.content
+    assert "candidate_id | asset_id | available_seconds | description | reason" in stale.content
     assert "允许重复使用同一素材" not in stale.content
