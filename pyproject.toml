@@ -25,7 +25,9 @@ dependencies = [
   "numpy>=2.0",
   "librosa>=0.11",
   "scenedetect>=0.7",
-  "pysilero-vad>=2.0",
+  # 3.x currently ships no CI-compatible wheel and its sdist build breaks with
+  # modern scikit-build-core; keep CI on the last stable wheel line.
+  "pysilero-vad>=2.0,<3",
   "jieba>=0.42",
 ]
 
