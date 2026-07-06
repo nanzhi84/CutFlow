@@ -247,3 +247,15 @@ export function lipsyncProviderLabel(providerId: string | null | undefined, fall
   if (providerId.startsWith("dashscope.videoretalk")) return "由 VideoReTalk 生成";
   return `由 ${providerId} 生成`;
 }
+
+export function artifactLabel(value: string) {
+  if (value === "video.final" || value === "video.finished") return "最终视频";
+  if (value === "video.rendered") return "渲染视频";
+  if (value === "subtitle.ass") return "字幕文件";
+  if (value === "cover.image") return "封面图片";
+  if (value === "audio.tts") return "配音音频";
+  if (value === "publish.package") return "发布包";
+  if (value === "run.report.public") return "公开报告";
+  if (value === "run.report.debug") return "调试报告";
+  return "运行产物";
+}

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { OctagonX, Play, RotateCw, Trash2 } from "lucide-react";
+import { Download, OctagonX, Play, RotateCw, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { api, type FinishedVideo, type RunCard, type RunDetailResponse } from "../../api/client";
 import { EmptyState, ErrorState, LoadingState } from "../ui/State";
@@ -15,7 +15,7 @@ import { StageProgress } from "./StageProgress";
 import { WindowPlanBoard, buildWindowBoard } from "./WindowPlanBoard";
 import { shortId } from "../../lib/format";
 import { toDisplayUrl } from "../../lib/url";
-import { buildStages, canResumeRun, lipsyncProviderLabel, type RunAction } from "./runModel";
+import { artifactLabel, buildStages, canResumeRun, lipsyncProviderLabel, type RunAction } from "./runModel";
 
 export function RunDetailModal({
   isOpen,
@@ -37,6 +37,7 @@ export function RunDetailModal({
   onAction: (type: RunAction, run: RunCard) => void;
 }) {
   const nodes = detail?.node_runs ?? [];
+  const artifacts = detail?.artifacts ?? [];
   const stages = buildStages(nodes);
   const editClips = buildEditClips(detail);
   const windowBoard = buildWindowBoard(detail, editClips);
@@ -167,6 +168,45 @@ export function RunDetailModal({
             ) : (
               <NodePipeline templateId={detail?.config?.workflow_template_id} nodes={nodes} runStatus={card.status} />
             )}
+          </section>
+
+          <section className="grid gap-3">
+            <h4 className="text-base font-semibold text-text-primary">产物清单</h4>
+            {artifacts.length === 0 ? <EmptyState title="暂无产物" detail="节点完成后会显示可下载产物。" /> : null}
+            <div className="grid gap-2">
+              {artifacts.map((artifact) => {
+                const safeUrl = toDisplayUrl(artifact.uri);
+                const content = (
+                  <>
+                    <div className="min-w-0">
+                      <p className="truncate font-medium text-text-primary">{artifactLabel(artifact.kind)}</p>
+                      <p className="truncate font-mono text-xs text-text-tertiary">
+                        {shortId(artifact.artifact_id, 12)} · {artifact.schema_version}
+                      </p>
+                    </div>
+                    {safeUrl ? <Download className="h-4 w-4 text-accent" /> : <span className="text-xs text-text-tertiary">内部产物 URI</span>}
+                  </>
+                );
+                if (!safeUrl) {
+                  return (
+                    <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/70 bg-white/60 p-3" key={artifact.artifact_id}>
+                      {content}
+                    </div>
+                  );
+                }
+                return (
+                  <a
+                    className="flex items-center justify-between gap-3 rounded-2xl border border-border/70 bg-white/60 p-3 no-underline hover:bg-white/80"
+                    href={safeUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    key={artifact.artifact_id}
+                  >
+                    {content}
+                  </a>
+                );
+              })}
+            </div>
           </section>
         </div>
       ) : null}

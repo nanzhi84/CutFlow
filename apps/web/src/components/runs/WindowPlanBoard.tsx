@@ -284,12 +284,27 @@ function WindowCard({
     visibleCandidates = [...window.candidates.slice(0, MAX_CANDIDATE_ROWS - 1), chosen];
   }
   const hiddenCount = window.candidates.length - visibleCandidates.length;
+  const isSelectable = Boolean(window.clipId);
+  const selectWindow = () => {
+    if (window.clipId) onSelect?.(window.clipId);
+  };
   return (
     <article
       className={`flex h-full flex-col gap-3 rounded-2xl border p-4 transition-colors ${
         active ? "border-accent/30 bg-accent/5 ring-1 ring-accent/20" : "border-border/70 bg-white/60"
-      } ${window.clipId ? "cursor-pointer hover:bg-white/80" : ""}`}
-      onClick={() => window.clipId && onSelect?.(window.clipId)}
+      } ${isSelectable ? "cursor-pointer hover:bg-white/80 focus:outline-none focus:ring-2 focus:ring-accent/60" : ""}`}
+      role={isSelectable ? "button" : undefined}
+      tabIndex={isSelectable ? 0 : undefined}
+      onClick={isSelectable ? selectWindow : undefined}
+      onKeyDown={
+        isSelectable
+          ? (event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              selectWindow();
+            }
+          : undefined
+      }
     >
       <header className="flex min-h-7 flex-wrap items-center gap-2">
         <span
