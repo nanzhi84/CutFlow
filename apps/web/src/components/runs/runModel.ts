@@ -123,6 +123,9 @@ export function warningLabel(value: string) {
   if (value === "editing_agent.llm_repair") return "剪辑 Agent 已通过模型修复重试";
   if (value === "editing_agent.local_constraint_repair") return "剪辑 Agent 已执行本地约束修正";
   if (value === "broll.insertions_dropped_geometry") return "部分 B-roll 插入因时间线几何约束被丢弃";
+  if (value === "window_query.template_fallback") {
+    return "检索 query 已回退模板拼接（LLM 不可用）";
+  }
   return "未知警告";
 }
 

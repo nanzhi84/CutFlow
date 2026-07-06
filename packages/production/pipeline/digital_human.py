@@ -145,6 +145,7 @@ _PROVIDER_SIDE_EFFECT_NODES = {
     "ExportFinishedVideo",
     "SeedanceGenerateVideo",
     "EditingAgentPlanning",
+    "WindowQueryPlanning",
     "WindowMaterialRetrieval",
 }
 _TIMELINE_REUSE_BREAK_NODES = {

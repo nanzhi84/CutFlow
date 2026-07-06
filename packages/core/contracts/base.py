@@ -88,6 +88,7 @@ class WarningCode(str, Enum):
     editing_agent_llm_repair = "editing_agent.llm_repair"
     editing_agent_local_constraint_repair = "editing_agent.local_constraint_repair"
     broll_insertions_dropped_geometry = "broll.insertions_dropped_geometry"
+    window_query_template_fallback = "window_query.template_fallback"
 
 
 class DegradationCode(str, Enum):
@@ -99,6 +100,9 @@ class DegradationCode(str, Enum):
     bgm_loudness_probe_failed = "bgm.loudness_probe_failed"
     font_resolution_failed = "font.resolution_failed"
     subtitle_burn_skipped = "subtitle.burn_skipped"
+    broll_insertions_dropped_geometry = "broll.insertions_dropped_geometry"
+    editing_agent_deterministic_fallback = "editing_agent.deterministic_fallback"
+    window_query_template_fallback = "window_query.template_fallback"
 
 
 class JobStatus(str, Enum):

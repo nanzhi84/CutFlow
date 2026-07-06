@@ -34,6 +34,7 @@ EXPECTED_PROMPT_GROUPS = {
         # EditingAgentPlanning; the steady/balanced/fast rhythm variants were
         # dropped (no rhythm presets exposed).
         "prompt_editing_agent": "prompt.editing.agent",
+        "prompt_window_query": "prompt.window_query.planning",
     },
 }
 

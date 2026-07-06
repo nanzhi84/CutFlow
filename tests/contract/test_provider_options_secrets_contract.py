@@ -114,6 +114,9 @@ def test_warning_code_is_single_spec_enum_and_degradation_notice_shape():
         # Editing-agent drops B-roll inserts that cannot satisfy the shared geometry
         # policy; surfaced visibly instead of silently losing overlays.
         "broll.insertions_dropped_geometry",
+        # WindowQueryPlanning falls back to deterministic template queries when
+        # the LLM path is unavailable.
+        "window_query.template_fallback",
     }
     assert DegradationCode.font_default_used.value == "font.default_used"
 

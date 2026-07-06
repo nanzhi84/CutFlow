@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from packages.ai.gateway import ProviderGateway, ProviderResult
@@ -23,6 +25,8 @@ from packages.core.contracts import (
     NodeStatus,
     ProviderError,
     ProviderInvocation,
+    ProviderOptionsSchemaRef,
+    ProviderProfile,
     ProviderStatus,
     RunStatus,
     UsageRole,
@@ -58,6 +62,44 @@ def _adapter(tmp_path) -> LocalRuntimeAdapter:
         prompt_registry=PromptRegistry(repository),
         seed_media=False,
     )
+
+
+class _FakeWindowQueryLlmProvider:
+    provider_id = "fake.window_query_llm"
+
+    def __init__(self, outputs: list[dict]) -> None:
+        self.outputs = list(outputs)
+        self.calls = []
+
+    def invoke(self, call):
+        self.calls.append(call)
+        output = self.outputs.pop(0)
+        return ProviderResult(output=output, input_tokens=100, output_tokens=20)
+
+
+class _SpyPromptRegistry(PromptRegistry):
+    def __init__(self, repository: Repository) -> None:
+        super().__init__(repository)
+        self.render_calls = []
+
+    def render(self, **kwargs):
+        self.render_calls.append(kwargs)
+        return super().render(**kwargs)
+
+
+def _seed_fake_window_query_llm(adapter: LocalRuntimeAdapter) -> _FakeWindowQueryLlmProvider:
+    adapter.repository.provider_profiles["fake.window_query_llm.prod"] = ProviderProfile(
+        id="fake.window_query_llm.prod",
+        provider_id="fake.window_query_llm",
+        model_id="qwen3.7-plus",
+        capability="llm.chat",
+        display_name="Fake Window Query LLM",
+        environment="prod",
+        options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.llm.options"),
+    )
+    provider = _FakeWindowQueryLlmProvider([])
+    adapter.provider_gateway.register(provider)
+    return provider
 
 
 def _run(template_id: str = "digital_human_v2") -> WorkflowRun:
@@ -439,6 +481,207 @@ def test_window_query_planning_omits_portrait_narration_when_unit_text_missing(t
     assert instruction in portrait_query
     assert "SCRIPT_SENTINEL" not in portrait_query
     assert "Narration:" not in portrait_query
+
+
+def test_window_query_planning_uses_llm_queries_and_unwraps_intent(tmp_path):
+    adapter = _adapter(tmp_path)
+    provider = _seed_fake_window_query_llm(adapter)
+    provider.outputs.append(
+        {
+            "intent": {
+                "window_queries": [
+                    {
+                        "window_id": "pwin_000",
+                        "retrieval_intent": "稳定正脸口播，白色上衣，口型清晰",
+                    },
+                    {
+                        "window_id": "bwin_000",
+                        "retrieval_intent": "施工前现场墙面细节和工具摆放",
+                    },
+                    {"window_id": "extra_window", "retrieval_intent": "应被丢弃"},
+                ]
+            }
+        }
+    )
+    spy_registry = _SpyPromptRegistry(adapter.repository)
+    adapter.prompt_registry = spy_registry
+    ctx = _ctx(
+        adapter,
+        "WindowQueryPlanning",
+        {
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                _windows(),
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+            ArtifactKind.case_context: _artifact(
+                ArtifactKind.case_context,
+                {"case_profile": {"product": "旧房翻新", "target_audience": "业主"}},
+            ),
+            ArtifactKind.creative_intent: _artifact(
+                ArtifactKind.creative_intent,
+                {"intent": {"tone": "可信", "beats": ["施工前", "施工后"]}},
+            ),
+        },
+        request=_request(instruction="人像穿搭尽量一致"),
+    )
+
+    output = nodes.window_query_planning.run(ctx)
+
+    payload = output.artifacts[0].payload
+    query_by_window = {
+        item["window_id"]: item["retrieval_intent"] for item in payload["window_queries"]
+    }
+    assert output.status == NodeStatus.succeeded
+    assert output.warnings == []
+    assert output.degradations == []
+    assert len(output.provider_invocation_ids) == 1
+    assert set(query_by_window) == {"pwin_000", "bwin_000"}
+    assert query_by_window["pwin_000"] == "稳定正脸口播，白色上衣，口型清晰"
+    assert query_by_window["bwin_000"] == "施工前现场墙面细节和工具摆放"
+    assert payload["diagnostics"]["source"] == "llm_window_queries"
+    call = provider.calls[0]
+    assert call.input["response_format"] == {"type": "json_object"}
+    assert call.idempotency_key == "run_window_retrieval:nr_WindowQueryPlanning:window_query_llm"
+    render_variables = spy_registry.render_calls[0]["variables"]
+    assert set(render_variables) == {
+        "script",
+        "edit_instruction",
+        "case_context",
+        "creative_beats",
+        "windows",
+    }
+    assert render_variables["script"] == ctx.state.request.script
+    assert render_variables["edit_instruction"] == "人像穿搭尽量一致"
+    assert "旧房翻新" in render_variables["case_context"]
+    assert "施工前" in render_variables["creative_beats"]
+    prompt_windows = json.loads(render_variables["windows"])
+    assert prompt_windows == [
+        {
+            "window_id": "pwin_000",
+            "kind": "portrait",
+            "narration_text": "今天看施工前后变化，第一步先看施工前现场。",
+        },
+        {"window_id": "bwin_000", "kind": "broll", "narration_text": "施工前现场"},
+    ]
+
+
+def test_window_query_planning_backfills_missing_llm_window_with_template(tmp_path):
+    adapter = _adapter(tmp_path)
+    provider = _seed_fake_window_query_llm(adapter)
+    provider.outputs.append(
+        {
+            "intent": {
+                "window_queries": [
+                    {
+                        "window_id": "pwin_000",
+                        "retrieval_intent": "稳定口播人像，正脸清楚",
+                    }
+                ]
+            }
+        }
+    )
+    ctx = _ctx(
+        adapter,
+        "WindowQueryPlanning",
+        {
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                _windows(),
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+        },
+    )
+
+    output = nodes.window_query_planning.run(ctx)
+
+    payload = output.artifacts[0].payload
+    query_by_window = {
+        item["window_id"]: item["retrieval_intent"] for item in payload["window_queries"]
+    }
+    assert output.status == NodeStatus.succeeded
+    assert query_by_window["pwin_000"] == "稳定口播人像，正脸清楚"
+    assert query_by_window["bwin_000"].startswith("B-roll insert clip")
+    assert "Narration: 施工前现场" in query_by_window["bwin_000"]
+    assert payload["diagnostics"]["source"] == "llm_window_queries"
+    assert payload["diagnostics"]["template_backfilled_windows"] == ["bwin_000"]
+
+
+def test_window_query_planning_falls_back_when_gateway_fails(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path)
+    _seed_fake_window_query_llm(adapter)
+    ctx = _ctx(
+        adapter,
+        "WindowQueryPlanning",
+        {
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                _windows(),
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+        },
+    )
+
+    def fake_invoke(_call):
+        return (
+            ProviderInvocation(
+                id="pinv_window_query_failed",
+                provider_id="fake.window_query_llm",
+                model_id="qwen3.7-plus",
+                provider_profile_id="fake.window_query_llm.prod",
+                capability_id="llm.chat",
+                status=ProviderStatus.failed,
+                error=ProviderError(code=ErrorCode.provider_timeout, message="timeout"),
+            ),
+            None,
+        )
+
+    monkeypatch.setattr(adapter.provider_gateway, "invoke", fake_invoke)
+
+    output = nodes.window_query_planning.run(ctx)
+
+    payload = output.artifacts[0].payload
+    query_by_window = {
+        item["window_id"]: item["retrieval_intent"] for item in payload["window_queries"]
+    }
+    assert output.status == NodeStatus.degraded
+    assert output.warnings == [WarningCode.window_query_template_fallback]
+    assert [notice.code for notice in output.degradations] == [
+        WarningCode.window_query_template_fallback
+    ]
+    assert output.provider_invocation_ids == ["pinv_window_query_failed"]
+    assert query_by_window["pwin_000"].startswith("A-roll portrait talking-head")
+    assert query_by_window["bwin_000"].startswith("B-roll insert clip")
+    assert payload["diagnostics"]["source"] == "template_fallback"
+    assert payload["diagnostics"]["fallback_reason"] == "provider_error"
+    assert payload["diagnostics"]["error"]["code"] == ErrorCode.provider_timeout.value
+
+
+def test_window_query_planning_falls_back_without_provider(tmp_path):
+    adapter = _adapter(tmp_path)
+    ctx = _ctx(
+        adapter,
+        "WindowQueryPlanning",
+        {
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                _windows(),
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+        },
+    )
+
+    output = nodes.window_query_planning.run(ctx)
+
+    payload = output.artifacts[0].payload
+    assert output.status == NodeStatus.degraded
+    assert output.warnings == [WarningCode.window_query_template_fallback]
+    assert [notice.code for notice in output.degradations] == [
+        WarningCode.window_query_template_fallback
+    ]
+    assert output.provider_invocation_ids == []
+    assert payload["diagnostics"]["source"] == "template_fallback"
+    assert payload["diagnostics"]["fallback_reason"] == "no_provider"
 
 
 def test_window_material_retrieval_uses_material_pack_pool_and_sql_hnsw_index(
