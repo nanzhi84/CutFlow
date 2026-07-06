@@ -250,7 +250,7 @@ class DashScopeMultimodalEmbeddingProvider:
                 "index_version": str(
                     call.input.get("index_version")
                     or context.profile.default_options.get("index_version")
-                    or "clip-video-qwen3-v2"
+                    or "clip-video-qwen3-v3"
                 ),
             },
             input_tokens=(

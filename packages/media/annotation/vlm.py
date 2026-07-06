@@ -70,6 +70,13 @@ def build_window_prompt(
             "speaker_intent(口播意图) / speech_action_alignment(话术与动作一致性) / "
             "retake_cue(重拍/笑场提示)"
         )
+        retrieval_guide = (
+            "retrieval 填写指南:\n"
+            "  retrieval.summary 必须写详细的人物外观与环境描述,包括衣服颜色/款式/材质、"
+            "发型、配饰(眼镜/首饰/帽子)、背景环境与陈设,写细不限长;\n"
+            "  retrieval.keywords 并入外观/实体词,如\"白色衬衫\"\"金丝眼镜\";"
+            "retrieval_sentence 保持一句话检索摘要,不堆细节。"
+        )
         role_hint = "role 取值: hook(开场钩子)/main(正片口播)/backup(备用)/avoid(不建议)"
     elif cls == "video":
         semantics_guide = (
@@ -81,6 +88,14 @@ def build_window_prompt(
             "  · 空镜/B-roll段(无人讲话/转场/产品/环境): subject_type / scene_type / action / "
             "narrative_role(process_proof/detail_showcase/result_showcase/environment_establish) / "
             "contains_face / process_stage"
+        )
+        retrieval_guide = (
+            "retrieval 填写指南:\n"
+            "  口播段按人物外观指南填写:summary 详细写衣服颜色/款式/材质、发型、配饰、"
+            "背景环境与陈设,keywords 并入外观/实体词,retrieval_sentence 保持一句话;\n"
+            "  空镜/B-roll段按实体指南填写:summary 详细写产品、品牌露出(logo/包装文字)、"
+            "场景物件、工序/动作对象,以及画面中人物外观(若有),实体词并入 keywords,"
+            "retrieval_sentence 保持一句话。"
         )
         role_hint = (
             "role 取值: 口播段用 hook(开场钩子)/main(正片口播)/backup(备用);"
@@ -94,6 +109,13 @@ def build_window_prompt(
             "  subject_type / scene_type / action(主要动作) / "
             "narrative_role(叙事角色:process_proof/detail_showcase/result_showcase/environment_establish) / "
             "contains_face(是否含人脸) / process_stage(工序阶段)"
+        )
+        retrieval_guide = (
+            "retrieval 填写指南:\n"
+            "  retrieval.summary 重点详细描述实体:产品、品牌露出(logo/包装文字)、场景物件、"
+            "工序/动作对象、画面中人物外观(若有),写细不限长;\n"
+            "  retrieval.keywords 并入产品、品牌、物件、工序动作、人物外观等实体词;"
+            "retrieval_sentence 保持一句话检索摘要。"
         )
         role_hint = "role 取值: cover(盖旁白的空镜)/backup(备用)/avoid(不建议)"
 
@@ -113,6 +135,7 @@ def build_window_prompt(
 你**不要**判断这些;只输出语义判断(笑场/转身/离镜/能否当 hook/话术-动作一致性等)。
 
 {semantics_guide}
+{retrieval_guide}
 {role_hint}
 
 只返回一个 JSON 对象(不要 Markdown 代码块包装、不要解释),结构:
@@ -124,7 +147,7 @@ def build_window_prompt(
       "visual": {{ "shot_scale": "...", "camera_motion": "...", "composition": "..." }},
       "usage": {{ "recommended_for_lip_sync": <bool>, "recommended_for_voiceover": <bool>,
                   "voiceover_only": <bool>, "role": "<上面的 role 之一>" }},
-      "retrieval": {{ "summary": "...", "keywords": ["..."], "retrieval_sentence": "..." }},
+      "retrieval": {{ "summary": "...(写详细描述)", "keywords": ["..."], "retrieval_sentence": "..." }},
       "confidence": <0~1>
     }}
   ]

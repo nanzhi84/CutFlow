@@ -692,6 +692,9 @@ def _call_embedding_provider(
         video_uri, video_url = _prepare_clip_video(request, candidate)
     except _EmbeddingPreparationError as exc:
         return None, exc.message, exc.fatal
+    # Clip index revisions bind to source media (source_artifact_id), not editable
+    # annotation text. Keep index embeddings video-only; if text is added later, the
+    # annotation revision must become part of the embedding key.
     invocation, result = request.app.state.provider_gateway.invoke(
         ProviderCall(
             case_id=case_id,

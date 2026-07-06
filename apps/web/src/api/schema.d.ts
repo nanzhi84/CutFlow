@@ -3916,7 +3916,7 @@ export interface components {
             embedding_input_type: "video_clip";
             /**
              * Index Version
-             * @default clip-video-qwen3-v2
+             * @default clip-video-qwen3-v3
              */
             index_version: string;
             /** Last Indexed At */
@@ -4024,7 +4024,7 @@ export interface components {
             embedding_input_type: "video_clip";
             /**
              * Index Version
-             * @default clip-video-qwen3-v2
+             * @default clip-video-qwen3-v3
              */
             index_version: string;
             /** Last Indexed At */

@@ -11243,7 +11243,7 @@
           "index_version": {
             "type": "string",
             "title": "Index Version",
-            "default": "clip-video-qwen3-v2"
+            "default": "clip-video-qwen3-v3"
           },
           "last_indexed_at": {
             "anyOf": [
@@ -11433,7 +11433,7 @@
           "index_version": {
             "type": "string",
             "title": "Index Version",
-            "default": "clip-video-qwen3-v2"
+            "default": "clip-video-qwen3-v3"
           },
           "last_indexed_at": {
             "anyOf": [

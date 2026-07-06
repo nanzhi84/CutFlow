@@ -35,7 +35,7 @@ from packages.core.storage.database import MediaAssetRow
 from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
 from packages.core.workflow import NodeExecutionError
-from packages.planning.material import build_clip_embedding_record
+from packages.planning.material import CLIP_INDEX_VERSION, build_clip_embedding_record
 from packages.production.pipeline import nodes
 from packages.production.pipeline._editing_agent import (
     BrollChoice,
@@ -904,6 +904,56 @@ def test_window_material_retrieval_sql_results_ignore_stale_embedding_keys():
     assert [candidate.candidate_id for candidate in ranked] == ["bc_known"]
     assert ranked[0].semantic_similarity == 0.8
     assert ranked[0].recency_adjustment == -0.3
+
+
+def test_window_material_retrieval_uses_shared_clip_index_version():
+    candidate_payload = {
+        "asset_id": "broll_a",
+        "metadata": {"clip_id": "clip_a", "source_start": 0.0, "source_end": 4.0},
+    }
+    record = build_clip_embedding_record(
+        candidate=candidate_payload,
+        asset=MediaAssetRecord(
+            id="broll_a",
+            title="施工现场",
+            kind="video",
+            source_artifact_id="artifact_broll_a",
+        ),
+        namespace="broll",
+        provider_profile_id="sandbox.embedding.default",
+        embedding=[1.0, *([0.0] * 1023)],
+    )
+    eligible = nodes.window_material_retrieval._RetrievalCandidate(
+        candidate_id="bc_000",
+        candidate=candidate_payload,
+        clip_embedding_key=record.clip_embedding_key,
+        source_frames=120,
+        index=0,
+    )
+
+    class FakeRepository:
+        def __init__(self) -> None:
+            self.kwargs = {}
+
+        def nearest_clip_embeddings(self, **kwargs):
+            self.kwargs = kwargs
+            return [(record, 0.1)]
+
+    repository = FakeRepository()
+
+    ranked = nodes.window_material_retrieval._retrieve_for_window_from_sql(
+        production_repository=repository,
+        namespace="broll",
+        eligible=[eligible],
+        query_embedding=[1.0, *([0.0] * 1023)],
+        query_keywords=[],
+        provider_profile_id="sandbox.embedding.default",
+        required_frames=60,
+    )
+
+    assert record.index_version == CLIP_INDEX_VERSION
+    assert repository.kwargs["index_version"] == CLIP_INDEX_VERSION
+    assert ranked[0].retrieval_trace["index_version"] == CLIP_INDEX_VERSION
 
 
 def test_window_material_retrieval_requires_sql_hnsw_repository(tmp_path):

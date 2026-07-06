@@ -361,7 +361,7 @@ class ClipEmbeddingIndexStatusResponse(ContractModel):
     embedding_model: str = "qwen3-vl-embedding"
     embedding_dimension: int = 1024
     embedding_input_type: Literal["video_clip"] = "video_clip"
-    index_version: str = "clip-video-qwen3-v2"
+    index_version: str = "clip-video-qwen3-v3"
     last_indexed_at: datetime | None = None
     request_id: str
 

@@ -65,6 +65,40 @@ def test_prompt_branches_on_material_type():
     assert "hook(开场钩子)" in portrait
 
 
+def test_prompt_retrieval_guides_cover_portrait_broll_and_video():
+    portrait = build_window_prompt(
+        material_type="portrait",
+        window_start=0.0,
+        window_end=4.0,
+        sensor_signals={},
+        full_asr_text="",
+    )
+    broll = build_window_prompt(
+        material_type="broll",
+        window_start=0.0,
+        window_end=4.0,
+        sensor_signals={},
+        full_asr_text="",
+    )
+    video = build_window_prompt(
+        material_type="video",
+        window_start=0.0,
+        window_end=4.0,
+        sensor_signals={},
+        full_asr_text="",
+    )
+
+    assert "人物外观" in portrait
+    assert "发型" in portrait
+    assert "白色衬衫" in portrait
+    assert "品牌露出" in broll
+    assert "包装文字" in broll
+    assert "实体词" in broll
+    assert "口播段按人物外观指南" in video
+    assert "空镜/B-roll段按实体指南" in video
+    assert "品牌露出" in video
+
+
 def test_prompt_appends_retry_hint():
     prompt = build_window_prompt(
         material_type="broll",

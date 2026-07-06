@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +21,7 @@ from packages.core.storage.database import (
 )
 from packages.core.workflow import NodeExecutionError
 from packages.planning.material.clip_embedding import (
+    CLIP_INDEX_VERSION,
     asset_revision_token,
     build_clip_embedding_record,
     candidate_clip_embedding_key,
@@ -55,7 +57,7 @@ def test_clip_embedding_row_mapper_preserves_index_contract():
         embedding_dimension=1024,
         normalization="l2",
         instruct="video_clip_retrieval_v1",
-        index_version="clip-video-qwen3-v2",
+        index_version=CLIP_INDEX_VERSION,
     )
 
     record = _clip_embedding_record_from_row(row)
@@ -88,7 +90,7 @@ def test_clip_embedding_row_mapper_accepts_pgvector_text():
         embedding_dimension=1024,
         normalization="l2",
         instruct="video_clip_retrieval_v1",
-        index_version="clip-video-qwen3-v2",
+        index_version=CLIP_INDEX_VERSION,
     )
 
     record = _clip_embedding_record_from_row(row)
@@ -153,7 +155,7 @@ def test_clip_embedding_helpers_validate_keys_vectors_and_source_spans():
         provider_profile_id="sandbox.embedding.default",
         embedding=[1.0, *([0.0] * 1023)],
     )
-    assert record.index_version == "clip-video-qwen3-v2"
+    assert record.index_version == CLIP_INDEX_VERSION
     assert record.source_frames_available == 60
 
     for bad_candidate, message in (
@@ -213,7 +215,7 @@ def test_nearest_clip_embeddings_statement_orders_by_pgvector_cosine_distance():
         embedding_model="qwen3-vl-embedding",
         embedding_dimension=1024,
         normalization="l2",
-        index_version="clip-video-qwen3-v2",
+        index_version=CLIP_INDEX_VERSION,
         min_source_frames_available=60,
         limit=12,
     )
@@ -225,6 +227,31 @@ def test_nearest_clip_embeddings_statement_orders_by_pgvector_cosine_distance():
     assert "clip_embedding_index.embedding_model = %(embedding_model_1)s" in sql
     assert "clip_embedding_index.index_version = %(index_version_1)s" in sql
     assert "clip_embedding_index.source_frames_available >= %(source_frames_available_1)s" in sql
+    compiled = statement.compile(dialect=postgresql.dialect())
+    assert compiled.params["index_version_1"] == CLIP_INDEX_VERSION
+
+
+def test_asset_revision_token_prefers_source_artifact_over_annotation_timestamp():
+    base_time = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+    asset = c.MediaAssetRecord(
+        id="asset_broll",
+        title="施工前现场",
+        kind="video",
+        source_artifact_id="artifact_source_a",
+        updated_at=base_time,
+        version=7,
+        schema_version="v4",
+    )
+    retagged = asset.model_copy(update={"updated_at": base_time + timedelta(hours=1)})
+    replaced_source = asset.model_copy(update={"source_artifact_id": "artifact_source_b"})
+    legacy = asset.model_copy(update={"source_artifact_id": None})
+    legacy_retagged = legacy.model_copy(update={"updated_at": base_time + timedelta(hours=1)})
+
+    assert asset_revision_token(asset) == "asset:asset_broll:v7:v4:src:artifact_source_a"
+    assert asset_revision_token(retagged) == asset_revision_token(asset)
+    assert asset_revision_token(replaced_source) != asset_revision_token(asset)
+    assert asset_revision_token(legacy) != asset_revision_token(legacy_retagged)
+    assert asset_revision_token(legacy).endswith(base_time.isoformat())
 
 
 def _annotation(asset_id: str) -> c.AnnotationV4:
@@ -435,7 +462,17 @@ def test_index_clip_embeddings_indexes_pending_records_and_reports_progress(
     assert {item.status for item in response.results} == {"indexed"}
     assert snapshots[0].processed_count == 0
     assert snapshots[-1].processed_count == 2
-    assert gateway.calls[0].input["video_url"] == "https://oss.example.com/clip.mp4"
+    assert gateway.calls[0].input == {
+        "video_url": "https://oss.example.com/clip.mp4",
+        "model": "qwen3-vl-embedding",
+        "dimension": 1024,
+        "normalization": "l2",
+        "instruct": "video_clip_retrieval_v1",
+        "index_version": CLIP_INDEX_VERSION,
+    }
+    assert "text" not in gateway.calls[0].input
+    assert "retrieval_intent" not in gateway.calls[0].input
+    assert "contents" not in gateway.calls[0].input
     with db_session_factory() as session:
         existing, last_indexed_at = clip_embeddings._existing_index_snapshot(
             session,
@@ -469,6 +506,36 @@ def test_call_embedding_provider_classifies_failures(monkeypatch):
         "_prepare_clip_video",
         lambda *_args, **_kwargs: ("s3://bucket/clip.mp4", "https://oss.example.com/clip.mp4"),
     )
+    success_gateway = _FakeEmbeddingGateway(
+        {"embedding": [1.0, *([0.0] * 1023)], "embedding_id": "emb_ok"}
+    )
+    success_request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(provider_gateway=success_gateway))
+    )
+
+    prepared, message, fatal = clip_embeddings._call_embedding_provider(
+        success_request,
+        provider_profile_id="dashscope.multimodal_embedding.prod",
+        case_id="case_test",
+        candidate=candidate,
+    )
+
+    assert prepared is not None
+    assert prepared.input_ref == "s3://bucket/clip.mp4"
+    assert message is None
+    assert fatal is False
+    assert success_gateway.calls[0].input == {
+        "video_url": "https://oss.example.com/clip.mp4",
+        "model": "qwen3-vl-embedding",
+        "dimension": 1024,
+        "normalization": "l2",
+        "instruct": "video_clip_retrieval_v1",
+        "index_version": CLIP_INDEX_VERSION,
+    }
+    assert "text" not in success_gateway.calls[0].input
+    assert "retrieval_intent" not in success_gateway.calls[0].input
+    assert "contents" not in success_gateway.calls[0].input
+
     auth_request = SimpleNamespace(
         app=SimpleNamespace(
             state=SimpleNamespace(
