@@ -94,7 +94,7 @@ def seed_real_provider_configuration(repository) -> None:
             environment="prod",
             secret_ref="dashscope_prod.secret",
             concurrency_key="dashscope:llm.chat",
-            timeout_sec=120,
+            timeout_sec=360,
             options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.llm.options"),
         ),
         ProviderProfile(
