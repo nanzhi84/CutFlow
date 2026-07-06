@@ -824,3 +824,36 @@ def test_clip_embedding_job_late_progress_cannot_overwrite_terminal_status(db_se
     assert stored.status == c.JobStatus.succeeded
     assert stored.processed_count == 2
     assert stored.remaining_count == 0
+
+
+def test_clip_embedding_job_terminal_status_cannot_be_replaced_by_another_terminal(
+    db_session_factory,
+):
+    app = SimpleNamespace(state=SimpleNamespace(sqlalchemy_session_factory=db_session_factory))
+    clip_embeddings._store_job(
+        app,
+        c.ClipEmbeddingJobStatusResponse(
+            job_id="embjob_reconciled",
+            case_id="case_test",
+            namespace="all",
+            status=c.JobStatus.failed,
+            provider_profile_id="dashscope.multimodal_embedding.prod",
+            limit=5,
+            error_message="API 重启中断，请重新发起索引",
+            request_id="req_reconciled",
+        ),
+    )
+
+    updated = clip_embeddings._update_job(
+        app,
+        "embjob_reconciled",
+        status=c.JobStatus.succeeded,
+        processed_count=5,
+    )
+
+    assert updated is not None
+    assert updated.status == c.JobStatus.failed
+    stored = clip_embeddings._read_job(app, "embjob_reconciled")
+    assert stored is not None
+    assert stored.status == c.JobStatus.failed
+    assert stored.error_message == "API 重启中断，请重新发起索引"

@@ -159,6 +159,20 @@ def run(ctx: NodeContext) -> NodeOutput:
     diagnostics["source"] = "llm_window_queries"
     if template_backfilled_windows:
         diagnostics["template_backfilled_windows"] = template_backfilled_windows
+        notice = degradation_notice(
+            WarningCode.window_query_template_fallback,
+            f"{len(template_backfilled_windows)} 个窗口的检索 query 已用模板补齐（LLM 输出缺失）。",
+            node_id=ctx.node_run.node_id,
+            affects_true_yield=False,
+        )
+        return _output(
+            ctx,
+            window_queries=window_queries,
+            diagnostics=diagnostics,
+            warnings=[WarningCode.window_query_template_fallback],
+            degradations=[notice],
+            provider_invocation_ids=provider_invocation_ids,
+        )
     return _output(
         ctx,
         window_queries=window_queries,

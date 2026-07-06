@@ -599,7 +599,11 @@ def test_window_query_planning_backfills_missing_llm_window_with_template(tmp_pa
     query_by_window = {
         item["window_id"]: item["retrieval_intent"] for item in payload["window_queries"]
     }
-    assert output.status == NodeStatus.succeeded
+    assert output.status == NodeStatus.degraded
+    assert WarningCode.window_query_template_fallback in output.warnings
+    assert [notice.code for notice in output.degradations] == [
+        WarningCode.window_query_template_fallback
+    ]
     assert query_by_window["pwin_000"] == "稳定口播人像，正脸清楚"
     assert query_by_window["bwin_000"].startswith("B-roll insert clip")
     assert "Narration: 施工前现场" in query_by_window["bwin_000"]

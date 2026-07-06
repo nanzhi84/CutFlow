@@ -561,12 +561,9 @@ def _update_job(
         if row is None:
             return None
         current = c.ClipEmbeddingJobStatusResponse.model_validate(row.payload)
-        next_status = updates.get("status")
-        if (
-            current.status.value in _TERMINAL_JOB_STATUSES
-            and next_status is not None
-            and _job_status_value(next_status) not in _TERMINAL_JOB_STATUSES
-        ):
+        # Terminal statuses are immutable: a restart reconcile may have already
+        # failed this job, and a surviving background thread must not overwrite it.
+        if current.status.value in _TERMINAL_JOB_STATUSES and "status" in updates:
             return current
         updated = current.model_copy(update={**updates, "updated_at": c.utcnow()})
         payload = updated.model_dump(mode="json")
