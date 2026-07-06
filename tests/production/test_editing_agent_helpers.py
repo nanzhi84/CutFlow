@@ -94,7 +94,12 @@ def _material(*, with_font=True, with_bgm=True, short_portrait=False) -> dict:
             "asset_id": "portrait_a",
             "score": 90.0,
             "reason": "白色上衣，稳定口播",
-            "metadata": {"clip_id": "clip_a", "source_start": 0.0, "source_end": 20.0},
+            "metadata": {
+                "clip_id": "clip_a",
+                "source_start": 0.0,
+                "source_end": 20.0,
+                "description": "白色上衣稳定口播",
+            },
         },
         {
             "asset_id": "portrait_b",
@@ -118,6 +123,7 @@ def _material(*, with_font=True, with_bgm=True, short_portrait=False) -> dict:
                 "source_end": 6.0,
                 "scene_name": "工地/施工前",
                 "matched_keywords": ["施工前"],
+                "description": "施工前墙面状态特写",
             },
         },
         {
@@ -281,6 +287,8 @@ def test_index_and_build_agent_input_number_candidates():
     assert [c["candidate_id"] for c in payload["portrait_candidates"]] == ["pc_000", "pc_001"]
     assert payload["portrait_candidates"][0]["source_end"] == 20.0
     assert payload["portrait_candidates"][0]["available_frames"] == 600
+    assert payload["portrait_candidates"][0]["description"] == "白色上衣稳定口播"
+    assert payload["broll_candidates"][0]["description"] == "施工前墙面状态特写"
     assert payload["portrait_slots"][0]["required_frames"] == 180
     assert payload["portrait_slots"][0]["required_seconds"] == 6.0
     assert payload["portrait_slots"][0]["legal_window_ids"] == ["pc_000", "pc_001"]

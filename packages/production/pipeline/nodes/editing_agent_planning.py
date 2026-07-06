@@ -70,14 +70,19 @@ _JSON_VARS = frozenset(
         "safe_cut_boundaries",
         "portrait_slots",
         "broll_slots",
-        "portrait_candidates",
-        "broll_candidates",
         "font_candidates",
         "bgm_candidates",
     }
 )
-_PROMPT_RETRIEVAL_TOPK_LIMIT = 6
+_PROMPT_RETRIEVAL_TOPK_LIMIT = 12
 _PROMPT_BGM_CANDIDATE_LIMIT = 6
+_PORTRAIT_CANDIDATE_HEADER = (
+    "candidate_id | asset_id | available_seconds | description | reason"
+)
+_BROLL_CANDIDATE_HEADER = (
+    "candidate_id | asset_id | scene_name | allowed_slot_ids | matched_keywords | "
+    "available_seconds | description"
+)
 
 
 @dataclass(frozen=True)
@@ -393,6 +398,20 @@ def _compact_prompt_slot(slot: dict, *, broll: bool) -> dict:
     return payload
 
 
+def _prompt_line_cell(value) -> str:
+    if isinstance(value, list | tuple):
+        cells = [_prompt_line_cell(item) for item in value]
+        return ",".join(cell for cell in cells if cell)
+    text = "" if value is None else str(value)
+    return " ".join(text.replace("|", "/").split())
+
+
+def _prompt_candidate_lines(header: str, rows: list[list[object]]) -> str:
+    lines = [header]
+    lines.extend(" | ".join(_prompt_line_cell(value) for value in row) for row in rows)
+    return "\n".join(lines)
+
+
 def _compact_prompt_input(agent_input: dict) -> dict:
     """Shrink the LLM prompt to ID-decision fields only.
 
@@ -419,6 +438,31 @@ def _compact_prompt_input(agent_input: dict) -> dict:
         key=lambda item: float(item.get("score") or 0.0),
         reverse=True,
     )[:_PROMPT_BGM_CANDIDATE_LIMIT]
+    portrait_rows = [
+        [
+            candidate.get("candidate_id"),
+            candidate.get("asset_id"),
+            candidate.get("available_seconds"),
+            candidate.get("description"),
+            candidate.get("reason"),
+        ]
+        for candidate in agent_input.get("portrait_candidates", [])
+        if isinstance(candidate, dict)
+    ]
+    broll_rows = [
+        [
+            candidate.get("candidate_id"),
+            candidate.get("asset_id"),
+            candidate.get("scene_name"),
+            broll_allowed_slot_ids.get(str(candidate.get("candidate_id") or ""), []),
+            list(candidate.get("matched_keywords") or [])[:6],
+            candidate.get("available_seconds"),
+            candidate.get("description"),
+        ]
+        for candidate in agent_input.get("broll_candidates", [])
+        if isinstance(candidate, dict)
+        and broll_allowed_slot_ids.get(str(candidate.get("candidate_id") or ""))
+    ]
     return {
         **agent_input,
         "narration_units": [
@@ -438,33 +482,8 @@ def _compact_prompt_input(agent_input: dict) -> dict:
             if isinstance(slot, dict)
         ],
         "broll_slots": compact_broll_slots,
-        "portrait_candidates": [
-            {
-                "candidate_id": str(candidate.get("candidate_id") or ""),
-                "asset_id": str(candidate.get("asset_id") or ""),
-                "available_seconds": candidate.get("available_seconds"),
-                "reason": str(candidate.get("reason") or ""),
-            }
-            for candidate in agent_input.get("portrait_candidates", [])
-            if isinstance(candidate, dict)
-        ],
-        "broll_candidates": [
-            {
-                "candidate_id": str(candidate.get("candidate_id") or ""),
-                "asset_id": str(candidate.get("asset_id") or ""),
-                "scene_name": str(candidate.get("scene_name") or ""),
-                "diversity_key": str(candidate.get("diversity_key") or ""),
-                "allowed_slot_ids": broll_allowed_slot_ids.get(
-                    str(candidate.get("candidate_id") or ""),
-                    [],
-                ),
-                "matched_keywords": list(candidate.get("matched_keywords") or [])[:6],
-                "available_seconds": candidate.get("available_seconds"),
-            }
-            for candidate in agent_input.get("broll_candidates", [])
-            if isinstance(candidate, dict)
-            and broll_allowed_slot_ids.get(str(candidate.get("candidate_id") or ""))
-        ],
+        "portrait_candidates": _prompt_candidate_lines(_PORTRAIT_CANDIDATE_HEADER, portrait_rows),
+        "broll_candidates": _prompt_candidate_lines(_BROLL_CANDIDATE_HEADER, broll_rows),
         "bgm_candidates": [
             {
                 "bgm_id": str(candidate.get("bgm_id") or ""),
@@ -1015,7 +1034,10 @@ def select_editing_assignment(
                     provider_profile_id=profile.id,
                     capability_id="llm.chat",
                     prompt_version_id=prompt_invocation.prompt_version_id,
-                    input={"prompt": rendered},
+                    input={
+                        "prompt": rendered,
+                        "response_format": {"type": "json_object"},
+                    },
                     idempotency_key=f"{run.id}:{node_run.id}:editing_agent:{attempt}",
                 )
             )

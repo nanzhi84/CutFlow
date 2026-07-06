@@ -581,6 +581,70 @@ def test_window_material_retrieval_keyword_fusion_breaks_close_semantic_tie():
     assert ranked[0].retrieval_trace["keyword_matched"] == ["施工前"]
 
 
+def test_window_material_retrieval_uses_portrait_metadata_keywords_for_fusion():
+    candidate_plain = nodes.window_material_retrieval._RetrievalCandidate(
+        candidate_id="pc_000",
+        candidate={
+            "asset_id": "portrait_plain",
+            "metadata": {"source_start": 0.0, "source_end": 4.0},
+        },
+        clip_embedding_key="clipemb_plain",
+        source_frames=120,
+        index=0,
+    )
+    candidate_keyword = nodes.window_material_retrieval._RetrievalCandidate(
+        candidate_id="pc_001",
+        candidate={
+            "asset_id": "portrait_keyword",
+            "metadata": {
+                "source_start": 0.0,
+                "source_end": 4.0,
+                "keywords": ["稳定口播"],
+            },
+        },
+        clip_embedding_key="clipemb_keyword",
+        source_frames=120,
+        index=1,
+    )
+
+    class FakeProductionRepository:
+        def nearest_clip_embeddings(self, **_kwargs):
+            return [
+                (
+                    _clip_embedding_record(
+                        key="clipemb_plain",
+                        asset_id="portrait_plain",
+                        clip_id="plain",
+                        namespace="portrait",
+                    ),
+                    0.2,
+                ),
+                (
+                    _clip_embedding_record(
+                        key="clipemb_keyword",
+                        asset_id="portrait_keyword",
+                        clip_id="keyword",
+                        namespace="portrait",
+                    ),
+                    0.2,
+                ),
+            ]
+
+    ranked = nodes.window_material_retrieval._retrieve_for_window_from_sql(
+        production_repository=FakeProductionRepository(),
+        namespace="portrait",
+        eligible=[candidate_plain, candidate_keyword],
+        query_embedding=[1.0, *([0.0] * 1023)],
+        query_keywords=["稳定口播", "现场"],
+        provider_profile_id="sandbox.embedding.default",
+        required_frames=60,
+    )
+
+    assert [candidate.candidate_id for candidate in ranked[:2]] == ["pc_001", "pc_000"]
+    assert ranked[0].retrieval_trace["keyword_adjustment"] == 0.075
+    assert ranked[0].retrieval_trace["keyword_matched"] == ["稳定口播"]
+
+
 def test_window_material_retrieval_without_keywords_preserves_legacy_score_formula():
     item = nodes.window_material_retrieval._RetrievalCandidate(
         candidate_id="bc_000",

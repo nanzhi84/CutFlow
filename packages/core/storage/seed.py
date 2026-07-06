@@ -35,6 +35,11 @@ _LEGACY_EDITING_AGENT_MARKERS = (
     '"broll_overrides"',
     '"subtitle_style_plan"',
 )
+_EDITING_AGENT_LINE_FORMAT_MARKERS = (
+    "candidate_id | asset_id | available_seconds | description | reason",
+    "candidate_id | asset_id | scene_name | allowed_slot_ids | matched_keywords | "
+    "available_seconds | description",
+)
 
 
 def seed_rows(
@@ -360,7 +365,7 @@ def _needs_prompt_version_sync(existing: PromptVersionRow) -> bool:
         return (
             any(marker in content for marker in _LEGACY_EDITING_AGENT_MARKERS)
             or "legal_window_ids" not in content
-            or "available_frames" not in content
+            or any(marker not in content for marker in _EDITING_AGENT_LINE_FORMAT_MARKERS)
             or "允许重复使用同一素材" in content
             or "{portrait_uniqueness_rule}" not in content
         )

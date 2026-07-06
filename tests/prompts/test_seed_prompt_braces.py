@@ -120,6 +120,17 @@ def test_seeded_cover_reference_style_prompt_requests_chinese_style_guide():
     assert "English style guide" not in content
 
 
+def test_editing_agent_seed_prompt_documents_line_candidate_format_and_json_output():
+    content = Repository().prompt_versions["prompt_editing_agent_v1"].content
+
+    assert "JSON" in content
+    assert "candidate_id | asset_id | available_seconds | description | reason" in content
+    assert (
+        "candidate_id | asset_id | scene_name | allowed_slot_ids | matched_keywords | "
+        "available_seconds | description"
+    ) in content
+
+
 def test_prompt_template_view_exposes_seed_variable_hints():
     repository = Repository()
     template = repository.prompt_templates["prompt_script_ip_persona_fresh_generate"]

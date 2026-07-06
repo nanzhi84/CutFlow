@@ -46,8 +46,10 @@ class _FakeEditingLlmProvider:
 
     def __init__(self, outputs: list[dict]) -> None:
         self.outputs = list(outputs)
+        self.calls = []
 
-    def invoke(self, _call):
+    def invoke(self, call):
+        self.calls.append(call)
         output = self.outputs.pop(0)
         return ProviderResult(output=output, input_tokens=100, output_tokens=20)
 
@@ -81,7 +83,13 @@ def _material() -> dict:
                 "asset_id": "portrait_a",
                 "score": 90.0,
                 "reason": "白色上衣",
-                "metadata": {"clip_id": "clip_a", "source_start": 0.0, "source_end": 15.0},
+                "metadata": {
+                    "clip_id": "clip_a",
+                    "source_start": 0.0,
+                    "source_end": 15.0,
+                    "description": "白色上衣稳定口播",
+                    "keywords": ["白色上衣", "稳定口播"],
+                },
             },
             {
                 "asset_id": "portrait_b",
@@ -101,6 +109,7 @@ def _material() -> dict:
                     "source_end": 6.0,
                     "scene_name": "工地/施工前",
                     "matched_keywords": ["施工前"],
+                    "description": "施工前墙面状态特写",
                 },
             },
         ],
@@ -439,8 +448,8 @@ def test_build_context_limits_llm_input_to_retrieval_topk_candidates():
 def test_compact_prompt_input_keeps_only_llm_decision_fields():
     context = _agent_context(_state())
     agent_input = dict(context.agent_input)
-    retrieval_ids = [f"pc_{index:03d}" for index in range(8)]
-    broll_ids = [f"bc_{index:03d}" for index in range(8)]
+    retrieval_ids = [f"pc_{index:03d}" for index in range(14)]
+    broll_ids = [f"bc_{index:03d}" for index in range(14)]
     agent_input["safe_cut_boundaries"] = [{"cut_id": "cut_001", "frame": 120}]
     agent_input["portrait_slots"] = [
         {
@@ -463,13 +472,30 @@ def test_compact_prompt_input_keeps_only_llm_decision_fields():
     compact = nodes.editing_agent_planning._compact_prompt_input(agent_input)
 
     assert compact["safe_cut_boundaries"] == []
-    assert compact["portrait_slots"][0]["retrieval_topk_candidate_ids"] == retrieval_ids[:6]
-    assert compact["portrait_slots"][0]["legal_window_ids"] == retrieval_ids[:6]
-    assert compact["broll_slots"][0]["retrieval_topk_candidate_ids"] == broll_ids[:6]
-    assert "source_start" not in compact["portrait_candidates"][0]
-    assert "source_end" not in compact["broll_candidates"][0]
-    assert compact["broll_candidates"][0]["allowed_slot_ids"] == ["bslot_000"]
-    assert "diversity_key" in compact["broll_candidates"][0]
+    assert compact["portrait_slots"][0]["retrieval_topk_candidate_ids"] == retrieval_ids[:12]
+    assert compact["portrait_slots"][0]["legal_window_ids"] == retrieval_ids[:12]
+    assert compact["broll_slots"][0]["retrieval_topk_candidate_ids"] == broll_ids[:12]
+    portrait_lines = compact["portrait_candidates"].splitlines()
+    assert portrait_lines[0] == (
+        "candidate_id | asset_id | available_seconds | description | reason"
+    )
+    assert portrait_lines[1] == (
+        "pc_000 | portrait_a | 15.0 | 白色上衣稳定口播 | 白色上衣"
+    )
+    broll_lines = compact["broll_candidates"].splitlines()
+    assert broll_lines[0] == (
+        "candidate_id | asset_id | scene_name | allowed_slot_ids | matched_keywords | "
+        "available_seconds | description"
+    )
+    assert broll_lines[1] == (
+        "bc_000 | broll_x | 工地/施工前 | bslot_000 | 施工前 | 6.0 | "
+        "施工前墙面状态特写"
+    )
+    assert "source_start" not in compact["portrait_candidates"]
+    assert "source_end" not in compact["broll_candidates"]
+    assert "available_frames" not in compact["portrait_candidates"]
+    assert "score" not in compact["broll_candidates"]
+    assert "diversity_key" not in compact["broll_candidates"]
     assert [candidate["bgm_id"] for candidate in compact["bgm_candidates"]] == [
         "bgm_007",
         "bgm_006",
@@ -559,23 +585,22 @@ def test_local_broll_constraint_repair_replaces_invalid_candidate():
 def test_local_portrait_constraint_repair_replaces_topk_hallucination(tmp_path):
     adapter = _adapter(tmp_path)
     _seed_fake_llm_profile(adapter)
-    adapter.provider_gateway.register(
-        _FakeEditingLlmProvider(
-            [
-                {
-                    "intent": {
-                        "portrait_plan": [
-                            {"slot_id": "pslot_000", "window_id": "pc_000"},
-                            {"slot_id": "pslot_001", "window_id": "pc_001"},
-                        ],
-                        "broll_plan": [{"slot_id": "bslot_000", "candidate_id": "bc_000"}],
-                        "font_plan": {"font_id": "font_yst"},
-                        "bgm_plan": {"bgm_id": "bgm_001"},
-                    }
+    provider = _FakeEditingLlmProvider(
+        [
+            {
+                "intent": {
+                    "portrait_plan": [
+                        {"slot_id": "pslot_000", "window_id": "pc_000"},
+                        {"slot_id": "pslot_001", "window_id": "pc_001"},
+                    ],
+                    "broll_plan": [{"slot_id": "bslot_000", "candidate_id": "bc_000"}],
+                    "font_plan": {"font_id": "font_yst"},
+                    "bgm_plan": {"bgm_id": "bgm_001"},
                 }
-            ]
-        )
+            }
+        ]
     )
+    adapter.provider_gateway.register(provider)
     state = _state()
     _disable_llm_reprompt(state)
     _attach_retrieval(
@@ -591,6 +616,7 @@ def test_local_portrait_constraint_repair_replaces_topk_hallucination(tmp_path):
 
     assert output.status == NodeStatus.succeeded
     assert output.provider_invocation_ids and len(output.provider_invocation_ids) == 1
+    assert provider.calls[0].input["response_format"] == {"type": "json_object"}
     assert WarningCode.editing_agent_local_constraint_repair in output.warnings
     assignment = _payload(output, ArtifactKind.plan_media_assignment)
     assert assignment["engine"] == "editing_agent_llm"
