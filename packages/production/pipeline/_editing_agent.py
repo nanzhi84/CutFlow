@@ -458,11 +458,12 @@ def validate_selection(
     seen_broll_candidates: set[str] = set()
     broll_asset_slots: dict[str, str] = {}
     broll_diversity_slots: dict[str, str] = {}
+    broll_covered_frames_by_slot: dict[str, int] = {}
     for choice in selection.broll:
         if choice.slot_id not in broll_slots:
             errors.append(f"broll slot_id '{choice.slot_id}' is not a known broll slot")
             continue
-        if choice.slot_id in seen_broll:
+        if not allow_broll_asset_diversity_reuse and choice.slot_id in seen_broll:
             errors.append(f"broll slot '{choice.slot_id}' is covered more than once")
             continue
         seen_broll.add(choice.slot_id)
@@ -487,7 +488,11 @@ def validate_selection(
         slot = broll_slots[choice.slot_id]
         need = _slot_required_frames(slot)
         available = _broll_source_frames_available(cand)
-        if available < need:
+        if allow_broll_asset_diversity_reuse:
+            broll_covered_frames_by_slot[choice.slot_id] = (
+                broll_covered_frames_by_slot.get(choice.slot_id, 0) + max(0, available)
+            )
+        elif available < need:
             errors.append(
                 f"broll candidate '{choice.candidate_id}' source is too short: has "
                 f"{available} frames but slot '{choice.slot_id}' requires {need} frames"
@@ -513,6 +518,16 @@ def validate_selection(
                     )
                 else:
                     broll_diversity_slots[diversity_key] = choice.slot_id
+
+    if allow_broll_asset_diversity_reuse:
+        missing_broll = []
+        for slot_id, slot in broll_slots.items():
+            need = _slot_required_frames(slot)
+            covered = broll_covered_frames_by_slot.get(slot_id, 0)
+            if covered < need:
+                missing_broll.append(f"{slot_id} ({covered}/{need} frames)")
+        if missing_broll:
+            errors.append("broll slots not fully covered: " + ", ".join(sorted(missing_broll)))
 
     # Font / BGM: an explicit choice must reference a real candidate; null is fine
     # (empty candidate pool → default font / no BGM).
@@ -603,44 +618,47 @@ def deterministic_selection(
                 broll_pool = _topk_for_slot(slot, retrieval_topk_by_window)
             else:
                 broll_pool = ranked_broll
-            candidate_id = next(
-                (
-                    cid
-                    for cid in broll_pool
-                    if cid in candidates.broll_by_id
-                    if cid not in used_broll_candidates
-                    and _broll_source_frames_available(candidates.broll_by_id[cid]) >= need
-                    and (
-                        allow_broll_asset_diversity_reuse
-                        or _as_str(candidates.broll_by_id[cid].get("asset_id"))
-                        not in used_broll_assets
+            covered = 0
+            for candidate_id in broll_pool:
+                if len(broll) >= max(0, max_inserts):
+                    break
+                if candidate_id not in candidates.broll_by_id:
+                    continue
+                candidate = candidates.broll_by_id[candidate_id]
+                source_frames = _broll_source_frames_available(candidate)
+                if (
+                    candidate_id in used_broll_candidates
+                    or source_frames <= 0
+                    or (not allow_broll_asset_diversity_reuse and source_frames < need)
+                    or (
+                        not allow_broll_asset_diversity_reuse
+                        and _as_str(candidate.get("asset_id")) in used_broll_assets
                     )
-                    and (
-                        allow_broll_asset_diversity_reuse
-                        or not _as_str(_meta(candidates.broll_by_id[cid]).get("diversity_key"))
-                        or _as_str(_meta(candidates.broll_by_id[cid]).get("diversity_key"))
-                        not in used_broll_diversity
+                    or (
+                        not allow_broll_asset_diversity_reuse
+                        and _as_str(_meta(candidate).get("diversity_key"))
+                        and _as_str(_meta(candidate).get("diversity_key")) in used_broll_diversity
                     )
-                ),
-                None,
-            )
-            if candidate_id is None:
-                continue
-            used_broll_candidates.add(candidate_id)
-            asset_key = _as_str(candidates.broll_by_id[candidate_id].get("asset_id"))
-            if asset_key:
-                used_broll_assets.add(asset_key)
-            diversity_key = _as_str(_meta(candidates.broll_by_id[candidate_id]).get("diversity_key"))
-            if diversity_key:
-                used_broll_diversity.add(diversity_key)
-            broll.append(
-                BrollChoice(
-                    slot_id=_as_str(slot.get("slot_id")),
-                    candidate_id=candidate_id,
-                    reason="deterministic coverage",
-                    confidence=0.5,
+                ):
+                    continue
+                used_broll_candidates.add(candidate_id)
+                asset_key = _as_str(candidate.get("asset_id"))
+                if asset_key:
+                    used_broll_assets.add(asset_key)
+                diversity_key = _as_str(_meta(candidate).get("diversity_key"))
+                if diversity_key:
+                    used_broll_diversity.add(diversity_key)
+                broll.append(
+                    BrollChoice(
+                        slot_id=_as_str(slot.get("slot_id")),
+                        candidate_id=candidate_id,
+                        reason="deterministic coverage",
+                        confidence=0.5,
+                    )
                 )
-            )
+                covered += source_frames
+                if not allow_broll_asset_diversity_reuse or covered >= need:
+                    break
     return EditingSelection(
         portrait=portrait,
         broll=broll,

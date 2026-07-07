@@ -53,7 +53,9 @@ from packages.production.pipeline._editing_agent import (
     validate_selection,
 )
 from packages.production.pipeline._materialize import (
+    full_coverage_broll_coverage_gaps,
     materialize_broll_from_assignment,
+    materialize_full_coverage_broll_from_assignment,
     materialize_portrait_from_assignment,
     materialize_style_from_selection,
     portrait_cut_frames,
@@ -62,9 +64,6 @@ from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
 from packages.production.pipeline.nodes._broll_policy import broll_full_coverage_enabled
 from packages.production.pipeline.nodes._creative_intent import load_creative_intent
-from packages.production.pipeline.nodes.deterministic_editing_planning import (
-    materialize_full_coverage_broll_from_assignment,
-)
 from packages.production.pipeline.nodes.style_planning import _derive_overlay_events
 
 # Structured variables serialized as JSON for the prompt; scalars go through str().
@@ -710,7 +709,10 @@ def _repair_broll_selection_to_constraints(
             and diversity_key in used_diversity
         ):
             return False
-        return _broll_source_frames(candidate) >= _slot_source_required_frames(slot)
+        source_frames = _broll_source_frames(candidate)
+        if allow_asset_diversity_reuse:
+            return source_frames > 0
+        return source_frames >= _slot_source_required_frames(slot)
 
     def reserve(candidate_id: str) -> None:
         candidate = candidates.broll_by_id[candidate_id]
@@ -734,7 +736,7 @@ def _repair_broll_selection_to_constraints(
             )
             continue
         slot = broll_slots.get(choice.slot_id)
-        if slot is None or choice.slot_id in used_slots:
+        if slot is None or (choice.slot_id in used_slots and not allow_asset_diversity_reuse):
             actions.append(
                 {
                     "slot_id": choice.slot_id,
@@ -770,7 +772,8 @@ def _repair_broll_selection_to_constraints(
                     "reason": "no legal broll candidate remains",
                 }
             )
-            used_slots.add(choice.slot_id)
+            if not allow_asset_diversity_reuse:
+                used_slots.add(choice.slot_id)
             continue
         used_slots.add(choice.slot_id)
         reserve(candidate_id)
@@ -1001,6 +1004,7 @@ def select_editing_assignment(
         broll_limit = _broll_assignment_limit(
             request=state.request,
             windows=agent_context.windows,
+            broll_candidate_count=len(agent_context.candidates.broll_by_id),
         )
         selection = deterministic_selection(
             boundary=agent_context.agent_boundary,
@@ -1135,6 +1139,7 @@ def select_editing_assignment(
                     max_inserts=_broll_assignment_limit(
                         request=state.request,
                         windows=agent_context.windows,
+                        broll_candidate_count=len(agent_context.candidates.broll_by_id),
                     ),
                     retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
                     allow_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
@@ -1170,6 +1175,7 @@ def select_editing_assignment(
                 max_inserts=_broll_assignment_limit(
                     request=state.request,
                     windows=agent_context.windows,
+                    broll_candidate_count=len(agent_context.candidates.broll_by_id),
                 ),
                 retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
                 allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
@@ -1224,7 +1230,11 @@ def materialize_editing_outputs(
         else _selection_portrait_assignment(selection)
     )
     broll_assignment = _selection_broll_assignment(selection)
-    broll_limit = _broll_assignment_limit(request=request, windows=windows)
+    broll_limit = _broll_assignment_limit(
+        request=request,
+        windows=windows,
+        broll_candidate_count=len(candidates.broll_by_id),
+    )
     assignment_for_materialize = {
         "portrait": portrait_assignment,
         "broll": broll_assignment,
@@ -1243,7 +1253,6 @@ def materialize_editing_outputs(
             windows=windows,
             assignment=assignment_for_materialize,
             candidates=candidates,
-            cut_frames=portrait_cut_frames(portrait_payload),
             enabled=request.broll.enabled,
             max_inserts=broll_limit,
         )
@@ -1351,9 +1360,10 @@ def materialize_editing_outputs(
     )
 
 
-def _broll_assignment_limit(*, request, windows: dict) -> int:
+def _broll_assignment_limit(*, request, windows: dict, broll_candidate_count: int = 0) -> int:
     if broll_full_coverage_enabled(request):
-        return len([w for w in (windows.get("broll_windows") or []) if isinstance(w, dict)])
+        window_count = len([w for w in (windows.get("broll_windows") or []) if isinstance(w, dict)])
+        return max(window_count, int(broll_candidate_count or 0))
     return request.broll.max_inserts
 
 
@@ -1374,7 +1384,11 @@ def _ensure_full_coverage_broll(
         if isinstance(overlay, dict) and str(overlay.get("window_id") or "")
     }
     missing = sorted(expected - covered)
-    if missing or broll_drops:
+    coverage_gaps = full_coverage_broll_coverage_gaps(
+        windows=windows,
+        overlays=[overlay for overlay in (broll_payload.get("overlays") or []) if isinstance(overlay, dict)],
+    )
+    if missing or coverage_gaps or broll_drops:
         raise NodeExecutionError(
             ErrorCode.material_insufficient_broll,
             "B-roll full coverage requires every authoritative window to have material.",
@@ -1382,6 +1396,7 @@ def _ensure_full_coverage_broll(
                 "missing_broll_window_ids": missing,
                 "expected_broll_window_count": len(expected),
                 "covered_broll_window_count": len(covered),
+                "coverage_gaps": coverage_gaps,
                 "broll_drops": broll_drops,
             },
         )

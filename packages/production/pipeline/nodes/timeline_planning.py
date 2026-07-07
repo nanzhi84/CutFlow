@@ -9,6 +9,7 @@ from packages.production.pipeline._timeline_grid import (
     build_tracks,
     validate_timeline,
 )
+from packages.production.pipeline._materialize import full_coverage_broll_coverage_gaps
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline.nodes._broll_policy import broll_full_coverage_enabled
 from packages.production.pipeline.nodes._timeline_output import timeline_output
@@ -36,6 +37,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         for window in (windows.get("broll_windows") or [])
         if isinstance(window, dict) and window.get("window_id")
     }
+    full_coverage_broll = broll_full_coverage_enabled(state.request)
 
     raw_segments: list[dict] = []
     for index, segment in enumerate(portrait.get("segments", [])):
@@ -101,10 +103,17 @@ def run(ctx: NodeContext) -> NodeOutput:
             )
         expected_start = int(window.get("start_frame", 0) or 0)
         expected_end = int(window.get("end_frame", 0) or 0)
-        if (
-            overlay.timeline_start_frame != expected_start
-            or overlay.timeline_end_frame != expected_end
-        ):
+        if full_coverage_broll:
+            drifts = (
+                overlay.timeline_start_frame < expected_start
+                or overlay.timeline_end_frame > expected_end
+            )
+        else:
+            drifts = (
+                overlay.timeline_start_frame != expected_start
+                or overlay.timeline_end_frame != expected_end
+            )
+        if drifts:
             raise NodeExecutionError(
                 ErrorCode.render_invalid_timeline,
                 f"B-roll overlay {overlay.overlay_id} drifts from authoritative window "
@@ -128,6 +137,18 @@ def run(ctx: NodeContext) -> NodeOutput:
                 "pad_end": overlay.pad_end,
             }
         )
+
+    if full_coverage_broll:
+        coverage_gaps = full_coverage_broll_coverage_gaps(
+            windows=windows,
+            overlays=[item for item in raw_overlays if isinstance(item, dict)],
+        )
+        if coverage_gaps:
+            raise NodeExecutionError(
+                ErrorCode.render_invalid_timeline,
+                "B-roll full coverage overlays leave gaps inside authoritative windows.",
+                details={"coverage_gaps": coverage_gaps},
+            )
 
     validation = validate_timeline(raw_segments, fps, total_frames)
     if not validation.valid:

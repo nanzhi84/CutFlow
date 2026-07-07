@@ -26,9 +26,13 @@ from packages.production.pipeline.nodes._broll_policy import broll_full_coverage
 _FULL_COVERAGE_CUT_PRIORITY = {
     "audio_pause": 0,
     "safe_cut": 0,
+    "semantic_group": 0,
     "unit_boundary": 2,
     "fallback": 3,
 }
+
+_FULL_COVERAGE_GROUP_PAUSE_MS = 120
+_FULL_COVERAGE_GROUP_BOUNDARY_SCORE = 0.62
 
 
 def run(ctx: NodeContext) -> NodeOutput:
@@ -223,6 +227,7 @@ def _full_coverage_output(
                 "semantics": "authoritative_full_coverage_main_visual_track",
                 "downstream_may_skip": False,
                 "downstream_may_resize": False,
+                "downstream_may_stitch": True,
             },
             "portrait_reuse": {"mode": "disabled_for_full_coverage"},
         },
@@ -281,8 +286,10 @@ def compile_full_coverage_broll_windows(
         min_frames,
         frame_index(BROLL_GEOMETRY_POLICY.full_coverage_max_segment_seconds),
     )
+    semantic_groups = _full_coverage_semantic_groups(narration_units)
     candidates = _full_coverage_cut_candidates(
         narration_units=narration_units,
+        semantic_groups=semantic_groups,
         safe_cut_boundaries=safe_cut_boundaries,
         total_frames=total_frames,
     )
@@ -295,6 +302,12 @@ def compile_full_coverage_broll_windows(
         "min_segment_frames": min_frames,
         "max_segment_frames": max_frames,
         "raw_pause_window_count": len(pause_windows),
+        "semantic_group_count": len(semantic_groups),
+        "semantic_group_boundary_count": max(0, len(semantic_groups) - 1),
+        "semantic_group_policy": {
+            "pause_after_ms": _FULL_COVERAGE_GROUP_PAUSE_MS,
+            "boundary_score": _FULL_COVERAGE_GROUP_BOUNDARY_SCORE,
+        },
     }
     cuts = [0]
     cursor = 0
@@ -355,6 +368,7 @@ def compile_full_coverage_broll_windows(
 def _full_coverage_cut_candidates(
     *,
     narration_units,
+    semantic_groups: list[dict],
     safe_cut_boundaries: list[dict],
     total_frames: int,
 ) -> dict[int, dict]:
@@ -384,7 +398,55 @@ def _full_coverage_cut_candidates(
     for unit in narration_units:
         add(frame_index(float(unit.start)), "unit_boundary")
         add(frame_index(float(unit.end)), "unit_boundary")
+    for group in semantic_groups:
+        add(int(group["end_frame"]), "semantic_group")
     return candidates
+
+
+def _full_coverage_semantic_groups(narration_units) -> list[dict]:
+    groups: list[dict] = []
+    current_units = []
+    for unit in narration_units:
+        current_units.append(unit)
+        if _full_coverage_is_semantic_group_boundary(unit):
+            groups.append(_full_coverage_group_payload(current_units))
+            current_units = []
+    if current_units:
+        groups.append(_full_coverage_group_payload(current_units))
+    return groups
+
+
+def _full_coverage_group_payload(units) -> dict:
+    start_frame = frame_index(float(units[0].start))
+    end_frame = frame_index(float(units[-1].end))
+    return {
+        "start_frame": start_frame,
+        "end_frame": end_frame,
+        "unit_ids": [str(unit.unit_id) for unit in units],
+    }
+
+
+def _full_coverage_is_semantic_group_boundary(unit) -> bool:
+    pause_after_ms = _full_coverage_int(getattr(unit, "pause_after_ms", 0))
+    boundary_score = _full_coverage_float(getattr(unit, "boundary_score", 0.0))
+    return bool(getattr(unit, "hard_end", False)) or (
+        pause_after_ms >= _FULL_COVERAGE_GROUP_PAUSE_MS
+        or boundary_score >= _FULL_COVERAGE_GROUP_BOUNDARY_SCORE
+    )
+
+
+def _full_coverage_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _full_coverage_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _choose_full_coverage_cut(

@@ -262,6 +262,149 @@ def materialize_broll_from_assignment(
     )
 
 
+def materialize_full_coverage_broll_from_assignment(
+    *,
+    windows: dict,
+    assignment: dict,
+    candidates,
+    enabled: bool,
+    max_inserts: int,
+) -> tuple[dict, list[dict]]:
+    """Materialize full-coverage B-roll windows, stitching clips inside a window.
+
+    Insert mode requires one candidate to cover one optional slot. Full coverage is
+    the main visual track: an authoritative window may be longer than a clean source
+    clip, so multiple selected candidates can cover contiguous slices of the same
+    window. Candidate IDs still remain single-use per run.
+    """
+    if not enabled:
+        return BrollPlanArtifact(enabled=False).model_dump(mode="json"), []
+
+    fps = int(windows.get("fps") or TIMELINE_FPS)
+    candidate_by_id = _candidate_group(candidates, "broll_by_id")
+    choices_by_window: dict[str, list[dict]] = {}
+    for choice in assignment.get("broll") or []:
+        if not isinstance(choice, dict):
+            continue
+        window_id = _as_str(choice.get("window_id"))
+        if not window_id:
+            continue
+        choices_by_window.setdefault(window_id, []).append(choice)
+
+    accepted: list[tuple[str, BrollInsertion]] = []
+    drop_diagnostics: list[dict] = []
+    used_candidate_ids: set[str] = set()
+    broll_windows = sorted(
+        (window for window in (windows.get("broll_windows") or []) if isinstance(window, dict)),
+        key=lambda window: int(window.get("start_frame", 0) or 0),
+    )
+
+    for window_data in broll_windows:
+        window_id = _as_str(window_data.get("window_id"))
+        start_frame = int(window_data.get("start_frame", 0) or 0)
+        end_frame = int(window_data.get("end_frame", 0) or 0)
+        if not window_id or end_frame <= start_frame:
+            continue
+        cursor = start_frame
+        window_choices = choices_by_window.get(window_id, [])
+        for choice in window_choices:
+            if cursor >= end_frame or len(accepted) >= max(0, max_inserts):
+                break
+            candidate_id = _as_str(choice.get("candidate_id"))
+            if not candidate_id or candidate_id in used_candidate_ids:
+                continue
+            candidate = candidate_by_id.get(candidate_id)
+            if candidate is None:
+                continue
+            meta = _meta(candidate)
+            source_start = _as_float(meta.get("source_start"))
+            source_end = _as_float(meta.get("source_end"))
+            source_start_frame = _frame_index_at_fps(source_start, fps=fps)
+            source_end_frame_limit = _frame_index_at_fps(source_end, fps=fps)
+            source_frames_available = max(0, source_end_frame_limit - source_start_frame)
+            take_frames = min(source_frames_available, end_frame - cursor)
+            if take_frames <= 0:
+                continue
+            diversity_key = _as_str(meta.get("diversity_key"))
+            insert = BrollInsertion(
+                asset_id=_as_str(candidate.get("asset_id")),
+                clip_id=_as_str(meta.get("clip_id")),
+                timeline_start=to_seconds(cursor),
+                timeline_end=to_seconds(cursor + take_frames),
+                source_start=to_seconds(source_start_frame),
+                source_end=to_seconds(source_start_frame + take_frames),
+                confidence=_as_float(choice.get("confidence")),
+                matched_keywords=tuple(
+                    _as_str(keyword)
+                    for keyword in (choice.get("matched_keywords") or [])
+                    if _as_str(keyword)
+                ),
+                scene_name=_as_str(meta.get("scene_name")),
+                reason=_as_str(choice.get("reason")) or "full_coverage stitched selection",
+                diversity_key=diversity_key,
+                timeline_start_frame=cursor,
+                timeline_end_frame=cursor + take_frames,
+                source_start_frame=source_start_frame,
+                source_end_frame=source_start_frame + take_frames,
+            )
+            accepted.append((window_id, insert))
+            used_candidate_ids.add(candidate_id)
+            cursor += take_frames
+        if cursor < end_frame:
+            drop_diagnostics.append(
+                {
+                    "slot_id": window_id,
+                    "reason": "insufficient_window_coverage",
+                    "required_frames": end_frame - start_frame,
+                    "covered_frames": max(0, cursor - start_frame),
+                    "missing_frames": end_frame - cursor,
+                    "candidate_count": len(window_choices),
+                }
+            )
+
+    return (
+        BrollPlanArtifact(enabled=True, overlays=overlays_from_insertions(accepted)).model_dump(
+            mode="json"
+        ),
+        drop_diagnostics,
+    )
+
+
+def full_coverage_broll_coverage_gaps(*, windows: dict, overlays: list[dict]) -> list[dict]:
+    gaps: list[dict] = []
+    for window in (windows.get("broll_windows") or []):
+        if not isinstance(window, dict):
+            continue
+        window_id = _as_str(window.get("window_id"))
+        if not window_id:
+            continue
+        start_frame = int(window.get("start_frame", 0) or 0)
+        end_frame = int(window.get("end_frame", 0) or 0)
+        if end_frame <= start_frame:
+            continue
+        intervals = sorted(
+            (
+                int(overlay.get("timeline_start_frame", 0) or 0),
+                int(overlay.get("timeline_end_frame", 0) or 0),
+            )
+            for overlay in overlays
+            if isinstance(overlay, dict) and _as_str(overlay.get("window_id")) == window_id
+        )
+        cursor = start_frame
+        window_gaps: list[dict] = []
+        for overlay_start, overlay_end in intervals:
+            if overlay_end <= overlay_start:
+                continue
+            if overlay_start > cursor:
+                window_gaps.append({"start_frame": cursor, "end_frame": overlay_start})
+            cursor = max(cursor, overlay_end)
+        if cursor < end_frame:
+            window_gaps.append({"start_frame": cursor, "end_frame": end_frame})
+        if window_gaps:
+            gaps.append({"window_id": window_id, "gaps": window_gaps})
+    return gaps
+
+
 def overlays_from_insertions(insertions: list[tuple[str, BrollInsertion]]) -> list[BrollOverlay]:
     return [
         BrollOverlay(

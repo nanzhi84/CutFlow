@@ -13,7 +13,9 @@ from packages.planning.material import (
 )
 from packages.production.pipeline._editing_agent import index_candidates
 from packages.production.pipeline._materialize import (
+    full_coverage_broll_coverage_gaps,
     materialize_broll_from_assignment,
+    materialize_full_coverage_broll_from_assignment,
     materialize_portrait_from_assignment,
     materialize_style_from_selection,
     portrait_cut_frames,
@@ -71,12 +73,18 @@ def run(ctx: NodeContext) -> NodeOutput:
         assignment=portrait_assignment,
         portrait_payload=portrait_payload,
     )
-    broll_limit = _broll_assignment_limit(request=state.request, windows=windows)
+    broll_limit = _broll_assignment_limit(
+        request=state.request,
+        windows=windows,
+        broll_candidate_count=len(candidates.broll_by_id),
+    )
     broll_assignment = _assign_broll_from_retrieval(
         retrieval=retrieval,
         candidates=candidates.broll_by_id,
+        windows=windows,
         max_inserts=broll_limit,
         allow_asset_diversity_reuse=broll_full_coverage_enabled(state.request),
+        allow_multi_clip_windows=broll_full_coverage_enabled(state.request),
     )
     broll_candidate_index = candidates
     broll_fallback_diagnostics: dict = {}
@@ -92,6 +100,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             units=units,
             max_inserts=broll_limit,
             allow_asset_diversity_reuse=broll_full_coverage_enabled(state.request),
+            allow_multi_clip_windows=broll_full_coverage_enabled(state.request),
         )
         if fallback_assignment:
             broll_assignment = fallback_assignment
@@ -106,7 +115,6 @@ def run(ctx: NodeContext) -> NodeOutput:
             windows=windows,
             assignment=assignment,
             candidates=broll_candidate_index,
-            cut_frames=portrait_cut_frames(portrait_payload),
             enabled=state.request.broll.enabled,
             max_inserts=broll_limit,
         )
@@ -292,17 +300,36 @@ def _assign_broll_from_retrieval(
     *,
     retrieval: dict,
     candidates: dict[str, dict],
+    windows: dict,
     max_inserts: int,
     allow_asset_diversity_reuse: bool = False,
+    allow_multi_clip_windows: bool = False,
 ) -> list[dict]:
     assignments: list[dict] = []
     used_candidate_ids: set[str] = set()
     used_asset_ids: set[str] = set()
     used_diversity: set[str] = set()
     candidates_by_window = retrieval.get("candidates_by_window") or {}
-    for window_id in sorted(candidates_by_window):
+    broll_windows = sorted(
+        (
+            window
+            for window in (windows.get("broll_windows") or [])
+            if isinstance(window, dict) and str(window.get("window_id") or "")
+        ),
+        key=lambda window: int(window.get("start_frame", 0) or 0),
+    )
+    window_ids = [str(window.get("window_id") or "") for window in broll_windows]
+    if not window_ids:
+        window_ids = sorted(candidates_by_window)
+    required_by_window = {
+        str(window.get("window_id") or ""): _required_frames(window)
+        for window in broll_windows
+    }
+    for window_id in window_ids:
         if len(assignments) >= max(0, max_inserts):
             break
+        covered_frames = 0
+        required_frames = int(required_by_window.get(window_id, 0) or 0)
         for retrieved in candidates_by_window.get(window_id) or []:
             if not isinstance(retrieved, dict):
                 continue
@@ -321,6 +348,11 @@ def _assign_broll_from_retrieval(
                 and diversity_key in used_diversity
             ):
                 continue
+            source_frames = _broll_source_frames_available(candidate)
+            if source_frames <= 0:
+                continue
+            if not allow_multi_clip_windows and source_frames < required_frames:
+                continue
             used_candidate_ids.add(candidate_id)
             if asset_id:
                 used_asset_ids.add(asset_id)
@@ -335,65 +367,10 @@ def _assign_broll_from_retrieval(
                     "matched_keywords": list(metadata.get("matched_keywords") or []),
                 }
             )
-            break
+            covered_frames += source_frames
+            if not allow_multi_clip_windows or covered_frames >= required_frames:
+                break
     return assignments
-
-
-def materialize_full_coverage_broll_from_assignment(
-    *,
-    windows: dict,
-    assignment: dict,
-    candidates,
-    cut_frames: list[int],
-    enabled: bool,
-    max_inserts: int,
-) -> tuple[dict, list[dict]]:
-    """Materialize full-coverage B-roll without insert-mode asset/diversity uniqueness.
-
-    The shared materializer owns geometry and source-length validation, but its insert
-    mode intentionally drops repeated assets and diversity clusters. Full coverage is
-    the main visual track, so it may reuse the same source asset across different clips
-    when that is the only way to cover every authoritative window.
-    """
-    if not enabled:
-        return BrollPlanArtifact(enabled=False).model_dump(mode="json"), []
-
-    accepted_overlays: list[dict] = []
-    drop_diagnostics: list[dict] = []
-    used_candidate_ids: set[str] = set()
-    for choice in assignment.get("broll") or []:
-        if len(accepted_overlays) >= max(0, max_inserts):
-            break
-        if not isinstance(choice, dict):
-            continue
-        candidate_id = str(choice.get("candidate_id") or "")
-        drop_base = {
-            "slot_id": str(choice.get("window_id") or ""),
-            "candidate_id": candidate_id,
-        }
-        if candidate_id in used_candidate_ids:
-            drop_diagnostics.append({**drop_base, "reason": "duplicate_candidate"})
-            continue
-        payload, drops = materialize_broll_from_assignment(
-            windows=windows,
-            assignment={"broll": [choice]},
-            candidates=candidates,
-            cut_frames=cut_frames,
-            enabled=enabled,
-            max_inserts=1,
-        )
-        overlays = [overlay for overlay in payload.get("overlays") or [] if isinstance(overlay, dict)]
-        if overlays:
-            used_candidate_ids.add(candidate_id)
-            overlay = dict(overlays[0])
-            overlay["overlay_id"] = f"broll_{len(accepted_overlays) + 1}"
-            accepted_overlays.append(overlay)
-        drop_diagnostics.extend(drops)
-
-    return (
-        BrollPlanArtifact(enabled=True, overlays=accepted_overlays).model_dump(mode="json"),
-        drop_diagnostics,
-    )
 
 
 def _has_broll_retrieval_topk(*, retrieval: dict, windows: dict) -> bool:
@@ -421,6 +398,7 @@ def _assign_broll_from_annotations(
     units: list[dict],
     max_inserts: int,
     allow_asset_diversity_reuse: bool = False,
+    allow_multi_clip_windows: bool = False,
 ) -> tuple[list[dict], dict]:
     candidate_asset_ids = [
         item.get("asset_id")
@@ -452,6 +430,7 @@ def _assign_broll_from_annotations(
         candidates=candidate_index["broll_by_id"],
         max_inserts=max_inserts,
         allow_asset_diversity_reuse=allow_asset_diversity_reuse,
+        allow_multi_clip_windows=allow_multi_clip_windows,
     )
     return assignment, candidate_index
 
@@ -462,6 +441,7 @@ def _assign_indexed_broll_candidates_to_windows(
     candidates: dict[str, dict],
     max_inserts: int,
     allow_asset_diversity_reuse: bool = False,
+    allow_multi_clip_windows: bool = False,
 ) -> list[dict]:
     assignments: list[dict] = []
     used_candidate_ids: set[str] = set()
@@ -474,6 +454,7 @@ def _assign_indexed_broll_candidates_to_windows(
         if len(assignments) >= max(0, max_inserts):
             break
         required_frames = _required_frames(window)
+        covered_frames = 0
         for candidate_id, candidate in candidates.items():
             metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
             asset_id = str(candidate.get("asset_id") or "")
@@ -488,7 +469,10 @@ def _assign_indexed_broll_candidates_to_windows(
                 and diversity_key in used_diversity
             ):
                 continue
-            if _broll_source_frames_available(candidate) < required_frames:
+            source_frames = _broll_source_frames_available(candidate)
+            if source_frames <= 0:
+                continue
+            if not allow_multi_clip_windows and source_frames < required_frames:
                 continue
             used_candidate_ids.add(candidate_id)
             if asset_id:
@@ -504,7 +488,9 @@ def _assign_indexed_broll_candidates_to_windows(
                     "matched_keywords": list(metadata.get("matched_keywords") or []),
                 }
             )
-            break
+            covered_frames += source_frames
+            if not allow_multi_clip_windows or covered_frames >= required_frames:
+                break
     return assignments
 
 
@@ -541,9 +527,10 @@ def _ensure_portrait_coverage(
         )
 
 
-def _broll_assignment_limit(*, request, windows: dict) -> int:
+def _broll_assignment_limit(*, request, windows: dict, broll_candidate_count: int = 0) -> int:
     if broll_full_coverage_enabled(request):
-        return len([w for w in (windows.get("broll_windows") or []) if isinstance(w, dict)])
+        window_count = len([w for w in (windows.get("broll_windows") or []) if isinstance(w, dict)])
+        return max(window_count, int(broll_candidate_count or 0))
     return request.broll.max_inserts
 
 
@@ -564,7 +551,11 @@ def _ensure_full_coverage_broll(
         if isinstance(overlay, dict) and str(overlay.get("window_id") or "")
     }
     missing = sorted(expected - covered)
-    if missing or broll_drops:
+    coverage_gaps = full_coverage_broll_coverage_gaps(
+        windows=windows,
+        overlays=[overlay for overlay in (broll_payload.get("overlays") or []) if isinstance(overlay, dict)],
+    )
+    if missing or coverage_gaps or broll_drops:
         raise NodeExecutionError(
             ErrorCode.material_insufficient_broll,
             "B-roll full coverage requires every authoritative window to have material.",
@@ -572,6 +563,7 @@ def _ensure_full_coverage_broll(
                 "missing_broll_window_ids": missing,
                 "expected_broll_window_count": len(expected),
                 "covered_broll_window_count": len(covered),
+                "coverage_gaps": coverage_gaps,
                 "broll_drops": broll_drops,
             },
         )
