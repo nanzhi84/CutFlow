@@ -9,6 +9,7 @@ from packages.core.contracts import (
 )
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline.nodes._broll_policy import broll_full_coverage_enabled
 
 
 def run(ctx: NodeContext) -> NodeOutput:
@@ -28,17 +29,21 @@ def run(ctx: NodeContext) -> NodeOutput:
             raise NodeExecutionError(
                 ErrorCode.validation_missing_voice, "Voice is missing or disabled."
             )
-    if request.lipsync.enabled and "LipSync" in node_ids:
+    if (
+        request.lipsync.enabled
+        and "LipSync" in node_ids
+        and not broll_full_coverage_enabled(request)
+    ):
         profile = repository.provider_profiles.get(request.lipsync.provider_profile_id)
         if profile is None or profile.capability != "lipsync.video":
             raise NodeExecutionError(
                 ErrorCode.provider_unsupported_option,
                 "LipSync provider profile is missing or incompatible.",
             )
-    if "BrollCoveragePlanning" in node_ids and not request.broll.enabled:
+    if request.broll.mode == "full_coverage" and not request.broll.enabled:
         raise NodeExecutionError(
             ErrorCode.validation_invalid_options,
-            "B_roll must be enabled in B_roll-only mode.",
+            "B-roll must be enabled when broll.mode is full_coverage.",
         )
     artifact = ctx.artifact(
         ArtifactKind.validated_production_spec,

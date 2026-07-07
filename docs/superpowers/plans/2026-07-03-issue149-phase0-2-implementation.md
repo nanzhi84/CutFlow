@@ -155,7 +155,7 @@
 - Agent 重指派在唯一性预算下的完整可行性由 default_assignment 存在性保证；validator+repair+default 回退三层兜底。
 - windows artifact 是 JSON payload，零 DB 迁移；ArtifactKind/WarningCode 枚举进 openapi → 终审统一 regen。
 - worker 独立进程：本 PR 合并部署时需重启 worker（写进 PR 描述）。
-- Out of scope：Phase 3（intent/sketch/工具环）、broll_only_v1 链、MaterialPack 检索化、prompt seed 变更、`_creative_intent` 接线。
+- Out of scope：Phase 3（intent/sketch/工具环）、旧纯 B-roll 独立链路、MaterialPack 检索化、prompt seed 变更、`_creative_intent` 接线。
 
 ## Verification（终审前全绿）
 

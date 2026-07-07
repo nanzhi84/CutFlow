@@ -7,12 +7,15 @@ from packages.core.contracts.artifacts import LipSyncReportArtifact
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline.degradation_policies import LIPSYNC_FAILOVER_POLICY
+from packages.production.pipeline.nodes._broll_policy import broll_full_coverage_enabled
 
 
 def run(ctx: NodeContext) -> NodeOutput:
     state = ctx.state
     run = ctx.run
     node_run = ctx.node_run
+    if broll_full_coverage_enabled(state.request):
+        return NodeOutput(status=NodeStatus.skipped)
     portrait = state.require(ArtifactKind.video_portrait_track)
     audio = state.require(ArtifactKind.audio_tts)
     duration = float(audio.media_info.duration_sec if audio.media_info and audio.media_info.duration_sec else 0)

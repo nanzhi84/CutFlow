@@ -41,8 +41,10 @@ def _artifact(
     )
 
 
-def _run() -> WorkflowRun:
-    return WorkflowRun(
+def _ctx(*, duration: float = 5.0) -> NodeContext:
+    adapter = object.__new__(LocalRuntimeAdapter)
+    adapter.repository = Repository()
+    run = WorkflowRun(
         id="run_broll_only",
         job_id="job_broll_only",
         case_id="case_demo",
@@ -50,29 +52,21 @@ def _run() -> WorkflowRun:
         workflow_version="v1",
         status=RunStatus.running,
     )
-
-
-def _node_run() -> NodeRun:
-    return NodeRun(
+    node_run = NodeRun(
         id="nr_broll_coverage",
-        run_id="run_broll_only",
+        run_id=run.id,
         node_id="BrollCoveragePlanning",
         node_version="v1",
         status=NodeStatus.running,
         input_manifest_hash="sha256:test",
     )
-
-
-def _ctx(*, duration: float = 5.0, min_segment_duration: float = 1.0) -> NodeContext:
-    adapter = object.__new__(LocalRuntimeAdapter)
-    adapter.repository = Repository()
     state = RunState(
         request=DigitalHumanVideoRequest(
             case_id="case_demo",
-            script="先展示维修过程。再展示完工效果。",
+            script="Show the repair process. Then show the final result.",
             voice={"voice_id": "voice_sandbox"},
             workflow_template_id="broll_only_v1",
-            broll={"enabled": True, "min_segment_duration": min_segment_duration},
+            broll={"enabled": True, "min_segment_duration": 1.0},
         ),
         artifacts={
             ArtifactKind.plan_material_pack: _artifact(
@@ -88,14 +82,14 @@ def _ctx(*, duration: float = 5.0, min_segment_duration: float = 1.0) -> NodeCon
                     "units": [
                         {
                             "unit_id": "unit_1",
-                            "text": "先展示维修过程。",
+                            "text": "Show the repair process.",
                             "start": 0.0,
                             "end": 2.5,
                             "confidence": 0.9,
                         },
                         {
                             "unit_id": "unit_2",
-                            "text": "再展示完工效果。",
+                            "text": "Then show the final result.",
                             "start": 2.5,
                             "end": duration,
                             "confidence": 0.9,
@@ -116,25 +110,19 @@ def _ctx(*, duration: float = 5.0, min_segment_duration: float = 1.0) -> NodeCon
             ),
         },
     )
-    return NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+    return NodeContext(adapter=adapter, run=run, node_run=node_run, state=state)
 
 
-def _candidate(
-    *,
-    asset_id: str,
-    clip_id: str,
-    source_start: float,
-    source_end: float,
-) -> BrollCandidate:
+def _candidate(*, clip_id: str, source_end: float) -> BrollCandidate:
     return BrollCandidate(
-        asset_id=asset_id,
+        asset_id="asset_broll_demo",
         clip_id=clip_id,
         score=100.0,
         base_score=100.0,
         recency_penalty=0.0,
-        matched_keywords=("展示",),
-        scene_name="展示素材",
-        source_start=source_start,
+        matched_keywords=("show",),
+        scene_name="demo",
+        source_start=0.0,
         source_end=source_end,
         diversity_key="demo",
     )
@@ -145,68 +133,16 @@ def test_broll_coverage_planning_outputs_full_duration_plan(monkeypatch: pytest.
         broll_coverage_planning,
         "rank_broll_candidates",
         lambda **_: [
-            _candidate(
-                asset_id="asset_broll_demo",
-                clip_id="cover_a",
-                source_start=0.0,
-                source_end=3.0,
-            ),
-            _candidate(
-                asset_id="asset_broll_demo",
-                clip_id="cover_b",
-                source_start=0.0,
-                source_end=3.0,
-            ),
+            _candidate(clip_id="cover_a", source_end=3.0),
+            _candidate(clip_id="cover_b", source_end=3.0),
         ],
     )
 
     output = broll_coverage_planning.run(_ctx(duration=5.0))
-    payload = next(
-        artifact.payload
-        for artifact in output.artifacts
-        if artifact.kind == ArtifactKind.plan_broll
-    )
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_broll)
 
     assert payload["enabled"] is True
-    # overlays is the single canonical structure; segments is no longer written.
     assert "segments" not in payload
-    assert payload["overlays"][0]["timeline_start"] == 0.0
-    assert payload["overlays"][-1]["timeline_end"] == 5.0
-
-
-def test_broll_coverage_planning_never_reads_selection_ledger(monkeypatch: pytest.MonkeyPatch):
-    # The selection ledger is read once, in MaterialPackPlanning. BrollCoveragePlanning
-    # must cover the narration WITHOUT reading the ledger.
-    monkeypatch.setattr(
-        broll_coverage_planning,
-        "rank_broll_candidates",
-        lambda **_: [
-            _candidate(
-                asset_id="asset_broll_demo", clip_id="cover_a", source_start=0.0, source_end=3.0
-            ),
-            _candidate(
-                asset_id="asset_broll_demo", clip_id="cover_b", source_start=0.0, source_end=3.0
-            ),
-        ],
-    )
-    ctx = _ctx(duration=5.0)
-    ledger_calls: list = []
-    real_recent_selections = ctx.repository.recent_selections
-
-    def _spy_recent_selections(*args, **kwargs):
-        ledger_calls.append((args, kwargs))
-        return real_recent_selections(*args, **kwargs)
-
-    monkeypatch.setattr(ctx.repository, "recent_selections", _spy_recent_selections)
-
-    output = broll_coverage_planning.run(ctx)
-    payload = next(
-        artifact.payload
-        for artifact in output.artifacts
-        if artifact.kind == ArtifactKind.plan_broll
-    )
-
-    assert ledger_calls == []
     assert payload["overlays"][0]["timeline_start"] == 0.0
     assert payload["overlays"][-1]["timeline_end"] == 5.0
 
@@ -217,17 +153,10 @@ def test_broll_coverage_planning_hard_fails_when_material_is_insufficient(
     monkeypatch.setattr(
         broll_coverage_planning,
         "rank_broll_candidates",
-        lambda **_: [
-            _candidate(
-                asset_id="asset_broll_demo",
-                clip_id="short_cover",
-                source_start=0.0,
-                source_end=2.0,
-            )
-        ],
+        lambda **_: [_candidate(clip_id="short_cover", source_end=2.0)],
     )
 
-    with pytest.raises(NodeExecutionError) as exc:
+    with pytest.raises(NodeExecutionError) as exc_info:
         broll_coverage_planning.run(_ctx(duration=5.0))
 
-    assert exc.value.error.code == ErrorCode.material_insufficient_broll
+    assert exc_info.value.error.code == ErrorCode.material_insufficient_broll

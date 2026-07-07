@@ -6,7 +6,6 @@ from packages.core.contracts import (
     Artifact,
     ArtifactKind,
     DigitalHumanVideoRequest,
-    MediaInfo,
     NodeRun,
     NodeStatus,
     RunStatus,
@@ -27,7 +26,6 @@ def _artifact(
     payload: dict | None = None,
     *,
     payload_schema: str | None = None,
-    media_info: MediaInfo | None = None,
 ) -> Artifact:
     return Artifact(
         id=f"art_{kind.value.replace('.', '_')}",
@@ -37,29 +35,6 @@ def _artifact(
         kind=kind,
         payload=payload,
         payload_schema=payload_schema or f"{kind.value}.v1",
-        media_info=media_info,
-    )
-
-
-def _run() -> WorkflowRun:
-    return WorkflowRun(
-        id="run_broll_only",
-        job_id="job_broll_only",
-        case_id="case_demo",
-        workflow_template_id="broll_only_v1",
-        workflow_version="v1",
-        status=RunStatus.running,
-    )
-
-
-def _node_run() -> NodeRun:
-    return NodeRun(
-        id="nr_broll_render",
-        run_id="run_broll_only",
-        node_id="BrollRenderBase",
-        node_version="v1",
-        status=NodeStatus.running,
-        input_manifest_hash="sha256:test",
     )
 
 
@@ -81,7 +56,6 @@ def test_broll_render_base_outputs_rendered_video_with_exact_frame_count(
         filename="broll_render_base_source.mp4",
     )
     stored = store_file(object_store, source_path, purpose="seed-media")
-    source_info = probe_media(source_path)
     source_artifact = repository.create_artifact(
         kind=ArtifactKind.uploaded_file,
         payload_schema="UploadedFileArtifact.v1",
@@ -97,7 +71,7 @@ def test_broll_render_base_outputs_rendered_video_with_exact_frame_count(
         case_id="case_demo",
         uri=stored.ref.uri,
         sha256=stored.sha256,
-        media_info=source_info,
+        media_info=probe_media(source_path),
     )
     repository.media_assets["asset_broll_demo"] = repository.media_assets[
         "asset_broll_demo"
@@ -110,7 +84,7 @@ def test_broll_render_base_outputs_rendered_video_with_exact_frame_count(
     state = RunState(
         request=DigitalHumanVideoRequest(
             case_id="case_demo",
-            script="旁白配 B_roll。",
+            script="B-roll narration.",
             voice={"voice_id": "voice_sandbox"},
             workflow_template_id="broll_only_v1",
             output={"width": 160, "height": 90, "fps": fps},
@@ -153,7 +127,26 @@ def test_broll_render_base_outputs_rendered_video_with_exact_frame_count(
             ),
         },
     )
-    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+    ctx = NodeContext(
+        adapter=adapter,
+        run=WorkflowRun(
+            id="run_broll_only",
+            job_id="job_broll_only",
+            case_id="case_demo",
+            workflow_template_id="broll_only_v1",
+            workflow_version="v1",
+            status=RunStatus.running,
+        ),
+        node_run=NodeRun(
+            id="nr_broll_render",
+            run_id="run_broll_only",
+            node_id="BrollRenderBase",
+            node_version="v1",
+            status=NodeStatus.running,
+            input_manifest_hash="sha256:test",
+        ),
+        state=state,
+    )
 
     output = broll_render_base.run(ctx)
     artifact = next(a for a in output.artifacts if a.kind == ArtifactKind.video_rendered)

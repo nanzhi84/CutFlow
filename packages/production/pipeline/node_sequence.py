@@ -7,7 +7,7 @@ importing the heavy pipeline engine (ffmpeg, providers, every node handler).
 source of truth.
 
 Each workflow is a dependency DAG (``WORKFLOW_GRAPHS``): nodes plus the edges that
-say which upstream node must finish before a node may run. The three shipping
+say which upstream node must finish before a node may run. The shipping
 templates are linear chains (edge i -> i+1), so their behaviour is unchanged, but
 the runtime schedules from the *edges* via ``topological_node_order`` — a
 dependency ready-set, not a hard-coded list — so a non-linear template runs its

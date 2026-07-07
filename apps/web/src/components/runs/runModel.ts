@@ -151,6 +151,7 @@ export function buildStages(nodes: NodeRun[]): StageView[] {
     let status = "pending";
     if (statuses.some((s) => s === "failed")) status = "failed";
     else if (statuses.some((s) => s === "running" || s === "admitted")) status = "running";
+    else if (statuses.length > 0 && statuses.every((s) => s === "skipped")) status = "skipped";
     else if (statuses.length > 0 && statuses.every((s) => ["succeeded", "skipped", "degraded"].includes(s))) {
       status = statuses.some((s) => s === "degraded") ? "degraded" : "succeeded";
     }

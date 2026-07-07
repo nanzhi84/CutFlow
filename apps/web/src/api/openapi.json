@@ -9777,6 +9777,15 @@
             "title": "Enabled",
             "default": true
           },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "insert",
+              "full_coverage"
+            ],
+            "title": "Mode",
+            "default": "insert"
+          },
           "case_id": {
             "anyOf": [
               {

@@ -1140,6 +1140,9 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         return (
             node_id == "ResolveCreativeIntent"
             and state.request.creative_intent_ref is not None
+            or node_id in {"PortraitTrackBuild", "LipSync"}
+            and state.request.broll.enabled
+            and state.request.broll.mode == "full_coverage"
             or node_id == "LipSync"
             and not state.request.lipsync.enabled
             or node_id == "SubtitleAndBgmMix"

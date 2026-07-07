@@ -98,13 +98,16 @@ def _state(
     recent_usage: dict | None = None,
     source_window: tuple[float, float] = (0.0, 15.0),
     pause_windows: list[dict] | None = None,
+    safe_cut_boundaries: list[dict] | None = None,
     broll_slots: list[dict] | None = None,
+    broll_mode: str = "insert",
 ) -> RunState:
     _back_portrait_sources(adapter, candidate_ids)
     request = DigitalHumanVideoRequest(
         case_id="case_demo",
         script=SCRIPT,
         voice={"voice_id": "voice_sandbox"},
+        broll={"enabled": True, "mode": broll_mode},
         strictness={"strict_timestamps": False},
     )
 
@@ -160,7 +163,11 @@ def _state(
         run_id="run_1",
         node_run_id="nr_narration_boundary",
         kind=ArtifactKind.plan_narration_boundary,
-        payload={"pause_windows": pause_windows or [], "broll_slots": broll_slots or []},
+        payload={
+            "pause_windows": pause_windows or [],
+            "safe_cut_boundaries": safe_cut_boundaries or [],
+            "broll_slots": broll_slots or [],
+        },
         payload_schema="NarrationBoundaryPlan.v1",
     )
     return RunState(
@@ -316,6 +323,90 @@ def test_broll_windows_are_authoritative_optional_slots(monkeypatch, tmp_path):
         "downstream_may_skip": True,
         "downstream_may_resize": False,
     }
+
+
+def test_full_coverage_broll_windows_cover_entire_audio_and_skip_portrait(monkeypatch, tmp_path):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    state = _state(
+        adapter,
+        candidate_ids=[],
+        broll_mode="full_coverage",
+        pause_windows=[{"start": 3.9, "end": 4.1, "duration": 0.2, "center": 4.0}],
+        safe_cut_boundaries=[{"cut_id": "cut_008", "frame": 240, "source": "semantic"}],
+    )
+
+    output = _run_node(adapter, state)
+    payload = _payload(output, ArtifactKind.plan_timeline_windows)
+    portrait_payload = _payload(output, ArtifactKind.plan_portrait)
+
+    assert payload["portrait_windows"] == []
+    assert portrait_payload["segments"] == []
+    assert portrait_payload["diagnostics"]["track_mode"] == "broll_full_coverage"
+    assert [
+        (window["start_frame"], window["end_frame"])
+        for window in payload["broll_windows"]
+    ] == [(0, 120), (120, 240), (240, 360)]
+    assert payload["broll_windows"][0] == {
+        "window_id": "bwin_000",
+        "start_frame": 0,
+        "end_frame": 120,
+        "length_frames": 120,
+        "source_length_frames": 120,
+        "host_unit_ids": ["unit_001"],
+        "text": "先讲解打磨工艺的细节非常重要。",
+    }
+    assert payload["geometry_policy"]["broll_window_contract"] == {
+        "authority": "TimelineWindowPlanning",
+        "semantics": "authoritative_full_coverage_main_visual_track",
+        "downstream_may_skip": False,
+        "downstream_may_resize": False,
+    }
+    assert payload["compile_diagnostics"]["selected_cut_source_counts"]["audio_pause"] == 1
+    assert payload["compile_diagnostics"]["selected_cut_source_counts"]["safe_cut"] == 1
+
+
+def test_full_coverage_ignores_short_fragments_and_uses_safe_cut(monkeypatch, tmp_path):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    state = _state(
+        adapter,
+        candidate_ids=[],
+        duration=7.0,
+        broll_mode="full_coverage",
+        pause_windows=[{"start": 0.95, "end": 1.05, "duration": 0.1, "center": 1.0}],
+        safe_cut_boundaries=[{"cut_id": "cut_004", "frame": 120, "source": "semantic"}],
+    )
+
+    payload = _payload(_run_node(adapter, state), ArtifactKind.plan_timeline_windows)
+
+    assert [
+        (window["start_frame"], window["end_frame"])
+        for window in payload["broll_windows"]
+    ] == [(0, 120), (120, 210)]
+    assert 30 not in payload["compile_diagnostics"]["cut_frames"]
+
+
+def test_full_coverage_splits_overlong_windows_with_deterministic_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    from packages.production.pipeline.nodes import timeline_window_planning as twp
+
+    windows, diagnostics = twp.compile_full_coverage_broll_windows(
+        narration_units=[],
+        pause_windows=[],
+        safe_cut_boundaries=[],
+        total_frames=300,
+        min_segment_duration=3.0,
+    )
+    assert [
+        (window["start_frame"], window["end_frame"])
+        for window in windows
+    ] == [(0, 120), (120, 210), (210, 300)]
+    assert diagnostics["fallback_cut_count"] == 2
 
 
 def test_broll_windows_reject_unsnappable_short_aroll_gaps(monkeypatch, tmp_path):

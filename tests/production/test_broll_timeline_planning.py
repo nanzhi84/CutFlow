@@ -36,28 +36,6 @@ def _artifact(
     )
 
 
-def _run() -> WorkflowRun:
-    return WorkflowRun(
-        id="run_broll_only",
-        job_id="job_broll_only",
-        case_id="case_demo",
-        workflow_template_id="broll_only_v1",
-        workflow_version="v1",
-        status=RunStatus.running,
-    )
-
-
-def _node_run() -> NodeRun:
-    return NodeRun(
-        id="nr_broll_timeline",
-        run_id="run_broll_only",
-        node_id="BrollTimelinePlanning",
-        node_version="v1",
-        status=NodeStatus.running,
-        input_manifest_hash="sha256:test",
-    )
-
-
 def test_broll_timeline_planning_builds_single_broll_track_and_render_plan():
     adapter = object.__new__(LocalRuntimeAdapter)
     adapter.repository = Repository()
@@ -66,7 +44,7 @@ def test_broll_timeline_planning_builds_single_broll_track_and_render_plan():
     state = RunState(
         request=DigitalHumanVideoRequest(
             case_id="case_demo",
-            script="旁白配 B_roll。",
+            script="B-roll narration.",
             voice={"voice_id": "voice_sandbox"},
             workflow_template_id="broll_only_v1",
             output={"width": 160, "height": 90, "fps": fps},
@@ -118,19 +96,30 @@ def test_broll_timeline_planning_builds_single_broll_track_and_render_plan():
     adapter.repository.artifacts[state.artifacts[ArtifactKind.plan_broll].id] = state.artifacts[
         ArtifactKind.plan_broll
     ]
-    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+    ctx = NodeContext(
+        adapter=adapter,
+        run=WorkflowRun(
+            id="run_broll_only",
+            job_id="job_broll_only",
+            case_id="case_demo",
+            workflow_template_id="broll_only_v1",
+            workflow_version="v1",
+            status=RunStatus.running,
+        ),
+        node_run=NodeRun(
+            id="nr_broll_timeline",
+            run_id="run_broll_only",
+            node_id="BrollTimelinePlanning",
+            node_version="v1",
+            status=NodeStatus.running,
+            input_manifest_hash="sha256:test",
+        ),
+        state=state,
+    )
 
     output = broll_timeline_planning.run(ctx)
-    timeline = next(
-        artifact.payload
-        for artifact in output.artifacts
-        if artifact.kind == ArtifactKind.plan_timeline
-    )
-    render = next(
-        artifact.payload
-        for artifact in output.artifacts
-        if artifact.kind == ArtifactKind.plan_render
-    )
+    timeline = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_timeline)
+    render = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_render)
 
     assert timeline["total_frames"] == round(duration * fps)
     assert {track["track_id"] for track in timeline["tracks"]} == {"broll"}

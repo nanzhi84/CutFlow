@@ -5,7 +5,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from packages.core.contracts import ArtifactKind, ErrorCode
+from packages.core.contracts import ArtifactKind, ErrorCode, NodeStatus
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.media.assets import store_file
 from packages.media.rendering import (
@@ -16,10 +16,13 @@ from packages.media.rendering import (
 from packages.media.video.ffmpeg import FfmpegCommandError, probe_media
 from packages.production.pipeline._timeline_grid import to_frame
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline.nodes._broll_policy import broll_full_coverage_enabled
 
 
 def run(ctx: NodeContext) -> NodeOutput:
     state = ctx.state
+    if broll_full_coverage_enabled(state.request):
+        return NodeOutput(status=NodeStatus.skipped)
     portrait = state.require(ArtifactKind.plan_portrait).payload or {}
     duration = float(portrait.get("duration_sec", 0) or 0)
     segments = portrait.get("segments", [])

@@ -8,10 +8,15 @@ from pathlib import Path
 from packages.core.contracts import ArtifactKind, ErrorCode
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.media.assets import store_file
-from packages.media.rendering import render_video_timeline, validate_rendered_output
+from packages.media.rendering import (
+    render_broll_montage,
+    render_video_timeline,
+    validate_rendered_output,
+)
 from packages.media.video.ffmpeg import FfmpegCommandError
 from packages.production._broll_overlays import broll_overlays_from_plan
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline.nodes._broll_policy import broll_full_coverage_enabled
 
 
 def _broll_segment_index(segment_id: str | None, fallback: int) -> int:
@@ -80,7 +85,7 @@ def _broll_segments_from_timeline(timeline: dict, broll_plan: dict, fps: int) ->
 
 def run(ctx: NodeContext) -> NodeOutput:
     state = ctx.state
-    lipsync = state.require(ArtifactKind.video_lipsync)
+    lipsync = state.artifacts.get(ArtifactKind.video_lipsync)
     render_plan = state.require(ArtifactKind.plan_render).payload or {}
     timeline = state.require(ArtifactKind.plan_timeline).payload or {}
     broll_plan = state.require(ArtifactKind.plan_broll).payload or {}
@@ -94,17 +99,32 @@ def run(ctx: NodeContext) -> NodeOutput:
     try:
         with tempfile.TemporaryDirectory(prefix="cutagent-render-") as directory:
             output_path = Path(directory) / "rendered.mp4"
-            render_video_timeline(
-                main_path=ctx.artifact_path(lipsync),
-                output_path=output_path,
-                broll_segments=_broll_segments_from_timeline(timeline, broll_plan, fps),
-                total_frames=total_frames,
-                width=width,
-                height=height,
-                fps=fps,
-                source_artifact_for_asset=ctx.source_artifact_for_asset,
-                artifact_path=ctx.artifact_path,
-            )
+            broll_segments = _broll_segments_from_timeline(timeline, broll_plan, fps)
+            if lipsync is not None:
+                render_video_timeline(
+                    main_path=ctx.artifact_path(lipsync),
+                    output_path=output_path,
+                    broll_segments=broll_segments,
+                    total_frames=total_frames,
+                    width=width,
+                    height=height,
+                    fps=fps,
+                    source_artifact_for_asset=ctx.source_artifact_for_asset,
+                    artifact_path=ctx.artifact_path,
+                )
+            elif broll_full_coverage_enabled(state.request):
+                render_broll_montage(
+                    segments=broll_segments,
+                    output_path=output_path,
+                    total_frames=total_frames,
+                    width=width,
+                    height=height,
+                    fps=fps,
+                    source_artifact_for_asset=ctx.source_artifact_for_asset,
+                    artifact_path=ctx.artifact_path,
+                )
+            else:
+                state.require(ArtifactKind.video_lipsync)
             media_info = validate_rendered_output(
                 output_path,
                 expected_frames=total_frames,

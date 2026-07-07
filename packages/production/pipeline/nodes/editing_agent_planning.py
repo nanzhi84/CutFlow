@@ -60,7 +60,11 @@ from packages.production.pipeline._materialize import (
 )
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
+from packages.production.pipeline.nodes._broll_policy import broll_full_coverage_enabled
 from packages.production.pipeline.nodes._creative_intent import load_creative_intent
+from packages.production.pipeline.nodes.deterministic_editing_planning import (
+    materialize_full_coverage_broll_from_assignment,
+)
 from packages.production.pipeline.nodes.style_planning import _derive_overlay_events
 
 # Structured variables serialized as JSON for the prompt; scalars go through str().
@@ -556,6 +560,7 @@ def _repair_portrait_selection_to_constraints(
     candidates: IndexedCandidates,
     bgm_enabled: bool,
     retrieval_topk_by_window: dict[str, list[str]],
+    allow_broll_asset_diversity_reuse: bool = False,
 ) -> tuple[EditingSelection, list[dict], list[str]]:
     portrait_slots = {
         _local_str(slot.get("slot_id")): slot
@@ -655,6 +660,7 @@ def _repair_portrait_selection_to_constraints(
         candidates=candidates,
         bgm_enabled=bgm_enabled,
         retrieval_topk_by_window=retrieval_topk_by_window,
+        allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
     )
     return repaired, actions, errors
 
@@ -667,6 +673,7 @@ def _repair_broll_selection_to_constraints(
     bgm_enabled: bool,
     max_inserts: int,
     retrieval_topk_by_window: dict[str, list[str]],
+    allow_asset_diversity_reuse: bool = False,
 ) -> tuple[EditingSelection, list[dict], list[str]]:
     broll_slots = {
         _local_str(slot.get("slot_id")): slot
@@ -694,10 +701,14 @@ def _repair_broll_selection_to_constraints(
         if candidate_id in used_candidates:
             return False
         asset_id = _local_str(candidate.get("asset_id"))
-        if asset_id and asset_id in used_assets:
+        if not allow_asset_diversity_reuse and asset_id and asset_id in used_assets:
             return False
         diversity_key = _local_str(_local_meta(candidate).get("diversity_key"))
-        if diversity_key and diversity_key in used_diversity:
+        if (
+            not allow_asset_diversity_reuse
+            and diversity_key
+            and diversity_key in used_diversity
+        ):
             return False
         return _broll_source_frames(candidate) >= _slot_source_required_frames(slot)
 
@@ -798,6 +809,7 @@ def _repair_broll_selection_to_constraints(
         candidates=candidates,
         bgm_enabled=bgm_enabled,
         retrieval_topk_by_window=retrieval_topk_by_window,
+        allow_broll_asset_diversity_reuse=allow_asset_diversity_reuse,
     )
     return repaired, actions, errors
 
@@ -953,6 +965,7 @@ def select_editing_assignment(
     repair_trace: list[dict] = []
     fallback_used = False
     fallback_reason: str | None = None
+    allow_broll_asset_diversity_reuse = broll_full_coverage_enabled(state.request)
 
     def _validate_deterministic_fallback(selection: EditingSelection) -> None:
         if not agent_context.retrieval_topk_by_window:
@@ -963,6 +976,7 @@ def select_editing_assignment(
             candidates=agent_context.candidates,
             bgm_enabled=state.request.bgm.enabled,
             retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
+            allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
         )
         if not errors:
             return
@@ -984,12 +998,17 @@ def select_editing_assignment(
                 "未配置可用的真实 LLM 供应商（llm.chat）。"
                 "请在「设置」中配置并启用真实 LLM 供应商及密钥。",
             )
+        broll_limit = _broll_assignment_limit(
+            request=state.request,
+            windows=agent_context.windows,
+        )
         selection = deterministic_selection(
             boundary=agent_context.agent_boundary,
             candidates=agent_context.candidates,
             bgm_enabled=state.request.bgm.enabled,
-            max_inserts=state.request.broll.max_inserts,
+            max_inserts=broll_limit,
             retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
+            allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
         )
         _validate_deterministic_fallback(selection)
         engine = "deterministic_fallback"
@@ -1080,6 +1099,7 @@ def select_editing_assignment(
             bgm_enabled=state.request.bgm.enabled,
             max_repair_attempts=state.request.edit.max_repair_attempts,
             retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
+            allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
         )
         llm_repair_used = any(
             isinstance(item.get("attempt"), int) and int(item.get("error_count") or 0) > 0
@@ -1094,6 +1114,7 @@ def select_editing_assignment(
                     candidates=agent_context.candidates,
                     bgm_enabled=state.request.bgm.enabled,
                     retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
+                    allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
                 )
             )
             if portrait_repair_actions:
@@ -1111,8 +1132,12 @@ def select_editing_assignment(
                     boundary=agent_context.agent_boundary,
                     candidates=agent_context.candidates,
                     bgm_enabled=state.request.bgm.enabled,
-                    max_inserts=state.request.broll.max_inserts,
+                    max_inserts=_broll_assignment_limit(
+                        request=state.request,
+                        windows=agent_context.windows,
+                    ),
                     retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
+                    allow_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
                 )
             )
             if local_repair_actions:
@@ -1142,8 +1167,12 @@ def select_editing_assignment(
                 boundary=agent_context.agent_boundary,
                 candidates=agent_context.candidates,
                 bgm_enabled=state.request.bgm.enabled,
-                max_inserts=state.request.broll.max_inserts,
+                max_inserts=_broll_assignment_limit(
+                    request=state.request,
+                    windows=agent_context.windows,
+                ),
                 retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
+                allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
             )
             _validate_deterministic_fallback(selection)
             engine = "deterministic_fallback"
@@ -1195,6 +1224,7 @@ def materialize_editing_outputs(
         else _selection_portrait_assignment(selection)
     )
     broll_assignment = _selection_broll_assignment(selection)
+    broll_limit = _broll_assignment_limit(request=request, windows=windows)
     assignment_for_materialize = {
         "portrait": portrait_assignment,
         "broll": broll_assignment,
@@ -1208,16 +1238,32 @@ def materialize_editing_outputs(
             candidates=candidates,
         )
     )
-    broll_payload, broll_drops = materialize_broll_from_assignment(
-        windows=windows,
-        assignment=assignment_for_materialize,
-        candidates=candidates,
-        cut_frames=portrait_cut_frames(portrait_payload),
-        enabled=request.broll.enabled,
-        max_inserts=request.broll.max_inserts,
-    )
+    if broll_full_coverage_enabled(request):
+        broll_payload, broll_drops = materialize_full_coverage_broll_from_assignment(
+            windows=windows,
+            assignment=assignment_for_materialize,
+            candidates=candidates,
+            cut_frames=portrait_cut_frames(portrait_payload),
+            enabled=request.broll.enabled,
+            max_inserts=broll_limit,
+        )
+    else:
+        broll_payload, broll_drops = materialize_broll_from_assignment(
+            windows=windows,
+            assignment=assignment_for_materialize,
+            candidates=candidates,
+            cut_frames=portrait_cut_frames(portrait_payload),
+            enabled=request.broll.enabled,
+            max_inserts=broll_limit,
+        )
+    if broll_full_coverage_enabled(request):
+        _ensure_full_coverage_broll(
+            windows=windows,
+            broll_payload=broll_payload,
+            broll_drops=broll_drops,
+        )
     if broll_drops:
-        selected_broll_choices = selection.broll[: max(0, request.broll.max_inserts)]
+        selected_broll_choices = selection.broll[: max(0, broll_limit)]
         affects_true_yield = bool(selected_broll_choices) and not broll_payload.get("overlays")
         degradations.append(
             degradation_notice(
@@ -1303,6 +1349,42 @@ def materialize_editing_outputs(
         warnings=warnings,
         degradations=degradations,
     )
+
+
+def _broll_assignment_limit(*, request, windows: dict) -> int:
+    if broll_full_coverage_enabled(request):
+        return len([w for w in (windows.get("broll_windows") or []) if isinstance(w, dict)])
+    return request.broll.max_inserts
+
+
+def _ensure_full_coverage_broll(
+    *,
+    windows: dict,
+    broll_payload: dict,
+    broll_drops: list[dict],
+) -> None:
+    expected = {
+        str(window.get("window_id") or "")
+        for window in (windows.get("broll_windows") or [])
+        if isinstance(window, dict) and str(window.get("window_id") or "")
+    }
+    covered = {
+        str(overlay.get("window_id") or "")
+        for overlay in (broll_payload.get("overlays") or [])
+        if isinstance(overlay, dict) and str(overlay.get("window_id") or "")
+    }
+    missing = sorted(expected - covered)
+    if missing or broll_drops:
+        raise NodeExecutionError(
+            ErrorCode.material_insufficient_broll,
+            "B-roll full coverage requires every authoritative window to have material.",
+            details={
+                "missing_broll_window_ids": missing,
+                "expected_broll_window_count": len(expected),
+                "covered_broll_window_count": len(covered),
+                "broll_drops": broll_drops,
+            },
+        )
 
 
 def run(ctx: NodeContext) -> NodeOutput:

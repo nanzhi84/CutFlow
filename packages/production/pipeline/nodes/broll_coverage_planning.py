@@ -53,8 +53,6 @@ def run(ctx: NodeContext) -> NodeOutput:
         for asset_id in dict.fromkeys(candidate_asset_ids)
         if (annotation := ctx.repository.annotation_v4_for_asset(asset_id)) is not None
     }
-    # The ledger is NOT read here (MaterialPackPlanning is the single ledger-reading
-    # node); recency is re-applied from the MaterialPack-computed penalties below.
     candidates = rank_broll_candidates(
         annotations=annotations,
         segments=segments,

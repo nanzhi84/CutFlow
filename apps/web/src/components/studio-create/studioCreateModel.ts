@@ -179,6 +179,7 @@ export function mapFormToDefaults(form: FormState): UserGenerationDefaults {
     },
     broll: {
       enabled: form.brollEnabled,
+      mode: "insert",
       max_inserts: form.maxInserts,
       min_segment_duration: 3,
       allow_generic_coverage: true,

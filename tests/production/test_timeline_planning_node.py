@@ -184,6 +184,50 @@ def _state(
     return adapter, state
 
 
+def _full_coverage_state() -> tuple[LocalRuntimeAdapter, RunState]:
+    adapter = object.__new__(LocalRuntimeAdapter)
+    adapter.repository = Repository()
+    portrait = _artifact(
+        ArtifactKind.plan_portrait,
+        {
+            "fps": 30,
+            "total_duration": 6.0,
+            "asset_id": None,
+            "duration_sec": 6.0,
+            "segments": [],
+            "diagnostics": {"track_mode": "broll_full_coverage"},
+        },
+    )
+    broll = _artifact(
+        ArtifactKind.plan_broll,
+        {"enabled": True, "overlays": [_broll_overlay(with_frames=True)]},
+        schema="BrollPlanArtifact.v1",
+    )
+    timeline_windows = _artifact(
+        ArtifactKind.plan_timeline_windows,
+        _timeline_windows_payload(),
+        schema="TimelineWindowsPlan.v1",
+    )
+    adapter.repository.artifacts[portrait.id] = portrait
+    adapter.repository.artifacts[broll.id] = broll
+    adapter.repository.artifacts[timeline_windows.id] = timeline_windows
+    state = RunState(
+        request=DigitalHumanVideoRequest(
+            case_id="case_demo",
+            script="hello",
+            voice={"voice_id": "voice_sandbox"},
+            broll={"enabled": True, "mode": "full_coverage"},
+            output={"width": 160, "height": 90, "fps": 30},
+        ),
+        artifacts={
+            ArtifactKind.plan_portrait: portrait,
+            ArtifactKind.plan_broll: broll,
+            ArtifactKind.plan_timeline_windows: timeline_windows,
+        },
+    )
+    return adapter, state
+
+
 def test_timeline_planning_passes_broll_frames_through_verbatim_without_snapping():
     # The overlay's tail (frame 147) sits 3 frames short of the portrait cut at 150.
     # The OLD timeline node would have snapped it to 150; the verify-only node must
@@ -200,6 +244,19 @@ def test_timeline_planning_passes_broll_frames_through_verbatim_without_snapping
     assert broll_track["timeline_end_frame"] == 147  # NOT snapped to 150
     assert broll_track["source_start_frame"] == 90
     assert broll_track["source_end_frame"] == 147
+    assert timeline["validation"]["valid"] is True
+
+
+def test_timeline_planning_accepts_broll_full_coverage_without_portrait_track():
+    adapter, state = _full_coverage_state()
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+    output = timeline_planning.run(ctx)
+
+    timeline = next(
+        a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_timeline
+    )
+    assert [track["track_id"] for track in timeline["tracks"]] == ["broll"]
+    assert timeline["total_frames"] == 180
     assert timeline["validation"]["valid"] is True
 
 

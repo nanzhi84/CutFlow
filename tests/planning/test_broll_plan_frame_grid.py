@@ -489,7 +489,7 @@ def test_plan_insertions_prefers_distinct_diversity_keys_within_run():
 
 def test_plan_insertions_leaves_frames_none_without_grid_context():
     # No fps / cut frames -> the legacy seconds-only placement still works and frame
-    # fields are left unset (broll_only_v1 path that has no portrait cut grid).
+    # fields are left unset (legacy callers with no portrait cut grid).
     units = [
         NarrationUnit(unit_id="u1", text="先讲解补漆效果对比。", start=0.0, end=5.0, confidence=1.0),
     ]

@@ -11,8 +11,8 @@ from packages.media.assets import store_file
 from packages.media.rendering import render_broll_montage, validate_rendered_output
 from packages.media.video.ffmpeg import FfmpegCommandError
 from packages.production._broll_overlays import broll_overlays_from_plan
-from packages.production.pipeline._timeline_grid import to_frame
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline._timeline_grid import to_frame
 
 
 def run(ctx: NodeContext) -> NodeOutput:

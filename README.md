@@ -22,10 +22,10 @@ Case 是账号、品牌、素材、脚本、指标和学习反馈的长期边界
 
 一条 `DigitalHumanVideo` job 会生成 `WorkflowRun`，按固定节点完成校验、Case 上下文加载、创作意图解析、TTS、素材规划、旁白对齐、立绘和 B-roll 规划、LipSync、渲染、字幕与 BGM 混音、成片导出和最终报告。
 
-系统同时保留三套生产模板：
+系统保留主链模板和专用生成模板；纯 B-roll 画外音不再是独立模板，而是主链的 `broll.mode="full_coverage"`：
 
 - `digital_human_v2`：主链数字人成片。
-- `broll_only_v1`：纯 B-roll/空镜生产。
+- `digital_human_editing_agent_v1`：主链的剪辑 Agent 指派变体。
 - `seedance_t2v_v1`：Seedance 文生视频链路。
 
 **素材和媒体内核**
