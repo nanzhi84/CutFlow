@@ -166,6 +166,35 @@ def test_write_ass_subtitles_defaults_to_arial_without_font(tmp_path):
     assert "Style: Default,Arial," in out.read_text(encoding="utf-8")
 
 
+def test_write_ass_subtitles_emits_selected_colors_and_overlay_styles(tmp_path):
+    out = tmp_path / "sub.ass"
+
+    write_ass_subtitles(
+        out,
+        narration={"units": [{"text": "普通字幕", "start": 0.0, "end": 1.0}]},
+        style={
+            "subtitle": {
+                "font_size": 48,
+                "primary_color": "#112233",
+                "outline_color": "#445566",
+                "outline": 6,
+                "emphasis_primary_color": "#FFEEDD",
+                "emphasis_outline_color": "#102030",
+            }
+        },
+        width=1080,
+        height=1920,
+        overlay_events=[{"text": "重点", "start": 0.2, "end": 0.8, "style": "pop"}],
+    )
+
+    text = out.read_text(encoding="utf-8")
+    assert "Style: Default,Arial,85,&H00332211,&H000000FF,&H00665544" in text
+    assert "Style: Emphasis,Arial,119,&H00DDEEFF,&H000000FF,&H00302010" in text
+    assert "Style: Pop,Arial,119," in text
+    assert r"Dialogue: 1,0:00:00.20,0:00:00.80,Pop" in text
+    assert r"{\fad(80,120)\t(0,180,\fscx108\fscy108)}重点" in text
+
+
 # --- gap 2: adaptive mix volume -------------------------------------------------
 def test_adaptive_volume_passthrough_when_auto_mix_off(tmp_path):
     result = resolve_adaptive_bgm_volume(

@@ -63,7 +63,7 @@ export function summarizeBatchResults(results: BatchItemResult[]): {
   let failed = 0;
   let firstRunId: string | null = null;
   for (const result of results) {
-    if (result.status === "created") {
+    if (result.status === "created" || result.status === "queued") {
       created += 1;
       if (!firstRunId && result.run_id) firstRunId = result.run_id;
     } else {

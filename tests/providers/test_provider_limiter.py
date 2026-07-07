@@ -192,3 +192,102 @@ def test_separate_keys_have_independent_slots(monkeypatch):
     # Cap is 1 per key but there are two distinct keys, so both run together.
     assert plugin.peak == 2
     assert observed == {profile_a.id: 1, profile_b.id: 1}
+
+
+def test_configured_provider_limits_override_default_caps(monkeypatch):
+    monkeypatch.setenv(
+        "CUTAGENT_PROVIDER_LIMITS",
+        '{"shared:key":{"max_inflight":2,"max_qps":5},'
+        '"provider.fallback":{"max_inflight":7,"max_qps":11}}',
+    )
+    limiter = provider_limiter.DistributedRateLimiter(
+        redis_url=None,
+        max_inflight=4,
+        max_qps=9,
+    )
+
+    assert limiter._limits_for("shared:key", "provider.fallback") == (2, 5)
+    assert limiter._limits_for("other:key", "provider.fallback") == (7, 11)
+    assert limiter._limits_for("other:key", "provider.none") == (4, 9)
+
+
+def test_redis_slot_uses_eval_keys_and_releases_lease():
+    calls: list[tuple[str, tuple]] = []
+
+    class _FakeRedis:
+        def eval(self, script, key_count, leases_key, qps_key, *args):
+            calls.append(("eval", (script, key_count, leases_key, qps_key, args)))
+            return [1, 0]
+
+        def zrem(self, key, lease_id):
+            calls.append(("zrem", (key, lease_id)))
+
+    limiter = provider_limiter.DistributedRateLimiter(
+        redis_url="redis://fake",
+        namespace="ns",
+        max_inflight=3,
+        max_qps=4,
+        redis_client_factory=lambda _url: _FakeRedis(),
+    )
+
+    with limiter.slot("shared:key", "provider.fake"):
+        pass
+
+    assert calls[0][0] == "eval"
+    assert calls[0][1][1] == 2
+    assert calls[0][1][2] == "ns:provider:shared:key:leases"
+    assert calls[0][1][3] == "ns:provider:shared:key:qps"
+    assert calls[0][1][4][2] == 3
+    assert calls[0][1][4][4] == 4
+    assert calls[1][0] == "zrem"
+    assert calls[1][1][0] == "ns:provider:shared:key:leases"
+
+
+def test_redis_slot_waits_then_retries_until_token_available(monkeypatch):
+    sleeps: list[float] = []
+
+    class _FakeRedis:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def eval(self, *_args):
+            self.calls += 1
+            return [0, 2] if self.calls == 1 else [1, 0]
+
+        def zrem(self, *_args):
+            pass
+
+    fake = _FakeRedis()
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleeps.append(seconds))
+    limiter = provider_limiter.DistributedRateLimiter(
+        redis_url="redis://fake",
+        max_inflight=1,
+        max_qps=1,
+        acquire_sleep_seconds=0.001,
+        redis_client_factory=lambda _url: fake,
+    )
+
+    with limiter.slot("qps:key", "provider.fake"):
+        pass
+
+    assert fake.calls == 2
+    assert sleeps == [0.002]
+
+
+def test_failed_redis_release_degrades_to_local_fallback():
+    class _FakeRedis:
+        def eval(self, *_args):
+            return [1, 0]
+
+        def zrem(self, *_args):
+            raise RuntimeError("release failed")
+
+    limiter = provider_limiter.DistributedRateLimiter(
+        redis_url="redis://fake",
+        redis_client_factory=lambda _url: _FakeRedis(),
+    )
+
+    with limiter.slot("release:key", "provider.fake"):
+        pass
+
+    assert limiter.is_redis_degraded() is True

@@ -222,7 +222,9 @@ def test_emphasis_overlay_renders_layer1_dialogue(tmp_path):
     )
     assert "Style: Emphasis," in txt
     assert "Dialogue: 1," in txt  # emphasis layered above the Layer 0 narration
-    assert "Emphasis,,0,0,0,,限时五折" in txt
+    assert (
+        r"Emphasis,,0,0,0,,{\fad(80,120)\t(0,180,\fscx108\fscy108)}限时五折" in txt
+    )
     assert "&H0000FFFF" in txt  # yellow emphasis primary colour
 
 

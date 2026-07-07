@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import timedelta
+from typing import Literal
 
 from fastapi import Request, WebSocket, WebSocketDisconnect
 
@@ -417,6 +418,43 @@ def _start_submitted_run(
     return repository(request).runs[run.id]
 
 
+def _queue_submitted_run(
+    request: Request,
+    *,
+    job_id: str,
+    mode: str,
+    from_run_id: str | None,
+    reason: str | None,
+) -> c.WorkflowRun:
+    _job, run, _template = _admit_run(
+        request,
+        job_id=job_id,
+        mode=mode,
+        from_run_id=from_run_id,
+        reason=reason,
+    )
+    _sync_workflow_snapshot(request, run)
+    return repository(request).runs[run.id]
+
+
+def _poke_case_admission(request: Request, case_id: str) -> None:
+    runtime = workflow_runtime(request)
+    signal = getattr(runtime, "signal_case_admission", None)
+    if not callable(signal):
+        return
+    try:
+        signal(case_id)
+    except Exception:
+        # The batch rows are durably queued. A failed poke should not turn a
+        # successful batch-create request into a partial failure; the controller
+        # will pick the queue up on a later signal/timer when Temporal is healthy.
+        return
+
+
+def _uses_case_admission_controller(request: Request) -> bool:
+    return callable(getattr(workflow_runtime(request), "signal_case_admission", None))
+
+
 def _runtime_run(request: Request, run_id: str) -> c.WorkflowRun:
     repo = repository(request)
     if run_id not in repo.runs:
@@ -590,6 +628,8 @@ def create_digital_human_batch(
     )
     batch_key = request.headers.get("Idempotency-Key") or new_id("batch")
     repo = repository(request)
+    use_case_admission = _uses_case_admission_controller(request)
+    created_status: Literal["created", "queued"] = "queued" if use_case_admission else "created"
     results: list[c.BatchItemResult] = []
     for index, item in enumerate(payload.items):
         idem_key = f"batch_item:{user.id}:{batch_key}:{index}"
@@ -600,7 +640,7 @@ def create_digital_human_batch(
                     index=index,
                     job_id=cached.get("job_id"),
                     run_id=cached.get("run_id"),
-                    status="created",
+                    status=created_status,
                 )
             )
             continue
@@ -618,28 +658,149 @@ def create_digital_human_batch(
             )
             repo.jobs[job.id] = job
             try:
-                run = _start_submitted_run(
-                    request, job_id=job.id, mode="new", from_run_id=None, reason=None
-                )
+                if use_case_admission:
+                    run = _queue_submitted_run(
+                        request, job_id=job.id, mode="new", from_run_id=None, reason=None
+                    )
+                else:
+                    run = _start_submitted_run(
+                        request, job_id=job.id, mode="new", from_run_id=None, reason=None
+                    )
             except Exception:
-                # A start failure has already compensated the admitted run + its
-                # job to ``failed`` (consistent in memory AND, under SQL, in the
-                # DB) — leaving a visible, retryable failed record rather than an
-                # orphan. Only when admission itself failed before any run row
-                # existed do we drop the half-created draft job (never synced to
-                # the DB), so a failed item leaves nothing dangling either way.
+                # Admission failed before a durable queue row existed; remove the
+                # half-created draft job so the failed item leaves no orphan.
                 if not any(r.job_id == job.id for r in repo.runs.values()):
                     repo.jobs.pop(job.id, None)
                 raise
             repo.idempotency_records[idem_key] = {"job_id": job.id, "run_id": run.id}
             results.append(
                 c.BatchItemResult(
-                    index=index, job_id=job.id, run_id=run.id, status="created"
+                    index=index, job_id=job.id, run_id=run.id, status=created_status
                 )
             )
         except Exception as exc:  # noqa: BLE001 — per-item fault tolerance
             results.append(c.BatchItemResult(index=index, status="failed", error=str(exc)))
+    if use_case_admission and any(result.status == "queued" for result in results):
+        _poke_case_admission(request, payload.case_id)
     return c.BatchGenerationResponse(results=results, request_id=request_id())
+
+
+def _parse_ids(ids: str | None) -> list[str] | None:
+    if not ids:
+        return None
+    values = [item.strip() for item in ids.split(",") if item.strip()]
+    return values or None
+
+
+def run_overview(
+    request: Request,
+    *,
+    limit: int = 50,
+    cursor: str | None = None,
+    status: c.RunStatus | None = None,
+    ids: str | None = None,
+) -> c.RunOverviewResponse:
+    owner_filter = visible_owner_filter(current_user(request))
+    run_ids = _parse_ids(ids)
+    if production_repository(request) is not None:
+        return production_repository(request).run_overview(
+            request_id=request_id(),
+            limit=limit,
+            cursor=cursor,
+            status=status,
+            run_ids=run_ids,
+            owner_user_id=owner_filter,
+        )
+    repo = repository(request)
+    values = [
+        run
+        for run in repo.runs.values()
+        if _run_visible(repo, run, owner_filter)
+        and (status is None or run.status == status)
+        and (not run_ids or run.id in run_ids)
+    ]
+    values.sort(key=lambda run: (run.updated_at, run.created_at), reverse=True)
+    try:
+        offset = max(0, int(cursor or "0"))
+    except ValueError:
+        offset = 0
+    limit = max(1, min(100, int(limit or 50)))
+    page_runs = values[offset : offset + limit]
+    status_counts: dict[str, int] = {}
+    failure_counts: dict[str, int] = {}
+    degradation_counts: dict[str, int] = {}
+    for run in values:
+        status_counts[run.status.value] = status_counts.get(run.status.value, 0) + 1
+        for node in repo.node_runs.get(run.id, []):
+            if node.error is not None:
+                failure_counts[node.error.code.value] = failure_counts.get(node.error.code.value, 0) + 1
+            for notice in node.degradations:
+                code = notice.code.value if hasattr(notice.code, "value") else str(notice.code)
+                degradation_counts[code] = degradation_counts.get(code, 0) + 1
+    return c.RunOverviewResponse(
+        items=[_run_card(repo, run) for run in page_runs],
+        next_cursor=str(offset + limit) if offset + limit < len(values) else None,
+        total_hint=len(values),
+        status_counts=status_counts,
+        failure_code_counts=failure_counts,
+        degradation_code_counts=degradation_counts,
+        request_id=request_id(),
+    )
+
+
+def batch_feasibility(
+    request: Request,
+    *,
+    case_id: str,
+    estimated_audio_duration_sec: float,
+) -> c.BatchFeasibilityResponse:
+    get_case(request, case_id)
+    if production_repository(request) is not None:
+        response = production_repository(request).batch_feasibility(
+            case_id=case_id,
+            estimated_audio_duration_sec=estimated_audio_duration_sec,
+            request_id=request_id(),
+        )
+        if response is not None:
+            return response
+    repo = repository(request)
+    audio_duration = max(0.0, float(estimated_audio_duration_sec or 0.0))
+    video_assets = [
+        asset
+        for asset in repo.media_assets.values()
+        if asset.usable
+        and asset.case_id in {None, case_id}
+        and asset.kind in {"video", "portrait", "broll"}
+        and asset.annotation_status == "annotated"
+    ]
+    portrait_assets = [
+        asset
+        for asset in video_assets
+        if asset.kind == "portrait"
+        or any(tag in {"portrait", "digital_human"} for tag in (asset.tags or []))
+    ] or video_assets
+    portrait_duration = sum(float(asset.duration_sec or 0.0) for asset in portrait_assets)
+    estimated_windows = max(1, int((audio_duration + 3.999) // 4)) if audio_duration > 0 else 1
+    notes: list[str] = []
+    portrait_ok = portrait_duration >= audio_duration if audio_duration > 0 else portrait_duration > 0
+    broll_ok = len(video_assets) >= estimated_windows
+    if not portrait_ok:
+        notes.append("portrait_duration_insufficient")
+    if not broll_ok:
+        notes.append("clean_broll_candidates_insufficient")
+    if not video_assets:
+        notes.append("no_annotated_video_material")
+    return c.BatchFeasibilityResponse(
+        case_id=case_id,
+        estimated_audio_duration_sec=audio_duration,
+        portrait_duration_sec=portrait_duration,
+        clean_broll_candidate_count=len(video_assets),
+        estimated_broll_window_count=estimated_windows,
+        portrait_ok=portrait_ok,
+        broll_ok=broll_ok,
+        notes=notes,
+        request_id=request_id(),
+    )
 
 
 def _link_adopted_script(request: Request, payload: c.DigitalHumanVideoRequest) -> None:

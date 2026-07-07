@@ -122,7 +122,7 @@ class DistributedRateLimiter:
         self.lease_ttl_ms = max(1000, int(lease_ttl_seconds * 1000))
         self.acquire_sleep_seconds = acquire_sleep_seconds
         self._registry_lock = threading.Lock()
-        self._semaphores: dict[str, threading.BoundedSemaphore] = {}
+        self._semaphores: dict[str, tuple[int, threading.BoundedSemaphore]] = {}
         self._degradation_lock = threading.Lock()
         self._degraded = False
         self._degraded_at: float | None = None
@@ -137,10 +137,11 @@ class DistributedRateLimiter:
     @contextmanager
     def slot(self, concurrency_key: str | None, provider_id: str) -> Iterator[None]:
         key = (concurrency_key or "").strip() or provider_id
+        max_inflight, max_qps = self._limits_for(key, provider_id)
         if self._redis is None:
             self._maybe_reconnect()
         if self._redis is None:
-            with self._local_slot(key):
+            with self._local_slot(key, max_inflight=max_inflight):
                 yield
             return
 
@@ -149,10 +150,12 @@ class DistributedRateLimiter:
         try:
             while not acquired:
                 try:
-                    wait_ms = self._try_acquire_redis_slot(key, lease_id)
+                    wait_ms = self._try_acquire_redis_slot(
+                        key, lease_id, max_inflight=max_inflight, max_qps=max_qps
+                    )
                 except Exception as exc:  # pragma: no cover - exercised by bad Redis envs.
                     self._degrade(exc)
-                    with self._local_slot(key):
+                    with self._local_slot(key, max_inflight=max_inflight):
                         yield
                     return
                 if wait_ms is None:
@@ -165,25 +168,40 @@ class DistributedRateLimiter:
                 self._release_redis_slot(key, lease_id)
 
     @contextmanager
-    def _local_slot(self, key: str) -> Iterator[None]:
-        sem = self._semaphore_for(key)
+    def _local_slot(self, key: str, *, max_inflight: int) -> Iterator[None]:
+        sem = self._semaphore_for(key, max_inflight=max_inflight)
         sem.acquire()
         try:
             yield
         finally:
             sem.release()
 
-    def _semaphore_for(self, key: str) -> threading.BoundedSemaphore:
-        sem = self._semaphores.get(key)
-        if sem is None:
+    def _semaphore_for(self, key: str, *, max_inflight: int) -> threading.BoundedSemaphore:
+        entry = self._semaphores.get(key)
+        if entry is None or entry[0] != max_inflight:
             with self._registry_lock:
-                sem = self._semaphores.get(key)
-                if sem is None:
-                    sem = threading.BoundedSemaphore(self.max_inflight)
-                    self._semaphores[key] = sem
-        return sem
+                entry = self._semaphores.get(key)
+                if entry is None or entry[0] != max_inflight:
+                    sem = threading.BoundedSemaphore(max_inflight)
+                    self._semaphores[key] = (max_inflight, sem)
+                    return sem
+        return entry[1]
 
-    def _try_acquire_redis_slot(self, key: str, lease_id: str) -> int | None:
+    def _limits_for(self, key: str, provider_id: str) -> tuple[int, int]:
+        settings = build_providers_settings()
+        configured = settings.limits.get(key) or settings.limits.get(provider_id)
+        max_inflight = self.max_inflight
+        max_qps = self.max_qps
+        if configured is not None:
+            if configured.max_inflight and configured.max_inflight > 0:
+                max_inflight = configured.max_inflight
+            if configured.max_qps and configured.max_qps > 0:
+                max_qps = configured.max_qps
+        return max(1, int(max_inflight)), max(1, int(max_qps))
+
+    def _try_acquire_redis_slot(
+        self, key: str, lease_id: str, *, max_inflight: int, max_qps: int
+    ) -> int | None:
         now_ms = int(time.time() * 1000)
         result = self._redis.eval(
             _ACQUIRE_SCRIPT,
@@ -192,10 +210,10 @@ class DistributedRateLimiter:
             self._qps_key(key),
             now_ms,
             lease_id,
-            self.max_inflight,
+            max_inflight,
             self.lease_ttl_ms,
-            self.max_qps,
-            self.max_qps,
+            max_qps,
+            max_qps,
         )
         acquired, wait_ms = int(result[0]), int(result[1])
         return None if acquired == 1 else max(wait_ms, 1)

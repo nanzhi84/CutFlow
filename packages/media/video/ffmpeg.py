@@ -110,6 +110,17 @@ def ffprobe_bin() -> str:
     return _resolve_bin(build_settings().media.ffprobe_bin, "ffprobe")
 
 
+def ffmpeg_base_args(
+    *, quiet_args: Sequence[str] = FFMPEG_QUIET_ARGS
+) -> list[str]:
+    """Common ffmpeg argv prefix with optional deployment-level thread cap."""
+    args = [ffmpeg_bin(), *quiet_args]
+    threads = build_settings().media.ffmpeg_threads
+    if threads is not None and threads > 0:
+        args.extend(["-threads", str(threads)])
+    return args
+
+
 def _resolve_bin(configured: str | None, executable: str) -> str:
     if configured:
         return configured
@@ -239,7 +250,7 @@ def extract_thumbnails(
         hdr_args = ["-vf", HDR_TONEMAP_VF, *HDR_SDR_OUTPUT_ARGS] if is_hdr else []
         FfmpegRunner().run(
             [
-                ffmpeg_bin(), *FFMPEG_QUIET_ARGS, "-ss", f"{timestamp:.3f}", "-i", str(source),
+                *ffmpeg_base_args(), "-ss", f"{timestamp:.3f}", "-i", str(source),
                 *hdr_args, "-frames:v", "1", "-update", "1", str(output),
             ]
         )
@@ -270,7 +281,7 @@ def extract_frame_at_time(
     output.parent.mkdir(parents=True, exist_ok=True)
     FfmpegRunner().run(
         [
-            ffmpeg_bin(), *FFMPEG_QUIET_ARGS, "-ss", f"{timestamp:.3f}", "-i", str(source),
+            *ffmpeg_base_args(), "-ss", f"{timestamp:.3f}", "-i", str(source),
             "-frames:v", "1", "-update", "1", str(output),
         ]
     )
@@ -316,7 +327,7 @@ def stabilize_video(
     output = Path(output_path) if output_path else source.with_name(f"{source.stem}_stabilized.mp4")
     output.parent.mkdir(parents=True, exist_ok=True)
     runner = FfmpegRunner(timeout_sec=timeout_sec)
-    base_args = [ffmpeg_bin(), *FFMPEG_QUIET_ARGS, "-i", str(source)]
+    base_args = [*ffmpeg_base_args(), "-i", str(source)]
     with tempfile.TemporaryDirectory(prefix="cutagent_vidstab_") as temp_dir:
         transforms = Path(temp_dir) / "transforms.trf"
         detect_vf = (
@@ -410,7 +421,7 @@ def compress_video_to_budget(
     max_size_bytes = int(max_size_mb * 1024 * 1024)
     for strategy in strategies:
         args = [
-            ffmpeg_bin(), *FFMPEG_QUIET_ARGS, "-i", str(source),
+            *ffmpeg_base_args(), "-i", str(source),
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
             "-b:v", f"{strategy.video_kbps}k",
             "-maxrate", f"{strategy.video_kbps}k",
@@ -446,8 +457,7 @@ def extract_audio_segment(source: str | Path, start: float, end: float, output: 
     runner = FfmpegRunner()
     runner.run(
         [
-            ffmpeg_bin(),
-            *FFMPEG_QUIET_ARGS,
+            *ffmpeg_base_args(),
             "-ss",
             f"{float(start):.3f}",
             "-t",
@@ -486,7 +496,7 @@ def trim_to_valid_segments(
             target = Path(temp_dir) / f"segment_{index:03d}.mp4"
             runner.run(
                 [
-                    ffmpeg_bin(), *FFMPEG_QUIET_ARGS, "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(source),
+                    *ffmpeg_base_args(), "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(source),
                     "-map", "0:v:0", "-map", "0:a:0?", *VIDEO_ENCODE_ARGS, str(target),
                 ],
                 timeout_sec=timeout_sec,
@@ -499,7 +509,7 @@ def trim_to_valid_segments(
             concat_file.write_text("".join(_concat_file_line(path) for path in segment_paths), encoding="utf-8")
             runner.run(
                 [
-                    ffmpeg_bin(), *FFMPEG_QUIET_ARGS, "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy", str(output),
+                    *ffmpeg_base_args(), "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy", str(output),
                 ],
                 timeout_sec=timeout_sec,
             )
@@ -596,12 +606,12 @@ def normalize_for_upload(
     vf = _build_normalize_vf(target_w, target_h, is_hdr=is_hdr, crop=crop)
     runner = FfmpegRunner(timeout_sec=timeout_sec)
     runner.run(
-        [
+            [
             # ffmpeg auto-applies the display-matrix rotation before the vf chain
             # (default autorotate), so the output pixels are upright and the
             # target resolution computed from the post-rotation display
             # dimensions is correct. No -noautorotate / rotate-metadata fiddling.
-            ffmpeg_bin(), *FFMPEG_QUIET_ARGS, "-i", str(source),
+            *ffmpeg_base_args(), "-i", str(source),
             "-map", "0:v:0", "-map", "0:a:0?",
             "-vf", vf,
             "-c:v", "libx264", "-preset", UPLOAD_NORMALIZE_PRESET, "-crf", UPLOAD_NORMALIZE_CRF,

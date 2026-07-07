@@ -14,6 +14,39 @@ def case_run_cards(request: Request, case_id: str, limit: int = 50) -> c.PageRes
     return service.case_run_cards(request, case_id, limit)
 
 
+@router.get("/api/runs", response_model=c.RunOverviewResponse)
+def run_overview(
+    request: Request,
+    limit: int = 50,
+    cursor: str | None = None,
+    status: c.RunStatus | None = None,
+    ids: str | None = None,
+) -> c.RunOverviewResponse:
+    return service.run_overview(
+        request,
+        limit=limit,
+        cursor=cursor,
+        status=status,
+        ids=ids,
+    )
+
+
+@router.get(
+    "/api/cases/{case_id}/batch/feasibility",
+    response_model=c.BatchFeasibilityResponse,
+)
+def batch_feasibility(
+    request: Request,
+    case_id: str,
+    estimated_audio_duration_sec: float = 60.0,
+) -> c.BatchFeasibilityResponse:
+    return service.batch_feasibility(
+        request,
+        case_id=case_id,
+        estimated_audio_duration_sec=estimated_audio_duration_sec,
+    )
+
+
 @router.post("/api/jobs/digital-human-video", response_model=c.CreateJobResponse, status_code=201)
 def create_digital_human_job(
     payload: c.CreateDigitalHumanVideoJobRequest, request: Request

@@ -185,7 +185,7 @@ class BatchItemResult(ContractModel):
     index: int
     job_id: str | None = None
     run_id: str | None = None
-    status: Literal["created", "failed"]
+    status: Literal["created", "queued", "failed"]
     error: str | None = None
 
 
@@ -365,6 +365,44 @@ class RunCard(ContractModel):
     can_publish: bool = Field(alias="canPublish")
     started_at: datetime | None = Field(default=None, alias="startedAt")
     updated_at: datetime | None = Field(default=None, alias="updatedAt")
+
+
+class RunOverviewResponse(ContractModel):
+    items: list[RunCard]
+    next_cursor: str | None = None
+    total_hint: int | None = None
+    status_counts: dict[str, int] = Field(default_factory=dict, alias="statusCounts")
+    failure_code_counts: dict[str, int] = Field(default_factory=dict, alias="failureCodeCounts")
+    degradation_code_counts: dict[str, int] = Field(
+        default_factory=dict, alias="degradationCodeCounts"
+    )
+    request_id: str = "req_local"
+
+
+class BatchFeasibilityResponse(ContractModel):
+    case_id: str = Field(alias="caseId")
+    estimated_audio_duration_sec: float = Field(alias="estimatedAudioDurationSec")
+    portrait_duration_sec: float = Field(alias="portraitDurationSec")
+    clean_broll_candidate_count: int = Field(alias="cleanBrollCandidateCount")
+    estimated_broll_window_count: int = Field(alias="estimatedBrollWindowCount")
+    portrait_ok: bool = Field(alias="portraitOk")
+    broll_ok: bool = Field(alias="brollOk")
+    notes: list[str] = Field(default_factory=list)
+    request_id: str = "req_local"
+
+
+class FinishedVideoDownloadItem(ContractModel):
+    finished_video_id: str = Field(alias="finishedVideoId")
+    title: str | None = None
+    url: str
+    expires_at: datetime = Field(alias="expiresAt")
+    content_type: str = Field(default="video/mp4", alias="contentType")
+    filename: str
+
+
+class BatchFinishedVideoDownloadResponse(ContractModel):
+    items: list[FinishedVideoDownloadItem]
+    request_id: str = "req_local"
 
 
 class RunActionResponse(ContractModel):

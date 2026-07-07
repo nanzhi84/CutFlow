@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from pathlib import Path
 
-from sqlalchemy import Float, bindparam, or_, select, text, update
+from sqlalchemy import Float, bindparam, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -25,6 +26,7 @@ from packages.core.contracts import (
     ImportRowResult,
     JianyingDraftPackageArtifact,
     Job,
+    JobStatus,
     JobDetailResponse,
     MediaInfo,
     MetricsImportRequest,
@@ -42,6 +44,8 @@ from packages.core.contracts import (
     RunCard,
     RunDebugReportArtifact,
     RunDetailResponse,
+    RunOverviewResponse,
+    BatchFeasibilityResponse,
     build_run_config_summary,
     RunPublicReportArtifact,
     RunReportResponse,
@@ -697,6 +701,287 @@ class SqlAlchemyProductionRepository(BaseRepository):
                 )
             return PageResponse(items=items, total_hint=len(items), request_id=request_id)
 
+    def run_overview(
+        self,
+        *,
+        request_id: str,
+        limit: int = 50,
+        cursor: str | None = None,
+        status: RunStatus | None = None,
+        run_ids: Sequence[str] | None = None,
+        owner_user_id: str | None = None,
+    ) -> RunOverviewResponse:
+        limit = max(1, min(100, int(limit or 50)))
+        try:
+            offset = max(0, int(cursor or "0"))
+        except ValueError:
+            offset = 0
+        with self.session_factory() as session:
+            base_statement = select(WorkflowRunRow)
+            count_statement = select(WorkflowRunRow.status, func.count()).group_by(WorkflowRunRow.status)
+            if status is not None:
+                base_statement = base_statement.where(WorkflowRunRow.status == status.value)
+                count_statement = count_statement.where(WorkflowRunRow.status == status.value)
+            if run_ids:
+                ids = list(dict.fromkeys(run_ids))
+                base_statement = base_statement.where(WorkflowRunRow.id.in_(ids))
+                count_statement = count_statement.where(WorkflowRunRow.id.in_(ids))
+            if owner_user_id is not None:
+                base_statement = base_statement.join(
+                    JobRow, JobRow.id == WorkflowRunRow.job_id
+                ).where(JobRow.created_by == owner_user_id)
+                count_statement = count_statement.join(
+                    JobRow, JobRow.id == WorkflowRunRow.job_id
+                ).where(JobRow.created_by == owner_user_id)
+            run_rows = list(
+                session.scalars(
+                    base_statement.order_by(
+                        WorkflowRunRow.updated_at.desc(),
+                        WorkflowRunRow.created_at.desc(),
+                    )
+                    .offset(offset)
+                    .limit(limit + 1)
+                )
+            )
+            next_cursor = str(offset + limit) if len(run_rows) > limit else None
+            run_rows = run_rows[:limit]
+            status_counts = {str(key): int(value) for key, value in session.execute(count_statement)}
+            all_run_ids_statement = select(WorkflowRunRow.id)
+            if status is not None:
+                all_run_ids_statement = all_run_ids_statement.where(
+                    WorkflowRunRow.status == status.value
+                )
+            if run_ids:
+                all_run_ids_statement = all_run_ids_statement.where(WorkflowRunRow.id.in_(run_ids))
+            if owner_user_id is not None:
+                all_run_ids_statement = all_run_ids_statement.join(
+                    JobRow, JobRow.id == WorkflowRunRow.job_id
+                ).where(JobRow.created_by == owner_user_id)
+            visible_run_ids = list(session.scalars(all_run_ids_statement))
+            failure_counts: dict[str, int] = {}
+            degradation_counts: dict[str, int] = {}
+            if visible_run_ids:
+                failure_statement = (
+                    select(FailureTaxonomyRow.error_code, func.count())
+                    .where(FailureTaxonomyRow.run_id.in_(visible_run_ids))
+                    .group_by(FailureTaxonomyRow.error_code)
+                )
+                failure_counts = {
+                    str(code or "unknown"): int(value)
+                    for code, value in session.execute(failure_statement)
+                }
+                for node_row in session.scalars(
+                    select(NodeRunRow.degradations).where(NodeRunRow.run_id.in_(visible_run_ids))
+                ):
+                    for notice in node_row or []:
+                        if isinstance(notice, dict):
+                            code = notice.get("code") or notice.get("degradation_code")
+                        else:
+                            code = str(notice)
+                        if code:
+                            degradation_counts[str(code)] = degradation_counts.get(str(code), 0) + 1
+            items: list[RunCard] = []
+            for run_row in run_rows:
+                job_row = session.get(JobRow, run_row.job_id)
+                if job_row is None:
+                    continue
+                run = workflow_run_row_to_contract(run_row)
+                node_runs = [
+                    node_run_row_to_contract(row)
+                    for row in session.scalars(
+                        select(NodeRunRow)
+                        .where(NodeRunRow.run_id == run.id)
+                        .order_by(NodeRunRow.created_at.asc())
+                    )
+                ]
+                fv_row = session.scalar(
+                    select(FinishedVideoRow).where(FinishedVideoRow.run_id == run.id).limit(1)
+                )
+                items.append(
+                    _run_card_from_parts(
+                        run=run,
+                        job=job_row_to_contract(job_row),
+                        node_runs=node_runs,
+                        has_finished_video=fv_row is not None,
+                        finished_video_title=fv_row.title if fv_row is not None else None,
+                        preview_url=self._signed_run_thumbnail(fv_row),
+                    )
+                )
+            total_hint = sum(status_counts.values())
+            return RunOverviewResponse(
+                items=items,
+                next_cursor=next_cursor,
+                total_hint=total_hint,
+                status_counts=status_counts,
+                failure_code_counts=failure_counts,
+                degradation_code_counts=degradation_counts,
+                request_id=request_id,
+            )
+
+    def batch_feasibility(
+        self,
+        *,
+        case_id: str,
+        estimated_audio_duration_sec: float,
+        request_id: str,
+    ) -> BatchFeasibilityResponse | None:
+        audio_duration = max(0.0, float(estimated_audio_duration_sec or 0.0))
+        with self.session_factory() as session:
+            if session.get(CaseRow, case_id) is None:
+                return None
+            media_rows = list(
+                session.scalars(
+                    select(MediaAssetRow)
+                    .where(or_(MediaAssetRow.case_id == case_id, MediaAssetRow.case_id.is_(None)))
+                    .where(MediaAssetRow.usable.is_(True))
+                )
+            )
+        video_rows = [row for row in media_rows if row.kind in {"video", "portrait", "broll"}]
+        annotated_rows = [row for row in video_rows if row.annotation_status == "annotated"]
+        portrait_rows = [
+            row
+            for row in annotated_rows
+            if row.kind == "portrait" or any(tag in {"portrait", "digital_human"} for tag in (row.tags or []))
+        ]
+        if not portrait_rows:
+            portrait_rows = annotated_rows
+        portrait_duration = sum(float(row.duration_sec or 0.0) for row in portrait_rows)
+        clean_broll_count = len(annotated_rows)
+        estimated_windows = max(1, int(math.ceil(audio_duration / 4.0))) if audio_duration > 0 else 1
+        notes: list[str] = []
+        portrait_ok = portrait_duration >= audio_duration if audio_duration > 0 else portrait_duration > 0
+        broll_ok = clean_broll_count >= estimated_windows
+        if not portrait_ok:
+            notes.append("portrait_duration_insufficient")
+        if not broll_ok:
+            notes.append("clean_broll_candidates_insufficient")
+        if not annotated_rows:
+            notes.append("no_annotated_video_material")
+        return BatchFeasibilityResponse(
+            case_id=case_id,
+            estimated_audio_duration_sec=audio_duration,
+            portrait_duration_sec=portrait_duration,
+            clean_broll_candidate_count=clean_broll_count,
+            estimated_broll_window_count=estimated_windows,
+            portrait_ok=portrait_ok,
+            broll_ok=broll_ok,
+            notes=notes,
+            request_id=request_id,
+        )
+
+    def admit_case_runs(
+        self,
+        *,
+        case_id: str,
+        max_inflight: int,
+    ) -> dict[str, object]:
+        """FIFO-select admitted case runs up to the configured in-flight cap.
+
+        Runs stay durable ``admitted`` until the Temporal workflow start succeeds.
+        This keeps admission retryable if the worker crashes after this transaction
+        but before ``Client.start_workflow`` returns.
+        """
+        max_inflight = max(1, int(max_inflight or 1))
+        admitted: list[tuple[Job, WorkflowRun]] = []
+        with self.session_factory() as session:
+            running_count = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(WorkflowRunRow)
+                    .where(WorkflowRunRow.case_id == case_id)
+                    .where(WorkflowRunRow.status == RunStatus.running.value)
+                )
+                or 0
+            )
+            slots = max(0, max_inflight - running_count)
+            if slots > 0:
+                queued_rows = list(
+                    session.scalars(
+                        select(WorkflowRunRow)
+                        .where(WorkflowRunRow.case_id == case_id)
+                        .where(WorkflowRunRow.status == RunStatus.admitted.value)
+                        .order_by(WorkflowRunRow.created_at.asc(), WorkflowRunRow.id.asc())
+                        .limit(slots)
+                        .with_for_update(skip_locked=True)
+                    )
+                )
+                for run_row in queued_rows:
+                    job_row = session.get(JobRow, run_row.job_id, with_for_update=True)
+                    if job_row is None:
+                        continue
+                    session.flush()
+                    admitted.append(
+                        (job_row_to_contract(job_row), workflow_run_row_to_contract(run_row))
+                    )
+            queued_remaining = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(WorkflowRunRow)
+                    .where(WorkflowRunRow.case_id == case_id)
+                    .where(WorkflowRunRow.status == RunStatus.admitted.value)
+                )
+                or 0
+            )
+            active_count = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(WorkflowRunRow)
+                    .where(WorkflowRunRow.case_id == case_id)
+                    .where(WorkflowRunRow.status == RunStatus.running.value)
+                )
+                or 0
+            )
+            session.commit()
+        return {
+            "admitted": admitted,
+            "active_count": active_count,
+            "queued_remaining": queued_remaining,
+        }
+
+    def case_ids_with_admitted_runs(self, *, limit: int = 100) -> list[str]:
+        limit = max(1, min(500, int(limit or 100)))
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(WorkflowRunRow.case_id)
+                .where(WorkflowRunRow.status == RunStatus.admitted.value)
+                .where(WorkflowRunRow.case_id.is_not(None))
+                .distinct()
+                .order_by(WorkflowRunRow.case_id.asc())
+                .limit(limit)
+            )
+            return [str(case_id) for case_id in rows if case_id]
+
+    def mark_run_started(self, run_id: str) -> None:
+        now = utcnow()
+        with self.session_factory() as session:
+            run_row = session.get(WorkflowRunRow, run_id, with_for_update=True)
+            if run_row is None:
+                return
+            job_row = session.get(JobRow, run_row.job_id, with_for_update=True)
+            run_row.status = RunStatus.running.value
+            run_row.started_at = run_row.started_at or now
+            run_row.updated_at = now
+            if job_row is not None:
+                job_row.status = JobStatus.running.value
+                job_row.active_run_id = run_row.id
+                job_row.updated_at = now
+            session.commit()
+
+    def mark_run_start_failed(self, run_id: str, reason: str) -> None:
+        now = utcnow()
+        with self.session_factory() as session:
+            run_row = session.get(WorkflowRunRow, run_id)
+            if run_row is None:
+                return
+            job_row = session.get(JobRow, run_row.job_id)
+            run_row.status = RunStatus.failed.value
+            run_row.finished_at = now
+            run_row.updated_at = now
+            if job_row is not None:
+                job_row.status = JobStatus.failed.value
+                job_row.updated_at = now
+            session.commit()
+
     def _signed_run_thumbnail(self, fv_row) -> str | None:
         """Signed https URL of a run's finished-video cover (image preferred, video
         fallback) for the Outputs card thumbnail. None when there is no finished
@@ -1156,6 +1441,7 @@ class SqlAlchemyProductionRepository(BaseRepository):
                     finished_video_id=finished_video_id,
                     package_format=payload.format,
                     assets=self._handoff_assets(session, finished),
+                    effects=self._handoff_effects(session, finished),
                 )
             )
             artifact = ArtifactRow(
@@ -1216,7 +1502,7 @@ class SqlAlchemyProductionRepository(BaseRepository):
                         style_plan,
                         resolve_source_path=lambda asset_id: self._media_asset_source_path(session, asset_id),
                     ),
-                    text_segments=build_text_segments_from_narration(narration_units),
+                    text_segments=build_text_segments_from_narration(narration_units, style_plan),
                 )
             )
             artifact = ArtifactRow(
@@ -1343,6 +1629,51 @@ class SqlAlchemyProductionRepository(BaseRepository):
         if finished.subtitle_artifact:
             assets.append(self._handoff_asset(session, "subtitle", ArtifactRef.model_validate(finished.subtitle_artifact)))
         return assets
+
+    def _handoff_effects(self, session: Session, finished: FinishedVideoRow) -> dict:
+        if not finished.run_id:
+            return {}
+        style_plan = self._latest_run_artifact_payload(
+            session, finished.run_id, ArtifactKind.plan_style
+        ) or {}
+        style_dict = style_plan if isinstance(style_plan, dict) else {}
+        broll_plan = self._latest_run_artifact_payload(
+            session, finished.run_id, ArtifactKind.plan_broll
+        ) or {}
+        timeline_plan = self._timeline_plan_payload(session, finished.id) or {}
+        overlays = [
+            {
+                "overlay_id": item.get("overlay_id"),
+                "asset_id": item.get("asset_id"),
+                "clip_id": item.get("clip_id"),
+                "fade_frames": item.get("fade_frames"),
+                "placement": item.get("placement"),
+            }
+            for item in (broll_plan.get("overlays") or [])
+            if isinstance(item, dict)
+            and (item.get("fade_frames") is not None or item.get("placement") is not None)
+        ]
+        tracks = [
+            {
+                "segment_id": item.get("segment_id"),
+                "fade_frames": item.get("fade_frames"),
+                "placement": item.get("placement"),
+            }
+            for item in (timeline_plan.get("tracks") or [])
+            if isinstance(item, dict)
+            and item.get("track_id") == "broll"
+            and (item.get("fade_frames") is not None or item.get("placement") is not None)
+        ]
+        return {
+            "subtitle": style_dict.get("subtitle") if isinstance(style_dict.get("subtitle"), dict) else {},
+            "overlay_events": style_dict.get("overlay_events", []),
+            "broll_overlays": overlays,
+            "timeline_tracks": tracks,
+            "manual_acceptance": {
+                "jianying_effect_id_policy": "If native Jianying effect_id changes, keep cutflow_effects/effects.json as source of truth and record a degradation on mismatch.",
+                "requires_review": bool(overlays or tracks or style_dict.get("overlay_events")),
+            },
+        }
 
     def _handoff_asset(self, session: Session, role: str, artifact_ref: ArtifactRef) -> EditorHandoffAsset:
         return EditorHandoffAsset(

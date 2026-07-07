@@ -277,3 +277,148 @@ def test_retry_policy_and_template_from_run_guards(monkeypatch):
     _job, run = _job_and_run()
     with pytest.raises(RuntimeError, match="unsupported template"):
         ta._template_from_run(run)
+
+
+def test_admit_case_runs_without_production_repository_returns_empty(monkeypatch):
+    monkeypatch.setattr(
+        ta,
+        "_activity_context",
+        ta.TemporalActivityContext(
+            repository=Repository(),
+            local_runtime=object(),
+            production_repository=None,
+        ),
+    )
+
+    assert ta.admit_case_runs({"case_id": "case_no_sql"}) == {
+        "case_id": "case_no_sql",
+        "admitted_run_ids": [],
+        "active_count": 0,
+        "queued_remaining": 0,
+    }
+
+
+def test_admit_case_runs_starts_selected_rows_and_updates_summary(monkeypatch):
+    job, run = _job_and_run()
+
+    class _ProductionRepository:
+        def __init__(self) -> None:
+            self.started: list[str] = []
+
+        def admit_case_runs(self, *, case_id: str, max_inflight: int):
+            assert case_id == "case_1"
+            assert max_inflight == 2
+            return {
+                "admitted": [(job, run)],
+                "active_count": 1,
+                "queued_remaining": 3,
+            }
+
+        def mark_run_started(self, run_id: str) -> None:
+            self.started.append(run_id)
+
+    production_repository = _ProductionRepository()
+    monkeypatch.setattr(
+        ta,
+        "_activity_context",
+        ta.TemporalActivityContext(
+            repository=Repository(),
+            local_runtime=object(),
+            production_repository=production_repository,
+        ),
+    )
+    monkeypatch.setattr(
+        ta,
+        "load_workflow_runtime_settings",
+        lambda: WorkflowRuntimeSettings(runtime="temporal", case_max_inflight_runs=2),
+    )
+
+    async def fake_start(_settings, *, job, run):
+        assert job.id == "job_temporal"
+        assert run.id == "run_temporal"
+
+    monkeypatch.setattr(ta, "_start_admitted_workflow", fake_start)
+
+    assert ta.admit_case_runs({"case_id": "case_1"}) == {
+        "case_id": "case_1",
+        "admitted_run_ids": ["run_temporal"],
+        "start_error_run_ids": [],
+        "active_count": 2,
+        "queued_remaining": 2,
+    }
+    assert production_repository.started == ["run_temporal"]
+
+
+def test_start_admitted_workflow_treats_existing_run_as_success(monkeypatch):
+    job, run = _job_and_run()
+    seen: dict[str, object] = {}
+
+    class _FakeClient:
+        async def start_workflow(self, workflow_type, payload, **kwargs):
+            seen["workflow_type"] = workflow_type
+            seen["payload"] = payload
+            seen["kwargs"] = kwargs
+            raise WorkflowAlreadyStartedError(
+                workflow_id=run.id,
+                workflow_type=workflow_type,
+                run_id=run.id,
+            )
+
+    async def fake_connect(*_args, **_kwargs):
+        return _FakeClient()
+
+    monkeypatch.setattr(Client, "connect", fake_connect)
+    monkeypatch.setattr(ta, "_template_from_run", lambda _run: _template())
+
+    asyncio.run(
+        ta._start_admitted_workflow(
+            WorkflowRuntimeSettings(runtime="temporal", temporal_task_queue="queue-a"),
+            job=job,
+            run=run,
+        )
+    )
+
+    assert seen["workflow_type"] == ta.WORKFLOW_TYPE
+    assert seen["payload"]["run_id"] == run.id
+    assert seen["kwargs"]["id"] == run.id
+    assert seen["kwargs"]["task_queue"] == "queue-a"
+    assert seen["kwargs"]["rpc_timeout"] == ta.TEMPORAL_RPC_TIMEOUT
+
+
+def test_signal_case_admission_starts_or_pokes_existing_controller():
+    calls: list[tuple[str, object]] = []
+
+    class _Handle:
+        async def signal(self, name, payload, **kwargs):
+            calls.append((name, payload))
+            assert kwargs["rpc_timeout"] == ta.TEMPORAL_RPC_TIMEOUT
+
+    class _ClientStartsNew:
+        async def start_workflow(self, workflow_type, payload, **kwargs):
+            calls.append((workflow_type, payload))
+            assert kwargs["id"] == "case-run-admission:case_1"
+            assert kwargs["task_queue"] == "queue-b"
+            assert kwargs["rpc_timeout"] == ta.TEMPORAL_RPC_TIMEOUT
+
+    class _ClientAlreadyStarted:
+        async def start_workflow(self, workflow_type, payload, **kwargs):
+            raise WorkflowAlreadyStartedError(
+                workflow_id=kwargs["id"],
+                workflow_type=workflow_type,
+                run_id=kwargs["id"],
+            )
+
+        def get_workflow_handle(self, workflow_id):
+            calls.append(("handle", workflow_id))
+            return _Handle()
+
+    settings = WorkflowRuntimeSettings(runtime="temporal", temporal_task_queue="queue-b")
+
+    asyncio.run(ta.signal_case_admission_with_client(_ClientStartsNew(), settings, "case_1"))
+    asyncio.run(ta.signal_case_admission_with_client(_ClientAlreadyStarted(), settings, "case_1"))
+
+    assert calls == [
+        (ta.CASE_ADMISSION_WORKFLOW_TYPE, {"case_id": "case_1"}),
+        ("handle", "case-run-admission:case_1"),
+        ("poke", {"case_id": "case_1"}),
+    ]

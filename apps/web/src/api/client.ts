@@ -544,6 +544,14 @@ export const api = {
       ),
   },
   jobs: {
+    batchFeasibility: (
+      caseId: string,
+      query: QueryParams<operations["batch_feasibility_api_cases__case_id__batch_feasibility_get"]> = {},
+    ) =>
+      fetchJson<JsonResponse<operations["batch_feasibility_api_cases__case_id__batch_feasibility_get"]>>(
+        `/api/cases/${enc(caseId)}/batch/feasibility`,
+        { query },
+      ),
     createDigitalHumanVideo: (
       payload: JsonRequest<operations["create_digital_human_job_api_jobs_digital_human_video_post"]>,
       idempotencyKey = createIdempotencyKey("video_job"),
@@ -562,6 +570,8 @@ export const api = {
       ),
   },
   runs: {
+    overview: (query: QueryParams<operations["run_overview_api_runs_get"]> = {}) =>
+      fetchJson<JsonResponse<operations["run_overview_api_runs_get"]>>("/api/runs", { query }),
     detail: (runId: string) =>
       fetchJson<JsonResponse<operations["run_detail_api_runs__run_id__get"]>>(`/api/runs/${enc(runId)}`),
     cancel: (runId: string, payload: JsonRequest<operations["cancel_run_api_runs__run_id__cancel_post"]>) =>
@@ -603,6 +613,14 @@ export const api = {
     download: (id: string) =>
       fetchJson<JsonResponse<operations["finished_video_download_api_finished_videos__id__download_get"]>>(
         `/api/finished-videos/${enc(id)}/download`,
+      ),
+    batchDownloads: (
+      caseId: string,
+      query: QueryParams<operations["case_finished_video_downloads_api_cases__case_id__finished_videos_downloads_get"]> = {},
+    ) =>
+      fetchJson<JsonResponse<operations["case_finished_video_downloads_api_cases__case_id__finished_videos_downloads_get"]>>(
+        `/api/cases/${enc(caseId)}/finished-videos/downloads`,
+        { query },
       ),
     delete: (id: string) =>
       fetchJson<JsonResponse<operations["delete_finished_video_api_finished_videos__id__delete"]>>(
@@ -907,6 +925,8 @@ export type PromptTemplateView = components["schemas"]["PromptTemplateView"];
 export type PromptBindingView = components["schemas"]["PromptBindingView"];
 export type NodeRun = components["schemas"]["NodeRun"];
 export type RunCard = components["schemas"]["RunCard"];
+export type RunOverviewResponse = components["schemas"]["RunOverviewResponse"];
+export type BatchFeasibilityResponse = components["schemas"]["BatchFeasibilityResponse"];
 export type RunDetailResponse = components["schemas"]["RunDetailResponse"];
 export type RunConfigSummary = components["schemas"]["RunConfigSummary"];
 export type VoiceProfile = components["schemas"]["VoiceProfile"];
@@ -918,6 +938,7 @@ export type MediaAssetRecord = components["schemas"]["MediaAssetRecord"];
 export type SignedUrlResponse = components["schemas"]["SignedUrlResponse"];
 export type AnnotationEditorVm = components["schemas"]["AnnotationEditorVm"];
 export type FinishedVideo = components["schemas"]["FinishedVideo"];
+export type BatchFinishedVideoDownloadResponse = components["schemas"]["BatchFinishedVideoDownloadResponse"];
 export type ArtifactRef = components["schemas"]["ArtifactRef"];
 export type PublishCoverResult = components["schemas"]["PublishCoverResult"];
 export type PreviewCoverFrameResult = components["schemas"]["PreviewCoverFrameResult"];

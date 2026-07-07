@@ -10,7 +10,7 @@ from typing import Any
 
 from packages.media.audio.loudness import measure_loudness_lufs
 from packages.media.rendering import _escape_subtitle_filter_value, render_slot
-from packages.media.video.ffmpeg import FfmpegRunner, ffmpeg_bin
+from packages.media.video.ffmpeg import FfmpegRunner, ffmpeg_base_args
 
 logger = logging.getLogger("packages.production.pipeline._ffmpeg")
 
@@ -213,11 +213,7 @@ def render_final_media(
     time.
     """
     args = [
-        ffmpeg_bin(),
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
+        *ffmpeg_base_args(quiet_args=("-y", "-hide_banner", "-loglevel", "error")),
         "-i",
         str(rendered_path),
         "-i",

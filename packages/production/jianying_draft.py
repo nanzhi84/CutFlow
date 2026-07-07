@@ -39,6 +39,8 @@ class JianyingVideoSegment:
     asset_id: str | None = None
     clip_id: str | None = None
     volume: float = 0.0
+    fade_frames: int | None = None
+    placement: str | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,8 @@ def build_video_segments_from_plans(
                 source_end_frame=source_end_frame,
                 asset_id=asset_id,
                 clip_id=_str_or_none(source.get("clip_id")),
+                fade_frames=_int_or_none(raw.get("fade_frames", source.get("fade_frames"))),
+                placement=_placement_or_none(raw.get("placement", source.get("placement"))),
             )
         )
     return segments
@@ -156,6 +160,7 @@ def build_audio_segments_from_sources(
 
 def build_text_segments_from_narration(
     narration_units: list[dict[str, Any]],
+    style_plan: dict[str, Any] | None = None,
 ) -> list[JianyingTextSegment]:
     segments: list[JianyingTextSegment] = []
     for unit in narration_units:
@@ -170,6 +175,26 @@ def build_text_segments_from_narration(
             segments.append(
                 JianyingTextSegment(
                     track_name="字幕", text=text, start_us=start_us, duration_us=end_us - start_us
+                )
+            )
+    style = style_plan or {}
+    overlay_events = style.get("overlay_events") if isinstance(style.get("overlay_events"), list) else []
+    for event in overlay_events:
+        if not isinstance(event, dict):
+            continue
+        text = str(event.get("text") or "").strip()
+        if not text:
+            continue
+        start_us = _sec_to_us(event.get("start") or 0)
+        end_us = _sec_to_us(event.get("end") or 0)
+        if end_us > start_us:
+            segments.append(
+                JianyingTextSegment(
+                    track_name="花字",
+                    text=text,
+                    start_us=start_us,
+                    duration_us=end_us - start_us,
+                    transform_y=-0.48,
                 )
             )
     return segments
@@ -412,6 +437,7 @@ class JianyingDraftBuilder:
                     "audio": _material_names(materials["audios"], "name"),
                     "subtitle": Path(source.subtitle_path).name if source.subtitle_path else None,
                 },
+                "effects": _draft_effects_manifest(source, huazi_segments=len(huazi_segments)),
                 "warnings": [],
             }
             return JianyingDraftBuild(
@@ -556,6 +582,20 @@ def _str_or_none(value: Any) -> str | None:
     return text or None
 
 
+def _int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _placement_or_none(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text if text in {"fullscreen", "pip_fixed"} else None
+
+
 def _explicit_video_tracks(
     source: JianyingDraftInput,
     draft_dir: Path,
@@ -596,6 +636,7 @@ def _explicit_video_tracks(
                 source_start,
                 source_end - source_start,
                 volume=segment.volume,
+                effects=_segment_effects(segment),
             )
         )
     return tracks, materials
@@ -693,6 +734,7 @@ def _broll_segments(source: JianyingDraftInput, material_id: str) -> list[dict[s
                     source_start,
                     max(1, source_end - source_start),
                     volume=0.0,
+                    effects=_track_effects(raw),
                 )
             )
     return segments
@@ -706,6 +748,7 @@ def _media_segment(
     source_duration: int,
     *,
     volume: float,
+    effects: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     speed_id = uuid.uuid4().hex
     payload = _base_segment(material_id, start, duration)
@@ -720,7 +763,29 @@ def _media_segment(
             "uniform_scale": {"on": True, "value": 1.0},
         }
     )
+    if effects:
+        payload["cutflow_effects"] = effects
     return payload
+
+
+def _segment_effects(segment: JianyingVideoSegment) -> dict[str, Any]:
+    effects: dict[str, Any] = {}
+    if segment.fade_frames is not None:
+        effects["fade_frames"] = segment.fade_frames
+    if segment.placement:
+        effects["placement"] = segment.placement
+    return effects
+
+
+def _track_effects(raw: dict[str, Any]) -> dict[str, Any]:
+    effects: dict[str, Any] = {}
+    fade_frames = _int_or_none(raw.get("fade_frames"))
+    placement = _placement_or_none(raw.get("placement"))
+    if fade_frames is not None:
+        effects["fade_frames"] = fade_frames
+    if placement:
+        effects["placement"] = placement
+    return effects
 
 
 def _text_segment(
@@ -749,6 +814,29 @@ def _voice_audio_count(source: JianyingDraftInput, audio_path: str | None) -> in
 
 def _bgm_audio_count(audio_segments: list[JianyingAudioSegment]) -> int:
     return sum(1 for segment in audio_segments if _is_bgm_track(segment.track_name))
+
+
+def _draft_effects_manifest(
+    source: JianyingDraftInput, *, huazi_segments: int
+) -> dict[str, Any]:
+    video_effects = []
+    for segment in source.video_segments:
+        effects = _segment_effects(segment)
+        if effects:
+            video_effects.append(
+                {
+                    "track_name": segment.track_name,
+                    "asset_id": segment.asset_id,
+                    "clip_id": segment.clip_id,
+                    **effects,
+                }
+            )
+    return {
+        "video_segments": video_effects,
+        "huazi_segments": huazi_segments,
+        "manual_acceptance_required": bool(video_effects or huazi_segments),
+        "effect_id_policy": "cutflow_effects metadata is authoritative when Jianying native effect_id drifts.",
+    }
 
 
 def _is_broll_track(track_name: str) -> bool:

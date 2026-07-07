@@ -1339,6 +1339,143 @@
         }
       }
     },
+    "/api/runs": {
+      "get": {
+        "summary": "Run Overview",
+        "operationId": "run_overview_api_runs_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RunStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ids"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunOverviewResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cases/{case_id}/batch/feasibility": {
+      "get": {
+        "summary": "Batch Feasibility",
+        "operationId": "batch_feasibility_api_cases__case_id__batch_feasibility_get",
+        "parameters": [
+          {
+            "name": "case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Case Id"
+            }
+          },
+          {
+            "name": "estimated_audio_duration_sec",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "default": 60.0,
+              "title": "Estimated Audio Duration Sec"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchFeasibilityResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/jobs/digital-human-video": {
       "post": {
         "summary": "Create Digital Human Job",
@@ -5248,6 +5385,61 @@
         }
       }
     },
+    "/api/cases/{case_id}/finished-videos/downloads": {
+      "get": {
+        "summary": "Case Finished Video Downloads",
+        "operationId": "case_finished_video_downloads_api_cases__case_id__finished_videos_downloads_get",
+        "parameters": [
+          {
+            "name": "case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Case Id"
+            }
+          },
+          {
+            "name": "ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ids"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchFinishedVideoDownloadResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/finished-videos/{id}": {
       "get": {
         "summary": "Finished Video Detail",
@@ -5509,6 +5701,22 @@
             "schema": {
               "type": "string",
               "title": "Artifact Id"
+            }
+          },
+          {
+            "name": "disposition",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Disposition"
             }
           }
         ],
@@ -9245,6 +9453,84 @@
         ],
         "title": "BatchDigitalHumanVideoRequest"
       },
+      "BatchFeasibilityResponse": {
+        "properties": {
+          "caseId": {
+            "type": "string",
+            "title": "Caseid"
+          },
+          "estimatedAudioDurationSec": {
+            "type": "number",
+            "title": "Estimatedaudiodurationsec"
+          },
+          "portraitDurationSec": {
+            "type": "number",
+            "title": "Portraitdurationsec"
+          },
+          "cleanBrollCandidateCount": {
+            "type": "integer",
+            "title": "Cleanbrollcandidatecount"
+          },
+          "estimatedBrollWindowCount": {
+            "type": "integer",
+            "title": "Estimatedbrollwindowcount"
+          },
+          "portraitOk": {
+            "type": "boolean",
+            "title": "Portraitok"
+          },
+          "brollOk": {
+            "type": "boolean",
+            "title": "Brollok"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Notes"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id",
+            "default": "req_local"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "caseId",
+          "estimatedAudioDurationSec",
+          "portraitDurationSec",
+          "cleanBrollCandidateCount",
+          "estimatedBrollWindowCount",
+          "portraitOk",
+          "brollOk"
+        ],
+        "title": "BatchFeasibilityResponse"
+      },
+      "BatchFinishedVideoDownloadResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/FinishedVideoDownloadItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id",
+            "default": "req_local"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "BatchFinishedVideoDownloadResponse"
+      },
       "BatchGenerationResponse": {
         "properties": {
           "results": {
@@ -9456,6 +9742,7 @@
             "type": "string",
             "enum": [
               "created",
+              "queued",
               "failed"
             ],
             "title": "Status"
@@ -14164,6 +14451,52 @@
           "finished_video"
         ],
         "title": "FinishedVideoDetail"
+      },
+      "FinishedVideoDownloadItem": {
+        "properties": {
+          "finishedVideoId": {
+            "type": "string",
+            "title": "Finishedvideoid"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expiresat"
+          },
+          "contentType": {
+            "type": "string",
+            "title": "Contenttype",
+            "default": "video/mp4"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "finishedVideoId",
+          "url",
+          "expiresAt",
+          "filename"
+        ],
+        "title": "FinishedVideoDownloadItem"
       },
       "GeneratePublishCopyRequest": {
         "properties": {
@@ -22912,6 +23245,71 @@
           "artifacts"
         ],
         "title": "RunDetailResponse"
+      },
+      "RunOverviewResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunCard"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "total_hint": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Hint"
+          },
+          "statusCounts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Statuscounts"
+          },
+          "failureCodeCounts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Failurecodecounts"
+          },
+          "degradationCodeCounts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Degradationcodecounts"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id",
+            "default": "req_local"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "RunOverviewResponse"
       },
       "RunPublicReportArtifact": {
         "properties": {

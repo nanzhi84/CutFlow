@@ -54,6 +54,8 @@ _INFRA_ENV_VARS = (
     "CUTAGENT_TEMPORAL_ADDRESS",
     "CUTAGENT_TEMPORAL_NAMESPACE",
     "CUTAGENT_TEMPORAL_TASK_QUEUE",
+    "CUTAGENT_CASE_MAX_INFLIGHT_RUNS",
+    "CUTAGENT_WORKER_MAX_ACTIVITIES",
     "CUTAGENT_REGISTRATION_OPEN",
     "CUTAGENT_REGISTRATION_CODE_SALT",
     "CUTAGENT_SEED_LOCAL_AUTH",
@@ -66,6 +68,7 @@ _INFRA_ENV_VARS = (
     "CUTAGENT_SECRET_STORE_DIR",
     "CUTAGENT_FFMPEG_BIN",
     "CUTAGENT_FFPROBE_BIN",
+    "CUTAGENT_FFMPEG_THREADS",
     "CUTAGENT_DISABLE_BACKGROUND_DISPATCHER",
     "CUTAGENT_MOTION_GUARD_SAMPLE_FPS",
     "CUTAGENT_MOTION_GUARD_WIDTH",
@@ -101,6 +104,7 @@ _INFRA_ENV_VARS = (
     "CUTAGENT_LEARNING_BUMP_CONSISTENCY_FLOOR",
     "CUTAGENT_PROVIDER_MAX_INFLIGHT",
     "CUTAGENT_PROVIDER_MAX_QPS",
+    "CUTAGENT_PROVIDER_LIMITS",
     "CUTAGENT_PROVIDER_CIRCUIT_BREAKER",
     "CUTAGENT_PROVIDER_CIRCUIT_ERROR_RATE",
     "CUTAGENT_PROVIDER_CIRCUIT_WINDOW",
@@ -178,6 +182,8 @@ def test_settings_built_in_defaults() -> None:
     assert settings.workflow.temporal_address == "127.0.0.1:7233"
     assert settings.workflow.temporal_namespace == "default"
     assert settings.workflow.temporal_task_queue == "cutagent-production"
+    assert settings.workflow.case_max_inflight_runs == 3
+    assert settings.workflow.worker_max_activities == 8
 
     assert settings.auth.registration_open is True
     assert settings.auth.registration_code_salt == "local-dev-registration-code-salt"
@@ -192,6 +198,7 @@ def test_settings_built_in_defaults() -> None:
     assert settings.secret_store.dir == ".data/secrets"
     assert settings.media.ffmpeg_bin is None
     assert settings.media.ffprobe_bin is None
+    assert settings.media.ffmpeg_threads is None
     assert settings.api.disable_background_dispatcher is False
 
     assert settings.motion_guard.sample_fps == 10.0
@@ -232,6 +239,7 @@ def test_settings_built_in_defaults() -> None:
     prov = settings.providers
     assert prov.max_inflight == 4
     assert prov.max_qps == 4
+    assert prov.limits == {}
     assert prov.circuit_breaker_enabled is False
     assert prov.circuit_error_rate_threshold == 0.5
     assert prov.circuit_window_hours == 24
@@ -253,9 +261,12 @@ def test_settings_reads_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CUTAGENT_OBJECTSTORE_BACKEND", "S3")  # lower-cased
     monkeypatch.setenv("CUTAGENT_OBJECTSTORE_MAX_ATTEMPTS", "9")
     monkeypatch.setenv("CUTAGENT_WORKFLOW_RUNTIME", "TEMPORAL")  # lower-cased
+    monkeypatch.setenv("CUTAGENT_CASE_MAX_INFLIGHT_RUNS", "5")
+    monkeypatch.setenv("CUTAGENT_WORKER_MAX_ACTIVITIES", "11")
     monkeypatch.setenv("CUTAGENT_REGISTRATION_OPEN", "false")
     monkeypatch.setenv("CUTAGENT_SEED_LOCAL_AUTH", "false")
     monkeypatch.setenv("CUTAGENT_FFMPEG_BIN", "/opt/ffmpeg")
+    monkeypatch.setenv("CUTAGENT_FFMPEG_THREADS", "2")
     monkeypatch.setenv("CUTAGENT_DISABLE_BACKGROUND_DISPATCHER", "1")
 
     settings = build_settings()
@@ -266,15 +277,22 @@ def test_settings_reads_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.object_store.backend == "s3"
     assert settings.object_store.s3.max_attempts == 9
     assert settings.workflow.runtime == "temporal"
+    assert settings.workflow.case_max_inflight_runs == 5
+    assert settings.workflow.worker_max_activities == 11
     assert settings.auth.registration_open is False
     assert settings.auth.seed_local_auth is False
     assert settings.media.ffmpeg_bin == "/opt/ffmpeg"
+    assert settings.media.ffmpeg_threads == 2
     assert settings.api.disable_background_dispatcher is True
 
 
 def test_provider_publishing_settings_read_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CUTAGENT_PROVIDER_MAX_INFLIGHT", "7")
     monkeypatch.setenv("CUTAGENT_PROVIDER_MAX_QPS", "9")
+    monkeypatch.setenv(
+        "CUTAGENT_PROVIDER_LIMITS",
+        '{"dashscope:llm.chat":{"max_inflight":2,"max_qps":1},"runninghub":{"max_inflight":1}}',
+    )
     monkeypatch.setenv("CUTAGENT_PROVIDER_CIRCUIT_BREAKER", "1")
     monkeypatch.setenv("CUTAGENT_PROVIDER_CIRCUIT_ERROR_RATE", "0.7")
     monkeypatch.setenv("CUTAGENT_PROVIDER_CIRCUIT_WINDOW", "6")
@@ -287,6 +305,10 @@ def test_provider_publishing_settings_read_env_overrides(monkeypatch: pytest.Mon
     prov = build_providers_settings()
     assert prov.max_inflight == 7
     assert prov.max_qps == 9
+    assert prov.limits["dashscope:llm.chat"].max_inflight == 2
+    assert prov.limits["dashscope:llm.chat"].max_qps == 1
+    assert prov.limits["runninghub"].max_inflight == 1
+    assert prov.limits["runninghub"].max_qps is None
     assert prov.circuit_breaker_enabled is True
     assert prov.circuit_error_rate_threshold == 0.7
     assert prov.circuit_window_hours == 6
