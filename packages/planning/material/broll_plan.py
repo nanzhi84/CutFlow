@@ -22,6 +22,7 @@ class BrollGeometryPolicy:
     fps: int = 30
     min_insert_seconds: float = 1.5
     max_insert_seconds: float = 4.0
+    full_coverage_max_segment_seconds: float = 5.5
     min_visible_aroll_seconds: float = 2.0
     snap_max_frames: int = 15
     max_pad_seconds: float = 0.15

@@ -202,15 +202,17 @@ def _window_specs(*, windows: dict, units_by_id: dict[str, dict]) -> list[_Windo
         window_id = str(window.get("window_id") or "")
         if not window_id:
             continue
+        text = str(window.get("text") or "").strip()
+        if not text and str(window.get("text_assignment") or "") != "argmax_overlap":
+            text = _unit_text(
+                window.get("host_unit_ids") or window.get("unit_ids") or [],
+                units_by_id,
+            )
         specs.append(
             _WindowQueryInput(
                 window_id=window_id,
                 kind="broll",
-                narration_text=str(window.get("text") or "").strip()
-                or _unit_text(
-                    window.get("host_unit_ids") or window.get("unit_ids") or [],
-                    units_by_id,
-                ),
+                narration_text=text,
             )
         )
     return specs

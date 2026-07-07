@@ -25,7 +25,7 @@ from packages.production.pipeline.nodes._broll_policy import broll_full_coverage
 
 _FULL_COVERAGE_CUT_PRIORITY = {
     "audio_pause": 0,
-    "safe_cut": 1,
+    "safe_cut": 0,
     "unit_boundary": 2,
     "fallback": 3,
 }
@@ -239,9 +239,13 @@ def _full_coverage_output(
                 "target_duration": round(duration, 3),
                 "fps": TIMELINE_FPS,
                 "min_segment_duration": ctx.state.request.broll.min_segment_duration,
-                "max_segment_duration": BROLL_GEOMETRY_POLICY.max_insert_seconds,
+                "max_segment_duration": (
+                    BROLL_GEOMETRY_POLICY.full_coverage_max_segment_seconds
+                ),
             },
-            "used_audio_pauses": bool(audio_pauses),
+            "used_audio_pauses": bool(
+                diagnostics.get("selected_cut_source_counts", {}).get("audio_pause", 0)
+            ),
             "audio_pause_count": len(audio_pauses),
             **diagnostics,
         },
@@ -273,10 +277,12 @@ def compile_full_coverage_broll_windows(
 ) -> tuple[list[dict], dict]:
     total_frames = max(1, int(total_frames))
     min_frames = max(1, frame_index(float(min_segment_duration)))
-    max_frames = max(min_frames, frame_index(BROLL_GEOMETRY_POLICY.max_insert_seconds))
+    max_frames = max(
+        min_frames,
+        frame_index(BROLL_GEOMETRY_POLICY.full_coverage_max_segment_seconds),
+    )
     candidates = _full_coverage_cut_candidates(
         narration_units=narration_units,
-        pause_windows=pause_windows,
         safe_cut_boundaries=safe_cut_boundaries,
         total_frames=total_frames,
     )
@@ -288,6 +294,7 @@ def compile_full_coverage_broll_windows(
         "fallback_cut_count": 0,
         "min_segment_frames": min_frames,
         "max_segment_frames": max_frames,
+        "raw_pause_window_count": len(pause_windows),
     }
     cuts = [0]
     cursor = 0
@@ -312,15 +319,16 @@ def compile_full_coverage_broll_windows(
         cursor = cut_frame
     cuts.append(total_frames)
 
+    spans = [(start_frame, end_frame) for start_frame, end_frame in zip(cuts, cuts[1:])]
+    text_assignments = _full_coverage_text_assignments(narration_units, spans=spans)
     windows: list[dict] = []
-    for index, (start_frame, end_frame) in enumerate(zip(cuts, cuts[1:])):
+    for index, (start_frame, end_frame) in enumerate(spans):
         if end_frame <= start_frame:
             continue
-        host_unit_ids, text = _full_coverage_window_text(
+        host_unit_ids = _full_coverage_window_unit_ids(
             narration_units,
             start_frame=start_frame,
             end_frame=end_frame,
-            fps=fps,
         )
         length_frames = end_frame - start_frame
         windows.append(
@@ -331,19 +339,20 @@ def compile_full_coverage_broll_windows(
                 "length_frames": length_frames,
                 "source_length_frames": length_frames,
                 "host_unit_ids": host_unit_ids,
-                "text": text,
+                "text": " ".join(text_assignments["text_parts"][index]).strip(),
+                "text_assignment": "argmax_overlap",
             }
         )
     diagnostics["window_count"] = len(windows)
     diagnostics["cut_frames"] = cuts
     diagnostics["selected_cut_source_counts"] = _selected_cut_source_counts(cuts, candidates)
+    diagnostics["split_unit_count"] = text_assignments["split_unit_count"]
     return windows, diagnostics
 
 
 def _full_coverage_cut_candidates(
     *,
     narration_units,
-    pause_windows: list[dict],
     safe_cut_boundaries: list[dict],
     total_frames: int,
 ) -> dict[int, dict]:
@@ -360,16 +369,6 @@ def _full_coverage_cut_candidates(
 
     add(0, "unit_boundary")
     add(total_frames, "unit_boundary")
-    for pause in pause_windows:
-        if not isinstance(pause, dict):
-            continue
-        center = pause.get("center")
-        if center is None:
-            start = _float_or_none(pause.get("start"))
-            end = _float_or_none(pause.get("end"))
-            center = (start + end) / 2 if start is not None and end is not None else None
-        if center is not None:
-            add(frame_index(float(center)), "audio_pause")
     for cut in safe_cut_boundaries:
         if not isinstance(cut, dict):
             continue
@@ -402,12 +401,13 @@ def _choose_full_coverage_cut(
         item for frame, item in candidates.items() if lower <= frame <= upper
     ]
     if natural:
+        midpoint = lower + (upper - lower) / 2
         best = sorted(
             natural,
             key=lambda item: (
                 int(item["priority"]),
-                abs(int(item["frame"]) - min(cursor + max_frames, total_frames)),
-                -int(item["frame"]),
+                abs(int(item["frame"]) - midpoint),
+                int(item["frame"]),
             ),
         )[0]
         return int(best["frame"]), str(best["sources"][0])
@@ -415,24 +415,47 @@ def _choose_full_coverage_cut(
     return fallback, "fallback"
 
 
-def _full_coverage_window_text(
+def _full_coverage_window_unit_ids(
     narration_units,
     *,
     start_frame: int,
     end_frame: int,
-    fps: int,
-) -> tuple[list[str], str]:
+) -> list[str]:
     unit_ids: list[str] = []
-    text_parts: list[str] = []
     for unit in narration_units:
         unit_start = frame_index(float(unit.start))
         unit_end = frame_index(float(unit.end))
         if unit_end <= start_frame or unit_start >= end_frame:
             continue
         unit_ids.append(str(unit.unit_id))
-        if str(unit.text).strip():
-            text_parts.append(str(unit.text).strip())
-    return unit_ids, " ".join(text_parts).strip()
+    return unit_ids
+
+
+def _full_coverage_text_assignments(narration_units, *, spans: list[tuple[int, int]]):
+    text_parts: list[list[str]] = [[] for _ in spans]
+    split_unit_count = 0
+    for unit in narration_units:
+        unit_start = frame_index(float(unit.start))
+        unit_end = frame_index(float(unit.end))
+        if unit_end <= unit_start:
+            continue
+        overlaps: list[tuple[int, int]] = []
+        for index, (start_frame, end_frame) in enumerate(spans):
+            overlap = max(0, min(unit_end, end_frame) - max(unit_start, start_frame))
+            if overlap > 0:
+                overlaps.append((index, overlap))
+        if not overlaps:
+            continue
+        if len(overlaps) > 1:
+            split_unit_count += 1
+        assigned_index, _ = max(overlaps, key=lambda item: (item[1], -item[0]))
+        text = str(unit.text).strip()
+        if text:
+            text_parts[assigned_index].append(text)
+    return {
+        "text_parts": text_parts,
+        "split_unit_count": split_unit_count,
+    }
 
 
 def _cut_source_counts(candidates: dict[int, dict]) -> dict[str, int]:
@@ -450,13 +473,6 @@ def _selected_cut_source_counts(cuts: list[int], candidates: dict[int, dict]) ->
         source = str((item.get("sources") or ["fallback"])[0])
         counts[source] = counts.get(source, 0) + 1
     return counts
-
-
-def _float_or_none(value) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _plan_with_escalation(
