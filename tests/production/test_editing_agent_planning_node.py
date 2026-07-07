@@ -582,6 +582,90 @@ def test_local_broll_constraint_repair_replaces_invalid_candidate():
     ]
 
 
+def test_local_broll_constraint_repair_fills_missing_full_coverage_slot():
+    state = _state()
+    state.request = state.request.model_copy(
+        update={
+            "broll": state.request.broll.model_copy(
+                update={"enabled": True, "mode": "full_coverage"}
+            )
+        }
+    )
+    boundary = state.artifacts[ArtifactKind.plan_narration_boundary].payload
+    boundary["broll_slots"].append(
+        {
+            "slot_id": "bslot_001",
+            "start_frame": 120,
+            "end_frame": 180,
+            "unit_ids": ["unit_1"],
+            "text": "施工后",
+        }
+    )
+    windows = state.artifacts[ArtifactKind.plan_timeline_windows].payload
+    windows["broll_windows"].append(
+        {
+            "window_id": "bslot_001",
+            "start_frame": 120,
+            "end_frame": 180,
+            "length_frames": 60,
+            "host_unit_ids": ["unit_1"],
+            "host_portrait_window_ids": [],
+            "text": "施工后",
+            "boundary_source": "narration_unit",
+        }
+    )
+    material = state.artifacts[ArtifactKind.plan_material_pack].payload
+    material["broll_candidates"].append(
+        {
+            "asset_id": "broll_y",
+            "score": 70.0,
+            "reason": "施工后",
+            "metadata": {
+                "clip_id": "clip_y",
+                "source_start": 0.0,
+                "source_end": 6.0,
+                "scene_name": "施工后",
+                "matched_keywords": ["施工后"],
+            },
+        }
+    )
+    context = _agent_context(state)
+    selection = EditingSelection(
+        portrait=[
+            PortraitChoice(slot_id="pslot_000", window_id="pc_000"),
+            PortraitChoice(slot_id="pslot_001", window_id="pc_001"),
+        ],
+        broll=[BrollChoice(slot_id="bslot_000", candidate_id="bc_000")],
+        font_id="font_yst",
+        bgm_id="bgm_001",
+    )
+
+    repaired, actions, errors = nodes.editing_agent_planning._repair_broll_selection_to_constraints(
+        selection=selection,
+        boundary=context.agent_boundary,
+        candidates=context.candidates,
+        bgm_enabled=state.request.bgm.enabled,
+        max_inserts=2,
+        retrieval_topk_by_window={"bslot_000": ["bc_000"], "bslot_001": ["bc_001"]},
+        require_broll_coverage=True,
+        allow_asset_diversity_reuse=True,
+    )
+
+    assert errors == []
+    assert [(choice.slot_id, choice.candidate_id) for choice in repaired.broll] == [
+        ("bslot_000", "bc_000"),
+        ("bslot_001", "bc_001"),
+    ]
+    assert actions == [
+        {
+            "slot_id": "bslot_001",
+            "repaired_candidate_id": "bc_001",
+            "action": "filled",
+            "reason": "filled missing full_coverage broll slot from legal retrieval candidate",
+        }
+    ]
+
+
 def test_local_portrait_constraint_repair_replaces_topk_hallucination(tmp_path):
     adapter = _adapter(tmp_path)
     _seed_fake_llm_profile(adapter)
@@ -1452,7 +1536,7 @@ def test_llm_path_repairs_portrait_choice_using_clean_source_span(monkeypatch, t
     assert portrait["segments"][1]["source_end_frame"] == 210
 
 
-def test_llm_invalid_selection_records_raw_artifacts_before_fallback(tmp_path):
+def test_llm_invalid_selection_records_raw_artifacts_before_failure(tmp_path):
     adapter = _adapter(tmp_path)
     _seed_fake_llm_profile(adapter)
     adapter.provider_gateway.register(
@@ -1465,17 +1549,12 @@ def test_llm_invalid_selection_records_raw_artifacts_before_fallback(tmp_path):
     )
 
     state = _state()
-    default_portrait = state.artifacts[
-        ArtifactKind.plan_timeline_windows
-    ].payload["default_assignment"]["portrait_plan_payload"]
-    output = _run_node(adapter, state)
 
-    assert output.status == NodeStatus.degraded
-    assert WarningCode.editing_agent_deterministic_fallback in output.warnings
-    assert _payload(output, ArtifactKind.plan_portrait) == default_portrait
-    assignment = _payload(output, ArtifactKind.plan_media_assignment)
-    assert assignment["engine"] == "deterministic_fallback"
-    assert assignment["diagnostics"]["fallback_reason"] == "llm_unrepairable"
+    with pytest.raises(NodeExecutionError) as exc:
+        _run_node(adapter, state)
+
+    assert exc.value.error.code == ErrorCode.prompt_output_invalid
+    assert "剪辑 Agent 的选择在" in exc.value.error.message
     invocations = list(adapter.repository.provider_invocations.values())
     assert len(invocations) == 2
     assert all(inv.request_artifact_id for inv in invocations)

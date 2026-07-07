@@ -6,6 +6,7 @@ import {
   mapDefaultsToForm,
   mapFormToDefaults,
   validateAll,
+  visualModeLabel,
 } from "./studioCreateModel";
 import type { UserGenerationDefaults } from "./studioCreateModel";
 
@@ -37,12 +38,23 @@ describe("studioCreateModel", () => {
     expect(form.lipsyncTimeoutMinutes).toBe(90);
   });
 
+  it("migrates removed legacy content modes to deterministic mode", () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ contentMode: "digital_human" }));
+    expect(loadStoredForm().contentMode).toBe("deterministic");
+    expect(loadStoredForm().visualMode).toBe("digital_human");
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ contentMode: "broll_only" }));
+    expect(loadStoredForm().contentMode).toBe("deterministic");
+    expect(loadStoredForm().visualMode).toBe("broll_full_coverage");
+  });
+
   it("projects user defaults without content fields", () => {
     const defaults = mapFormToDefaults({
       title: "标题",
       script: "脚本",
       scriptVersionId: "script_1",
-      contentMode: "digital_human",
+      contentMode: "deterministic",
+      visualMode: "digital_human",
       seedanceReferenceAssetIds: [],
       voiceId: "voice_1",
       speed: 1.2,
@@ -71,6 +83,20 @@ describe("studioCreateModel", () => {
     expect(defaults).not.toHaveProperty("edit");
   });
 
+  it("projects full-coverage B-roll mode into defaults", () => {
+    const defaults = mapFormToDefaults({
+      ...loadStoredForm(),
+      visualMode: "broll_full_coverage",
+      brollEnabled: false,
+      lipsyncEnabled: true,
+      maxInserts: 8,
+    });
+
+    expect(defaults.broll?.enabled).toBe(true);
+    expect(defaults.broll?.mode).toBe("full_coverage");
+    expect(defaults.lipsync?.enabled).toBe(false);
+  });
+
   it("hydrates defaults with clamped values and validates seedance voice exemption", () => {
     const defaults: UserGenerationDefaults = {
       voice: { voice_id: "voice_2", speed: 4, emotion: "serious", volume: 1 },
@@ -85,6 +111,30 @@ describe("studioCreateModel", () => {
     expect(form.subtitleSize).toBe(12);
     expect(form.lipsyncTimeoutMinutes).toBe(5);
     expect(validateAll({ ...form, script: "文案", contentMode: "seedance" }, "")).toBeNull();
-    expect(contentModeLabel("editing_agent")).toBe("AI 综合剪辑");
+    expect(contentModeLabel("editing_agent")).toBe("Agent智能剪辑");
+    expect(contentModeLabel("seedance")).toBe("seedance文生视频");
+    expect(contentModeLabel("deterministic")).toBe("确定算法剪辑");
+    expect(visualModeLabel("digital_human")).toBe("数字人模式");
+    expect(visualModeLabel("broll_full_coverage")).toBe("纯Broll模式");
+  });
+
+  it("hydrates full-coverage B-roll defaults into pure Broll visual mode", () => {
+    const form = mapDefaultsToForm(
+      {
+        broll: {
+          enabled: true,
+          mode: "full_coverage",
+          max_inserts: 7,
+          min_segment_duration: 3,
+          allow_generic_coverage: true,
+        },
+      },
+      loadStoredForm(),
+    );
+
+    expect(form.visualMode).toBe("broll_full_coverage");
+    expect(form.brollEnabled).toBe(true);
+    expect(form.maxInserts).toBe(7);
+    expect(validateAll({ ...form, script: "文案", voiceId: "voice_1", maxInserts: 0 }, "voice_1")).toBeNull();
   });
 });

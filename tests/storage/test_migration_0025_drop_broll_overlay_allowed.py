@@ -4,8 +4,8 @@ The un-consumed ``NarrationUnit.broll_overlay_allowed`` field was dropped from t
 contract. ``narration.units`` artifacts persisted the key inside each
 ``payload->'units'[*]`` element (via ``model_dump`` with defaults), so under
 ``extra="forbid"`` re-reading a legacy unit through ``NarrationUnit.model_validate``
-(the path in ``packages/production/pipeline/nodes/broll_planning.py`` and
-``broll_coverage_planning.py``) would raise. Unlike 0023/0024 (which strip a
+    (the path in ``packages/production/pipeline/nodes/broll_planning.py`` and the
+    legacy B-roll-only coverage path) would raise. Unlike 0023/0024 (which strip a
 top-level request key), this field lives inside a JSONB *array element*, so the
 migration rebuilds ``payload->'units'`` with the key removed from every element.
 This test proves a legacy unit is broken before the upgrade and validates cleanly

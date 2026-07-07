@@ -674,6 +674,7 @@ def _repair_broll_selection_to_constraints(
     max_inserts: int,
     retrieval_topk_by_window: dict[str, list[str]],
     allow_asset_diversity_reuse: bool = False,
+    require_broll_coverage: bool = False,
 ) -> tuple[EditingSelection, list[dict], list[str]]:
     broll_slots = {
         _local_str(slot.get("slot_id")): slot
@@ -722,6 +723,24 @@ def _repair_broll_selection_to_constraints(
         if diversity_key:
             used_diversity.add(diversity_key)
 
+    def replacement_pool(slot_id: str, desired: dict | None, preferred_id: str = "") -> list[str]:
+        pool = [
+            candidate_id
+            for candidate_id in retrieval_topk_by_window.get(slot_id, [])
+            if candidate_id in candidates.broll_by_id
+        ] or list(candidates.broll_by_id)
+        ranked_pool = sorted(
+            enumerate(pool),
+            key=lambda item: (
+                -int(bool(preferred_id) and item[1] == preferred_id),
+                -_broll_candidate_similarity(candidates.broll_by_id[item[1]], desired)[0],
+                -_broll_candidate_similarity(candidates.broll_by_id[item[1]], desired)[1],
+                -_broll_candidate_similarity(candidates.broll_by_id[item[1]], desired)[2],
+                item[0],
+            ),
+        )
+        return [candidate_id for _, candidate_id in ranked_pool]
+
     for choice in selection.broll:
         if len(repaired_broll) >= max(0, max_inserts):
             actions.append(
@@ -745,22 +764,14 @@ def _repair_broll_selection_to_constraints(
             )
             continue
         desired = candidates.broll_by_id.get(choice.candidate_id)
-        pool = [
-            candidate_id
-            for candidate_id in retrieval_topk_by_window.get(choice.slot_id, [])
-            if candidate_id in candidates.broll_by_id
-        ] or list(candidates.broll_by_id)
-        ranked_pool = sorted(
-            enumerate(pool),
-            key=lambda item: (
-                -int(item[1] == choice.candidate_id),
-                -_broll_candidate_similarity(candidates.broll_by_id[item[1]], desired)[0],
-                -_broll_candidate_similarity(candidates.broll_by_id[item[1]], desired)[1],
-                -_broll_candidate_similarity(candidates.broll_by_id[item[1]], desired)[2],
-                item[0],
+        candidate_id = next(
+            (
+                candidate_id
+                for candidate_id in replacement_pool(choice.slot_id, desired, choice.candidate_id)
+                if usable(candidate_id, slot)
             ),
+            "",
         )
-        candidate_id = next((candidate_id for _, candidate_id in ranked_pool if usable(candidate_id, slot)), "")
         if not candidate_id:
             actions.append(
                 {
@@ -796,6 +807,51 @@ def _repair_broll_selection_to_constraints(
                 }
             )
 
+    if require_broll_coverage:
+        for slot_id in sorted(set(broll_slots) - used_slots):
+            if len(repaired_broll) >= max(0, max_inserts):
+                actions.append(
+                    {
+                        "slot_id": slot_id,
+                        "action": "dropped",
+                        "reason": "max_broll_inserts reached before filling missing full_coverage slot",
+                    }
+                )
+                continue
+            slot = broll_slots[slot_id]
+            candidate_id = next(
+                (candidate_id for candidate_id in replacement_pool(slot_id, None) if usable(candidate_id, slot)),
+                "",
+            )
+            if not candidate_id:
+                actions.append(
+                    {
+                        "slot_id": slot_id,
+                        "action": "dropped",
+                        "reason": "no legal broll candidate remains for missing full_coverage slot",
+                    }
+                )
+                used_slots.add(slot_id)
+                continue
+            used_slots.add(slot_id)
+            reserve(candidate_id)
+            repaired_broll.append(
+                BrollChoice(
+                    slot_id=slot_id,
+                    candidate_id=candidate_id,
+                    reason="本地约束修正：补齐纯Broll全覆盖缺失窗口",
+                    confidence=0.5,
+                )
+            )
+            actions.append(
+                {
+                    "slot_id": slot_id,
+                    "repaired_candidate_id": candidate_id,
+                    "action": "filled",
+                    "reason": "filled missing full_coverage broll slot from legal retrieval candidate",
+                }
+            )
+
     repaired = EditingSelection(
         portrait=selection.portrait,
         broll=repaired_broll,
@@ -810,6 +866,7 @@ def _repair_broll_selection_to_constraints(
         bgm_enabled=bgm_enabled,
         retrieval_topk_by_window=retrieval_topk_by_window,
         allow_broll_asset_diversity_reuse=allow_asset_diversity_reuse,
+        require_broll_coverage=require_broll_coverage,
     )
     return repaired, actions, errors
 
@@ -966,6 +1023,7 @@ def select_editing_assignment(
     fallback_used = False
     fallback_reason: str | None = None
     allow_broll_asset_diversity_reuse = broll_full_coverage_enabled(state.request)
+    require_broll_coverage = broll_full_coverage_enabled(state.request)
 
     def _validate_deterministic_fallback(selection: EditingSelection) -> None:
         if not agent_context.retrieval_topk_by_window:
@@ -977,12 +1035,15 @@ def select_editing_assignment(
             bgm_enabled=state.request.bgm.enabled,
             retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
             allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
+            require_broll_coverage=require_broll_coverage,
         )
         if not errors:
             return
         error_code = (
             ErrorCode.material_insufficient_portrait
             if any(error.startswith("portrait slots not covered:") for error in errors)
+            else ErrorCode.material_insufficient_broll
+            if any(error.startswith("broll slots not covered:") for error in errors)
             else ErrorCode.prompt_output_invalid
         )
         raise NodeExecutionError(
@@ -1100,6 +1161,7 @@ def select_editing_assignment(
             max_repair_attempts=state.request.edit.max_repair_attempts,
             retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
             allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
+            require_broll_coverage=require_broll_coverage,
         )
         llm_repair_used = any(
             isinstance(item.get("attempt"), int) and int(item.get("error_count") or 0) > 0
@@ -1138,6 +1200,7 @@ def select_editing_assignment(
                     ),
                     retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
                     allow_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
+                    require_broll_coverage=require_broll_coverage,
                 )
             )
             if local_repair_actions:
@@ -1156,37 +1219,12 @@ def select_editing_assignment(
                 if WarningCode.editing_agent_local_constraint_repair not in warnings:
                     warnings.append(WarningCode.editing_agent_local_constraint_repair)
         if errors:
-            if not sandbox_fallback_allowed():
-                raise NodeExecutionError(
-                    ErrorCode.prompt_output_invalid,
-                    f"剪辑 Agent 的选择在 {state.request.edit.max_repair_attempts} "
-                    "次修复后仍不合法："
-                    + "；".join(errors[:5]),
-                )
-            selection = deterministic_selection(
-                boundary=agent_context.agent_boundary,
-                candidates=agent_context.candidates,
-                bgm_enabled=state.request.bgm.enabled,
-                max_inserts=_broll_assignment_limit(
-                    request=state.request,
-                    windows=agent_context.windows,
-                ),
-                retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
-                allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
+            raise NodeExecutionError(
+                ErrorCode.prompt_output_invalid,
+                f"剪辑 Agent 的选择在 {state.request.edit.max_repair_attempts} "
+                "次修复后仍不合法："
+                + "；".join(errors[:5]),
             )
-            _validate_deterministic_fallback(selection)
-            engine = "deterministic_fallback"
-            fallback_used = True
-            fallback_reason = "llm_unrepairable"
-            degradations.append(
-                degradation_notice(
-                    WarningCode.editing_agent_deterministic_fallback,
-                    "剪辑 Agent 输出不可修复，改用确定性兜底选择。",
-                    node_id=node_run.node_id,
-                    affects_true_yield=False,
-                )
-            )
-            warnings.append(WarningCode.editing_agent_deterministic_fallback)
         elif llm_repair_used:
             warnings.append(WarningCode.editing_agent_llm_repair)
 
