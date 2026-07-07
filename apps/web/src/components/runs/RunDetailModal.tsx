@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Download, OctagonX, Play, RotateCw, Trash2 } from "lucide-react";
+import { OctagonX, Play, RotateCw, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { api, type FinishedVideo, type RunCard, type RunDetailResponse } from "../../api/client";
 import { EmptyState, ErrorState, LoadingState } from "../ui/State";
@@ -9,13 +9,12 @@ import { EditorHandoffActions } from "../editor-handoff/EditorHandoffActions";
 import { Modal } from "../ui/Modal";
 import { VideoPlayer } from "../ui/VideoPlayer";
 import { EditTimelinePreview, buildEditClips } from "./EditTimelinePreview";
-import { NodePipeline } from "./NodePipeline";
+import { NodePipeline, type NodePipelineBadge } from "./NodePipeline";
 import { RunConfigPanel } from "./RunConfigPanel";
 import { StageProgress } from "./StageProgress";
 import { WindowPlanBoard, buildWindowBoard } from "./WindowPlanBoard";
-import { shortId } from "../../lib/format";
 import { toDisplayUrl } from "../../lib/url";
-import { artifactLabel, buildStages, canResumeRun, lipsyncProviderLabel, type RunAction } from "./runModel";
+import { buildStages, canResumeRun, type RunAction } from "./runModel";
 
 export function RunDetailModal({
   isOpen,
@@ -37,11 +36,11 @@ export function RunDetailModal({
   onAction: (type: RunAction, run: RunCard) => void;
 }) {
   const nodes = detail?.node_runs ?? [];
-  const artifacts = detail?.artifacts ?? [];
   const stages = buildStages(nodes);
   const editClips = buildEditClips(detail);
   const windowBoard = buildWindowBoard(detail, editClips);
   const coverSource = coverSourceInfo(detail, card);
+  const nodeBadges = buildNodeProviderBadges(coverSource, finishedVideo);
   const [activeClipId, setActiveClipId] = useState<string | null>(null);
 
   const videoPreview = useQuery({
@@ -52,7 +51,7 @@ export function RunDetailModal({
   const videoUrl = toDisplayUrl(videoPreview.data?.url);
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title={card ? `运行详情 ${shortId(card.runId)}` : "运行详情"} size="2xl">
+    <Modal isOpen={isOpen} onClose={onClose} title="运行详情" size="2xl">
       {!card ? <EmptyState title="暂无任务" /> : null}
       {isLoading ? <LoadingState label="加载运行详情" /> : null}
       {error ? <ErrorState error={error} /> : null}
@@ -103,29 +102,9 @@ export function RunDetailModal({
                   {videoPreview.isLoading ? "加载成片预览…" : "成片暂不可预览"}
                 </div>
               )}
-              <div className="mx-auto flex w-full max-w-[320px] flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  {coverSource ? (
-                    <span className={coverSource.tone === "warning" ? "badge-warning" : "badge-info"} title={coverSource.detail}>
-                      {coverSource.label}
-                    </span>
-                  ) : null}
-                  {lipsyncProviderLabel(finishedVideo.lipsync_provider_id, finishedVideo.lipsync_fallback_used) ? (
-                    <span
-                      className={finishedVideo.lipsync_fallback_used ? "badge-warning" : "badge-info"}
-                      title={finishedVideo.lipsync_fallback_used ? finishedVideo.lipsync_fallback_reason ?? undefined : undefined}
-                    >
-                      {lipsyncProviderLabel(finishedVideo.lipsync_provider_id, finishedVideo.lipsync_fallback_used)}
-                    </span>
-                  ) : null}
-                </div>
+              <div className="mx-auto flex w-full max-w-[320px] flex-wrap items-center justify-center gap-2">
                 <EditorHandoffActions finishedVideoId={finishedVideo?.id} compact />
               </div>
-              {finishedVideo.lipsync_fallback_used && finishedVideo.lipsync_fallback_reason ? (
-                <p className="mx-auto w-full max-w-[320px] rounded-xl border border-status-warning/20 bg-status-warning/10 px-3 py-2 text-xs text-status-warning">
-                  口型兜底原因：{finishedVideo.lipsync_fallback_reason}
-                </p>
-              ) : null}
             </section>
           ) : null}
 
@@ -166,47 +145,8 @@ export function RunDetailModal({
             {nodes.length === 0 && !detail && !isLoading ? (
               <EmptyState title="暂无节点" />
             ) : (
-              <NodePipeline templateId={detail?.config?.workflow_template_id} nodes={nodes} runStatus={card.status} />
+              <NodePipeline templateId={detail?.config?.workflow_template_id} nodes={nodes} runStatus={card.status} badges={nodeBadges} />
             )}
-          </section>
-
-          <section className="grid gap-3">
-            <h4 className="text-base font-semibold text-text-primary">产物清单</h4>
-            {artifacts.length === 0 ? <EmptyState title="暂无产物" detail="节点完成后会显示可下载产物。" /> : null}
-            <div className="grid gap-2">
-              {artifacts.map((artifact) => {
-                const safeUrl = toDisplayUrl(artifact.uri);
-                const content = (
-                  <>
-                    <div className="min-w-0">
-                      <p className="truncate font-medium text-text-primary">{artifactLabel(artifact.kind)}</p>
-                      <p className="truncate font-mono text-xs text-text-tertiary">
-                        {shortId(artifact.artifact_id, 12)} · {artifact.schema_version}
-                      </p>
-                    </div>
-                    {safeUrl ? <Download className="h-4 w-4 text-accent" /> : <span className="text-xs text-text-tertiary">内部产物 URI</span>}
-                  </>
-                );
-                if (!safeUrl) {
-                  return (
-                    <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/70 bg-white/60 p-3" key={artifact.artifact_id}>
-                      {content}
-                    </div>
-                  );
-                }
-                return (
-                  <a
-                    className="flex items-center justify-between gap-3 rounded-2xl border border-border/70 bg-white/60 p-3 no-underline hover:bg-white/80"
-                    href={safeUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    key={artifact.artifact_id}
-                  >
-                    {content}
-                  </a>
-                );
-              })}
-            </div>
           </section>
         </div>
       ) : null}
@@ -229,9 +169,49 @@ function DetailMetric({ label, value }: { label: string; value: ReactNode }) {
 
 type CoverSourceInfo = {
   label: string;
+  providerLabel: string;
   detail?: string;
   tone: "info" | "warning";
 };
+
+function buildNodeProviderBadges(coverSource: CoverSourceInfo | null, finishedVideo?: FinishedVideo | null): NodePipelineBadge[] {
+  const badges: NodePipelineBadge[] = [];
+  if (coverSource) {
+    badges.push({
+      nodeId: "ExportFinishedVideo",
+      label: coverSource.providerLabel,
+      caption: coverSource.label,
+      detail: coverSource.detail,
+      tone: coverSource.tone === "warning" ? "warning" : "success",
+      count: coverSource.tone === "warning" ? 1 : undefined,
+    });
+  }
+  const lipsyncBadge = lipsyncProviderBadge(finishedVideo);
+  if (lipsyncBadge) badges.push(lipsyncBadge);
+  return badges;
+}
+
+function lipsyncProviderBadge(finishedVideo?: FinishedVideo | null): NodePipelineBadge | null {
+  const providerName = lipsyncProviderName(finishedVideo?.lipsync_provider_id);
+  if (!providerName) return null;
+  const fallbackUsed = Boolean(finishedVideo?.lipsync_fallback_used) || providerName === "VideoReTalk";
+  if (!fallbackUsed) return null;
+  return {
+    nodeId: "LipSync",
+    label: providerName,
+    caption: `${providerName} 兜底生成`,
+    detail: finishedVideo?.lipsync_fallback_reason ?? undefined,
+    tone: "warning",
+    count: 1,
+  };
+}
+
+function lipsyncProviderName(providerId: string | null | undefined): string | null {
+  if (!providerId) return null;
+  if (providerId.startsWith("runninghub.heygem")) return "HeyGem";
+  if (providerId.startsWith("dashscope.videoretalk")) return "VideoReTalk";
+  return providerId;
+}
 
 function coverSourceInfo(detail?: RunDetailResponse, card?: RunCard): CoverSourceInfo | null {
   const cover = detail?.artifacts.find((artifact) => artifact.kind === "cover.image");
@@ -251,27 +231,23 @@ function coverSourceInfo(detail?: RunDetailResponse, card?: RunCard): CoverSourc
       const fallbackUsed = fallbackFrom.length > 0;
       return {
         label: fallbackUsed ? `${providerLabel} 兜底封面` : `${providerLabel} 生成封面`,
-        detail: compactDetail([
-          fallbackUsed ? `兜底自 ${fallbackFrom.join(", ")}` : undefined,
-          asString(payload.provider_profile_id),
-          providerId,
-          asString(payload.model_id),
-        ]),
+        providerLabel,
+        detail: fallbackUsed ? `原封面生成不可用，已改用 ${providerLabel} 生成封面。` : undefined,
         tone: fallbackUsed ? "warning" : "info",
       };
     }
     if (source === "frame") {
       if (reason === "ai_failed") {
-        return { label: "帧封面（AI 失败）", detail: "AI 封面生成失败后回退到视频帧。", tone: "warning" };
+        return { label: "帧封面（AI 失败）", providerLabel: "帧封面", detail: "AI 封面生成失败后回退到视频帧。", tone: "warning" };
       }
       if (reason === "ai_unavailable") {
-        return { label: "帧封面（AI 未启用）", detail: "没有可用的真实图片生成供应商或密钥。", tone: "info" };
+        return { label: "帧封面（AI 未启用）", providerLabel: "帧封面", detail: "没有可用的真实图片生成供应商或密钥。", tone: "info" };
       }
-      return { label: "帧封面", detail: "封面来自视频帧。", tone: "info" };
+      return { label: "帧封面", providerLabel: "帧封面", detail: "封面来自视频帧。", tone: "info" };
     }
   }
   if (degradedToFrame) {
-    return { label: "帧封面（AI 失败）", detail: "旧运行没有封面来源快照；根据降级记录判断。", tone: "warning" };
+    return { label: "帧封面（AI 失败）", providerLabel: "帧封面", detail: "旧运行没有封面来源快照；根据降级记录判断。", tone: "warning" };
   }
   return imageRequestCoverSourceInfo(detail);
 }
@@ -286,12 +262,8 @@ function imageRequestCoverSourceInfo(detail?: RunDetailResponse): CoverSourceInf
   const providerLabel = coverProviderName(providerId, undefined);
   return {
     label: `${providerLabel} 生成封面`,
-    detail: compactDetail([
-      "来自生成请求快照",
-      asString(payload.provider_profile_id),
-      providerId,
-      asString(payload.model_id),
-    ]),
+    providerLabel,
+    detail: undefined,
     tone: "info",
   };
 }
@@ -314,9 +286,4 @@ function coverProviderName(providerId: string | undefined, providerLabel: string
   if (providerLabel === "image2" || providerId === "openai.image") return "image2";
   if (providerLabel === "seedream" || providerId === "volcengine.seedream") return "Seedream";
   return providerId || "AI";
-}
-
-function compactDetail(values: Array<string | undefined>): string | undefined {
-  const detail = values.filter(Boolean).join(" · ");
-  return detail || undefined;
 }

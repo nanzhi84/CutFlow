@@ -22,13 +22,46 @@ const sizeClasses: Record<ModalSize, string> = {
   "3xl": "max-w-[88rem]",
 };
 
+let activeScrollLocks = 0;
+let lockedScrollY = 0;
+let savedBodyOverflow = "";
+let savedBodyPosition = "";
+let savedBodyTop = "";
+let savedBodyWidth = "";
+let savedHtmlOverflow = "";
+
 export function Modal({ isOpen, onClose, title, children, size = "md", showCloseButton = true }: ModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    document.body.style.overflow = isOpen ? "hidden" : "";
+    if (!isOpen) return;
+
+    activeScrollLocks += 1;
+    if (activeScrollLocks === 1) {
+      lockedScrollY = window.scrollY;
+      savedBodyOverflow = document.body.style.overflow;
+      savedBodyPosition = document.body.style.position;
+      savedBodyTop = document.body.style.top;
+      savedBodyWidth = document.body.style.width;
+      savedHtmlOverflow = document.documentElement.style.overflow;
+
+      document.documentElement.style.overflow = "hidden";
+      document.body.style.overflow = "hidden";
+      document.body.style.position = "fixed";
+      document.body.style.top = `-${lockedScrollY}px`;
+      document.body.style.width = "100%";
+    }
+
     return () => {
-      document.body.style.overflow = "";
+      activeScrollLocks = Math.max(0, activeScrollLocks - 1);
+      if (activeScrollLocks === 0) {
+        document.documentElement.style.overflow = savedHtmlOverflow;
+        document.body.style.overflow = savedBodyOverflow;
+        document.body.style.position = savedBodyPosition;
+        document.body.style.top = savedBodyTop;
+        document.body.style.width = savedBodyWidth;
+        window.scrollTo(0, lockedScrollY);
+      }
     };
   }, [isOpen]);
 
@@ -45,7 +78,7 @@ export function Modal({ isOpen, onClose, title, children, size = "md", showClose
   return createPortal(
     <div
       ref={overlayRef}
-      className="fixed inset-0 z-[90] flex items-center justify-center bg-black/50 p-4 animate-in fade-in"
+      className="fixed inset-0 z-[90] flex items-center justify-center overscroll-contain bg-black/50 p-4 animate-in fade-in"
       onMouseDown={(event) => {
         if (event.target === overlayRef.current) onClose();
       }}
@@ -68,7 +101,7 @@ export function Modal({ isOpen, onClose, title, children, size = "md", showClose
             ) : null}
           </header>
         ) : null}
-        <div className="overflow-y-auto p-6">{children}</div>
+        <div className="overflow-y-auto overscroll-contain p-6">{children}</div>
       </section>
     </div>,
     document.body,

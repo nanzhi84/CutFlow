@@ -5,6 +5,15 @@ import { TimeText } from "../TimeText";
 import { StatusPill } from "../ui/StatusPill";
 import { buildNodeTimeline, nodeLabel, severityLabel, warningLabel, type NodeTimelineItem } from "./runModel";
 
+export type NodePipelineBadge = {
+  nodeId: string;
+  label: string;
+  caption?: string;
+  detail?: string;
+  tone: "success" | "warning" | "info";
+  count?: number;
+};
+
 function statusIcon(status: string) {
   if (status === "succeeded") return <CheckCircle2 className="h-3.5 w-3.5 text-status-success" />;
   if (status === "degraded") return <AlertTriangle className="h-3.5 w-3.5 text-status-warning" />;
@@ -34,16 +43,44 @@ function durationText(node?: NodeRun): string | null {
   return `${Math.floor(seconds / 60)}m${Math.round(seconds % 60)}s`;
 }
 
-function issueCount(node?: NodeRun): number {
-  if (!node) return 0;
-  return (node.warnings ?? []).length + (node.degradations ?? []).length + (node.error ? 1 : 0);
+function issueCount(node?: NodeRun, badges: NodePipelineBadge[] = []): number {
+  const nodeIssues = node ? (node.warnings ?? []).length + (node.degradations ?? []).length + (node.error ? 1 : 0) : 0;
+  const providerIssues = badges
+    .filter((badge) => badge.tone === "warning")
+    .reduce((total, badge) => total + (badge.count && badge.count > 0 ? badge.count : 1), 0);
+  return nodeIssues + providerIssues;
+}
+
+function providerBadgeClass(tone: NodePipelineBadge["tone"]) {
+  if (tone === "warning") return "border-status-warning/25 bg-status-warning/15 text-status-warning";
+  if (tone === "info") return "border-accent/20 bg-accent/10 text-accent";
+  return "border-status-success/20 bg-status-success/15 text-status-success";
+}
+
+function visualStatus(status: string, issues: number): string {
+  if (status === "succeeded" && issues > 0) return "degraded";
+  return status;
 }
 
 /** 节点流水线：按模板顺序用固定网格展示每个节点（保留英文节点名），点击查看警告/兜底/错误详情。 */
-export function NodePipeline({ templateId, nodes, runStatus }: { templateId?: string | null; nodes: NodeRun[]; runStatus?: string }) {
+export function NodePipeline({
+  templateId,
+  nodes,
+  runStatus,
+  badges = [],
+}: {
+  templateId?: string | null;
+  nodes: NodeRun[];
+  runStatus?: string;
+  badges?: NodePipelineBadge[];
+}) {
   const items = buildNodeTimeline(templateId, nodes, runStatus);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = items.find((item) => item.nodeId === selectedId) ?? null;
+  const badgesByNode = new Map<string, NodePipelineBadge[]>();
+  for (const badge of badges) {
+    badgesByNode.set(badge.nodeId, [...(badgesByNode.get(badge.nodeId) ?? []), badge]);
+  }
 
   if (items.length === 0) {
     return <p className="rounded-2xl border border-dashed border-border bg-white/55 p-4 text-sm text-text-secondary">暂无节点执行记录。</p>;
@@ -52,48 +89,55 @@ export function NodePipeline({ templateId, nodes, runStatus }: { templateId?: st
   return (
     <div className="grid gap-3">
       <ol className="grid grid-cols-1 gap-2 rounded-2xl border border-border/70 bg-white/60 p-4 sm:grid-cols-2 lg:grid-cols-3">
-        {items.map((item, index) => (
-          <li className="grid min-w-0 grid-cols-[minmax(0,1fr)_1.5rem] items-center gap-1.5" key={item.nodeId}>
-            <button
-              type="button"
-              className={chipClass(item.status, selectedId === item.nodeId)}
-              title={`${nodeLabel(item.nodeId)} · ${item.status}`}
-              onClick={() => setSelectedId((current) => (current === item.nodeId ? null : item.nodeId))}
-            >
-              {statusIcon(item.status)}
-              <span className="min-w-0">
-                <span className="block truncate font-mono text-xs font-medium text-text-primary">{item.nodeId}</span>
-                <span className="block truncate text-[10px] text-text-tertiary">{nodeLabel(item.nodeId)}</span>
+        {items.map((item, index) => {
+          const itemBadges = badgesByNode.get(item.nodeId) ?? [];
+          const itemIssueCount = issueCount(item.node, itemBadges);
+          const itemVisualStatus = visualStatus(item.status, itemIssueCount);
+          return (
+            <li className="grid min-w-0 grid-cols-[minmax(0,1fr)_1.5rem] items-center gap-1.5" key={item.nodeId}>
+              <button
+                type="button"
+                className={chipClass(itemVisualStatus, selectedId === item.nodeId)}
+                title={`${nodeLabel(item.nodeId)} · ${item.status}`}
+                onClick={() => setSelectedId((current) => (current === item.nodeId ? null : item.nodeId))}
+              >
+                {statusIcon(itemVisualStatus)}
+                <span className="min-w-0">
+                  <span className="block truncate font-mono text-xs font-medium text-text-primary">{item.nodeId}</span>
+                  <span className="block truncate text-[10px] text-text-tertiary">{nodeLabel(item.nodeId)}</span>
+                </span>
+                <span className="flex min-w-0 items-center justify-end gap-1.5">
+                  {durationText(item.node) ? <span className="shrink-0 font-mono text-[10px] text-text-tertiary">{durationText(item.node)}</span> : null}
+                  {itemIssueCount > 0 ? (
+                    <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-status-warning/20 px-1 text-[10px] font-semibold text-status-warning">
+                      {itemIssueCount}
+                    </span>
+                  ) : null}
+                </span>
+              </button>
+              <span
+                aria-hidden="true"
+                className={`flex h-6 w-6 shrink-0 items-center justify-center ${
+                  index < items.length - 1 ? "text-text-tertiary" : "text-transparent"
+                }`}
+              >
+                <ArrowRight className="h-4 w-4" strokeWidth={3} />
               </span>
-              <span className="flex items-center justify-end gap-1.5">
-                {durationText(item.node) ? <span className="shrink-0 font-mono text-[10px] text-text-tertiary">{durationText(item.node)}</span> : null}
-                {issueCount(item.node) > 0 ? (
-                  <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-status-warning/20 px-1 text-[10px] font-semibold text-status-warning">
-                    {issueCount(item.node)}
-                  </span>
-                ) : null}
-              </span>
-            </button>
-            <span
-              aria-hidden="true"
-              className={`flex h-6 w-6 shrink-0 items-center justify-center ${
-                index < items.length - 1 ? "text-text-tertiary" : "text-transparent"
-              }`}
-            >
-              <ArrowRight className="h-4 w-4" strokeWidth={3} />
-            </span>
-          </li>
-        ))}
+            </li>
+          );
+        })}
       </ol>
-      {selected ? <NodeDetailCard item={selected} /> : null}
+      {selected ? <NodeDetailCard item={selected} badges={badgesByNode.get(selected.nodeId) ?? []} /> : null}
     </div>
   );
 }
 
-function NodeDetailCard({ item }: { item: NodeTimelineItem }) {
+function NodeDetailCard({ item, badges }: { item: NodeTimelineItem; badges: NodePipelineBadge[] }) {
   const node = item.node;
   const error = node?.error;
-  const hasWarnings = Boolean(node && ((node.warnings ?? []).length > 0 || (node.degradations ?? []).length > 0));
+  const warningBadges = badges.filter((badge) => badge.tone === "warning");
+  const infoBadges = badges.filter((badge) => badge.tone !== "warning");
+  const hasWarnings = Boolean(node && ((node.warnings ?? []).length > 0 || (node.degradations ?? []).length > 0)) || warningBadges.length > 0;
   const hasError = Boolean(error);
   return (
     <div className="grid h-[13rem] grid-rows-[auto_auto_minmax(0,1fr)] gap-3 overflow-hidden rounded-2xl border border-border/70 bg-white/60 p-4">
@@ -120,8 +164,28 @@ function NodeDetailCard({ item }: { item: NodeTimelineItem }) {
         <p className="text-xs text-text-tertiary">该节点尚未开始执行。</p>
       )}
       <div className="min-h-0 overflow-y-auto pr-1">
+        {infoBadges.length > 0 ? (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {infoBadges.map((badge) => (
+              <span
+                className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold ${providerBadgeClass(badge.tone)}`}
+                key={`${badge.nodeId}-${badge.label}`}
+                title={badge.detail}
+              >
+                {badge.caption ?? badge.label}
+                {badge.count && badge.count > 0 ? <span>{badge.count}</span> : null}
+              </span>
+            ))}
+          </div>
+        ) : null}
         {hasWarnings ? (
           <div className="grid gap-1 rounded-xl border border-status-warning/20 bg-status-warning/10 p-3 text-sm text-status-warning">
+            {warningBadges.map((badge) => (
+              <p key={`${badge.nodeId}-${badge.label}`}>
+                {badge.caption ?? badge.label}
+                {badge.detail ? `：${badge.detail}` : ""}
+              </p>
+            ))}
             {(node?.warnings ?? []).map((warning) => (
               <p key={warning}>{warningLabel(warning)}</p>
             ))}
