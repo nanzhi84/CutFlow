@@ -359,6 +359,7 @@ def test_full_coverage_broll_windows_cover_entire_audio_and_skip_portrait(monkey
         "source_length_frames": 120,
         "host_unit_ids": ["unit_001"],
         "text": "先讲解打磨工艺的细节非常重要。",
+        "text_assignment": "argmax_overlap",
     }
     assert payload["geometry_policy"]["broll_window_contract"] == {
         "authority": "TimelineWindowPlanning",
@@ -369,6 +370,7 @@ def test_full_coverage_broll_windows_cover_entire_audio_and_skip_portrait(monkey
     assert payload["compile_diagnostics"]["selected_cut_source_counts"]["audio_pause"] == 1
     assert payload["compile_diagnostics"]["selected_cut_source_counts"]["safe_cut"] == 1
     assert payload["compile_diagnostics"]["raw_pause_window_count"] == 1
+    assert payload["compile_diagnostics"]["used_audio_pauses"] is True
 
 
 def test_full_coverage_ignores_short_fragments_and_uses_safe_cut(monkeypatch, tmp_path):
@@ -391,6 +393,7 @@ def test_full_coverage_ignores_short_fragments_and_uses_safe_cut(monkeypatch, tm
         for window in payload["broll_windows"]
     ] == [(0, 120), (120, 210)]
     assert 30 not in payload["compile_diagnostics"]["cut_frames"]
+    assert payload["compile_diagnostics"]["used_audio_pauses"] is False
 
 
 def test_full_coverage_splits_overlong_windows_with_deterministic_fallback(

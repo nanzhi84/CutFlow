@@ -243,7 +243,9 @@ def _full_coverage_output(
                     BROLL_GEOMETRY_POLICY.full_coverage_max_segment_seconds
                 ),
             },
-            "used_audio_pauses": bool(audio_pauses),
+            "used_audio_pauses": bool(
+                diagnostics.get("selected_cut_source_counts", {}).get("audio_pause", 0)
+            ),
             "audio_pause_count": len(audio_pauses),
             **diagnostics,
         },
@@ -338,6 +340,7 @@ def compile_full_coverage_broll_windows(
                 "source_length_frames": length_frames,
                 "host_unit_ids": host_unit_ids,
                 "text": " ".join(text_assignments["text_parts"][index]).strip(),
+                "text_assignment": "argmax_overlap",
             }
         )
     diagnostics["window_count"] = len(windows)

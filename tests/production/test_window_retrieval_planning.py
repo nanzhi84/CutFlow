@@ -525,6 +525,34 @@ def test_window_query_planning_omits_portrait_narration_when_unit_text_missing(t
     assert "Narration:" not in portrait_query
 
 
+def test_window_query_planning_respects_full_coverage_text_assignment(tmp_path):
+    adapter = _adapter(tmp_path)
+    windows = _windows()
+    windows["broll_windows"][0]["text"] = ""
+    windows["broll_windows"][0]["text_assignment"] = "argmax_overlap"
+    ctx = _ctx(
+        adapter,
+        "WindowQueryPlanning",
+        {
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                windows,
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+        },
+    )
+
+    output = nodes.window_query_planning.run(ctx)
+
+    broll_query = next(
+        item["retrieval_intent"]
+        for item in output.artifacts[0].payload["window_queries"]
+        if item["window_id"] == "bwin_000"
+    )
+    assert "Narration:" not in broll_query
+    assert "施工前现场" not in broll_query
+
+
 def test_window_query_planning_uses_llm_queries_and_unwraps_intent(tmp_path):
     adapter = _adapter(tmp_path)
     provider = _seed_fake_window_query_llm(adapter)
