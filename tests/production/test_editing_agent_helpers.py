@@ -295,6 +295,36 @@ def test_index_and_build_agent_input_number_candidates():
     assert payload["max_broll_inserts"] == 4
 
 
+def test_agent_input_allows_multi_clip_slots_for_full_coverage():
+    boundary = _boundary()
+    boundary["broll_slots"] = [boundary["broll_slots"][0]]
+    request = DigitalHumanVideoRequest(
+        case_id="case_demo",
+        script="今天带你看一下这套案例。第一步先看施工前的样子。",
+        title="案例",
+        voice={"voice_id": "voice_sandbox"},
+        broll={"enabled": True, "mode": "full_coverage", "max_inserts": 1},
+    )
+
+    payload = build_agent_input(
+        request=request,
+        boundary=boundary,
+        candidates=index_candidates(_material()),
+        narration_units=[],
+        duration=12.0,
+    )
+
+    assert payload["max_broll_inserts"] == 2
+    assert payload["broll_slots"] == [
+        {
+            **boundary["broll_slots"][0],
+            "required_frames": 60,
+            "required_seconds": 2.0,
+            "multi_clip_allowed": True,
+        }
+    ]
+
+
 def test_agent_input_marks_short_portraits_illegal_per_slot():
     payload = build_agent_input(
         request=_request(),

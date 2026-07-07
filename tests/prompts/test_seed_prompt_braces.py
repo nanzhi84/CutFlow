@@ -130,6 +130,8 @@ def test_editing_agent_seed_prompt_documents_line_candidate_format_and_json_outp
         "candidate_id | asset_id | scene_name | allowed_slot_ids | matched_keywords | "
         "available_seconds | description"
     ) in content
+    assert "multi_clip_allowed" in content
+    assert "同一 slot 可以输出多条不同 candidate_id" in content
 
 
 def test_prompt_template_view_exposes_seed_variable_hints():

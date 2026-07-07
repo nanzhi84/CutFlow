@@ -367,6 +367,7 @@ def test_full_coverage_broll_windows_cover_entire_audio_and_skip_portrait(monkey
         "semantics": "authoritative_full_coverage_main_visual_track",
         "downstream_may_skip": False,
         "downstream_may_resize": False,
+        "downstream_may_stitch": True,
     }
     assert payload["compile_diagnostics"]["selected_cut_source_counts"]["audio_pause"] == 1
     assert payload["compile_diagnostics"]["selected_cut_source_counts"]["safe_cut"] == 1
@@ -437,6 +438,56 @@ def test_full_coverage_cut_selection_prefers_midpoint_over_longest_candidate():
         (105, 270),
     ]
     assert diagnostics["fallback_cut_count"] == 0
+
+
+def test_full_coverage_prefers_semantic_group_boundary_over_nearer_unit_boundary():
+    from packages.production.pipeline.nodes import timeline_window_planning as twp
+
+    units = [
+        SimpleNamespace(
+            unit_id="unit_low",
+            text="普通过渡。",
+            start=0.0,
+            end=3.0,
+            pause_after_ms=0,
+            hard_end=False,
+            boundary_score=0.2,
+        ),
+        SimpleNamespace(
+            unit_id="unit_group",
+            text="语义句组在这里收束。",
+            start=3.0,
+            end=5.0,
+            pause_after_ms=180,
+            hard_end=False,
+            boundary_score=0.68,
+        ),
+        SimpleNamespace(
+            unit_id="unit_tail",
+            text="后续展开。",
+            start=5.0,
+            end=10.0,
+            pause_after_ms=0,
+            hard_end=True,
+            boundary_score=0.7,
+        ),
+    ]
+
+    windows, diagnostics = twp.compile_full_coverage_broll_windows(
+        narration_units=units,
+        pause_windows=[],
+        safe_cut_boundaries=[],
+        total_frames=300,
+        min_segment_duration=2.0,
+    )
+
+    assert [(window["start_frame"], window["end_frame"]) for window in windows] == [
+        (0, 150),
+        (150, 300),
+    ]
+    assert diagnostics["selected_cut_source_counts"]["semantic_group"] == 1
+    assert diagnostics["semantic_group_count"] == 2
+    assert diagnostics["semantic_group_boundary_count"] == 1
 
 
 def test_full_coverage_window_text_uses_largest_overlap_owner():

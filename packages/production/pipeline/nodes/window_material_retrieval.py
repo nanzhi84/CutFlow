@@ -71,6 +71,9 @@ def run(ctx: NodeContext) -> NodeOutput:
         "missing_clip_embeddings": [],
         "window_types": {},
     }
+    full_coverage_broll = _full_coverage_broll_windows(windows)
+    if full_coverage_broll:
+        diagnostics["full_coverage_partial_clip_stitching"] = True
     provider_invocation_ids: list[str] = []
     candidates_by_window: dict[str, list[RetrievedWindowCandidate]] = {}
 
@@ -164,6 +167,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             query_keywords=query_keywords,
             provider_profile_id=profile.id,
             diagnostics=diagnostics,
+            allow_partial_source=full_coverage_broll and namespace == "broll",
         )
 
     return _output(
@@ -184,6 +188,7 @@ def _retrieve_for_window(
     query_keywords: list[str],
     provider_profile_id: str,
     diagnostics: dict[str, Any],
+    allow_partial_source: bool = False,
 ) -> list[RetrievedWindowCandidate]:
     window_id = str(window.get("window_id") or "")
     required_frames = _required_frames(window)
@@ -194,7 +199,15 @@ def _retrieve_for_window(
         required_frames=required_frames,
         candidate_pool=candidate_pool,
         diagnostics=diagnostics,
+        allow_partial_source=allow_partial_source,
     )
+    if allow_partial_source:
+        _record_full_coverage_window_capacity(
+            diagnostics=diagnostics,
+            window_id=window_id,
+            required_frames=required_frames,
+            eligible=eligible,
+        )
     if not eligible:
         return []
     production_repository = ctx.production_repository
@@ -216,6 +229,7 @@ def _retrieve_for_window(
         query_keywords=query_keywords,
         provider_profile_id=provider_profile_id,
         required_frames=required_frames,
+        min_source_frames=1 if allow_partial_source else required_frames,
     )
 
 
@@ -227,12 +241,24 @@ def _eligible_candidates(
     required_frames: int,
     candidate_pool: dict[str, dict],
     diagnostics: dict[str, Any],
+    allow_partial_source: bool = False,
 ) -> list[_RetrievalCandidate]:
     eligible: list[_RetrievalCandidate] = []
     seen_keys: set[str] = set()
     for index, (candidate_id, candidate) in enumerate(candidate_pool.items()):
         source_frames = _source_frames_available(candidate, namespace=namespace)
-        if source_frames < required_frames:
+        if source_frames <= 0:
+            diagnostics["rejected_candidates"].append(
+                {
+                    "window_id": window_id,
+                    "candidate_id": candidate_id,
+                    "reason": "source_empty",
+                    "source_frames_available": source_frames,
+                    "required_frames": required_frames,
+                }
+            )
+            continue
+        if not allow_partial_source and source_frames < required_frames:
             diagnostics["rejected_candidates"].append(
                 {
                     "window_id": window_id,
@@ -273,6 +299,7 @@ def _retrieve_for_window_from_sql(
     query_keywords: list[str],
     provider_profile_id: str,
     required_frames: int,
+    min_source_frames: int | None = None,
 ) -> list[RetrievedWindowCandidate]:
     candidate_by_key = {item.clip_embedding_key: item for item in eligible}
     recall_limit = min(
@@ -288,7 +315,10 @@ def _retrieve_for_window_from_sql(
         embedding_dimension=CLIP_EMBEDDING_DIMENSION,
         normalization=CLIP_EMBEDDING_NORMALIZATION,
         index_version=CLIP_INDEX_VERSION,
-        min_source_frames_available=required_frames,
+        min_source_frames_available=max(
+            1,
+            int(min_source_frames if min_source_frames is not None else required_frames),
+        ),
         limit=recall_limit,
     )
     ranked: list[RetrievedWindowCandidate] = []
@@ -446,6 +476,36 @@ def _is_retrieval_degraded(
         for item in diagnostics.get("rejected_candidates") or []
         if isinstance(item, dict)
     )
+
+
+def _full_coverage_broll_windows(windows: dict) -> bool:
+    contract = (
+        (windows.get("geometry_policy") or {}).get("broll_window_contract")
+        if isinstance(windows.get("geometry_policy"), dict)
+        else {}
+    )
+    return (
+        isinstance(contract, dict)
+        and contract.get("semantics") == "authoritative_full_coverage_main_visual_track"
+    )
+
+
+def _record_full_coverage_window_capacity(
+    *,
+    diagnostics: dict[str, Any],
+    window_id: str,
+    required_frames: int,
+    eligible: list[_RetrievalCandidate],
+) -> None:
+    source_frames = [item.source_frames for item in eligible]
+    total_source_frames = sum(source_frames)
+    diagnostics.setdefault("full_coverage_capacity_by_window", {})[window_id] = {
+        "required_frames": required_frames,
+        "eligible_candidate_count": len(eligible),
+        "total_source_frames": total_source_frames,
+        "longest_source_frames": max(source_frames or [0]),
+        "sufficient_by_sum": total_source_frames >= required_frames,
+    }
 
 
 def _required_frames(window: dict) -> int:

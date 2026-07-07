@@ -1031,6 +1031,110 @@ def test_llm_path_records_broll_window_contract_drops(tmp_path):
     ]
 
 
+def test_llm_path_repairs_and_stitches_full_coverage_multi_clip_window(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    provider = _FakeEditingLlmProvider(
+        [
+            {
+                "intent": {
+                    "portrait_plan": [
+                        {"slot_id": "pslot_000", "window_id": "pc_000"},
+                        {"slot_id": "pslot_001", "window_id": "pc_001"},
+                    ],
+                    "broll_plan": [
+                        {
+                            "slot_id": "bslot_000",
+                            "candidate_id": "bc_000",
+                            "reason": "展示施工前",
+                            "confidence": 0.9,
+                        }
+                    ],
+                    "font_plan": {"font_id": "font_yst"},
+                    "bgm_plan": {"bgm_id": "bgm_001"},
+                }
+            }
+        ]
+    )
+    adapter.provider_gateway.register(provider)
+    state = _state()
+    state.request = state.request.model_copy(
+        update={
+            "broll": state.request.broll.model_copy(
+                update={"enabled": True, "mode": "full_coverage", "max_inserts": 1}
+            ),
+            "edit": state.request.edit.model_copy(update={"max_repair_attempts": 0}),
+        }
+    )
+    material = state.artifacts[ArtifactKind.plan_material_pack].payload
+    material["broll_candidates"][0]["metadata"]["source_end"] = 3.0
+    material["broll_candidates"].append(
+        {
+            "asset_id": "broll_y",
+            "score": 70.0,
+            "reason": "施工过程",
+            "metadata": {
+                "clip_id": "clip_y",
+                "source_start": 0.0,
+                "source_end": 3.0,
+                "scene_name": "施工过程",
+                "matched_keywords": ["施工"],
+                "description": "施工过程细节",
+            },
+        }
+    )
+    boundary = state.artifacts[ArtifactKind.plan_narration_boundary].payload
+    boundary["broll_slots"] = [
+        {
+            "slot_id": "bslot_000",
+            "start_frame": 0,
+            "end_frame": 180,
+            "unit_ids": ["unit_1", "unit_2"],
+            "text": "施工前到施工过程",
+        }
+    ]
+    windows = _timeline_windows(boundary)
+    windows["geometry_policy"] = {
+        "broll_window_contract": {
+            "semantics": "authoritative_full_coverage_main_visual_track",
+            "downstream_may_skip": False,
+            "downstream_may_resize": False,
+            "downstream_may_stitch": True,
+        }
+    }
+    windows["broll_windows"][0]["source_length_frames"] = 180
+    state.artifacts[ArtifactKind.plan_timeline_windows].payload = windows
+    _attach_retrieval(
+        state,
+        {
+            "pslot_000": ["pc_000"],
+            "pslot_001": ["pc_001"],
+            "bslot_000": ["bc_000", "bc_001"],
+        },
+    )
+
+    output = _run_node(adapter, state)
+
+    prompt = provider.calls[0].input["prompt"]
+    broll = _payload(output, ArtifactKind.plan_broll)
+    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
+    assert "multi_clip_allowed" in prompt
+    assert output.status == NodeStatus.succeeded
+    assert WarningCode.editing_agent_local_constraint_repair in output.warnings
+    assert [
+        (overlay["window_id"], overlay["asset_id"], overlay["timeline_start_frame"], overlay["timeline_end_frame"])
+        for overlay in broll["overlays"]
+    ] == [
+        ("bslot_000", "broll_x", 0, 90),
+        ("bslot_000", "broll_y", 90, 180),
+    ]
+    assert [choice["candidate_id"] for choice in diagnostics["broll_choices"]] == [
+        "bc_000",
+        "bc_001",
+    ]
+    assert diagnostics["repair_trace"][-1]["actions"][-1]["action"] == "added"
+
+
 def test_agent_slots_come_from_compiled_windows_not_base_slots(tmp_path):
     adapter = _adapter(tmp_path)
     _seed_fake_llm_profile(adapter)

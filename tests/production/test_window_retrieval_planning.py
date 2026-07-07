@@ -298,6 +298,14 @@ def _full_coverage_broll_windows() -> dict:
     return {
         "fps": 30,
         "total_frames": 120,
+        "geometry_policy": {
+            "broll_window_contract": {
+                "semantics": "authoritative_full_coverage_main_visual_track",
+                "downstream_may_skip": False,
+                "downstream_may_resize": False,
+                "downstream_may_stitch": True,
+            }
+        },
         "portrait_windows": [],
         "broll_windows": [
             {
@@ -333,6 +341,83 @@ def _full_coverage_broll_windows() -> dict:
         },
         "compile_diagnostics": {"track_mode": "broll_full_coverage"},
     }
+
+
+def _stitched_full_coverage_windows() -> dict:
+    return {
+        "fps": 30,
+        "total_frames": 180,
+        "geometry_policy": {
+            "broll_window_contract": {
+                "semantics": "authoritative_full_coverage_main_visual_track",
+                "downstream_may_skip": False,
+                "downstream_may_resize": False,
+                "downstream_may_stitch": True,
+            }
+        },
+        "portrait_windows": [],
+        "broll_windows": [
+            {
+                "window_id": "bwin_000",
+                "start_frame": 0,
+                "end_frame": 180,
+                "length_frames": 180,
+                "source_length_frames": 180,
+                "host_unit_ids": ["unit_1"],
+                "text": "施工前现场到补漆后效果",
+                "text_assignment": "argmax_overlap",
+                "scene_hint": "施工前现场到补漆后效果",
+            }
+        ],
+        "default_assignment": {
+            "portrait": [],
+            "portrait_plan_payload": {
+                "fps": 30,
+                "total_duration": 6.0,
+                "asset_id": None,
+                "duration_sec": 6.0,
+                "segments": [],
+                "diagnostics": {"track_mode": "broll_full_coverage"},
+            },
+            "engine": "compiler_full_coverage",
+        },
+        "compile_diagnostics": {"track_mode": "broll_full_coverage"},
+    }
+
+
+def _stitched_material() -> dict:
+    material = _material()
+    material["broll_candidates"] = [
+        {
+            "asset_id": "broll_a",
+            "score": 1.0,
+            "reason": "eligible b-roll clip",
+            "metadata": {
+                "clip_id": "clip_a",
+                "source_start": 0.0,
+                "source_end": 3.0,
+                "source_frames_available": 90,
+                "matched_keywords": ["施工前"],
+                "scene_name": "施工前",
+                "diversity_key": "scene:a",
+            },
+        },
+        {
+            "asset_id": "broll_b",
+            "score": 1.0,
+            "reason": "eligible b-roll clip",
+            "metadata": {
+                "clip_id": "clip_b",
+                "source_start": 0.0,
+                "source_end": 3.0,
+                "source_frames_available": 90,
+                "matched_keywords": ["补漆后"],
+                "scene_name": "补漆后",
+                "diversity_key": "scene:b",
+            },
+        },
+    ]
+    return material
 
 
 def _annotate_broll(repository: Repository, *, asset_id: str = "broll_a") -> None:
@@ -865,6 +950,117 @@ def test_window_material_retrieval_uses_material_pack_pool_and_sql_hnsw_index(
     assert payload["diagnostics"]["retrieval_backend"] == "postgres_hnsw"
     assert payload["diagnostics"]["rejected_candidates"][0]["reason"] == "source_too_short"
     assert adapter.repository.clip_embedding_index == {}
+
+
+def test_window_material_retrieval_allows_partial_full_coverage_candidates(tmp_path):
+    adapter = _adapter(tmp_path)
+    material = _stitched_material()
+    candidates = index_candidates(material)
+    diagnostics = {"rejected_candidates": []}
+
+    eligible = nodes.window_material_retrieval._eligible_candidates(
+        ctx=_ctx(adapter, "WindowMaterialRetrieval", {}),
+        namespace="broll",
+        window_id="bwin_000",
+        required_frames=180,
+        candidate_pool=candidates.broll_by_id,
+        diagnostics=diagnostics,
+        allow_partial_source=True,
+    )
+    nodes.window_material_retrieval._record_full_coverage_window_capacity(
+        diagnostics=diagnostics,
+        window_id="bwin_000",
+        required_frames=180,
+        eligible=eligible,
+    )
+
+    assert [item.candidate_id for item in eligible] == ["bc_000", "bc_001"]
+    assert diagnostics["rejected_candidates"] == []
+    assert diagnostics["full_coverage_capacity_by_window"]["bwin_000"] == {
+        "required_frames": 180,
+        "eligible_candidate_count": 2,
+        "total_source_frames": 180,
+        "longest_source_frames": 90,
+        "sufficient_by_sum": True,
+    }
+
+
+def test_window_material_retrieval_run_uses_partial_full_coverage_capacity(
+    tmp_path,
+    db_session_factory,
+):
+    adapter = _adapter(tmp_path)
+    adapter.production_repository = SqlAlchemyProductionRepository(db_session_factory)
+    material = _stitched_material()
+    for asset_id in ("broll_a", "broll_b"):
+        adapter.repository.media_assets[asset_id] = MediaAssetRecord(
+            id=asset_id,
+            case_id="case_demo",
+            title=asset_id,
+            kind="video",
+            annotation_status="annotated",
+            usable=True,
+        )
+    windows_artifact = _artifact(
+        ArtifactKind.plan_timeline_windows,
+        _stitched_full_coverage_windows(),
+    )
+    query_ctx = _ctx(
+        adapter,
+        "WindowQueryPlanning",
+        {
+            ArtifactKind.plan_timeline_windows: windows_artifact,
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+        },
+    )
+    query_output = nodes.window_query_planning.run(query_ctx)
+    query_artifact = query_output.artifacts[0]
+    broll_intent = query_artifact.payload["window_queries"][0]["retrieval_intent"]
+    indexed = index_candidates(material)
+    for candidate_id in ("bc_000", "bc_001"):
+        candidate = indexed.broll_by_id[candidate_id]
+        record = build_clip_embedding_record(
+            candidate=candidate,
+            asset=adapter.repository.media_assets[candidate["asset_id"]],
+            namespace="broll",
+            provider_profile_id="sandbox.embedding.default",
+            embedding=_deterministic_embedding(
+                f"sandbox.embedding.default:multimodal.embedding:{broll_intent}",
+                dimension=1024,
+            ),
+        )
+        _seed_clip_embedding_record(db_session_factory, record)
+    retrieval_ctx = _ctx(
+        adapter,
+        "WindowMaterialRetrieval",
+        {
+            ArtifactKind.plan_material_pack: _artifact(
+                ArtifactKind.plan_material_pack,
+                material,
+            ),
+            ArtifactKind.plan_timeline_windows: windows_artifact,
+            ArtifactKind.plan_window_queries: query_artifact,
+        },
+    )
+
+    output = nodes.window_material_retrieval.run(retrieval_ctx)
+
+    payload = output.artifacts[0].payload
+    diagnostics = payload["diagnostics"]
+    assert output.status == NodeStatus.succeeded
+    assert [item["candidate_id"] for item in payload["candidates_by_window"]["bwin_000"]] == [
+        "bc_000",
+        "bc_001",
+    ]
+    assert diagnostics["full_coverage_partial_clip_stitching"] is True
+    assert diagnostics["rejected_candidates"] == []
+    assert diagnostics["full_coverage_capacity_by_window"]["bwin_000"] == {
+        "required_frames": 180,
+        "eligible_candidate_count": 2,
+        "total_source_frames": 180,
+        "longest_source_frames": 90,
+        "sufficient_by_sum": True,
+    }
 
 
 def test_window_material_retrieval_keyword_fusion_breaks_close_semantic_tie():
@@ -1609,6 +1805,179 @@ def test_deterministic_editing_planning_hard_fails_full_coverage_missing_window(
 
     assert exc.value.error.code == ErrorCode.material_insufficient_broll
     assert exc.value.error.details["missing_broll_window_ids"] == ["bwin_001"]
+
+
+def test_deterministic_editing_planning_stitches_full_coverage_window(tmp_path):
+    adapter = _adapter(tmp_path)
+    retrieval = {
+        "candidates_by_window": {
+            "bwin_000": [
+                {
+                    "candidate_id": "bc_000",
+                    "retrieval_score": 0.99,
+                    "source_frames_available": 90,
+                    "required_frames": 180,
+                },
+                {
+                    "candidate_id": "bc_001",
+                    "retrieval_score": 0.98,
+                    "source_frames_available": 90,
+                    "required_frames": 180,
+                },
+            ]
+        },
+        "diagnostics": {
+            "full_coverage_capacity_by_window": {
+                "bwin_000": {
+                    "required_frames": 180,
+                    "eligible_candidate_count": 2,
+                    "total_source_frames": 180,
+                    "longest_source_frames": 90,
+                    "sufficient_by_sum": True,
+                }
+            }
+        },
+    }
+    windows_artifact = _artifact(
+        ArtifactKind.plan_timeline_windows,
+        _stitched_full_coverage_windows(),
+    )
+    ctx = _ctx(
+        adapter,
+        "DeterministicEditingPlanning",
+        {
+            ArtifactKind.plan_material_pack: _artifact(
+                ArtifactKind.plan_material_pack,
+                _stitched_material(),
+            ),
+            ArtifactKind.plan_timeline_windows: windows_artifact,
+            ArtifactKind.plan_window_material_retrieval: _artifact(
+                ArtifactKind.plan_window_material_retrieval,
+                retrieval,
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+            ArtifactKind.creative_intent: _artifact(ArtifactKind.creative_intent, {"intent": {}}),
+        },
+        request=_request(broll_mode="full_coverage"),
+    )
+
+    output = nodes.deterministic_editing_planning.run(ctx)
+
+    artifacts = {artifact.kind: artifact for artifact in output.artifacts}
+    broll_payload = artifacts[ArtifactKind.plan_broll].payload
+    media_assignment = artifacts[ArtifactKind.plan_media_assignment].payload
+    overlays = broll_payload["overlays"]
+    assert WarningCode.broll_skipped_no_material not in output.warnings
+    assert WarningCode.broll_insertions_dropped_geometry not in output.warnings
+    assert [
+        (
+            overlay["window_id"],
+            overlay["asset_id"],
+            overlay["timeline_start_frame"],
+            overlay["timeline_end_frame"],
+            overlay["source_start_frame"],
+            overlay["source_end_frame"],
+        )
+        for overlay in overlays
+    ] == [
+        ("bwin_000", "broll_a", 0, 90, 0, 90),
+        ("bwin_000", "broll_b", 90, 180, 0, 90),
+    ]
+    assert [choice["candidate_id"] for choice in media_assignment["broll"]] == [
+        "bc_000",
+        "bc_001",
+    ]
+    assert media_assignment["diagnostics"]["broll_drops"] == []
+    for artifact in (
+        artifacts[ArtifactKind.plan_portrait],
+        artifacts[ArtifactKind.plan_broll],
+        windows_artifact,
+    ):
+        adapter.repository.artifacts[artifact.id] = artifact
+
+    timeline_state = RunState(
+        request=_request(broll_mode="full_coverage"),
+        artifacts={
+            ArtifactKind.plan_portrait: artifacts[ArtifactKind.plan_portrait],
+            ArtifactKind.plan_broll: artifacts[ArtifactKind.plan_broll],
+            ArtifactKind.plan_timeline_windows: windows_artifact,
+        },
+    )
+    timeline_ctx = NodeContext(
+        adapter=adapter,
+        run=_run(),
+        node_run=_node_run("TimelinePlanning"),
+        state=timeline_state,
+    )
+    timeline_output = nodes.timeline_planning.run(timeline_ctx)
+    timeline = next(
+        artifact.payload
+        for artifact in timeline_output.artifacts
+        if artifact.kind == ArtifactKind.plan_timeline
+    )
+    broll_track = [track for track in timeline["tracks"] if track["track_id"] == "broll"]
+    assert timeline_output.status == NodeStatus.succeeded
+    assert [
+        (segment["timeline_start_frame"], segment["timeline_end_frame"])
+        for segment in broll_track
+    ] == [(0, 90), (90, 180)]
+    assert timeline["validation"]["valid"] is True
+
+
+def test_timeline_planning_rejects_full_coverage_stitching_gaps(tmp_path):
+    adapter = _adapter(tmp_path)
+    windows = _stitched_full_coverage_windows()
+    portrait = _artifact(
+        ArtifactKind.plan_portrait,
+        windows["default_assignment"]["portrait_plan_payload"],
+    )
+    broll = _artifact(
+        ArtifactKind.plan_broll,
+        {
+            "enabled": True,
+            "overlays": [
+                {
+                    "overlay_id": "broll_1",
+                    "window_id": "bwin_000",
+                    "asset_id": "broll_a",
+                    "clip_id": "clip_a",
+                    "timeline_start": 0.0,
+                    "timeline_end": 3.0,
+                    "source_start": 0.0,
+                    "source_end": 3.0,
+                    "timeline_start_frame": 0,
+                    "timeline_end_frame": 90,
+                    "source_start_frame": 0,
+                    "source_end_frame": 90,
+                    "reason": "partial full coverage",
+                    "confidence": 0.9,
+                }
+            ],
+        },
+    )
+    ctx = _ctx(
+        adapter,
+        "TimelinePlanning",
+        {
+            ArtifactKind.plan_portrait: portrait,
+            ArtifactKind.plan_broll: broll,
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                windows,
+            ),
+        },
+        request=_request(broll_mode="full_coverage"),
+    )
+    for artifact in ctx.state.artifacts.values():
+        adapter.repository.artifacts[artifact.id] = artifact
+
+    with pytest.raises(NodeExecutionError) as exc:
+        nodes.timeline_planning.run(ctx)
+
+    assert exc.value.error.code == ErrorCode.render_invalid_timeline
+    assert exc.value.error.details["coverage_gaps"] == [
+        {"window_id": "bwin_000", "gaps": [{"start_frame": 90, "end_frame": 180}]}
+    ]
 
 
 def test_agent_validator_rejects_broll_choice_outside_window_topk():
