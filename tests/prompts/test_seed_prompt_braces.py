@@ -154,5 +154,14 @@ def test_creative_intent_seed_prompt_requests_top_level_contract():
     assert "tone" in content
     assert "audience" in content
     assert "beats" in content
+    assert "bgm_mood" in content
+    assert "沉稳 / 温暖 / 轻快 / 励志 / 高能 / 紧张 / 高级 / 俏皮" in content
     assert "禁止使用 markdown 代码块" in content
     assert "不要再嵌套 intent" not in content
+
+
+def test_window_query_seed_prompt_requests_scene_hint():
+    content = Repository().prompt_versions["prompt_window_query_v1"].content
+
+    assert "scene_hint" in content
+    assert "窗口 JSON（每项含 window_id、kind、narration_text、scene_hint）" in content

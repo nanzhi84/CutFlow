@@ -439,7 +439,7 @@ def test_bgm_annotation_rerun_uses_audio_path_and_omni_semantics(monkeypatch):
         assert segment["start"] == 0.0 and segment["end"] == 30.0
         assert segment["drop_anchor_sec"] == 18.0
         assert segment["role"] == "climax"
-        assert segment["mood"] == "calm"
+        assert segment["mood"] == "沉稳"
         assert "产品介绍" in segment["scene_fit"]
         assert segment["source"] == "sensor+audio"
         # beat grid surfaced in quality_report + editor projection

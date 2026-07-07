@@ -40,6 +40,16 @@ def test_creative_intent_round_trips_emphasis():
     assert again.emphasis[0].phrase == "限时五折"
 
 
+def test_resolve_creative_intent_normalizes_bgm_mood():
+    from packages.production.pipeline.nodes.resolve_creative_intent import _intent_to_artifact
+
+    artifact = _intent_to_artifact(
+        {"intent": {"hook": "h", "beats": ["a"], "bgm_mood": "高能推进"}}
+    )
+
+    assert artifact.intent["bgm_mood"] == "高能"
+
+
 # --- load_creative_intent helper ---
 
 

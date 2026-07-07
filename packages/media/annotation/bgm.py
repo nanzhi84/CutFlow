@@ -44,10 +44,12 @@ from packages.core.contracts import (
     AnnotationV4,
     AnnotationVersion,
     BgmEnergyProfile,
+    BGM_MOOD_VALUES,
     BgmSegmentRole,
     BgmSegmentV4,
     BgmSectionType,
     ProviderProfile,
+    normalize_bgm_mood,
 )
 
 logger = logging.getLogger("packages.media.annotation.bgm")
@@ -659,7 +661,7 @@ def _build_segment_prompt(
             "loudness_lufs": features.get("loudness_lufs"),
         },
         "required_schema": {
-            "mood": "一个简短情绪词",
+            "mood": f"必须从以下枚举中选择一个：{'|'.join(BGM_MOOD_VALUES)}",
             "role": "hook|climax|outro|general",
             "section_type": "intro|stable_bed|verse|chorus|drop|bridge|outro|loop|build|general",
             "energy_profile": "stable|rising|falling|drop|peak",
@@ -698,7 +700,7 @@ def _normalize_segment_semantics(
 ) -> dict[str, Any]:
     data = raw if isinstance(raw, dict) else {}
     return {
-        "mood": str(data.get("mood") or "").strip(),
+        "mood": normalize_bgm_mood(data.get("mood")),
         "section_type": _section_type_from_hint(data.get("section_type"), fallback=section_type_hint),
         "energy_profile": _energy_profile_from_hint(
             data.get("energy_profile"),

@@ -26,7 +26,11 @@ from packages.core.storage.repository import Repository
 
 LOCAL_AUTH_SEED_USER_IDS = {"usr_admin", "usr_viewer"}
 LOCAL_AUTH_SEED_REGISTRATION_CODE_IDS = {"reg_seed_local_admin"}
-_SYNCABLE_PROMPT_VERSION_IDS = {"prompt_editing_agent_v1", "prompt_window_query_v1"}
+_SYNCABLE_PROMPT_VERSION_IDS = {
+    "prompt_creative_intent_v1",
+    "prompt_editing_agent_v1",
+    "prompt_window_query_v1",
+}
 _LEGACY_EDITING_AGENT_MARKERS = (
     "{asr_segments}",
     "{portrait_slot_plan}",
@@ -381,12 +385,17 @@ def _needs_prompt_version_sync(existing: PromptVersionRow) -> bool:
                 "{windows}",
                 '"window_queries"',
                 '"retrieval_intent"',
+                "scene_hint",
             )
         )
+    if existing.id == "prompt_creative_intent_v1":
+        return "bgm_mood" not in (existing.content or "")
     return False
 
 
 def _prompt_sync_changelog(version_id: str) -> str:
+    if version_id == "prompt_creative_intent_v1":
+        return "Synced built-in CreativeIntent prompt BGM mood contract."
     if version_id == "prompt_window_query_v1":
         return "Synced built-in WindowQueryPlanning prompt contract."
     return "Synced built-in EditingAgentPlanning prompt contract."

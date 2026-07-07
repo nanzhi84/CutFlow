@@ -360,6 +360,7 @@ def test_full_coverage_broll_windows_cover_entire_audio_and_skip_portrait(monkey
         "host_unit_ids": ["unit_001"],
         "text": "先讲解打磨工艺的细节非常重要。",
         "text_assignment": "argmax_overlap",
+        "scene_hint": "先讲解打磨工艺的细节非常重要。",
     }
     assert payload["geometry_policy"]["broll_window_contract"] == {
         "authority": "TimelineWindowPlanning",
