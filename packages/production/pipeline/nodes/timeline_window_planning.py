@@ -398,7 +398,7 @@ def _full_coverage_cut_candidates(
     for unit in narration_units:
         add(frame_index(float(unit.start)), "unit_boundary")
         add(frame_index(float(unit.end)), "unit_boundary")
-    for group in semantic_groups:
+    for group in semantic_groups[:-1]:
         add(int(group["end_frame"]), "semantic_group")
     return candidates
 

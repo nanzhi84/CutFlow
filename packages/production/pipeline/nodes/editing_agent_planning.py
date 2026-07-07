@@ -394,6 +394,7 @@ def _compact_prompt_slot(slot: dict, *, broll: bool) -> dict:
     }
     if broll:
         payload["text"] = str(slot.get("text") or "")
+        payload["multi_clip_allowed"] = bool(slot.get("multi_clip_allowed"))
     else:
         payload["legal_window_ids"] = legal_ids
     if topk:
@@ -798,6 +799,56 @@ def _repair_broll_selection_to_constraints(
                     "reason": "matched nearest legal retrieval/diversity candidate",
                 }
             )
+
+    if allow_asset_diversity_reuse:
+        covered_by_slot: dict[str, int] = {}
+        for choice in repaired_broll:
+            candidate = candidates.broll_by_id.get(choice.candidate_id)
+            if candidate is None:
+                continue
+            covered_by_slot[choice.slot_id] = covered_by_slot.get(
+                choice.slot_id,
+                0,
+            ) + _broll_source_frames(candidate)
+        for slot_id, slot in broll_slots.items():
+            required_frames = _slot_source_required_frames(slot)
+            covered_frames = covered_by_slot.get(slot_id, 0)
+            pool = [
+                candidate_id
+                for candidate_id in retrieval_topk_by_window.get(slot_id, [])
+                if candidate_id in candidates.broll_by_id
+            ] or list(candidates.broll_by_id)
+            while covered_frames < required_frames and len(repaired_broll) < max(0, max_inserts):
+                candidate_id = next(
+                    (candidate_id for candidate_id in pool if usable(candidate_id, slot)),
+                    "",
+                )
+                if not candidate_id:
+                    break
+                candidate = candidates.broll_by_id[candidate_id]
+                reserve(candidate_id)
+                source_frames = _broll_source_frames(candidate)
+                meta = _local_meta(candidate)
+                repaired_broll.append(
+                    BrollChoice(
+                        slot_id=slot_id,
+                        candidate_id=candidate_id,
+                        reason="本地 full_coverage 补窗",
+                        confidence=0.5,
+                        matched_keywords=tuple(_local_list(meta.get("matched_keywords"))),
+                    )
+                )
+                covered_frames += source_frames
+                actions.append(
+                    {
+                        "slot_id": slot_id,
+                        "repaired_candidate_id": candidate_id,
+                        "action": "added",
+                        "reason": "filled full_coverage window gap",
+                        "covered_frames": min(covered_frames, required_frames),
+                        "required_frames": required_frames,
+                    }
+                )
 
     repaired = EditingSelection(
         portrait=selection.portrait,

@@ -985,6 +985,84 @@ def test_window_material_retrieval_allows_partial_full_coverage_candidates(tmp_p
     }
 
 
+def test_window_material_retrieval_run_uses_partial_full_coverage_capacity(
+    tmp_path,
+    db_session_factory,
+):
+    adapter = _adapter(tmp_path)
+    adapter.production_repository = SqlAlchemyProductionRepository(db_session_factory)
+    material = _stitched_material()
+    for asset_id in ("broll_a", "broll_b"):
+        adapter.repository.media_assets[asset_id] = MediaAssetRecord(
+            id=asset_id,
+            case_id="case_demo",
+            title=asset_id,
+            kind="video",
+            annotation_status="annotated",
+            usable=True,
+        )
+    windows_artifact = _artifact(
+        ArtifactKind.plan_timeline_windows,
+        _stitched_full_coverage_windows(),
+    )
+    query_ctx = _ctx(
+        adapter,
+        "WindowQueryPlanning",
+        {
+            ArtifactKind.plan_timeline_windows: windows_artifact,
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+        },
+    )
+    query_output = nodes.window_query_planning.run(query_ctx)
+    query_artifact = query_output.artifacts[0]
+    broll_intent = query_artifact.payload["window_queries"][0]["retrieval_intent"]
+    indexed = index_candidates(material)
+    for candidate_id in ("bc_000", "bc_001"):
+        candidate = indexed.broll_by_id[candidate_id]
+        record = build_clip_embedding_record(
+            candidate=candidate,
+            asset=adapter.repository.media_assets[candidate["asset_id"]],
+            namespace="broll",
+            provider_profile_id="sandbox.embedding.default",
+            embedding=_deterministic_embedding(
+                f"sandbox.embedding.default:multimodal.embedding:{broll_intent}",
+                dimension=1024,
+            ),
+        )
+        _seed_clip_embedding_record(db_session_factory, record)
+    retrieval_ctx = _ctx(
+        adapter,
+        "WindowMaterialRetrieval",
+        {
+            ArtifactKind.plan_material_pack: _artifact(
+                ArtifactKind.plan_material_pack,
+                material,
+            ),
+            ArtifactKind.plan_timeline_windows: windows_artifact,
+            ArtifactKind.plan_window_queries: query_artifact,
+        },
+    )
+
+    output = nodes.window_material_retrieval.run(retrieval_ctx)
+
+    payload = output.artifacts[0].payload
+    diagnostics = payload["diagnostics"]
+    assert output.status == NodeStatus.succeeded
+    assert [item["candidate_id"] for item in payload["candidates_by_window"]["bwin_000"]] == [
+        "bc_000",
+        "bc_001",
+    ]
+    assert diagnostics["full_coverage_partial_clip_stitching"] is True
+    assert diagnostics["rejected_candidates"] == []
+    assert diagnostics["full_coverage_capacity_by_window"]["bwin_000"] == {
+        "required_frames": 180,
+        "eligible_candidate_count": 2,
+        "total_source_frames": 180,
+        "longest_source_frames": 90,
+        "sufficient_by_sum": True,
+    }
+
+
 def test_window_material_retrieval_keyword_fusion_breaks_close_semantic_tie():
     candidate_plain = nodes.window_material_retrieval._RetrievalCandidate(
         candidate_id="bc_000",

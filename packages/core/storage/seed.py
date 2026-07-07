@@ -372,6 +372,7 @@ def _needs_prompt_version_sync(existing: PromptVersionRow) -> bool:
             or any(marker not in content for marker in _EDITING_AGENT_LINE_FORMAT_MARKERS)
             or "允许重复使用同一素材" in content
             or "{portrait_uniqueness_rule}" not in content
+            or "multi_clip_allowed" not in content
         )
     if existing.id == "prompt_window_query_v1":
         content = existing.content or ""

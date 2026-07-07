@@ -285,6 +285,9 @@ def build_agent_input(
             )
         portrait_slots.append(payload)
 
+    full_coverage_broll = request.broll.enabled and getattr(request.broll, "mode", "insert") == (
+        "full_coverage"
+    )
     broll_slots = []
     for slot in (boundary.get("broll_slots") or []):
         if not isinstance(slot, dict):
@@ -294,6 +297,7 @@ def build_agent_input(
             **slot,
             "required_frames": need,
             "required_seconds": round(to_seconds(need), 3),
+            "multi_clip_allowed": full_coverage_broll,
         }
         if _slot_has_retrieval_constraint(slot, retrieval_topk_by_window):
             payload["retrieval_topk_candidate_ids"] = _topk_for_slot(
@@ -303,8 +307,8 @@ def build_agent_input(
         broll_slots.append(payload)
 
     max_broll_inserts = request.broll.max_inserts if request.broll.enabled else 0
-    if request.broll.enabled and getattr(request.broll, "mode", "insert") == "full_coverage":
-        max_broll_inserts = len(broll_slots)
+    if full_coverage_broll:
+        max_broll_inserts = max(len(broll_slots), len(candidates.broll_by_id))
 
     return {
         "script": request.script,
