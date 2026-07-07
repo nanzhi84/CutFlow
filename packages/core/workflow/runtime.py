@@ -61,6 +61,8 @@ class WorkflowRuntimeSettings(BaseModel):
     temporal_address: str = "127.0.0.1:7233"
     temporal_namespace: str = "default"
     temporal_task_queue: str = "cutagent-production"
+    case_max_inflight_runs: int = 3
+    worker_max_activities: int = 8
 
 
 def load_workflow_runtime_settings() -> WorkflowRuntimeSettings:
@@ -70,6 +72,8 @@ def load_workflow_runtime_settings() -> WorkflowRuntimeSettings:
         temporal_address=workflow.temporal_address,
         temporal_namespace=workflow.temporal_namespace,
         temporal_task_queue=workflow.temporal_task_queue,
+        case_max_inflight_runs=workflow.case_max_inflight_runs,
+        worker_max_activities=workflow.worker_max_activities,
     )
 
 

@@ -11,6 +11,7 @@ from packages.production.jianying_draft import (
     JianyingDraftInput,
     JianyingTextSegment,
     JianyingVideoSegment,
+    build_text_segments_from_narration,
     build_video_segments_from_plans,
 )
 
@@ -183,6 +184,8 @@ def test_jianying_builder_exports_editable_multitrack_broll_project(
                     source_end_frame=60,
                     asset_id="asset_broll",
                     clip_id="clip_broll",
+                    fade_frames=8,
+                    placement="pip_fixed",
                 ),
             ],
             audio_segments=[
@@ -244,6 +247,7 @@ def test_jianying_builder_exports_editable_multitrack_broll_project(
     assert broll_segment["target_timerange"] == {"start": 500_000, "duration": 1_000_000}
     assert broll_segment["source_timerange"] == {"start": 1_000_000, "duration": 1_000_000}
     assert broll_segment["render_index"] > main_segment["render_index"]
+    assert broll_segment["cutflow_effects"] == {"fade_frames": 8, "placement": "pip_fixed"}
 
     audio_materials = {material["id"]: material for material in content["materials"]["audios"]}
     assert (
@@ -262,6 +266,17 @@ def test_jianying_builder_exports_editable_multitrack_broll_project(
     assert result.manifest["assets"]["video"] == ["portrait-source.mp4", "broll-source.mp4"]
     assert result.manifest["assets"]["audio"] == ["run_unsafe_voice_.wav", "bgm-track.wav"]
     assert result.manifest["portable_resources"] is True
+    assert result.manifest["effects"]["video_segments"] == [
+        {
+            "track_name": "B-roll覆盖",
+            "asset_id": "asset_broll",
+            "clip_id": "clip_broll",
+            "fade_frames": 8,
+            "placement": "pip_fixed",
+        }
+    ]
+    assert result.manifest["effects"]["huazi_segments"] == 1
+    assert result.manifest["effects"]["manual_acceptance_required"] is True
 
 
 def test_build_video_segments_from_plans_uses_timeline_frames_and_asset_sources():
@@ -283,6 +298,8 @@ def test_build_video_segments_from_plans_uses_timeline_frames_and_asset_sources(
                 "timeline_end_frame": 45,
                 "source_start_frame": 30,
                 "source_end_frame": 60,
+                "fade_frames": 8,
+                "placement": "pip_fixed",
             },
         ],
     }
@@ -328,8 +345,27 @@ def test_build_video_segments_from_plans_uses_timeline_frames_and_asset_sources(
             source_end_frame=60,
             asset_id="asset_broll",
             clip_id="clip_broll",
+            fade_frames=8,
+            placement="pip_fixed",
         ),
     ]
+
+
+def test_build_text_segments_from_narration_adds_huazi_overlay_events():
+    segments = build_text_segments_from_narration(
+        [{"unit_id": "n1", "text": "普通字幕", "start": 0.0, "end": 1.0}],
+        {
+            "overlay_events": [
+                {"text": "重点花字", "start": 0.25, "end": 0.75, "style": "pop"}
+            ]
+        },
+    )
+
+    assert [segment.track_name for segment in segments] == ["字幕", "花字"]
+    assert segments[1].text == "重点花字"
+    assert segments[1].start_us == 250_000
+    assert segments[1].duration_us == 500_000
+    assert segments[1].transform_y == -0.48
 
 
 def test_build_video_segments_from_plans_reads_legacy_broll_segments():

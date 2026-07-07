@@ -9,6 +9,7 @@ import { routePatterns, routes } from "./routes";
 const RegisterPage = lazy(() => import("./pages/auth/RegisterPage"));
 const CaseListPage = lazy(() => import("./pages/studio/CaseListPage"));
 const CaseAgentPage = lazy(() => import("./pages/studio/CaseAgentPage"));
+const BatchWorkbenchPage = lazy(() => import("./pages/studio/BatchWorkbenchPage"));
 const CaseProfilePage = lazy(() => import("./pages/studio/CaseProfilePage"));
 const StudioCreatePage = lazy(() => import("./pages/studio/StudioCreatePage"));
 const RunsPage = lazy(() => import("./pages/studio/RunsPage"));
@@ -34,6 +35,7 @@ export default function App() {
             <Route path={routePatterns.caseStudio} element={<StudioCreatePage />} />
             <Route path={routePatterns.caseProfile} element={<CaseProfilePage />} />
             <Route path={routePatterns.caseAgent} element={<CaseAgentPage />} />
+            <Route path={routePatterns.caseBatch} element={<BatchWorkbenchPage />} />
             <Route path={routePatterns.caseOutputs} element={<RunsPage />} />
             <Route path={routePatterns.casePublish} element={<PublishCenterPage />} />
             <Route path={routePatterns.settings} element={<SettingsPage />} />

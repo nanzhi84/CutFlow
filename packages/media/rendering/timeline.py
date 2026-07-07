@@ -14,7 +14,7 @@ from packages.core.contracts import Artifact, ErrorCode, MediaInfo
 from packages.core.workflow import NodeExecutionError
 from packages.media.video.ffmpeg import (
     FfmpegRunner,
-    ffmpeg_bin,
+    ffmpeg_base_args,
     probe_media,
     probe_video_frame_count,
 )
@@ -75,6 +75,62 @@ def _format_filter_seconds(seconds: float) -> str:
     return text or "0"
 
 
+def _ffmpeg_render_prefix() -> list[str]:
+    return ffmpeg_base_args(quiet_args=("-y", "-hide_banner", "-loglevel", "error"))
+
+
+def _overlay_fade_frames(segment: dict) -> int:
+    value = segment.get("fade_frames")
+    if value is None:
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _overlay_placement(segment: dict) -> str:
+    placement = str(segment.get("placement") or "fullscreen")
+    return placement if placement in {"fullscreen", "pip_fixed"} else "fullscreen"
+
+
+def _pip_geometry(width: int, height: int) -> tuple[int, int, int, int]:
+    pip_width = max(2, int(width * 0.42) // 2 * 2)
+    pip_height = max(2, int(height * 0.24) // 2 * 2)
+    margin_x = max(16, int(width * 0.045))
+    margin_y = max(16, int(height * 0.10))
+    return pip_width, pip_height, width - pip_width - margin_x, margin_y
+
+
+def _overlay_scale_filter(segment: dict, *, width: int, height: int) -> tuple[str, int, int]:
+    if _overlay_placement(segment) == "pip_fixed":
+        pip_width, pip_height, x, y = _pip_geometry(width, height)
+        return (
+            f"scale={pip_width}:{pip_height}:force_original_aspect_ratio=increase,"
+            f"crop={pip_width}:{pip_height},setsar=1,",
+            x,
+            y,
+        )
+    return (
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},setsar=1,",
+        0,
+        0,
+    )
+
+
+def _overlay_alpha_filters(fade_frames: int, timeline_window_frames: int) -> str:
+    if fade_frames <= 0 or timeline_window_frames <= 1:
+        return ""
+    frames = min(fade_frames, max(1, timeline_window_frames // 2))
+    out_start = max(0, timeline_window_frames - frames)
+    return (
+        "format=yuva420p,"
+        f"fade=t=in:s=0:n={frames}:alpha=1,"
+        f"fade=t=out:s={out_start}:n={frames}:alpha=1,"
+    )
+
+
 def validate_rendered_output(
     output_path: Path,
     *,
@@ -115,11 +171,7 @@ def generate_seed_video(
 ) -> None:
     FfmpegRunner().run(
         [
-            ffmpeg_bin(),
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
+            *_ffmpeg_render_prefix(),
             "-f",
             "lavfi",
             "-i",
@@ -142,11 +194,7 @@ def generate_seed_video(
 def generate_seed_audio(output_path: Path, *, duration_sec: float) -> None:
     FfmpegRunner().run(
         [
-            ffmpeg_bin(),
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
+            *_ffmpeg_render_prefix(),
             "-f",
             "lavfi",
             "-i",
@@ -172,11 +220,7 @@ def transcode_video_segment(
 ) -> None:
     FfmpegRunner().run(
         [
-            ffmpeg_bin(),
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
+            *_ffmpeg_render_prefix(),
             "-i",
             str(source_path),
             "-an",
@@ -210,11 +254,7 @@ def concat_video_segments(segments: list[Path], output_path: Path) -> None:
     )
     FfmpegRunner().run(
         [
-            ffmpeg_bin(),
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
+            *_ffmpeg_render_prefix(),
             "-f",
             "concat",
             "-safe",
@@ -258,11 +298,7 @@ def fit_video_to_exact_duration(
     pad_duration = max(duration, 0.0) + 1.0
     FfmpegRunner().run(
         [
-            ffmpeg_bin(),
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
+            *_ffmpeg_render_prefix(),
             "-i",
             str(source_path),
             "-an",
@@ -309,11 +345,7 @@ def render_broll_montage(
         )
 
     args = [
-        ffmpeg_bin(),
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
+        *_ffmpeg_render_prefix(),
     ]
     montage_inputs: list[tuple[int, int]] = []
     for segment in segments:
@@ -435,15 +467,11 @@ def render_video_timeline(
     artifact_path: Callable[[Artifact], Path],
 ) -> None:
     args = [
-        ffmpeg_bin(),
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
+        *_ffmpeg_render_prefix(),
         "-i",
         str(main_path),
     ]
-    overlay_inputs: list[tuple[dict, Path, int, int, int, int, float, float]] = []
+    overlay_inputs: list[tuple[dict, Path, int, int, int, int, float, float, int]] = []
     for segment in broll_segments:
         source_artifact = source_artifact_for_asset(segment.get("asset_id"))
         source_path = artifact_path(source_artifact)
@@ -490,6 +518,7 @@ def render_video_timeline(
                 timeline_end_frame,
                 pad_start,
                 pad_end,
+                _overlay_fade_frames(segment),
             )
         )
         args.extend(["-i", str(source_path)])
@@ -513,10 +542,14 @@ def render_video_timeline(
         timeline_end_frame,
         pad_start,
         pad_end,
+        fade_frames,
     ) in enumerate(overlay_inputs, start=1):
         timeline_window_frames = timeline_end_frame - timeline_start_frame
         overlay_label = f"ov{index}"
         next_label = f"base{index}"
+        scale_filter, overlay_x, overlay_y = _overlay_scale_filter(
+            segment, width=width, height=height
+        )
         explicit_padding = ""
         if pad_start > 0:
             explicit_padding += f"tpad=start_duration={_format_filter_seconds(pad_start)}:start_mode=clone,"
@@ -527,11 +560,11 @@ def render_video_timeline(
                 f"[{index}:v]fps={fps},"
                 f"trim=start_frame={source_start_frame}:end_frame={source_end_frame},"
                 "setpts=PTS-STARTPTS,"
-                f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-                f"crop={width}:{height},setsar=1,"
+                f"{scale_filter}"
                 f"{explicit_padding}"
                 f"tpad=stop_mode=clone:stop={timeline_window_frames},"
                 f"trim=start_frame=0:end_frame={timeline_window_frames},"
+                f"{_overlay_alpha_filters(fade_frames, timeline_window_frames)}"
                 f"setpts=PTS-STARTPTS+{timeline_start_frame}/{fps}/TB[{overlay_label}]"
             )
         )
@@ -539,7 +572,7 @@ def render_video_timeline(
             (
                 f"[{previous_label}][{overlay_label}]overlay="
                 f"enable='gte(n\\,{timeline_start_frame})*lt(n\\,{timeline_end_frame})':"
-                f"x=0:y=0:eof_action=pass[{next_label}]"
+                f"x={overlay_x}:y={overlay_y}:eof_action=pass[{next_label}]"
             )
         )
         previous_label = next_label

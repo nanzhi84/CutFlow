@@ -62,6 +62,48 @@ def case_finished_videos(request: Request, case_id: str, limit: int = 50) -> c.P
     return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
 
 
+def case_finished_video_downloads(
+    request: Request, case_id: str, ids: str | None
+) -> c.BatchFinishedVideoDownloadResponse:
+    wanted_ids = [item.strip() for item in (ids or "").split(",") if item.strip()]
+    if wanted_ids:
+        finished_videos = [_finished_video_for_package(request, finished_id) for finished_id in wanted_ids]
+    else:
+        owner_filter = visible_owner_filter(current_user(request))
+        finished_videos = production_repository(request).list_finished_videos(
+            case_id=case_id,
+            limit=100,
+            owner_user_id=owner_filter,
+        )
+    items: list[c.FinishedVideoDownloadItem] = []
+    for finished in finished_videos:
+        if finished.case_id != case_id:
+            raise NodeExecutionError(c.ErrorCode.artifact_missing, "Finished video is missing.")
+        assert_owner_or_404(current_user(request), finished_video_owner(request, finished.id))
+        artifact = _artifact_for_download(request, finished.video_artifact.artifact_id)
+        if artifact is None or not artifact.uri:
+            raise NodeExecutionError(c.ErrorCode.artifact_missing, "Finished video artifact is missing.")
+        download_url, expires_at = _browser_download_fields(
+            request,
+            artifact.id,
+            artifact.uri,
+            disposition="attachment",
+        )
+        filename = _safe_package_name(finished.title or finished.id)
+        suffix = _artifact_suffix(finished.video_artifact, ".mp4")
+        items.append(
+            c.FinishedVideoDownloadItem(
+                finished_video_id=finished.id,
+                title=finished.title,
+                url=download_url,
+                expires_at=expires_at,
+                content_type=_artifact_download_content_type(artifact),
+                filename=f"{filename}{suffix}",
+            )
+        )
+    return c.BatchFinishedVideoDownloadResponse(items=items, request_id=request_id())
+
+
 def finished_video_detail(request: Request, id: str) -> c.FinishedVideoDetail:
     assert_owner_or_404(current_user(request), finished_video_owner(request, id))
     detail = production_repository(request).finished_video_detail(id)
@@ -301,7 +343,9 @@ def jianying_draft(
     )
 
 
-def artifact_download(request: Request, artifact_id: str) -> FileResponse | RedirectResponse:
+def artifact_download(
+    request: Request, artifact_id: str, disposition: str | None = None
+) -> FileResponse | RedirectResponse:
     artifact = _artifact_for_download(request, artifact_id)
     if artifact is None or not artifact.uri:
         raise NodeExecutionError(c.ErrorCode.artifact_missing, "Artifact is missing.")
@@ -320,7 +364,7 @@ def artifact_download(request: Request, artifact_id: str) -> FileResponse | Redi
         path,
         media_type=_artifact_download_content_type(artifact),
         filename=Path(urlsplit(artifact.uri).path).name or f"{artifact.id}.zip",
-        content_disposition_type=_artifact_download_disposition(artifact),
+        content_disposition_type=_artifact_download_disposition(artifact, disposition),
     )
 
 
@@ -365,11 +409,19 @@ def _with_browser_download_url(
     )
 
 
-def _browser_download_fields(request: Request, artifact_id: str, uri: str) -> tuple[str, object]:
+def _browser_download_fields(
+    request: Request,
+    artifact_id: str,
+    uri: str,
+    *,
+    disposition: str | None = None,
+) -> tuple[str, object]:
     signed_url = object_store(request).signed_url(uri)
     url = signed_url.url
     if not url.startswith(_BROWSER_DOWNLOAD_PREFIXES):
         url = f"/api/artifacts/{artifact_id}/download"
+        if disposition:
+            url = f"{url}?disposition={disposition}"
     return url, signed_url.expires_at
 
 
@@ -466,5 +518,7 @@ def _artifact_download_content_type(artifact: c.Artifact) -> str:
     return "application/zip"
 
 
-def _artifact_download_disposition(artifact: c.Artifact) -> str:
+def _artifact_download_disposition(artifact: c.Artifact, requested: str | None = None) -> str:
+    if requested == "attachment":
+        return "attachment"
     return "inline" if artifact.kind == c.ArtifactKind.cover_image or _is_video_download_artifact(artifact) else "attachment"

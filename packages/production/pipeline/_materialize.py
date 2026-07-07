@@ -50,6 +50,44 @@ _SUBTITLE_PRESET_DEFAULTS = {
     "movie": {"font_size": 44, "position": {"x": 0.5, "y": 0.82}},
     "youshe_title_black": {"font_size": 66, "position": {"x": 0.5, "y": 0.86}},
 }
+_SUBTITLE_COLOR_DEFAULTS = {
+    "douyin": {
+        "primary_color": "#FFFFFF",
+        "outline_color": "#000000",
+        "outline": 4.0,
+        "emphasis_primary_color": "#FFFF00",
+        "emphasis_outline_color": "#000000",
+    },
+    "clean": {
+        "primary_color": "#FFFFFF",
+        "outline_color": "#101010",
+        "outline": 3.0,
+        "emphasis_primary_color": "#FFFFFF",
+        "emphasis_outline_color": "#101010",
+    },
+    "variety": {
+        "primary_color": "#FFFFFF",
+        "outline_color": "#000000",
+        "outline": 5.0,
+        "emphasis_primary_color": "#FFFF00",
+        "emphasis_outline_color": "#000000",
+    },
+    "news": {
+        "primary_color": "#FFFFFF",
+        "outline_color": "#000000",
+        "outline": 3.0,
+        "emphasis_primary_color": "#FFD84A",
+        "emphasis_outline_color": "#000000",
+    },
+    "movie": {
+        "primary_color": "#F4F1E8",
+        "outline_color": "#000000",
+        "outline": 2.5,
+        "emphasis_primary_color": "#F8D568",
+        "emphasis_outline_color": "#000000",
+    },
+}
+_INSERT_BROLL_FADE_FRAMES = 8
 
 
 def materialize_portrait_from_assignment(
@@ -246,6 +284,10 @@ def materialize_broll_from_assignment(
             source_end_frame=source_start_frame + source_required_frames,
             pad_start=pad_start,
             pad_end=pad_end,
+            fade_frames=_int_or_none(choice.get("fade_frames"))
+            if choice.get("fade_frames") is not None
+            else _INSERT_BROLL_FADE_FRAMES,
+            placement=_placement_or_none(choice.get("placement") or window_data.get("placement")),
         )
         accepted.append((window_id, insert))
         used_candidate_ids.add(candidate_id)
@@ -422,6 +464,8 @@ def overlays_from_insertions(insertions: list[tuple[str, BrollInsertion]]) -> li
             source_end_frame=insertion.source_end_frame,
             pad_start=insertion.pad_start,
             pad_end=insertion.pad_end,
+            fade_frames=insertion.fade_frames,
+            placement=_placement_or_none(insertion.placement),
             reason=insertion.reason,
             confidence=insertion.confidence,
             matched_keywords=list(insertion.matched_keywords),
@@ -479,6 +523,7 @@ def materialize_style_from_selection(
     bgm_metadata = selected_bgm.get("metadata") if isinstance(selected_bgm, dict) else {}
     if not isinstance(bgm_metadata, dict):
         bgm_metadata = {}
+    subtitle_colors = _subtitle_colors(request.subtitle.style_preset)
     payload = StylePlanArtifact(
         subtitle=SubtitleStylePlan(
             font_id=request.subtitle.font_id,
@@ -490,6 +535,11 @@ def materialize_style_from_selection(
                 request.subtitle.style_preset,
                 request.subtitle.position,
             ),
+            primary_color=subtitle_colors["primary_color"],
+            outline_color=subtitle_colors["outline_color"],
+            outline=subtitle_colors["outline"],
+            emphasis_primary_color=subtitle_colors["emphasis_primary_color"],
+            emphasis_outline_color=subtitle_colors["emphasis_outline_color"],
         ),
         bgm=BgmPlan(
             enabled=request.bgm.enabled,
@@ -559,6 +609,12 @@ def _subtitle_position(style_preset: str, explicit_position: dict[str, float] | 
     if explicit_position is not None:
         return explicit_position
     return dict(_subtitle_preset(style_preset)["position"])
+
+
+def _subtitle_colors(style_preset: str) -> dict[str, Any]:
+    return dict(
+        _SUBTITLE_COLOR_DEFAULTS.get(style_preset, _SUBTITLE_COLOR_DEFAULTS["douyin"])
+    )
 
 
 def _select_bgm_candidate(
@@ -684,6 +740,20 @@ def _str_or_none(value) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _placement_or_none(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text if text in {"fullscreen", "pip_fixed"} else None
 
 
 def _float_or_none(value) -> float | None:

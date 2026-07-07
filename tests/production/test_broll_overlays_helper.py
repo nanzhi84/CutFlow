@@ -29,6 +29,8 @@ def test_prefers_typed_overlays_when_present():
                 "matched_keywords": ["x"],
                 "scene_name": "demo",
                 "diversity_key": "scene:demo",
+                "fade_frames": 8,
+                "placement": "pip_fixed",
             }
         ],
     }
@@ -46,6 +48,8 @@ def test_prefers_typed_overlays_when_present():
     assert overlay.source_start == 0.5
     assert overlay.source_end == 2.5
     assert overlay.diversity_key == "scene:demo"
+    assert overlay.fade_frames == 8
+    assert overlay.placement == "pip_fixed"
 
 
 def test_derives_overlays_from_legacy_segments_when_no_overlays():

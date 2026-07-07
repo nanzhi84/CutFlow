@@ -23,6 +23,7 @@ Design notes
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -126,6 +127,14 @@ def _env_min_int(name: str, default: int, *, minimum: int = 1) -> int:
     except ValueError:
         return default
     return max(minimum, value)
+
+
+def _env_optional_min_int(name: str, *, minimum: int = 1) -> int | None:
+    """Parse an optional int env var floored at ``minimum``; unset / blank -> None."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return None
+    return max(minimum, int(raw))
 
 
 def _default_ephemeral_local_path() -> str:
@@ -259,6 +268,8 @@ class WorkflowSettings(BaseModel):
     temporal_address: str = "127.0.0.1:7233"  # CUTAGENT_TEMPORAL_ADDRESS
     temporal_namespace: str = "default"  # CUTAGENT_TEMPORAL_NAMESPACE
     temporal_task_queue: str = "cutagent-production"  # CUTAGENT_TEMPORAL_TASK_QUEUE
+    case_max_inflight_runs: int = 3  # CUTAGENT_CASE_MAX_INFLIGHT_RUNS
+    worker_max_activities: int = 8  # CUTAGENT_WORKER_MAX_ACTIVITIES
 
 
 class AuthSettings(BaseModel):
@@ -326,6 +337,18 @@ class MediaSettings(BaseModel):
     # means "unset" so the resolver falls back to PATH / ~/.local/bin / name.
     ffmpeg_bin: str | None = None
     ffprobe_bin: str | None = None
+    # CUTAGENT_FFMPEG_THREADS: optional global ffmpeg ``-threads`` value. None
+    # preserves ffmpeg's default auto-threading and existing command strings.
+    ffmpeg_threads: int | None = None
+
+
+class ProviderLimitConfig(BaseModel):
+    """Per-provider/concurrency-key limiter override."""
+
+    model_config = ConfigDict(frozen=True)
+
+    max_inflight: int | None = None
+    max_qps: int | None = None
 
 
 class MotionGuardSettings(BaseModel):
@@ -470,6 +493,10 @@ class ProvidersSettings(BaseModel):
     # CUTAGENT_ENFORCE_PROVIDER_HOST_ALLOWLIST: "1" turns on the opt-in
     # gateway-level base_url host re-check before the secret is delivered.
     enforce_host_allowlist: bool = False
+    # CUTAGENT_PROVIDER_LIMITS JSON:
+    # {"dashscope:llm.chat":{"max_inflight":2,"max_qps":1},"runninghub":{"max_inflight":1}}
+    # Keys match ProviderProfile.concurrency_key first, then provider_id.
+    limits: dict[str, ProviderLimitConfig] = Field(default_factory=dict)
 
 
 class PublishingSettings(BaseModel):
@@ -633,7 +660,27 @@ def build_workflow_settings() -> WorkflowSettings:
         temporal_task_queue=_env_str(
             "CUTAGENT_TEMPORAL_TASK_QUEUE", "cutagent-production"
         ),
+        case_max_inflight_runs=_env_min_int("CUTAGENT_CASE_MAX_INFLIGHT_RUNS", 3),
+        worker_max_activities=_env_min_int("CUTAGENT_WORKER_MAX_ACTIVITIES", 8),
     )
+
+
+def _provider_limits_from_env() -> dict[str, ProviderLimitConfig]:
+    raw = os.getenv("CUTAGENT_PROVIDER_LIMITS")
+    if raw is None or raw.strip() == "":
+        return {}
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("CUTAGENT_PROVIDER_LIMITS must be a JSON object.")
+    limits: dict[str, ProviderLimitConfig] = {}
+    for key, value in data.items():
+        if not isinstance(key, str) or not key.strip():
+            continue
+        if not isinstance(value, dict):
+            raise ValueError("CUTAGENT_PROVIDER_LIMITS values must be objects.")
+        limit = ProviderLimitConfig.model_validate(value)
+        limits[key.strip()] = limit
+    return limits
 
 
 def build_providers_settings() -> ProvidersSettings:
@@ -647,6 +694,7 @@ def build_providers_settings() -> ProvidersSettings:
         circuit_window_hours=_env_min_int("CUTAGENT_PROVIDER_CIRCUIT_WINDOW", 24),
         allowed_api_hosts=_env_str("CUTAGENT_ALLOWED_API_HOSTS", ""),
         enforce_host_allowlist=os.getenv("CUTAGENT_ENFORCE_PROVIDER_HOST_ALLOWLIST") == "1",
+        limits=_provider_limits_from_env(),
     )
 
 
@@ -718,6 +766,7 @@ def build_settings() -> Settings:
         media=MediaSettings(
             ffmpeg_bin=os.getenv("CUTAGENT_FFMPEG_BIN"),
             ffprobe_bin=os.getenv("CUTAGENT_FFPROBE_BIN"),
+            ffmpeg_threads=_env_optional_min_int("CUTAGENT_FFMPEG_THREADS"),
         ),
         motion_guard=MotionGuardSettings(
             sample_fps=_env_float("CUTAGENT_MOTION_GUARD_SAMPLE_FPS", 10.0),

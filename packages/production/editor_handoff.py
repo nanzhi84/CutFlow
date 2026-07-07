@@ -22,6 +22,7 @@ class EditorHandoffInput:
     finished_video_id: str
     package_format: str = "zip"
     assets: list[EditorHandoffAsset] = field(default_factory=list)
+    effects: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,10 @@ class EditorHandoffBuilder:
                 "format": source.package_format,
                 "assets": assets_manifest,
                 "artifact_ids": [asset.artifact_id for asset in source.assets],
+                "effects": source.effects,
             }
+            if source.effects:
+                package_json.dump_json(root / "effects.json", source.effects)
             package_json.dump_json(root / "manifest.json", manifest)
             zip_path = Path(directory) / f"{source.finished_video_id}-editor-handoff.zip"
             package_json.zip_root(root, zip_path)

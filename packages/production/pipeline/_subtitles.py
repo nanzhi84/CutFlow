@@ -8,6 +8,12 @@ from pathlib import Path
 _ASS_MARGIN_L = 80
 _ASS_MARGIN_R = 80
 _ASS_WRAP_BREAK_CHARS = set("，,、：:；;。！？!? ")
+_OVERLAY_STYLE_ALIASES = {
+    "emphasis": "Emphasis",
+    "pop": "Pop",
+    "warning": "Warning",
+    "soft": "Soft",
+}
 
 
 def ass_time(seconds: float) -> str:
@@ -85,6 +91,67 @@ def ass_wrap_text(
     return "\n".join(wrapped)
 
 
+def _ass_color(value: str | None, fallback: str) -> str:
+    text = str(value or fallback).strip()
+    if text.startswith("#"):
+        text = text[1:]
+    if len(text) != 6:
+        text = fallback.lstrip("#")
+    try:
+        red = int(text[0:2], 16)
+        green = int(text[2:4], 16)
+        blue = int(text[4:6], 16)
+    except ValueError:
+        red, green, blue = (255, 255, 255)
+    return f"&H00{blue:02X}{green:02X}{red:02X}"
+
+
+def _ass_outline(value, fallback: float = 4.0) -> str:
+    try:
+        outline = max(0.0, float(value))
+    except (TypeError, ValueError):
+        outline = fallback
+    return f"{outline:g}"
+
+
+def _overlay_style_name(value: object) -> str:
+    return _OVERLAY_STYLE_ALIASES.get(str(value or "").strip().lower(), "Emphasis")
+
+
+def _overlay_style_rows(
+    *,
+    font_name: str,
+    font_size: int,
+    margin_v: int,
+    subtitle: dict,
+) -> list[str]:
+    emphasis_primary = _ass_color(subtitle.get("emphasis_primary_color"), "#FFFF00")
+    emphasis_outline = _ass_color(subtitle.get("emphasis_outline_color"), "#000000")
+    return [
+        (
+            f"Style: Emphasis,{font_name},{font_size},{emphasis_primary},&H000000FF,"
+            f"{emphasis_outline},&H64000000,1,0,0,0,100,100,0,0,1,"
+            f"{_ass_outline(subtitle.get('outline'), 4.0)},1,8,"
+            f"{_ASS_MARGIN_L},{_ASS_MARGIN_R},{margin_v},1"
+        ),
+        (
+            f"Style: Pop,{font_name},{font_size},{_ass_color('#FFFFFF', '#FFFFFF')},&H000000FF,"
+            f"{_ass_color('#175CFF', '#175CFF')},&H64000000,1,0,0,0,100,100,0,0,1,5,1,8,"
+            f"{_ASS_MARGIN_L},{_ASS_MARGIN_R},{margin_v},1"
+        ),
+        (
+            f"Style: Warning,{font_name},{font_size},{_ass_color('#FFE15A', '#FFE15A')},&H000000FF,"
+            f"{_ass_color('#8A1F11', '#8A1F11')},&H64000000,1,0,0,0,100,100,0,0,1,5,1,8,"
+            f"{_ASS_MARGIN_L},{_ASS_MARGIN_R},{margin_v},1"
+        ),
+        (
+            f"Style: Soft,{font_name},{font_size},{_ass_color('#F4F1E8', '#F4F1E8')},&H000000FF,"
+            f"{_ass_color('#2A2A2A', '#2A2A2A')},&H64000000,1,0,0,0,100,100,0,0,1,3,1,8,"
+            f"{_ASS_MARGIN_L},{_ASS_MARGIN_R},{margin_v},1"
+        ),
+    ]
+
+
 def write_ass_subtitles(
     output_path: Path,
     *,
@@ -127,17 +194,23 @@ def write_ass_subtitles(
             "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"
         ),
         (
-            f"Style: Default,{resolved_font},{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H64000000,"
-            f"1,0,0,0,100,100,0,0,1,4,1,2,{_ASS_MARGIN_L},{_ASS_MARGIN_R},{margin_v},1"
+            f"Style: Default,{resolved_font},{font_size},"
+            f"{_ass_color(subtitle.get('primary_color'), '#FFFFFF')},&H000000FF,"
+            f"{_ass_color(subtitle.get('outline_color'), '#000000')},&H64000000,"
+            f"1,0,0,0,100,100,0,0,1,{_ass_outline(subtitle.get('outline'), 4.0)},"
+            f"1,2,{_ASS_MARGIN_L},{_ASS_MARGIN_R},{margin_v},1"
         ),
     ]
     # The Emphasis style row is emitted ONLY when there are overlay events. Without
     # overlays, the subtitle style table stays unchanged. Yellow, larger, top-centered.
     if overlay_events:
-        lines.append(
-            f"Style: Emphasis,{resolved_font},{emphasis_size},&H0000FFFF,&H000000FF,"
-            f"&H00000000,&H64000000,1,0,0,0,100,100,0,0,1,4,1,8,"
-            f"{_ASS_MARGIN_L},{_ASS_MARGIN_R},{emphasis_margin_v},1"
+        lines.extend(
+            _overlay_style_rows(
+                font_name=resolved_font,
+                font_size=emphasis_size,
+                margin_v=emphasis_margin_v,
+                subtitle=subtitle,
+            )
         )
     lines += [
         "",
@@ -180,7 +253,9 @@ def write_ass_subtitles(
             "Dialogue: 1,"
             f"{ass_time(float(event.get('start', 0) or 0))},"
             f"{ass_time(float(event.get('end', 0) or 0))},"
-            f"Emphasis,,0,0,0,,{text}"
+            f"{_overlay_style_name(event.get('style'))},,0,0,0,,"
+            r"{\fad(80,120)\t(0,180,\fscx108\fscy108)}"
+            f"{text}"
         )
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

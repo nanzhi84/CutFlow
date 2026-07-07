@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
@@ -25,12 +26,19 @@ with workflow.unsafe.imports_passed_through():
     )
     from packages.core.contracts import ErrorCode, Job, RunStatus, WorkflowRun, WorkflowTemplate
     from packages.core.storage import Repository
-    from packages.core.workflow.runtime import NodeExecutionError, WorkflowRuntimeSettings
+    from packages.core.workflow.runtime import (
+        NodeExecutionError,
+        WorkflowRuntimeSettings,
+        load_workflow_runtime_settings,
+    )
     from packages.production.pipeline import LocalRuntimeAdapter, ReusePlan
     from packages.production.sqlalchemy_repository import SqlAlchemyProductionRepository
 
 
 WORKFLOW_TYPE = "DigitalHumanVideoWorkflow"
+CASE_ADMISSION_WORKFLOW_TYPE = "CaseRunAdmissionWorkflow"
+CASE_ADMISSION_WORKFLOW_ID_PREFIX = "case-run-admission:"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -99,11 +107,17 @@ def configure_temporal_activity_context(context: TemporalActivityContext) -> Non
 
 
 def temporal_workflows() -> list[type]:
-    return [DigitalHumanVideoWorkflow]
+    return [DigitalHumanVideoWorkflow, CaseRunAdmissionWorkflow]
 
 
 def temporal_activities() -> list:
-    return [apply_reuse_plan, run_node, mark_run_cancelled, mark_run_failed]
+    return [
+        apply_reuse_plan,
+        run_node,
+        mark_run_cancelled,
+        mark_run_failed,
+        admit_case_runs,
+    ]
 
 
 # A long node (e.g. LipSync) blocks the activity thread for minutes, so the
@@ -122,6 +136,8 @@ NODE_HEARTBEAT_TIMEOUT_SECONDS = 90
 TEMPORAL_CONNECT_TIMEOUT_SECONDS = 10.0
 TEMPORAL_RPC_TIMEOUT = timedelta(seconds=30)
 TEMPORAL_CALL_TIMEOUT_SECONDS = 45.0
+CASE_ADMISSION_POLL_SECONDS = 30.0
+CASE_ADMISSION_CONTINUE_AS_NEW_CYCLES = 500
 
 
 def _context() -> TemporalActivityContext:
@@ -209,6 +225,43 @@ class DigitalHumanVideoWorkflow:
         )
         self.current_status = RunStatus.cancelled.value
         return {"run_id": run_id, "status": result["run_status"]}
+
+
+@workflow.defn(name=CASE_ADMISSION_WORKFLOW_TYPE)
+class CaseRunAdmissionWorkflow:
+    """Per-case FIFO admission controller for long-running batch production."""
+
+    def __init__(self) -> None:
+        self.poke_requested = False
+        self.current_summary: dict[str, Any] = {}
+
+    @workflow.run
+    async def run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        case_id = str(payload["case_id"])
+        cycles = 0
+        while True:
+            self.poke_requested = False
+            self.current_summary = await workflow.execute_activity(
+                "admit_case_runs",
+                {"case_id": case_id},
+                start_to_close_timeout=timedelta(minutes=5),
+                retry_policy=TemporalRetryPolicy(maximum_attempts=3),
+            )
+            cycles += 1
+            if cycles >= CASE_ADMISSION_CONTINUE_AS_NEW_CYCLES:
+                workflow.continue_as_new({"case_id": case_id})
+            await workflow.wait_condition(
+                lambda: self.poke_requested,
+                timeout=timedelta(seconds=CASE_ADMISSION_POLL_SECONDS),
+            )
+
+    @workflow.signal(name="poke")
+    async def poke(self, payload: dict[str, Any] | None = None) -> None:
+        self.poke_requested = True
+
+    @workflow.query(name="summary")
+    def summary(self) -> dict[str, Any]:
+        return dict(self.current_summary)
 
 
 def _retry_policy(policy: dict[str, Any]) -> TemporalRetryPolicy:
@@ -350,6 +403,90 @@ def mark_run_failed(payload: dict[str, Any]) -> dict[str, Any]:
         reset_observability_context(token)
 
 
+@activity.defn(name="admit_case_runs")
+def admit_case_runs(payload: dict[str, Any]) -> dict[str, Any]:
+    ctx = _context()
+    case_id = str(payload["case_id"])
+    if ctx.production_repository is None:
+        return {
+            "case_id": case_id,
+            "admitted_run_ids": [],
+            "active_count": 0,
+            "queued_remaining": 0,
+        }
+    settings = load_workflow_runtime_settings()
+    summary = ctx.production_repository.admit_case_runs(
+        case_id=case_id,
+        max_inflight=settings.case_max_inflight_runs,
+    )
+    admitted = list(summary.get("admitted") or [])
+    admitted_run_ids: list[str] = []
+    start_error_run_ids: list[str] = []
+    for job, run in admitted:
+        try:
+            asyncio.run(_start_admitted_workflow(settings, job=job, run=run))
+            ctx.production_repository.mark_run_started(run.id)
+            admitted_run_ids.append(run.id)
+        except Exception:  # noqa: BLE001 - keep admitted rows retryable on transient start errors.
+            logger.warning(
+                "Temporal start failed for admitted case run; leaving run admitted for retry",
+                extra={"run_id": run.id, "case_id": case_id},
+                exc_info=True,
+            )
+            start_error_run_ids.append(run.id)
+            record_temporal_activity_failure()
+    return {
+        "case_id": case_id,
+        "admitted_run_ids": admitted_run_ids,
+        "start_error_run_ids": start_error_run_ids,
+        "active_count": int(summary.get("active_count") or 0) + len(admitted_run_ids),
+        "queued_remaining": max(
+            0, int(summary.get("queued_remaining") or 0) - len(admitted_run_ids)
+        ),
+    }
+
+
+async def _start_admitted_workflow(
+    settings: WorkflowRuntimeSettings, *, job: Job, run: WorkflowRun
+) -> None:
+    client = await asyncio.wait_for(
+        Client.connect(
+            settings.temporal_address,
+            namespace=settings.temporal_namespace,
+        ),
+        timeout=TEMPORAL_CONNECT_TIMEOUT_SECONDS,
+    )
+    try:
+        await client.start_workflow(
+            WORKFLOW_TYPE,
+            _workflow_payload(job=job, run=run, template=_template_from_run(run), reuse_plan=None),
+            id=run.id,
+            task_queue=settings.temporal_task_queue,
+            rpc_timeout=TEMPORAL_RPC_TIMEOUT,
+        )
+    except WorkflowAlreadyStartedError:
+        return
+
+
+async def signal_case_admission_with_client(
+    client: Client,
+    settings: WorkflowRuntimeSettings,
+    case_id: str,
+) -> None:
+    workflow_id = f"{CASE_ADMISSION_WORKFLOW_ID_PREFIX}{case_id}"
+    try:
+        await client.start_workflow(
+            CASE_ADMISSION_WORKFLOW_TYPE,
+            {"case_id": case_id},
+            id=workflow_id,
+            task_queue=settings.temporal_task_queue,
+            rpc_timeout=TEMPORAL_RPC_TIMEOUT,
+        )
+    except WorkflowAlreadyStartedError:
+        handle = client.get_workflow_handle(workflow_id)
+        await handle.signal("poke", {"case_id": case_id}, rpc_timeout=TEMPORAL_RPC_TIMEOUT)
+
+
 def _bind_activity_context(repository: Repository, run_id: str, node_id: str | None = None):
     run = repository.runs.get(run_id)
     return bind_observability_context(
@@ -394,6 +531,9 @@ class TemporalRuntimeAdapter:
                 _workflow_payload(job=job, run=run, template=template, reuse_plan=None)
             )
         )
+
+    def signal_case_admission(self, case_id: str) -> None:
+        self._run(self._signal_case_admission(case_id))
 
     def resume_run(
         self,
@@ -462,6 +602,10 @@ class TemporalRuntimeAdapter:
             # never saw the response). Treat as success and let the worker drive
             # the run forward — do NOT fail/recreate it.
             return
+
+    async def _signal_case_admission(self, case_id: str) -> None:
+        client = await self._client()
+        await signal_case_admission_with_client(client, self.settings, case_id)
 
     async def _cancel_workflow(self, run_id: str, *, force: bool, reason: str | None) -> None:
         client = await self._client()

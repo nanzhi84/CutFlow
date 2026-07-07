@@ -77,6 +77,8 @@ def _broll_segments_from_timeline(timeline: dict, broll_plan: dict, fps: int) ->
                 "source_end": source_end_frame / fps,
                 "pad_start": pad_start,
                 "pad_end": pad_end,
+                "fade_frames": track.get("fade_frames", original.get("fade_frames")),
+                "placement": track.get("placement", original.get("placement")),
             }
         )
         rendered_segments.append(original)

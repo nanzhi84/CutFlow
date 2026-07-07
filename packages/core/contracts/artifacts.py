@@ -28,6 +28,11 @@ class SubtitleStylePlan(ContractModel):
     font_id: str | None = None
     font_size: int | None = None
     position: dict[str, float] | None = None
+    primary_color: str | None = None
+    outline_color: str | None = None
+    outline: float | None = None
+    emphasis_primary_color: str | None = None
+    emphasis_outline_color: str | None = None
 
 
 class BgmPlan(ContractModel):
@@ -354,6 +359,8 @@ class BrollOverlay(ContractModel):
     source_end_frame: int | None = None
     pad_start: float = 0.0
     pad_end: float = 0.0
+    fade_frames: int | None = Field(default=None, ge=0)
+    placement: Literal["fullscreen", "pip_fixed"] | None = None
     reason: str
     confidence: float
     matched_keywords: list[str] = Field(default_factory=list)
@@ -379,13 +386,14 @@ class OverlayEvent(ContractModel):
 
     由 ``CreativeIntentArtifact.emphasis`` 的关键短语匹配旁白句换算而来，渲染层把它
     叠成一条独立样式的字幕。``text`` 是要强调的短语本身（非整句，避免与底部正文重复）。
-    本期只有"强调"一种样式，故不带 style 判别字段；未来花字做多样式分流时再连同渲染层
-    的消费一起加，避免现在留一个写了不读的死字段。
+    ``style`` 是渲染端白名单字符串；未知值回落到 emphasis，避免 prompt/旧数据漂移
+    直接破坏字幕烧录。
     """
 
     start: float
     end: float
     text: str
+    style: str = "emphasis"
 
 
 class StylePlanArtifact(ContractModel):
@@ -407,6 +415,8 @@ class TimelineTrackSegment(ContractModel):
     source_end_frame: int | None = None
     pad_start: float = 0.0
     pad_end: float = 0.0
+    fade_frames: int | None = Field(default=None, ge=0)
+    placement: Literal["fullscreen", "pip_fixed"] | None = None
 
 
 class TimelinePlanArtifact(ContractModel):

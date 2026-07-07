@@ -488,6 +488,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Run Overview */
+        get: operations["run_overview_api_runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/batch/feasibility": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Batch Feasibility */
+        get: operations["batch_feasibility_api_cases__case_id__batch_feasibility_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/digital-human-video": {
         parameters: {
             query?: never;
@@ -1681,6 +1715,23 @@ export interface paths {
         };
         /** Case Finished Videos */
         get: operations["case_finished_videos_api_cases__case_id__finished_videos_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/finished-videos/downloads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Case Finished Video Downloads */
+        get: operations["case_finished_video_downloads_api_cases__case_id__finished_videos_downloads_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2935,6 +2986,40 @@ export interface components {
              */
             use_my_defaults: boolean;
         };
+        /** BatchFeasibilityResponse */
+        BatchFeasibilityResponse: {
+            /** Caseid */
+            caseId: string;
+            /** Estimatedaudiodurationsec */
+            estimatedAudioDurationSec: number;
+            /** Portraitdurationsec */
+            portraitDurationSec: number;
+            /** Cleanbrollcandidatecount */
+            cleanBrollCandidateCount: number;
+            /** Estimatedbrollwindowcount */
+            estimatedBrollWindowCount: number;
+            /** Portraitok */
+            portraitOk: boolean;
+            /** Brollok */
+            brollOk: boolean;
+            /** Notes */
+            notes?: string[];
+            /**
+             * Request Id
+             * @default req_local
+             */
+            request_id: string;
+        };
+        /** BatchFinishedVideoDownloadResponse */
+        BatchFinishedVideoDownloadResponse: {
+            /** Items */
+            items: components["schemas"]["FinishedVideoDownloadItem"][];
+            /**
+             * Request Id
+             * @default req_local
+             */
+            request_id: string;
+        };
         /** BatchGenerationResponse */
         BatchGenerationResponse: {
             /** Results */
@@ -2991,7 +3076,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "created" | "failed";
+            status: "created" | "queued" | "failed";
             /** Error */
             error?: string | null;
         };
@@ -5078,6 +5163,27 @@ export interface components {
             video_version?: components["schemas"]["VideoVersion"] | null;
             /** Publish Records */
             publish_records?: components["schemas"]["PublishRecord"][];
+        };
+        /** FinishedVideoDownloadItem */
+        FinishedVideoDownloadItem: {
+            /** Finishedvideoid */
+            finishedVideoId: string;
+            /** Title */
+            title?: string | null;
+            /** Url */
+            url: string;
+            /**
+             * Expiresat
+             * Format: date-time
+             */
+            expiresAt: string;
+            /**
+             * Contenttype
+             * @default video/mp4
+             */
+            contentType: string;
+            /** Filename */
+            filename: string;
         };
         /**
          * GeneratePublishCopyRequest
@@ -8253,6 +8359,32 @@ export interface components {
              */
             request_id: string;
         };
+        /** RunOverviewResponse */
+        RunOverviewResponse: {
+            /** Items */
+            items: components["schemas"]["RunCard"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Total Hint */
+            total_hint?: number | null;
+            /** Statuscounts */
+            statusCounts?: {
+                [key: string]: number;
+            };
+            /** Failurecodecounts */
+            failureCodeCounts?: {
+                [key: string]: number;
+            };
+            /** Degradationcodecounts */
+            degradationCodeCounts?: {
+                [key: string]: number;
+            };
+            /**
+             * Request Id
+             * @default req_local
+             */
+            request_id: string;
+        };
         /** RunPublicReportArtifact */
         RunPublicReportArtifact: {
             /** Run Id */
@@ -10199,6 +10331,73 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PageResponse_RunCard_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_overview_api_runs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+                status?: components["schemas"]["RunStatus"] | null;
+                ids?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunOverviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    batch_feasibility_api_cases__case_id__batch_feasibility_get: {
+        parameters: {
+            query?: {
+                estimated_audio_duration_sec?: number;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchFeasibilityResponse"];
                 };
             };
             /** @description Validation Error */
@@ -12890,6 +13089,39 @@ export interface operations {
             };
         };
     };
+    case_finished_video_downloads_api_cases__case_id__finished_videos_downloads_get: {
+        parameters: {
+            query?: {
+                ids?: string | null;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchFinishedVideoDownloadResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     finished_video_detail_api_finished_videos__id__get: {
         parameters: {
             query?: never;
@@ -13080,7 +13312,9 @@ export interface operations {
     };
     artifact_download_api_artifacts__artifact_id__download_get: {
         parameters: {
-            query?: never;
+            query?: {
+                disposition?: string | null;
+            };
             header?: never;
             path: {
                 artifact_id: string;

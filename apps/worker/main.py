@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from concurrent.futures import ThreadPoolExecutor
 
 from temporalio.client import Client
@@ -24,8 +25,10 @@ from packages.core.storage.secret_store import LocalSecretStore
 from packages.core.storage.sqlalchemy_secrets import SqlAlchemySecretStore
 from packages.core.workflow import load_workflow_runtime_settings
 from packages.core.workflow.temporal_adapter import (
+    CASE_ADMISSION_POLL_SECONDS,
     TemporalActivityContext,
     configure_temporal_activity_context,
+    signal_case_admission_with_client,
     temporal_activities,
     temporal_workflows,
 )
@@ -86,7 +89,7 @@ async def async_main() -> None:
         task_queue=settings.temporal_task_queue,
         workflows=temporal_workflows(),
         activities=temporal_activities(),
-        activity_executor=ThreadPoolExecutor(max_workers=8),
+        activity_executor=ThreadPoolExecutor(max_workers=settings.worker_max_activities),
     )
     logging.getLogger("cutagent.worker").info(
         "Cutagent Temporal worker ready: "
@@ -95,9 +98,44 @@ async def async_main() -> None:
             "event": "worker_ready",
             "temporal_namespace": settings.temporal_namespace,
             "temporal_task_queue": settings.temporal_task_queue,
+            "worker_max_activities": settings.worker_max_activities,
         },
     )
-    await worker.run()
+    admission_recovery_task = asyncio.create_task(
+        _admission_recovery_loop(client, settings, production_repository)
+    )
+    try:
+        await worker.run()
+    finally:
+        admission_recovery_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await admission_recovery_task
+
+
+async def _admission_recovery_loop(
+    client: Client,
+    settings,
+    production_repository: SqlAlchemyProductionRepository,
+) -> None:
+    logger = logging.getLogger("cutagent.worker")
+    while True:
+        try:
+            for case_id in production_repository.case_ids_with_admitted_runs(limit=100):
+                try:
+                    await signal_case_admission_with_client(client, settings, case_id)
+                except Exception:
+                    logger.warning(
+                        "Failed to recover case admission controller",
+                        extra={"event": "case_admission_recovery_failed", "case_id": case_id},
+                        exc_info=True,
+                    )
+        except Exception:
+            logger.warning(
+                "Failed to scan admitted case runs",
+                extra={"event": "case_admission_scan_failed"},
+                exc_info=True,
+            )
+        await asyncio.sleep(float(CASE_ADMISSION_POLL_SECONDS))
 
 
 def main() -> None:
