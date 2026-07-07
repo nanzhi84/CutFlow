@@ -381,6 +381,7 @@ def validate_selection(
     candidates: IndexedCandidates,
     bgm_enabled: bool,
     retrieval_topk_by_window: dict[str, list[str]] | None = None,
+    allow_broll_asset_diversity_reuse: bool = False,
 ) -> list[str]:
     """Local hard constraints on the LLM's ID-only selection.
 
@@ -451,9 +452,8 @@ def validate_selection(
     if missing:
         errors.append(f"portrait slots not covered: {', '.join(missing)}")
 
-    # B-roll: valid optional window + unique candidate/asset/diversity. The slot
-    # geometry is authoritative; the agent may skip any window but cannot assign a
-    # source span that is shorter than the window's length.
+    # B-roll: valid optional window + unique candidate. Insert mode also keeps
+    # asset/diversity unique; full coverage may reuse long assets across windows.
     seen_broll: set[str] = set()
     seen_broll_candidates: set[str] = set()
     broll_asset_slots: dict[str, str] = {}
@@ -492,26 +492,27 @@ def validate_selection(
                 f"broll candidate '{choice.candidate_id}' source is too short: has "
                 f"{available} frames but slot '{choice.slot_id}' requires {need} frames"
             )
-        asset_key = _as_str(cand.get("asset_id"))
-        if asset_key:
-            prior_slot = broll_asset_slots.get(asset_key)
-            if prior_slot is not None:
-                errors.append(
-                    f"broll asset_id '{asset_key}' is assigned to more than one slot "
-                    f"('{prior_slot}' and '{choice.slot_id}'); choose a different asset"
-                )
-            else:
-                broll_asset_slots[asset_key] = choice.slot_id
-        diversity_key = _as_str(_meta(cand).get("diversity_key"))
-        if diversity_key:
-            prior_slot = broll_diversity_slots.get(diversity_key)
-            if prior_slot is not None:
-                errors.append(
-                    f"broll diversity_key '{diversity_key}' is assigned to more than one slot "
-                    f"('{prior_slot}' and '{choice.slot_id}'); choose a different scene cluster"
-                )
-            else:
-                broll_diversity_slots[diversity_key] = choice.slot_id
+        if not allow_broll_asset_diversity_reuse:
+            asset_key = _as_str(cand.get("asset_id"))
+            if asset_key:
+                prior_slot = broll_asset_slots.get(asset_key)
+                if prior_slot is not None:
+                    errors.append(
+                        f"broll asset_id '{asset_key}' is assigned to more than one slot "
+                        f"('{prior_slot}' and '{choice.slot_id}'); choose a different asset"
+                    )
+                else:
+                    broll_asset_slots[asset_key] = choice.slot_id
+            diversity_key = _as_str(_meta(cand).get("diversity_key"))
+            if diversity_key:
+                prior_slot = broll_diversity_slots.get(diversity_key)
+                if prior_slot is not None:
+                    errors.append(
+                        f"broll diversity_key '{diversity_key}' is assigned to more than one slot "
+                        f"('{prior_slot}' and '{choice.slot_id}'); choose a different scene cluster"
+                    )
+                else:
+                    broll_diversity_slots[diversity_key] = choice.slot_id
 
     # Font / BGM: an explicit choice must reference a real candidate; null is fine
     # (empty candidate pool → default font / no BGM).
@@ -543,6 +544,7 @@ def deterministic_selection(
     bgm_enabled: bool,
     max_inserts: int,
     retrieval_topk_by_window: dict[str, list[str]] | None = None,
+    allow_broll_asset_diversity_reuse: bool = False,
 ) -> EditingSelection:
     """Score-ranked default selection equivalent to the deterministic nodes.
 
@@ -608,10 +610,14 @@ def deterministic_selection(
                     if cid in candidates.broll_by_id
                     if cid not in used_broll_candidates
                     and _broll_source_frames_available(candidates.broll_by_id[cid]) >= need
-                    and _as_str(candidates.broll_by_id[cid].get("asset_id"))
-                    not in used_broll_assets
                     and (
-                        not _as_str(_meta(candidates.broll_by_id[cid]).get("diversity_key"))
+                        allow_broll_asset_diversity_reuse
+                        or _as_str(candidates.broll_by_id[cid].get("asset_id"))
+                        not in used_broll_assets
+                    )
+                    and (
+                        allow_broll_asset_diversity_reuse
+                        or not _as_str(_meta(candidates.broll_by_id[cid]).get("diversity_key"))
                         or _as_str(_meta(candidates.broll_by_id[cid]).get("diversity_key"))
                         not in used_broll_diversity
                     )
@@ -655,6 +661,7 @@ def select_with_repair(
     bgm_enabled: bool,
     max_repair_attempts: int,
     retrieval_topk_by_window: dict[str, list[str]] | None = None,
+    allow_broll_asset_diversity_reuse: bool = False,
 ) -> tuple[EditingSelection, list[dict], list[str]]:
     """Drive one LLM selection + up to ``max_repair_attempts`` local repairs.
 
@@ -678,6 +685,7 @@ def select_with_repair(
             candidates=candidates,
             bgm_enabled=bgm_enabled,
             retrieval_topk_by_window=retrieval_topk_by_window,
+            allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
         )
         trace.append({"attempt": attempt, "error_count": len(errors), "errors": errors})
         if not errors:

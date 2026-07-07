@@ -27,6 +27,9 @@ const NODE_LABELS: Record<string, string> = {
   SubtitleAndBgmMix: "混合字幕与配乐",
   ExportFinishedVideo: "导出成片",
   FinalizeRunReport: "生成运行报告",
+  BrollCoveragePlanning: "规划 B-roll 覆盖",
+  BrollTimelinePlanning: "编排 B-roll 时间线",
+  BrollRenderBase: "渲染 B-roll 底片",
   SeedanceGenerateVideo: "Seedance 文生视频",
   ExportSeedanceVideo: "导出 Seedance 成片",
 };
@@ -74,6 +77,21 @@ const TEMPLATE_NODE_SEQUENCES: Record<string, string[]> = {
     "PortraitTrackBuild",
     "LipSync",
     "RenderFinalTimeline",
+    "SubtitleAndBgmMix",
+    "ExportFinishedVideo",
+    "FinalizeRunReport",
+  ],
+  broll_only_v1: [
+    "ValidateRequest",
+    "LoadCaseContext",
+    "ResolveCreativeIntent",
+    "TTS",
+    "MaterialPackPlanning",
+    "NarrationAlignment",
+    "BrollCoveragePlanning",
+    "StylePlanning",
+    "BrollTimelinePlanning",
+    "BrollRenderBase",
     "SubtitleAndBgmMix",
     "ExportFinishedVideo",
     "FinalizeRunReport",
@@ -133,6 +151,7 @@ export function buildStages(nodes: NodeRun[]): StageView[] {
     let status = "pending";
     if (statuses.some((s) => s === "failed")) status = "failed";
     else if (statuses.some((s) => s === "running" || s === "admitted")) status = "running";
+    else if (statuses.length > 0 && statuses.every((s) => s === "skipped")) status = "skipped";
     else if (statuses.length > 0 && statuses.every((s) => ["succeeded", "skipped", "degraded"].includes(s))) {
       status = statuses.some((s) => s === "degraded") ? "degraded" : "succeeded";
     }

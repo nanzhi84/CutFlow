@@ -9,6 +9,7 @@ from packages.core.contracts import (
 )
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline.nodes._broll_policy import broll_full_coverage_enabled
 
 
 def run(ctx: NodeContext) -> NodeOutput:
@@ -28,7 +29,11 @@ def run(ctx: NodeContext) -> NodeOutput:
             raise NodeExecutionError(
                 ErrorCode.validation_missing_voice, "Voice is missing or disabled."
             )
-    if request.lipsync.enabled and "LipSync" in node_ids:
+    if (
+        request.lipsync.enabled
+        and "LipSync" in node_ids
+        and not broll_full_coverage_enabled(request)
+    ):
         profile = repository.provider_profiles.get(request.lipsync.provider_profile_id)
         if profile is None or profile.capability != "lipsync.video":
             raise NodeExecutionError(

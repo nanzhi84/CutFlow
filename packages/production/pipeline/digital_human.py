@@ -50,6 +50,7 @@ from packages.core.storage.object_store import get_object_store
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError, NodeOutput, WorkflowRuntimeAdapter, manifest_hash
 from packages.production.pipeline.node_sequence import (
+    BROLL_ONLY_SEQUENCE,
     EDITING_AGENT_SEQUENCE,
     NODE_SEQUENCE,
     SEEDANCE_T2V_SEQUENCE,
@@ -91,8 +92,10 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 __all__ = [
     "NODE_SEQUENCE",
+    "BROLL_ONLY_SEQUENCE",
     "SEEDANCE_T2V_SEQUENCE",
     "EDITING_AGENT_SEQUENCE",
+    "broll_only_template",
     "digital_human_template",
     "seedance_t2v_template",
     "template_for",
@@ -117,12 +120,15 @@ NODE_HANDLERS = {
     "WindowMaterialRetrieval": nodes.window_material_retrieval.run,
     "DeterministicEditingPlanning": nodes.deterministic_editing_planning.run,
     "BrollPlanning": nodes.broll_planning.run,
+    "BrollCoveragePlanning": nodes.broll_coverage_planning.run,
     "StylePlanning": nodes.style_planning.run,
     "EditingAgentPlanning": nodes.editing_agent_planning.run,
     "TimelinePlanning": nodes.timeline_planning.run,
+    "BrollTimelinePlanning": nodes.broll_timeline_planning.run,
     "PortraitTrackBuild": nodes.portrait_track_build.run,
     "LipSync": nodes.lipsync.run,
     "RenderFinalTimeline": nodes.render_final_timeline.run,
+    "BrollRenderBase": nodes.broll_render_base.run,
     "SubtitleAndBgmMix": nodes.subtitle_and_bgm_mix.run,
     "ExportFinishedVideo": nodes.export_finished_video.run,
     "SeedanceGenerateVideo": nodes.seedance_generate_video.run,
@@ -149,7 +155,9 @@ _TIMELINE_REUSE_BREAK_NODES = {
     "WindowMaterialRetrieval",
     "DeterministicEditingPlanning",
     "BrollPlanning",
+    "BrollCoveragePlanning",
     "TimelinePlanning",
+    "BrollTimelinePlanning",
     "EditingAgentPlanning",
 }
 _MATERIAL_PACK_RETRY_POLICY = RetryPolicy(
@@ -176,6 +184,7 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
         ArtifactKind.plan_style,
     ],
     "BrollPlanning": [ArtifactKind.plan_broll],
+    "BrollCoveragePlanning": [ArtifactKind.plan_broll],
     "StylePlanning": [ArtifactKind.plan_style],
     "EditingAgentPlanning": [
         ArtifactKind.plan_media_assignment,
@@ -185,9 +194,11 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
         ArtifactKind.plan_editing_diagnostics,
     ],
     "TimelinePlanning": [ArtifactKind.plan_timeline, ArtifactKind.plan_render],
+    "BrollTimelinePlanning": [ArtifactKind.plan_timeline, ArtifactKind.plan_render],
     "PortraitTrackBuild": [ArtifactKind.video_portrait_track],
     "LipSync": [ArtifactKind.video_lipsync, ArtifactKind.lipsync_report],
     "RenderFinalTimeline": [ArtifactKind.video_rendered],
+    "BrollRenderBase": [ArtifactKind.video_rendered],
     "SubtitleAndBgmMix": [ArtifactKind.video_final, ArtifactKind.subtitle_ass],
     "ExportFinishedVideo": [
         ArtifactKind.video_finished,
@@ -278,6 +289,10 @@ def digital_human_template() -> WorkflowTemplate:
     return _build_template("digital_human_v2", "v1", NODE_SEQUENCE)
 
 
+def broll_only_template() -> WorkflowTemplate:
+    return _build_template("broll_only_v1", "v1", BROLL_ONLY_SEQUENCE)
+
+
 def seedance_t2v_template() -> WorkflowTemplate:
     return _build_template("seedance_t2v_v1", "v1", SEEDANCE_T2V_SEQUENCE)
 
@@ -288,6 +303,7 @@ def editing_agent_template() -> WorkflowTemplate:
 
 _TEMPLATE_BUILDERS = {
     "digital_human_v2": digital_human_template,
+    "broll_only_v1": broll_only_template,
     "seedance_t2v_v1": seedance_t2v_template,
     "digital_human_editing_agent_v1": editing_agent_template,
 }

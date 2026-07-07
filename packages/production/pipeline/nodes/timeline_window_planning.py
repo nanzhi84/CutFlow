@@ -397,8 +397,7 @@ def _choose_full_coverage_cut(
     lower = cursor + min_frames
     upper = min(cursor + max_frames, total_frames - min_frames)
     if upper < lower:
-        lower = min(cursor + min_frames, total_frames - 1)
-        upper = min(cursor + max_frames, total_frames - 1)
+        return total_frames, "remainder"
     natural = [
         item for frame, item in candidates.items() if lower <= frame <= upper
     ]
