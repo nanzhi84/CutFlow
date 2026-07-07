@@ -22,7 +22,6 @@ from packages.core.contracts import (
 from packages.production.pipeline import digital_human as dh
 from packages.production.pipeline import node_sequence as ns
 from packages.production.pipeline.node_sequence import (
-    BROLL_ONLY_SEQUENCE,
     EDITING_AGENT_SEQUENCE,
     NODE_SEQUENCE,
     SEEDANCE_T2V_SEQUENCE,
@@ -41,7 +40,7 @@ REGISTERED_TEMPLATE_IDS = tuple(ns.WORKFLOW_GRAPHS.keys())
 
 @pytest.mark.parametrize(
     "sequence",
-    [NODE_SEQUENCE, BROLL_ONLY_SEQUENCE, SEEDANCE_T2V_SEQUENCE, EDITING_AGENT_SEQUENCE],
+    [NODE_SEQUENCE, SEEDANCE_T2V_SEQUENCE, EDITING_AGENT_SEQUENCE],
 )
 def test_linear_template_topological_order_equals_its_sequence(sequence):
     edges = ns._linear_edges(sequence)

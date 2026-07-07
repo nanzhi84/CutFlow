@@ -140,13 +140,14 @@ def _request(
     *,
     script: str = "今天看施工前后变化。第一步先看施工前现场。",
     instruction: str | None = None,
+    broll_mode: str = "insert",
 ) -> DigitalHumanVideoRequest:
     payload = {
         "case_id": "case_demo",
         "script": script,
         "title": "案例",
         "voice": {"voice_id": "voice_sandbox"},
-        "broll": {"enabled": True, "max_inserts": 2},
+        "broll": {"enabled": True, "mode": broll_mode, "max_inserts": 2},
     }
     if instruction is not None:
         payload["edit"] = {"instruction": instruction}
@@ -291,6 +292,47 @@ def _complete_default_portrait_windows() -> dict:
         "engine": "compiler_default",
     }
     return windows
+
+
+def _full_coverage_broll_windows() -> dict:
+    return {
+        "fps": 30,
+        "total_frames": 120,
+        "portrait_windows": [],
+        "broll_windows": [
+            {
+                "window_id": "bwin_000",
+                "start_frame": 0,
+                "end_frame": 60,
+                "length_frames": 60,
+                "source_length_frames": 60,
+                "host_unit_ids": ["unit_1"],
+                "text": "施工前现场",
+            },
+            {
+                "window_id": "bwin_001",
+                "start_frame": 60,
+                "end_frame": 120,
+                "length_frames": 60,
+                "source_length_frames": 60,
+                "host_unit_ids": ["unit_1"],
+                "text": "补漆后效果",
+            },
+        ],
+        "default_assignment": {
+            "portrait": [],
+            "portrait_plan_payload": {
+                "fps": 30,
+                "total_duration": 4.0,
+                "asset_id": None,
+                "duration_sec": 4.0,
+                "segments": [],
+                "diagnostics": {"track_mode": "broll_full_coverage"},
+            },
+            "engine": "compiler_full_coverage",
+        },
+        "compile_diagnostics": {"track_mode": "broll_full_coverage"},
+    }
 
 
 def _annotate_broll(repository: Repository, *, asset_id: str = "broll_a") -> None:
@@ -1471,6 +1513,43 @@ def test_deterministic_editing_planning_does_not_fallback_when_broll_topk_is_sta
     assert media_assignment["broll"] == []
     assert "broll_assignment_source" not in media_assignment["diagnostics"]
     assert "missing_retrieval_broll" not in media_assignment["diagnostics"]
+
+
+def test_deterministic_editing_planning_hard_fails_full_coverage_missing_window(
+    tmp_path,
+):
+    adapter = _adapter(tmp_path)
+    retrieval = {
+        "candidates_by_window": {
+            "bwin_000": [{"candidate_id": "bc_000", "retrieval_score": 0.9}],
+            "bwin_001": [],
+        },
+        "diagnostics": {},
+    }
+    ctx = _ctx(
+        adapter,
+        "DeterministicEditingPlanning",
+        {
+            ArtifactKind.plan_material_pack: _artifact(ArtifactKind.plan_material_pack, _material()),
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                _full_coverage_broll_windows(),
+            ),
+            ArtifactKind.plan_window_material_retrieval: _artifact(
+                ArtifactKind.plan_window_material_retrieval,
+                retrieval,
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+            ArtifactKind.creative_intent: _artifact(ArtifactKind.creative_intent, {"intent": {}}),
+        },
+        request=_request(broll_mode="full_coverage"),
+    )
+
+    with pytest.raises(NodeExecutionError) as exc:
+        nodes.deterministic_editing_planning.run(ctx)
+
+    assert exc.value.error.code == ErrorCode.material_insufficient_broll
+    assert exc.value.error.details["missing_broll_window_ids"] == ["bwin_001"]
 
 
 def test_agent_validator_rejects_broll_choice_outside_window_topk():

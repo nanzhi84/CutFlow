@@ -21,6 +21,7 @@ from packages.production.pipeline._materialize import (
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
 from packages.production.pipeline.nodes._broll_policy import (
+    broll_full_coverage_enabled,
     broll_generic_coverage_enabled,
     broll_recency_penalties,
 )
@@ -71,10 +72,11 @@ def run(ctx: NodeContext) -> NodeOutput:
         assignment=portrait_assignment,
         portrait_payload=portrait_payload,
     )
+    broll_limit = _broll_assignment_limit(request=state.request, windows=windows)
     broll_assignment = _assign_broll_from_retrieval(
         retrieval=retrieval,
         candidates=candidates.broll_by_id,
-        max_inserts=state.request.broll.max_inserts,
+        max_inserts=broll_limit,
     )
     broll_candidate_index = candidates
     broll_fallback_diagnostics: dict = {}
@@ -88,7 +90,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             material=material,
             windows=windows,
             units=units,
-            max_inserts=state.request.broll.max_inserts,
+            max_inserts=broll_limit,
         )
         if fallback_assignment:
             broll_assignment = fallback_assignment
@@ -104,10 +106,16 @@ def run(ctx: NodeContext) -> NodeOutput:
         candidates=broll_candidate_index,
         cut_frames=portrait_cut_frames(portrait_payload),
         enabled=state.request.broll.enabled,
-        max_inserts=state.request.broll.max_inserts,
+        max_inserts=broll_limit,
     )
     broll_degradations = []
     broll_warnings = []
+    if broll_full_coverage_enabled(state.request):
+        _ensure_full_coverage_broll(
+            windows=windows,
+            broll_payload=broll_payload,
+            broll_drops=broll_drops,
+        )
     if state.request.broll.enabled and not broll_payload.get("overlays"):
         broll_payload = BrollPlanArtifact(
             enabled=True,
@@ -402,6 +410,42 @@ def _ensure_portrait_coverage(
                 "expected_portrait_window_count": len(expected_window_ids),
                 "assigned_portrait_window_count": len(assigned_window_ids),
                 "materialized_portrait_segment_count": segment_count,
+            },
+        )
+
+
+def _broll_assignment_limit(*, request, windows: dict) -> int:
+    if broll_full_coverage_enabled(request):
+        return len([w for w in (windows.get("broll_windows") or []) if isinstance(w, dict)])
+    return request.broll.max_inserts
+
+
+def _ensure_full_coverage_broll(
+    *,
+    windows: dict,
+    broll_payload: dict,
+    broll_drops: list[dict],
+) -> None:
+    expected = {
+        str(window.get("window_id") or "")
+        for window in (windows.get("broll_windows") or [])
+        if isinstance(window, dict) and str(window.get("window_id") or "")
+    }
+    covered = {
+        str(overlay.get("window_id") or "")
+        for overlay in (broll_payload.get("overlays") or [])
+        if isinstance(overlay, dict) and str(overlay.get("window_id") or "")
+    }
+    missing = sorted(expected - covered)
+    if missing or broll_drops:
+        raise NodeExecutionError(
+            ErrorCode.material_insufficient_broll,
+            "B-roll full coverage requires every authoritative window to have material.",
+            details={
+                "missing_broll_window_ids": missing,
+                "expected_broll_window_count": len(expected),
+                "covered_broll_window_count": len(covered),
+                "broll_drops": broll_drops,
             },
         )
 

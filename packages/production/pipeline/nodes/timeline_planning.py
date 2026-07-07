@@ -10,6 +10,7 @@ from packages.production.pipeline._timeline_grid import (
     validate_timeline,
 )
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline.nodes._broll_policy import broll_full_coverage_enabled
 from packages.production.pipeline.nodes._timeline_output import timeline_output
 
 
@@ -20,12 +21,16 @@ def run(ctx: NodeContext) -> NodeOutput:
     broll_artifact = state.require(ArtifactKind.plan_broll)
     portrait = portrait_artifact.payload or {}
     broll = broll_artifact.payload or {}
+    windows = state.require(ArtifactKind.plan_timeline_windows).payload or {}
+    fps = int(windows.get("fps") or portrait.get("fps") or 30)
     duration = float(portrait.get("duration_sec", 0))
+    total_frames = max(0, int(windows.get("total_frames") or 0))
+    if duration <= 0 and broll_full_coverage_enabled(state.request):
+        duration = total_frames / fps if total_frames > 0 else 0
     if duration <= 0:
         raise NodeExecutionError(ErrorCode.render_invalid_timeline, "Timeline duration is invalid.")
-    fps = int(portrait.get("fps") or 30)
-    total_frames = max(1, round(duration * fps))
-    windows = state.require(ArtifactKind.plan_timeline_windows).payload or {}
+    if total_frames <= 0:
+        total_frames = max(1, round(duration * fps))
     broll_window_by_id = {
         str(window.get("window_id") or ""): window
         for window in (windows.get("broll_windows") or [])

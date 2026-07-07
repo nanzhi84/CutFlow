@@ -343,7 +343,7 @@ class BrollOverlay(ContractModel):
     source_end: float
     # Frame-aligned authoritative B-roll boundaries. Optional on the contract because
     # (a) the legacy reader ``broll_overlays_from_plan`` has no fps to derive them and
-    # (b) ``broll_only_v1`` shares ``BrollOverlay`` but has no portrait-cut grid. In
+    # (b) historical seconds-only overlays may have no portrait-cut grid. In
     # digital_human_v2 these fields must match the authoritative
     # ``TimelineWindowsPlan.broll_windows`` slot; TimelinePlanning fail-fasts when
     # they are missing or drift. ``pad_start``/``pad_end`` remain for legacy snapped

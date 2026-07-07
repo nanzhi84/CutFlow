@@ -130,7 +130,7 @@ def test_render_broll_montage_pads_non_frame_aligned_segments_to_exact_frames(
         artifact_path=lambda artifact: Path(artifact.local_path),
     )
 
-    # Exact frame count, or BrollRenderBase's validate_rendered_output would raise.
+    # Exact frame count, or the B-roll montage validation would raise.
     validate_rendered_output(
         output_path,
         expected_frames=total_frames,

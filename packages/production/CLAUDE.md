@@ -1,9 +1,9 @@
 # packages/production
 
-数字人视频生产引擎：执行 4 套工作流模板——`digital_human_v2`（17 节点主链）、`digital_human_editing_agent_v1`（16 节点 LLM 剪辑）、`broll_only_v1`（13 节点纯空镜）、`seedance_t2v_v1`（5 节点文生视频），以及成片的 SQL 仓储、剪映草稿包、剪辑师交接包导出。
+数字人视频生产引擎：执行 3 套工作流模板——`digital_human_v2`（18 节点主链）、`digital_human_editing_agent_v1`（18 节点 LLM 剪辑主链变体）、`seedance_t2v_v1`（5 节点文生视频）。纯 B-roll 画外音是主链的 `broll.mode="full_coverage"` 模式；成片侧包含 SQL 仓储、剪映草稿包、剪辑师交接包导出。
 
 ## 职责
-- 定义并执行四套工作流模板：`node_sequence.py` 给出四套序列（`NODE_SEQUENCE` 17 节点 / `EDITING_AGENT_SEQUENCE` 16 节点 / `BROLL_ONLY_SEQUENCE` 13 节点 / `SEEDANCE_T2V_SEQUENCE` 5 节点，外加 `WORKFLOW_TEMPLATE_NODE_COUNTS` 模板节点数）；`digital_human.py` 的 `_TEMPLATE_BUILDERS`/`template_for()` 按 `workflow_template_id` 路由四模板；`NODE_HANDLERS`（23 项，覆盖四模板全部 active 节点，`digital_human_v2` 走其中 17 个）分发到 `pipeline/nodes/` 下一文件一节点的 `run(ctx)`。
+- 定义并执行三套工作流模板：`node_sequence.py` 给出三套序列（`NODE_SEQUENCE` 18 节点 / `EDITING_AGENT_SEQUENCE` 18 节点 / `SEEDANCE_T2V_SEQUENCE` 5 节点，外加 `WORKFLOW_TEMPLATE_NODE_COUNTS` 模板节点数）；`digital_human.py` 的 `_TEMPLATE_BUILDERS`/`template_for()` 按 `workflow_template_id` 路由三模板；`NODE_HANDLERS` 分发到 `pipeline/nodes/` 下一文件一节点的 `run(ctx)`。
 - `LocalRuntimeAdapter` 是 thin engine：跑节点循环、run/node 状态机迁移（`assert_transition`）、事件/漏斗/可观测埋点、写 public+debug run report，并向节点提供共享服务（artifact 创建、media 解析、provider profile 选取、object store）。
 - resume 复用既有有效产物（`reuse.py` 校验 node_status/node_version/input_manifest_hash/schema_version/sha256），retry 则全新跑。
 - 节点产出 TYPED artifacts + provider invocation + warnings + GRADED degradations；选材落 selection ledger（`_selection.py`，驱动下一次 recency 降权）。当前 ledger 只由 `MaterialPackPlanning` 读取并写入候选 metadata，B-roll/Portrait 后续节点不再直接查 ledger。

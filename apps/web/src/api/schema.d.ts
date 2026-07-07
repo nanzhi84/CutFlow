@@ -3147,6 +3147,12 @@ export interface components {
              * @default true
              */
             enabled: boolean;
+            /**
+             * Mode
+             * @default insert
+             * @enum {string}
+             */
+            mode: "insert" | "full_coverage";
             /** Case Id */
             case_id?: string | null;
             /**

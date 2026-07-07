@@ -35,10 +35,10 @@ def run(ctx: NodeContext) -> NodeOutput:
                 ErrorCode.provider_unsupported_option,
                 "LipSync provider profile is missing or incompatible.",
             )
-    if "BrollCoveragePlanning" in node_ids and not request.broll.enabled:
+    if request.broll.mode == "full_coverage" and not request.broll.enabled:
         raise NodeExecutionError(
             ErrorCode.validation_invalid_options,
-            "B_roll must be enabled in B_roll-only mode.",
+            "B-roll must be enabled when broll.mode is full_coverage.",
         )
     artifact = ctx.artifact(
         ArtifactKind.validated_production_spec,

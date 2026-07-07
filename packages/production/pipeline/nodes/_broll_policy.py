@@ -1,10 +1,4 @@
-"""Shared b-roll selection policy helpers.
-
-Single source of truth for the downstream ``include_generic_coverage`` decision
-so BrollPlanning and BrollCoveragePlanning cannot drift apart. MaterialPack is
-only the hard eligibility pool after #160 Stage 2; it does not run semantic
-retrieval or generic-coverage ranking.
-"""
+"""Shared b-roll selection policy helpers."""
 
 from __future__ import annotations
 
@@ -48,12 +42,11 @@ def broll_recency_penalties(
 def broll_generic_coverage_enabled(request: DigitalHumanVideoRequest) -> bool:
     """Whether person-free clean clips with no keyword overlap may fill b-roll.
 
-    ``broll_only_v1`` forces it on (its whole purpose is full b-roll coverage);
-    every other template follows ``BrollOptions.allow_generic_coverage`` (default
-    on). The person/lip-sync gates and the keyword floor for *matched* clips are
-    unaffected — this only governs whether the no-overlap fallback is offered.
+    The person/lip-sync gates and the keyword floor for *matched* clips are
+    unaffected; this only governs whether the no-overlap fallback is offered.
     """
-    return (
-        request.workflow_template_id == "broll_only_v1"
-        or request.broll.allow_generic_coverage
-    )
+    return request.broll.allow_generic_coverage
+
+
+def broll_full_coverage_enabled(request: DigitalHumanVideoRequest) -> bool:
+    return request.broll.enabled and request.broll.mode == "full_coverage"

@@ -10,6 +10,7 @@ from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.planning.editing import (
     TIMELINE_FPS,
     BoundaryConstraints,
+    frame_index,
     plan_boundary_timeline,
 )
 from packages.planning.material import (
@@ -19,6 +20,15 @@ from packages.planning.material import (
 )
 from packages.production.pipeline._narration_units import build_planner_narration_units
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline.nodes._broll_policy import broll_full_coverage_enabled
+
+
+_FULL_COVERAGE_CUT_PRIORITY = {
+    "audio_pause": 0,
+    "safe_cut": 1,
+    "unit_boundary": 2,
+    "fallback": 3,
+}
 
 
 def run(ctx: NodeContext) -> NodeOutput:
@@ -28,6 +38,23 @@ def run(ctx: NodeContext) -> NodeOutput:
     boundary = state.require(ArtifactKind.plan_narration_boundary).payload or {}
     raw_units = narration.get("units", []) or []
     duration = max([float(unit.get("end", 0)) for unit in raw_units] or [1.0])
+
+    planner_units = build_planner_narration_units(
+        raw_units=raw_units,
+        source=str(narration.get("source") or ""),
+        script=state.request.script,
+        duration=duration,
+    )
+    audio_pauses = boundary.get("pause_windows", []) or []
+
+    if state.request.broll.mode == "full_coverage" and broll_full_coverage_enabled(state.request):
+        return _full_coverage_output(
+            ctx=ctx,
+            planner_units=planner_units,
+            boundary=boundary,
+            duration=duration,
+            audio_pauses=audio_pauses,
+        )
 
     hard_fail = state.request.strictness.portrait_insufficient_policy == "hard_fail"
     portrait_candidate_items = [
@@ -45,14 +72,6 @@ def run(ctx: NodeContext) -> NodeOutput:
             ErrorCode.material_insufficient_portrait,
             "Portrait source window cannot cover the full audio.",
         )
-
-    planner_units = build_planner_narration_units(
-        raw_units=raw_units,
-        source=str(narration.get("source") or ""),
-        script=state.request.script,
-        duration=duration,
-    )
-    audio_pauses = boundary.get("pause_windows", []) or []
 
     plan, escalation = _plan_with_escalation(
         narration_units=planner_units,
@@ -163,6 +182,282 @@ def run(ctx: NodeContext) -> NodeOutput:
             ),
         ]
     )
+
+
+def _full_coverage_output(
+    *,
+    ctx: NodeContext,
+    planner_units,
+    boundary: dict,
+    duration: float,
+    audio_pauses: list[dict],
+) -> NodeOutput:
+    total_frames = max(1, int(boundary.get("total_frames") or frame_index(duration)))
+    broll_windows, diagnostics = compile_full_coverage_broll_windows(
+        narration_units=planner_units,
+        pause_windows=audio_pauses,
+        safe_cut_boundaries=boundary.get("safe_cut_boundaries") or [],
+        total_frames=total_frames,
+        min_segment_duration=ctx.state.request.broll.min_segment_duration,
+        fps=TIMELINE_FPS,
+    )
+    total_duration = round(total_frames / TIMELINE_FPS, 3)
+    portrait_plan_payload = PortraitPlanArtifact(
+        fps=TIMELINE_FPS,
+        total_duration=total_duration,
+        asset_id=None,
+        duration_sec=total_duration,
+        segments=[],
+        diagnostics={
+            "track_mode": "broll_full_coverage",
+            "skipped_reason": "broll.full_coverage",
+        },
+    ).model_dump(mode="json")
+    payload = TimelineWindowsPlan(
+        fps=TIMELINE_FPS,
+        total_frames=total_frames,
+        geometry_policy={
+            "broll": asdict(BROLL_GEOMETRY_POLICY),
+            "broll_window_contract": {
+                "authority": "TimelineWindowPlanning",
+                "semantics": "authoritative_full_coverage_main_visual_track",
+                "downstream_may_skip": False,
+                "downstream_may_resize": False,
+            },
+            "portrait_reuse": {"mode": "disabled_for_full_coverage"},
+        },
+        portrait_windows=[],
+        broll_windows=broll_windows,
+        default_assignment={
+            "portrait": [],
+            "portrait_plan_payload": portrait_plan_payload,
+            "engine": "compiler_full_coverage",
+        },
+        compile_diagnostics={
+            "track_mode": "broll_full_coverage",
+            "requested_constraints": {
+                "target_duration": round(duration, 3),
+                "fps": TIMELINE_FPS,
+                "min_segment_duration": ctx.state.request.broll.min_segment_duration,
+                "max_segment_duration": BROLL_GEOMETRY_POLICY.max_insert_seconds,
+            },
+            "used_audio_pauses": bool(audio_pauses),
+            "audio_pause_count": len(audio_pauses),
+            **diagnostics,
+        },
+    ).model_dump(mode="json")
+    return NodeOutput(
+        artifacts=[
+            ctx.artifact(
+                ArtifactKind.plan_timeline_windows,
+                payload,
+                "TimelineWindowsPlan.v1",
+            ),
+            ctx.artifact(
+                ArtifactKind.plan_portrait,
+                portrait_plan_payload,
+                "PortraitPlanArtifact.v1",
+            ),
+        ]
+    )
+
+
+def compile_full_coverage_broll_windows(
+    *,
+    narration_units,
+    pause_windows: list[dict],
+    safe_cut_boundaries: list[dict],
+    total_frames: int,
+    min_segment_duration: float,
+    fps: int = TIMELINE_FPS,
+) -> tuple[list[dict], dict]:
+    total_frames = max(1, int(total_frames))
+    min_frames = max(1, frame_index(float(min_segment_duration)))
+    max_frames = max(min_frames, frame_index(BROLL_GEOMETRY_POLICY.max_insert_seconds))
+    candidates = _full_coverage_cut_candidates(
+        narration_units=narration_units,
+        pause_windows=pause_windows,
+        safe_cut_boundaries=safe_cut_boundaries,
+        total_frames=total_frames,
+    )
+    diagnostics = {
+        "candidate_cut_count": len(
+            [frame for frame in candidates if 0 < frame < total_frames]
+        ),
+        "candidate_cut_source_counts": _cut_source_counts(candidates),
+        "fallback_cut_count": 0,
+        "min_segment_frames": min_frames,
+        "max_segment_frames": max_frames,
+    }
+    cuts = [0]
+    cursor = 0
+    while total_frames - cursor > max_frames:
+        cut_frame, source = _choose_full_coverage_cut(
+            cursor=cursor,
+            total_frames=total_frames,
+            min_frames=min_frames,
+            max_frames=max_frames,
+            candidates=candidates,
+        )
+        if cut_frame <= cursor or cut_frame >= total_frames:
+            break
+        if source == "fallback":
+            diagnostics["fallback_cut_count"] += 1
+            candidates[cut_frame] = {
+                "frame": cut_frame,
+                "priority": _FULL_COVERAGE_CUT_PRIORITY["fallback"],
+                "sources": ["fallback"],
+            }
+        cuts.append(cut_frame)
+        cursor = cut_frame
+    cuts.append(total_frames)
+
+    windows: list[dict] = []
+    for index, (start_frame, end_frame) in enumerate(zip(cuts, cuts[1:])):
+        if end_frame <= start_frame:
+            continue
+        host_unit_ids, text = _full_coverage_window_text(
+            narration_units,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            fps=fps,
+        )
+        length_frames = end_frame - start_frame
+        windows.append(
+            {
+                "window_id": f"bwin_{index:03d}",
+                "start_frame": start_frame,
+                "end_frame": end_frame,
+                "length_frames": length_frames,
+                "source_length_frames": length_frames,
+                "host_unit_ids": host_unit_ids,
+                "text": text,
+            }
+        )
+    diagnostics["window_count"] = len(windows)
+    diagnostics["cut_frames"] = cuts
+    diagnostics["selected_cut_source_counts"] = _selected_cut_source_counts(cuts, candidates)
+    return windows, diagnostics
+
+
+def _full_coverage_cut_candidates(
+    *,
+    narration_units,
+    pause_windows: list[dict],
+    safe_cut_boundaries: list[dict],
+    total_frames: int,
+) -> dict[int, dict]:
+    candidates: dict[int, dict] = {}
+
+    def add(frame: int, source: str) -> None:
+        frame = max(0, min(total_frames, int(frame)))
+        priority = _FULL_COVERAGE_CUT_PRIORITY[source]
+        current = candidates.get(frame)
+        if current is None or priority < int(current["priority"]):
+            candidates[frame] = {"frame": frame, "priority": priority, "sources": [source]}
+        elif source not in current["sources"]:
+            current["sources"].append(source)
+
+    add(0, "unit_boundary")
+    add(total_frames, "unit_boundary")
+    for pause in pause_windows:
+        if not isinstance(pause, dict):
+            continue
+        center = pause.get("center")
+        if center is None:
+            start = _float_or_none(pause.get("start"))
+            end = _float_or_none(pause.get("end"))
+            center = (start + end) / 2 if start is not None and end is not None else None
+        if center is not None:
+            add(frame_index(float(center)), "audio_pause")
+    for cut in safe_cut_boundaries:
+        if not isinstance(cut, dict):
+            continue
+        raw_frame = cut.get("frame")
+        if raw_frame is None and cut.get("time") is not None:
+            raw_frame = frame_index(float(cut["time"]))
+        if raw_frame is None:
+            continue
+        source = str(cut.get("source") or "")
+        add(int(raw_frame), "audio_pause" if "pause" in source else "safe_cut")
+    for unit in narration_units:
+        add(frame_index(float(unit.start)), "unit_boundary")
+        add(frame_index(float(unit.end)), "unit_boundary")
+    return candidates
+
+
+def _choose_full_coverage_cut(
+    *,
+    cursor: int,
+    total_frames: int,
+    min_frames: int,
+    max_frames: int,
+    candidates: dict[int, dict],
+) -> tuple[int, str]:
+    lower = cursor + min_frames
+    upper = min(cursor + max_frames, total_frames - min_frames)
+    if upper < lower:
+        lower = min(cursor + min_frames, total_frames - 1)
+        upper = min(cursor + max_frames, total_frames - 1)
+    natural = [
+        item for frame, item in candidates.items() if lower <= frame <= upper
+    ]
+    if natural:
+        best = sorted(
+            natural,
+            key=lambda item: (
+                int(item["priority"]),
+                abs(int(item["frame"]) - min(cursor + max_frames, total_frames)),
+                -int(item["frame"]),
+            ),
+        )[0]
+        return int(best["frame"]), str(best["sources"][0])
+    fallback = max(lower, min(upper, cursor + max_frames))
+    return fallback, "fallback"
+
+
+def _full_coverage_window_text(
+    narration_units,
+    *,
+    start_frame: int,
+    end_frame: int,
+    fps: int,
+) -> tuple[list[str], str]:
+    unit_ids: list[str] = []
+    text_parts: list[str] = []
+    for unit in narration_units:
+        unit_start = frame_index(float(unit.start))
+        unit_end = frame_index(float(unit.end))
+        if unit_end <= start_frame or unit_start >= end_frame:
+            continue
+        unit_ids.append(str(unit.unit_id))
+        if str(unit.text).strip():
+            text_parts.append(str(unit.text).strip())
+    return unit_ids, " ".join(text_parts).strip()
+
+
+def _cut_source_counts(candidates: dict[int, dict]) -> dict[str, int]:
+    counts = {key: 0 for key in _FULL_COVERAGE_CUT_PRIORITY}
+    for item in candidates.values():
+        for source in item.get("sources") or []:
+            counts[str(source)] = counts.get(str(source), 0) + 1
+    return counts
+
+
+def _selected_cut_source_counts(cuts: list[int], candidates: dict[int, dict]) -> dict[str, int]:
+    counts = {key: 0 for key in _FULL_COVERAGE_CUT_PRIORITY}
+    for frame in cuts[1:-1]:
+        item = candidates.get(frame) or {}
+        source = str((item.get("sources") or ["fallback"])[0])
+        counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
+def _float_or_none(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _plan_with_escalation(

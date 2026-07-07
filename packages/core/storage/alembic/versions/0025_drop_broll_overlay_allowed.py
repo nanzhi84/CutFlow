@@ -21,12 +21,12 @@ def upgrade() -> None:
 
     ``NarrationUnit.broll_overlay_allowed`` was written by the narration builders
     (``end - start >= 0.18``) but never consumed: ``BrollPlanning`` /
-    ``BrollCoveragePlanning`` convert each ``NarrationUnit`` into a ``ScriptSegment``
+    historical B-roll planners convert each ``NarrationUnit`` into a ``ScriptSegment``
     using only text/start/end/keywords, and real B-roll inserts are governed by
     ``plan_insertions()``'s host narration window + ``_MIN_INSERT_SECONDS`` (issue
     #100). The field is removed from the contract, but ``narration.units`` artifacts
     persisted the key inside ``payload->'units'[*]`` via ``model_dump`` (defaults
-    included). ``BrollPlanning``/``BrollCoveragePlanning`` re-read those rows with
+    included). B-roll planning re-reads those rows with
     ``NarrationUnit.model_validate(unit)`` (extra="forbid"), so a resumed legacy run
     would raise on every stored unit. Drop the key from each unit element so stored
     rows validate against the slimmed contract.

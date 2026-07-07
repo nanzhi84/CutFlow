@@ -163,9 +163,7 @@ export default function StudioCreatePage() {
       script_version_id: scriptVersionId,
       workflow_template_id: isSeedance
         ? "seedance_t2v_v1"
-        : isBrollOnly
-          ? "broll_only_v1"
-          : isEditingAgent
+        : isEditingAgent
             ? "digital_human_editing_agent_v1"
             : "digital_human_v2",
       reference_asset_ids: isSeedance ? form.seedanceReferenceAssetIds : [],
@@ -176,9 +174,10 @@ export default function StudioCreatePage() {
         volume: 1,
       },
       broll: {
-        // Seedance generates the whole frame itself; B_roll-only fills with material;
-        // digital-human uses the user's toggle.
+        // Seedance generates the whole frame itself; B_roll-only is now the main
+        // chain's required full-coverage B-roll mode.
         enabled: isSeedance ? false : isBrollOnly ? true : form.brollEnabled,
+        mode: isBrollOnly ? "full_coverage" : "insert",
         max_inserts: form.maxInserts,
         min_segment_duration: 3,
         allow_generic_coverage: true,
@@ -200,7 +199,7 @@ export default function StudioCreatePage() {
         mode: isSeedance ? "frame" : form.coverMode,
       },
       lipsync: {
-        // B_roll-only and Seedance never run LipSync; force the block off so the
+        // Full-coverage B-roll and Seedance never run LipSync; force the block off so the
         // run-config snapshot reflects the actual workflow instead of a phantom
         // "口型同步: 开" the template can't perform.
         enabled: isBrollOnly || isSeedance ? false : form.lipsyncEnabled,

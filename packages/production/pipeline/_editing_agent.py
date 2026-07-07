@@ -302,12 +302,16 @@ def build_agent_input(
             )
         broll_slots.append(payload)
 
+    max_broll_inserts = request.broll.max_inserts if request.broll.enabled else 0
+    if request.broll.enabled and getattr(request.broll, "mode", "insert") == "full_coverage":
+        max_broll_inserts = len(broll_slots)
+
     return {
         "script": request.script,
         "title": request.title or "",
         "edit_instruction": request.edit.instruction,
         "video_duration": round(float(duration), 3),
-        "max_broll_inserts": request.broll.max_inserts if request.broll.enabled else 0,
+        "max_broll_inserts": max_broll_inserts,
         "portrait_uniqueness_rule": PORTRAIT_UNIQUENESS_RULE,
         "narration_units": [
             {

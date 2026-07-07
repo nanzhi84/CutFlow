@@ -163,6 +163,12 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
     },
     BrollOptions: {
         "enabled": (("packages/production/pipeline/nodes/broll_planning.py", "request.broll.enabled"),),
+        "mode": (
+            (
+                "packages/production/pipeline/nodes/timeline_window_planning.py",
+                "request.broll.mode",
+            ),
+        ),
         "case_id": (
             ("packages/production/pipeline/nodes/material_pack_planning.py", "request.broll.case_id"),
         ),
@@ -171,7 +177,7 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
         ),
         "min_segment_duration": (
             (
-                "packages/production/pipeline/nodes/broll_coverage_planning.py",
+                "packages/production/pipeline/nodes/timeline_window_planning.py",
                 "request.broll.min_segment_duration",
             ),
         ),
@@ -325,8 +331,8 @@ _REMOVED_ARTIFACT_FIELDS = {
     StylePlanArtifact: ("subtitle_enabled", "selection_reservation_ids"),
     CaseContextArtifact: ("recent_video_versions", "negative_lessons"),
     # issue #100: written by the narration builders (end-start>=0.18) but never
-    # consumed -- BrollPlanning/BrollCoveragePlanning convert NarrationUnit into
-    # ScriptSegment using only text/start/end/keywords, and real inserts are
+    # consumed -- BrollPlanning converts NarrationUnit into ScriptSegment using
+    # only text/start/end/keywords, and real inserts are
     # governed by plan_insertions()'s host window + _MIN_INSERT_SECONDS.
     NarrationUnit: ("broll_overlay_allowed",),
 }
