@@ -334,7 +334,10 @@ def test_full_coverage_broll_windows_cover_entire_audio_and_skip_portrait(monkey
         candidate_ids=[],
         broll_mode="full_coverage",
         pause_windows=[{"start": 3.9, "end": 4.1, "duration": 0.2, "center": 4.0}],
-        safe_cut_boundaries=[{"cut_id": "cut_008", "frame": 240, "source": "semantic"}],
+        safe_cut_boundaries=[
+            {"cut_id": "cut_004", "frame": 120, "source": "semantic_audio_pause"},
+            {"cut_id": "cut_008", "frame": 240, "source": "semantic"},
+        ],
     )
 
     output = _run_node(adapter, state)
@@ -365,6 +368,7 @@ def test_full_coverage_broll_windows_cover_entire_audio_and_skip_portrait(monkey
     }
     assert payload["compile_diagnostics"]["selected_cut_source_counts"]["audio_pause"] == 1
     assert payload["compile_diagnostics"]["selected_cut_source_counts"]["safe_cut"] == 1
+    assert payload["compile_diagnostics"]["raw_pause_window_count"] == 1
 
 
 def test_full_coverage_ignores_short_fragments_and_uses_safe_cut(monkeypatch, tmp_path):
@@ -405,8 +409,59 @@ def test_full_coverage_splits_overlong_windows_with_deterministic_fallback(
     assert [
         (window["start_frame"], window["end_frame"])
         for window in windows
-    ] == [(0, 120), (120, 210), (210, 300)]
-    assert diagnostics["fallback_cut_count"] == 2
+    ] == [(0, 165), (165, 300)]
+    assert diagnostics["max_segment_frames"] == 165
+    assert diagnostics["fallback_cut_count"] == 1
+
+
+def test_full_coverage_cut_selection_prefers_midpoint_over_longest_candidate():
+    from packages.production.pipeline.nodes import timeline_window_planning as twp
+
+    windows, diagnostics = twp.compile_full_coverage_broll_windows(
+        narration_units=[],
+        pause_windows=[],
+        safe_cut_boundaries=[
+            {"cut_id": "cut_near_midpoint", "frame": 105, "source": "semantic"},
+            {"cut_id": "cut_longest", "frame": 165, "source": "semantic"},
+        ],
+        total_frames=270,
+        min_segment_duration=3.0,
+    )
+
+    assert [(window["start_frame"], window["end_frame"]) for window in windows] == [
+        (0, 105),
+        (105, 270),
+    ]
+    assert diagnostics["fallback_cut_count"] == 0
+
+
+def test_full_coverage_window_text_uses_largest_overlap_owner():
+    from packages.production.pipeline.nodes import timeline_window_planning as twp
+
+    units = [
+        SimpleNamespace(unit_id="unit_split", text="跨窗句子。", start=0.0, end=5.0),
+        SimpleNamespace(unit_id="unit_second", text="第二句。", start=3.0, end=8.0),
+    ]
+
+    windows, diagnostics = twp.compile_full_coverage_broll_windows(
+        narration_units=units,
+        pause_windows=[],
+        safe_cut_boundaries=[
+            {"cut_id": "cut_003", "frame": 90, "source": "semantic"},
+        ],
+        total_frames=240,
+        min_segment_duration=2.0,
+    )
+
+    assert [(window["start_frame"], window["end_frame"]) for window in windows] == [
+        (0, 90),
+        (90, 240),
+    ]
+    assert windows[0]["host_unit_ids"] == ["unit_split"]
+    assert windows[0]["text"] == "跨窗句子。"
+    assert windows[1]["host_unit_ids"] == ["unit_split", "unit_second"]
+    assert windows[1]["text"] == "第二句。"
+    assert diagnostics["split_unit_count"] == 1
 
 
 def test_broll_windows_reject_unsnappable_short_aroll_gaps(monkeypatch, tmp_path):
