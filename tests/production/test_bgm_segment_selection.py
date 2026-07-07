@@ -164,7 +164,8 @@ def test_material_pack_offers_one_bgm_candidate_per_annotated_segment(tmp_path, 
     assert first["source_end"] == 58.0
     assert first["duration"] == 58.0
     assert first["role"] == "hook"
-    assert first["mood"] == "轻快开场"
+    assert first["mood"] == "轻快"
+    assert first["raw_mood"] == "轻快开场"
     assert first["scene_fit"] == ["短视频", "产品展示"]
 
 
@@ -588,6 +589,116 @@ def test_style_planning_demotes_short_non_loopable_bgm_for_single_clip_video(
 
     assert payload["bgm_asset_id"] == "asset_macro_bed"
     assert payload["bgm"]["segment_id"] == "stable_main"
+
+
+def test_style_planning_exact_bgm_mood_match_flips_duration_penalty(tmp_path, monkeypatch):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    ctx = _ctx(
+        adapter,
+        _request(script="这条片子需要快速推进和高能情绪。"),
+        "StylePlanning",
+    )
+    ctx.state.artifacts[ArtifactKind.creative_intent] = _artifact(
+        ArtifactKind.creative_intent,
+        {"intent": {"bgm_mood": "高能"}},
+    )
+    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
+        ArtifactKind.plan_material_pack,
+        {
+            "bgm_candidates": [
+                {
+                    "asset_id": "asset_safe_bed",
+                    "score": 95.0,
+                    "reason": "long stable bed",
+                    "metadata": {
+                        "clip_id": "safe_bed",
+                        "source_start": 0.0,
+                        "source_end": 80.0,
+                        "duration": 80.0,
+                        "section_type": "stable_bed",
+                        "loopable": True,
+                        "mood": "沉稳",
+                    },
+                },
+                {
+                    "asset_id": "asset_high_energy_short",
+                    "score": 60.0,
+                    "reason": "short but exact mood",
+                    "metadata": {
+                        "clip_id": "high_energy_intro",
+                        "source_start": 0.0,
+                        "source_end": 18.0,
+                        "duration": 18.0,
+                        "section_type": "intro",
+                        "loopable": False,
+                        "mood": "高能",
+                    },
+                },
+            ],
+            "font_candidates": [],
+        },
+    )
+
+    output = nodes.style_planning.run(ctx)
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
+
+    assert payload["bgm_asset_id"] == "asset_high_energy_short"
+    assert payload["bgm"]["segment_id"] == "high_energy_intro"
+
+
+def test_style_planning_does_not_match_bgm_mood_by_script_substring(tmp_path, monkeypatch):
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    ctx = _ctx(
+        adapter,
+        _request(script="文案里说要轻快开场，但音乐意图没有显式指定。"),
+        "StylePlanning",
+    )
+    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
+        ArtifactKind.plan_material_pack,
+        {
+            "bgm_candidates": [
+                {
+                    "asset_id": "asset_light_short",
+                    "score": 80.0,
+                    "reason": "legacy mood word appears in script",
+                    "metadata": {
+                        "clip_id": "light_short",
+                        "source_start": 0.0,
+                        "source_end": 12.0,
+                        "duration": 12.0,
+                        "section_type": "intro",
+                        "loopable": False,
+                        "mood": "轻快",
+                    },
+                },
+                {
+                    "asset_id": "asset_stable",
+                    "score": 60.0,
+                    "reason": "usable stable bed",
+                    "metadata": {
+                        "clip_id": "stable_bed",
+                        "source_start": 0.0,
+                        "source_end": 72.0,
+                        "duration": 72.0,
+                        "section_type": "stable_bed",
+                        "loopable": True,
+                        "mood": "沉稳",
+                    },
+                },
+            ],
+            "font_candidates": [],
+        },
+    )
+
+    output = nodes.style_planning.run(ctx)
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
+
+    assert payload["bgm_asset_id"] == "asset_stable"
+    assert payload["bgm"]["segment_id"] == "stable_bed"
 
 
 def test_style_planning_respects_requested_bgm_asset_even_when_not_top_scored(

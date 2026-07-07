@@ -19,6 +19,7 @@ class _WindowQueryInput:
     window_id: str
     kind: str
     narration_text: str
+    scene_hint: str = ""
 
 
 def run(ctx: NodeContext) -> NodeOutput:
@@ -194,6 +195,7 @@ def _window_specs(*, windows: dict, units_by_id: dict[str, dict]) -> list[_Windo
                 window_id=window_id,
                 kind="portrait",
                 narration_text=_unit_text(window.get("unit_ids") or [], units_by_id),
+                scene_hint=str(window.get("scene_hint") or "").strip(),
             )
         )
     for window in (windows.get("broll_windows") or []):
@@ -213,6 +215,7 @@ def _window_specs(*, windows: dict, units_by_id: dict[str, dict]) -> list[_Windo
                 window_id=window_id,
                 kind="broll",
                 narration_text=text,
+                scene_hint=str(window.get("scene_hint") or "").strip(),
             )
         )
     return specs
@@ -244,6 +247,7 @@ def _template_window_queries(
                     _join_intent(
                         lead,
                         context_text,
+                        f"Scene hint: {spec.scene_hint}" if spec.scene_hint else "",
                         f"Narration: {spec.narration_text}" if spec.narration_text else "",
                     )
                 ),
@@ -341,6 +345,7 @@ def _prompt_variables(
                     "window_id": spec.window_id,
                     "kind": spec.kind,
                     "narration_text": spec.narration_text,
+                    "scene_hint": spec.scene_hint,
                 }
                 for spec in window_specs
             ],

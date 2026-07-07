@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from packages.core.contracts import ArtifactKind, NodeStatus
+from packages.core.contracts import ArtifactKind, NodeStatus, normalize_bgm_mood
 from packages.core.contracts.artifacts import EmphasisHint, OverlayEvent
 from packages.core.workflow import NodeOutput
 from packages.production.pipeline._materialize import materialize_style_from_selection
@@ -16,11 +16,13 @@ def run(ctx: NodeContext) -> NodeOutput:
     material = state.require(ArtifactKind.plan_material_pack).payload or {}
     narration_units = state.artifacts.get(ArtifactKind.narration_units)
     units = (narration_units.payload or {}).get("units", []) if narration_units is not None else []
-    overlay_events = _derive_overlay_events(load_creative_intent(state).emphasis, units)
+    creative_intent = load_creative_intent(state)
+    overlay_events = _derive_overlay_events(creative_intent.emphasis, units)
     payload, warnings, degradations = materialize_style_from_selection(
         request=state.request,
         material=material,
         overlay_events=overlay_events,
+        target_bgm_mood=_target_bgm_mood(creative_intent.intent),
     )
     degradations = [
         notice.model_copy(update={"node_id": node_run.node_id}) for notice in degradations
@@ -74,3 +76,13 @@ def _derive_overlay_events(emphasis: list[EmphasisHint], units: list[dict]) -> l
 
 def _compact_text(value: str) -> str:
     return "".join(ch for ch in str(value or "").lower() if not ch.isspace())
+
+
+def _target_bgm_mood(intent: dict | None) -> str:
+    if not isinstance(intent, dict):
+        return ""
+    for key in ("bgm_mood", "music_mood", "mood"):
+        mood = normalize_bgm_mood(intent.get(key))
+        if mood:
+            return mood
+    return ""

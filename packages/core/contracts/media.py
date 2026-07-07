@@ -759,6 +759,74 @@ class BgmEnergyProfile(str, Enum):
     peak = "peak"
 
 
+BGM_MOOD_VALUES = (
+    "沉稳",
+    "温暖",
+    "轻快",
+    "励志",
+    "高能",
+    "紧张",
+    "高级",
+    "俏皮",
+)
+
+_BGM_MOOD_ALIASES = {
+    "calm": "沉稳",
+    "平静": "沉稳",
+    "舒缓": "沉稳",
+    "沉稳": "沉稳",
+    "warm": "温暖",
+    "温馨": "温暖",
+    "治愈": "温暖",
+    "温暖": "温暖",
+    "upbeat": "轻快",
+    "bright": "轻快",
+    "明快": "轻快",
+    "轻松": "轻快",
+    "欢快": "轻快",
+    "轻快": "轻快",
+    "inspiring": "励志",
+    "希望": "励志",
+    "鼓舞": "励志",
+    "正能量": "励志",
+    "励志": "励志",
+    "energetic": "高能",
+    "epic": "高能",
+    "燃": "高能",
+    "热血": "高能",
+    "推进感": "高能",
+    "高能推进": "高能",
+    "高能": "高能",
+    "tense": "紧张",
+    "悬念": "紧张",
+    "焦虑": "紧张",
+    "紧张": "紧张",
+    "premium": "高级",
+    "质感": "高级",
+    "高级感": "高级",
+    "高级": "高级",
+    "playful": "俏皮",
+    "活泼": "俏皮",
+    "可爱": "俏皮",
+    "俏皮": "俏皮",
+}
+
+
+def normalize_bgm_mood(value: object) -> str:
+    """Map free-form or legacy BGM mood text onto the controlled mood set."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    compact = "".join(ch for ch in text.lower() if not ch.isspace())
+    exact = _BGM_MOOD_ALIASES.get(compact)
+    if exact:
+        return exact
+    for alias, canonical in sorted(_BGM_MOOD_ALIASES.items(), key=lambda item: -len(item[0])):
+        if alias and alias in compact:
+            return canonical
+    return ""
+
+
 class BgmSegmentV4(ContractModel):
     """BGM full-track segment.
 

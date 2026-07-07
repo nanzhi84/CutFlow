@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from packages.core.contracts import DegradationNotice, WarningCode
+from packages.core.contracts import DegradationNotice, WarningCode, normalize_bgm_mood
 from packages.core.contracts.artifacts import (
     BgmPlan,
     BrollOverlay,
@@ -296,6 +296,7 @@ def materialize_style_from_selection(
     overlay_events: list[OverlayEvent],
     font_id: str | None = None,
     bgm_id: str | None = None,
+    target_bgm_mood: str | None = None,
 ) -> tuple[dict, list[WarningCode], list[DegradationNotice]]:
     font_candidates = [
         item for item in (material.get("font_candidates") or []) if item.get("asset_id")
@@ -316,6 +317,7 @@ def materialize_style_from_selection(
             bgm_candidates,
             requested_asset_id=bgm_id or request.bgm.bgm_id,
             script=request.script,
+            target_mood=target_bgm_mood,
         )
         if request.bgm.enabled
         else None
@@ -421,6 +423,7 @@ def _select_bgm_candidate(
     *,
     requested_asset_id: str | None,
     script: str,
+    target_mood: str | None = None,
 ) -> dict | None:
     if requested_asset_id:
         candidates = [
@@ -431,13 +434,14 @@ def _select_bgm_candidate(
     ranked = [
         (
             _bgm_script_choice_score(candidate, script=script),
+            _bgm_mood_choice_score(candidate, target_mood=target_mood),
             -index,
             candidate,
         )
         for index, candidate in enumerate(candidates)
     ]
-    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return ranked[0][2]
+    ranked.sort(key=lambda item: (item[0] + item[1], item[2]), reverse=True)
+    return ranked[0][3]
 
 
 def _is_segmented_bgm_candidate(candidate: dict) -> bool:
@@ -466,11 +470,19 @@ def _bgm_script_choice_score(candidate: dict, *, script: str) -> float:
             *(_string_list(metadata.get("scene_fit"))),
             str(metadata.get("reason") or ""),
             str(candidate.get("reason") or ""),
-            str(metadata.get("mood") or ""),
         ],
     )
     negative = _match_count(script, _string_list(metadata.get("avoid_script")))
     return base + positive * 50.0 - negative * 80.0 + _single_clip_usability_score(metadata)
+
+
+def _bgm_mood_choice_score(candidate: dict, *, target_mood: str | None) -> float:
+    target = normalize_bgm_mood(target_mood)
+    if not target:
+        return 0.0
+    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    candidate_mood = normalize_bgm_mood(metadata.get("mood") or metadata.get("raw_mood"))
+    return 320.0 if candidate_mood == target else 0.0
 
 
 def _single_clip_usability_score(metadata: dict) -> float:

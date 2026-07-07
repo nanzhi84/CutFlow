@@ -631,9 +631,40 @@ def test_window_query_planning_uses_llm_queries_and_unwraps_intent(tmp_path):
             "window_id": "pwin_000",
             "kind": "portrait",
             "narration_text": "今天看施工前后变化，第一步先看施工前现场。",
+            "scene_hint": "",
         },
-        {"window_id": "bwin_000", "kind": "broll", "narration_text": "施工前现场"},
+        {
+            "window_id": "bwin_000",
+            "kind": "broll",
+            "narration_text": "施工前现场",
+            "scene_hint": "",
+        },
     ]
+
+
+def test_window_query_planning_template_uses_scene_hint(tmp_path):
+    adapter = _adapter(tmp_path)
+    windows = _windows()
+    windows["broll_windows"][0]["scene_hint"] = "墙面破损、工具、施工前细节"
+    ctx = _ctx(
+        adapter,
+        "WindowQueryPlanning",
+        {
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows,
+                windows,
+            ),
+            ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+        },
+    )
+
+    output = nodes.window_query_planning.run(ctx)
+
+    query_by_window = {
+        item["window_id"]: item["retrieval_intent"]
+        for item in output.artifacts[0].payload["window_queries"]
+    }
+    assert "Scene hint: 墙面破损、工具、施工前细节" in query_by_window["bwin_000"]
 
 
 def test_window_query_planning_backfills_missing_llm_window_with_template(tmp_path):

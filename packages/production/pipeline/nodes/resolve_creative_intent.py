@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from packages.ai.gateway import ProviderCall
 from packages.core.config.settings import sandbox_fallback_allowed
-from packages.core.contracts import ArtifactKind, ErrorCode, NodeStatus, utcnow
+from packages.core.contracts import ArtifactKind, ErrorCode, NodeStatus, normalize_bgm_mood, utcnow
 from packages.core.contracts.artifacts import CreativeIntentArtifact, EmphasisHint
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.production.pipeline._node_context import NodeContext
@@ -33,6 +33,9 @@ def _intent_to_artifact(output: dict) -> CreativeIntentArtifact:
     downstream consumers never see junk; the raw intent blob is preserved as-is.
     """
     intent = output.get("intent") if isinstance(output.get("intent"), dict) else {}
+    normalized_bgm_mood = normalize_bgm_mood(intent.get("bgm_mood")) if intent else ""
+    if normalized_bgm_mood:
+        intent = {**intent, "bgm_mood": normalized_bgm_mood}
     emphasis: list[EmphasisHint] = []
     seen: set[str] = set()
     raw_emphasis = intent.get("emphasis")

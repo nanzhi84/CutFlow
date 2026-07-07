@@ -17,7 +17,7 @@ import hashlib
 import json
 from typing import Any
 
-from packages.core.contracts import ArtifactKind, ErrorCode
+from packages.core.contracts import ArtifactKind, ErrorCode, normalize_bgm_mood
 from packages.core.contracts.artifacts import MaterialCandidate, MaterialPackArtifact
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.planning.editing.frame_grid import frame_index
@@ -1094,6 +1094,8 @@ def _bgm_segment_candidates(
                 clip_id=segment_id,
             )
             role = segment.role.value if hasattr(segment.role, "value") else str(segment.role)
+            raw_mood = str(segment.mood or "").strip()
+            mood = normalize_bgm_mood(raw_mood)
             candidates.append(
                 MaterialCandidate(
                     asset_id=asset.id,
@@ -1127,7 +1129,8 @@ def _bgm_segment_candidates(
                         ),
                         "drop_anchor_sec": segment.drop_anchor_sec,
                         "energy": float(segment.energy or 0.0),
-                        "mood": segment.mood,
+                        "mood": mood,
+                        "raw_mood": raw_mood,
                         "script_fit": list(segment.script_fit),
                         "avoid_script": list(segment.avoid_script),
                         "scene_fit": list(segment.scene_fit),

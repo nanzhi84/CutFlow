@@ -331,6 +331,7 @@ def compile_full_coverage_broll_windows(
             end_frame=end_frame,
         )
         length_frames = end_frame - start_frame
+        text = " ".join(text_assignments["text_parts"][index]).strip()
         windows.append(
             {
                 "window_id": f"bwin_{index:03d}",
@@ -339,8 +340,9 @@ def compile_full_coverage_broll_windows(
                 "length_frames": length_frames,
                 "source_length_frames": length_frames,
                 "host_unit_ids": host_unit_ids,
-                "text": " ".join(text_assignments["text_parts"][index]).strip(),
+                "text": text,
                 "text_assignment": "argmax_overlap",
+                "scene_hint": _full_coverage_scene_hint(text),
             }
         )
     diagnostics["window_count"] = len(windows)
@@ -456,6 +458,11 @@ def _full_coverage_text_assignments(narration_units, *, spans: list[tuple[int, i
         "text_parts": text_parts,
         "split_unit_count": split_unit_count,
     }
+
+
+def _full_coverage_scene_hint(text: str) -> str:
+    compact = " ".join(str(text or "").split())
+    return compact[:120]
 
 
 def _cut_source_counts(candidates: dict[int, dict]) -> dict[str, int]:

@@ -176,10 +176,10 @@ def test_bgm_completed_with_semantics(tmp_path):
     first, second = ann.bgm_segments
     assert first.source == "sensor+audio"
     assert first.role.value == "climax"
-    assert first.mood == "upbeat"
+    assert first.mood == "轻快"
     assert second.source == "sensor+audio"
     report = ann.quality_report["bgm"]
-    assert report["mood"] == "upbeat"
+    assert report["mood"] == "轻快"
     assert report["tempo_bucket"] == "mid"  # objective-derived
     assert report["bpm"] == 128.0
     assert "产品开箱" in report["scene_fit"]
@@ -242,7 +242,7 @@ def test_bgm_incomplete_audio_output_does_not_fabricate(tmp_path):
     ann = result.annotation
     assert ann.meta.annotation_status == AnnotationStatus.completed
     segment = ann.bgm_segments[0]
-    assert segment.mood == "calm"
+    assert segment.mood == "沉稳"
     assert segment.scene_fit == []
     assert segment.avoid_scene == []
     assert segment.role.value == "hook"
@@ -485,7 +485,7 @@ def test_bgm_sensor_and_semantic_helper_edges(tmp_path):
         loopable_hint=segment.loopable,
         confidence_hint=segment.confidence,
     )
-    assert semantics["mood"] == "热血"
+    assert semantics["mood"] == "高能"
     assert semantics["role"] == BgmSegmentRole.climax
     assert semantics["section_type"] == BgmSectionType.drop
     assert semantics["energy_profile"] == BgmEnergyProfile.peak
@@ -570,6 +570,13 @@ def test_bgm_json_content_and_quality_report_edges():
     assert bgm_mod._extract_json_object("no json") is None
     assert bgm_mod._positive_float("bad") is None
     assert bgm_mod._positive_float(float("inf")) is None
+
+    prompt = bgm_mod._build_segment_prompt(
+        asset_title="demo",
+        segment=BgmSegmentV4(segment_id="seg", start=0, end=10, duration=10),
+        features={},
+    )
+    assert "沉稳|温暖|轻快|励志|高能|紧张|高级|俏皮" in prompt
 
     report = bgm_mod._bgm_quality_report(
         features={"librosa_available": True, "beats": [1], "drops": [2]},
