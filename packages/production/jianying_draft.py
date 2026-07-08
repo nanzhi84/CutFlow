@@ -40,7 +40,6 @@ class JianyingVideoSegment:
     asset_id: str | None = None
     clip_id: str | None = None
     volume: float = 0.0
-    fade_frames: int | None = None
     placement: str | None = None
 
 
@@ -113,7 +112,6 @@ def build_video_segments_from_plans(
                 source_end_frame=source_end_frame,
                 asset_id=asset_id,
                 clip_id=_str_or_none(source.get("clip_id")),
-                fade_frames=_int_or_none(raw.get("fade_frames", source.get("fade_frames"))),
                 placement=_placement_or_none(raw.get("placement", source.get("placement"))),
             )
         )
@@ -766,8 +764,6 @@ def _media_segment(
 
 def _segment_effects(segment: JianyingVideoSegment) -> dict[str, Any]:
     effects: dict[str, Any] = {}
-    if segment.fade_frames is not None:
-        effects["fade_frames"] = segment.fade_frames
     if segment.placement:
         effects["placement"] = segment.placement
     return effects
@@ -775,10 +771,7 @@ def _segment_effects(segment: JianyingVideoSegment) -> dict[str, Any]:
 
 def _track_effects(raw: dict[str, Any]) -> dict[str, Any]:
     effects: dict[str, Any] = {}
-    fade_frames = _int_or_none(raw.get("fade_frames"))
     placement = _placement_or_none(raw.get("placement"))
-    if fade_frames is not None:
-        effects["fade_frames"] = fade_frames
     if placement:
         effects["placement"] = placement
     return effects

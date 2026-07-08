@@ -135,7 +135,6 @@ def run(ctx: NodeContext) -> NodeOutput:
                 "source_end_frame": overlay.source_end_frame,
                 "pad_start": overlay.pad_start,
                 "pad_end": overlay.pad_end,
-                "fade_frames": overlay.fade_frames,
                 "placement": overlay.placement,
             }
         )

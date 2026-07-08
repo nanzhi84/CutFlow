@@ -80,16 +80,6 @@ def _ffmpeg_render_prefix() -> list[str]:
     return ffmpeg_base_args(quiet_args=("-y", "-hide_banner", "-loglevel", "error"))
 
 
-def _overlay_fade_frames(segment: dict) -> int:
-    value = segment.get("fade_frames")
-    if value is None:
-        return 0
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return 0
-
-
 def _overlay_placement(segment: dict) -> str:
     placement = str(segment.get("placement") or "fullscreen")
     return placement if placement in {"fullscreen", "pip_fixed"} else "fullscreen"
@@ -117,18 +107,6 @@ def _overlay_scale_filter(segment: dict, *, width: int, height: int) -> tuple[st
         f"crop={width}:{height},setsar=1,",
         0,
         0,
-    )
-
-
-def _overlay_alpha_filters(fade_frames: int, timeline_window_frames: int) -> str:
-    if fade_frames <= 0 or timeline_window_frames <= 1:
-        return ""
-    frames = min(fade_frames, max(1, timeline_window_frames // 2))
-    out_start = max(0, timeline_window_frames - frames)
-    return (
-        "format=yuva420p,"
-        f"fade=t=in:s=0:n={frames}:alpha=1,"
-        f"fade=t=out:s={out_start}:n={frames}:alpha=1,"
     )
 
 
@@ -523,7 +501,6 @@ def render_video_timeline(
                 timeline_end_frame,
                 pad_start,
                 pad_end,
-                _overlay_fade_frames(segment),
             )
         )
         args.extend(["-i", str(source_path)])
@@ -547,7 +524,6 @@ def render_video_timeline(
         timeline_end_frame,
         pad_start,
         pad_end,
-        fade_frames,
     ) in enumerate(overlay_inputs, start=1):
         timeline_window_frames = timeline_end_frame - timeline_start_frame
         overlay_label = f"ov{index}"
@@ -569,7 +545,6 @@ def render_video_timeline(
                 f"{explicit_padding}"
                 f"tpad=stop_mode=clone:stop={timeline_window_frames},"
                 f"trim=start_frame=0:end_frame={timeline_window_frames},"
-                f"{_overlay_alpha_filters(fade_frames, timeline_window_frames)}"
                 f"setpts=PTS-STARTPTS+{timeline_start_frame}/{fps}/TB[{overlay_label}]"
             )
         )

@@ -88,7 +88,6 @@ _SUBTITLE_COLOR_DEFAULTS = {
         "emphasis_outline_color": "#000000",
     },
 }
-_INSERT_BROLL_FADE_FRAMES = 8
 # Floor for a full-coverage stitched clip. A slice shorter than this renders as a
 # visual jitter fragment, so a sub-threshold candidate is skipped (a longer one
 # fills instead) and a sub-threshold window tail is folded into the previous clip.
@@ -289,9 +288,6 @@ def materialize_broll_from_assignment(
             source_end_frame=source_start_frame + source_required_frames,
             pad_start=pad_start,
             pad_end=pad_end,
-            fade_frames=_int_or_none(choice.get("fade_frames"))
-            if choice.get("fade_frames") is not None
-            else _INSERT_BROLL_FADE_FRAMES,
             placement=_placement_or_none(choice.get("placement") or window_data.get("placement")),
         )
         accepted.append((window_id, insert))
@@ -501,7 +497,6 @@ def overlays_from_insertions(insertions: list[tuple[str, BrollInsertion]]) -> li
             source_end_frame=insertion.source_end_frame,
             pad_start=insertion.pad_start,
             pad_end=insertion.pad_end,
-            fade_frames=insertion.fade_frames,
             placement=_placement_or_none(insertion.placement),
             reason=insertion.reason,
             confidence=insertion.confidence,

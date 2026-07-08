@@ -48,7 +48,6 @@ def build_tracks(raw_segments: list[dict], fps: int) -> list[TimelineTrackSegmen
             source_end_frame=_source_end(segment, fps),
             pad_start=float(segment.get("pad_start", 0.0) or 0.0),
             pad_end=float(segment.get("pad_end", 0.0) or 0.0),
-            fade_frames=segment.get("fade_frames"),
             placement=segment.get("placement"),
         )
         for segment in raw_segments

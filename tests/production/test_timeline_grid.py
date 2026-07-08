@@ -67,18 +67,16 @@ def test_build_tracks_prefers_explicit_frame_grid_and_falls_back_to_seconds():
     assert tracks[1].pad_end == 0.0
 
 
-def test_build_tracks_preserves_broll_transition_and_placement_metadata():
+def test_build_tracks_preserves_broll_placement_metadata():
     raw_segments = [
         {
             **_segment(track_id="broll", segment_id="broll_1", start_sec=0.5, end_sec=1.5),
-            "fade_frames": 8,
             "placement": "pip_fixed",
         }
     ]
 
     tracks = build_tracks(raw_segments, fps=30)
 
-    assert tracks[0].fade_frames == 8
     assert tracks[0].placement == "pip_fixed"
 
 

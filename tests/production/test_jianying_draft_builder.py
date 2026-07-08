@@ -184,7 +184,6 @@ def test_jianying_builder_exports_editable_multitrack_broll_project(
                     source_end_frame=60,
                     asset_id="asset_broll",
                     clip_id="clip_broll",
-                    fade_frames=8,
                     placement="pip_fixed",
                 ),
             ],
@@ -247,7 +246,7 @@ def test_jianying_builder_exports_editable_multitrack_broll_project(
     assert broll_segment["target_timerange"] == {"start": 500_000, "duration": 1_000_000}
     assert broll_segment["source_timerange"] == {"start": 1_000_000, "duration": 1_000_000}
     assert broll_segment["render_index"] > main_segment["render_index"]
-    assert broll_segment["cutflow_effects"] == {"fade_frames": 8, "placement": "pip_fixed"}
+    assert broll_segment["cutflow_effects"] == {"placement": "pip_fixed"}
 
     audio_materials = {material["id"]: material for material in content["materials"]["audios"]}
     assert (
@@ -271,7 +270,6 @@ def test_jianying_builder_exports_editable_multitrack_broll_project(
             "track_name": "B-roll覆盖",
             "asset_id": "asset_broll",
             "clip_id": "clip_broll",
-            "fade_frames": 8,
             "placement": "pip_fixed",
         }
     ]
@@ -298,7 +296,6 @@ def test_build_video_segments_from_plans_uses_timeline_frames_and_asset_sources(
                 "timeline_end_frame": 45,
                 "source_start_frame": 30,
                 "source_end_frame": 60,
-                "fade_frames": 8,
                 "placement": "pip_fixed",
             },
         ],
@@ -345,7 +342,6 @@ def test_build_video_segments_from_plans_uses_timeline_frames_and_asset_sources(
             source_end_frame=60,
             asset_id="asset_broll",
             clip_id="clip_broll",
-            fade_frames=8,
             placement="pip_fixed",
         ),
     ]

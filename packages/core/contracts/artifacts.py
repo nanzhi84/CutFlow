@@ -359,7 +359,6 @@ class BrollOverlay(ContractModel):
     source_end_frame: int | None = None
     pad_start: float = 0.0
     pad_end: float = 0.0
-    fade_frames: int | None = Field(default=None, ge=0)
     placement: Literal["fullscreen", "pip_fixed"] | None = None
     reason: str
     confidence: float
@@ -415,7 +414,6 @@ class TimelineTrackSegment(ContractModel):
     source_end_frame: int | None = None
     pad_start: float = 0.0
     pad_end: float = 0.0
-    fade_frames: int | None = Field(default=None, ge=0)
     placement: Literal["fullscreen", "pip_fixed"] | None = None
 
 

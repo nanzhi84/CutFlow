@@ -1685,23 +1685,21 @@ class SqlAlchemyProductionRepository(BaseRepository):
                 "overlay_id": item.get("overlay_id"),
                 "asset_id": item.get("asset_id"),
                 "clip_id": item.get("clip_id"),
-                "fade_frames": item.get("fade_frames"),
                 "placement": item.get("placement"),
             }
             for item in (broll_plan.get("overlays") or [])
             if isinstance(item, dict)
-            and (item.get("fade_frames") is not None or item.get("placement") is not None)
+            and item.get("placement") is not None
         ]
         tracks = [
             {
                 "segment_id": item.get("segment_id"),
-                "fade_frames": item.get("fade_frames"),
                 "placement": item.get("placement"),
             }
             for item in (timeline_plan.get("tracks") or [])
             if isinstance(item, dict)
             and item.get("track_id") == "broll"
-            and (item.get("fade_frames") is not None or item.get("placement") is not None)
+            and item.get("placement") is not None
         ]
         return {
             "subtitle": style_dict.get("subtitle") if isinstance(style_dict.get("subtitle"), dict) else {},

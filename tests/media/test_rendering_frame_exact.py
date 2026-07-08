@@ -223,7 +223,7 @@ def test_transcode_video_segment_uses_output_frame_trim_without_input_seek(monke
     assert "trim=start=" not in vf
 
 
-def test_render_video_timeline_broll_overlay_fade_uses_frame_alpha_filters(monkeypatch, tmp_path):
+def test_render_video_timeline_broll_overlay_uses_frame_exact_filter(monkeypatch, tmp_path):
     captured: dict[str, list[str]] = {}
 
     def capture_run(self, args):
@@ -242,7 +242,6 @@ def test_render_video_timeline_broll_overlay_fade_uses_frame_alpha_filters(monke
                 "source_end_frame": 120,
                 "timeline_start_frame": 0,
                 "timeline_end_frame": 90,
-                "fade_frames": 8,
             }
         ],
         total_frames=120,
@@ -256,13 +255,7 @@ def test_render_video_timeline_broll_overlay_fade_uses_frame_alpha_filters(monke
     args = captured["args"]
     filter_complex = args[args.index("-filter_complex") + 1]
 
-    assert (
-        "format=yuva420p,fade=t=in:s=0:n=8:alpha=1,fade=t=out:s=82:n=8:alpha=1,"
-        in filter_complex
-    )
     assert "between(t," not in filter_complex
-    # Fades are frame-quantized (n=/s= integers), never float seconds.
-    assert re.search(r"fade=t=(?:in|out):s=\d+\.\d", filter_complex) is None
 
 
 def test_render_video_timeline_pip_placement_scales_and_positions_overlay(monkeypatch, tmp_path):

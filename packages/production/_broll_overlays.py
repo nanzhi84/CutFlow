@@ -60,7 +60,6 @@ def _overlay_from_item(item: dict[str, Any], index: int) -> BrollOverlay:
         source_end_frame=_int_or_none(item.get("source_end_frame")),
         pad_start=float(item.get("pad_start", 0) or 0),
         pad_end=float(item.get("pad_end", 0) or 0),
-        fade_frames=_int_or_none(item.get("fade_frames")),
         placement=_placement_or_none(item.get("placement")),
         reason=str(item.get("reason") or ""),
         confidence=float(item.get("confidence", 0) or 0),
