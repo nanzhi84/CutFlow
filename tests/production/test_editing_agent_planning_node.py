@@ -1117,7 +1117,7 @@ def test_llm_path_records_broll_window_contract_drops(tmp_path):
     ]
 
 
-def test_llm_path_repairs_and_stitches_full_coverage_multi_clip_window(tmp_path):
+def test_llm_path_repairs_full_coverage_to_single_window_sized_candidate(tmp_path):
     adapter = _adapter(tmp_path)
     _seed_fake_llm_profile(adapter)
     provider = _FakeEditingLlmProvider(
@@ -1158,14 +1158,14 @@ def test_llm_path_repairs_and_stitches_full_coverage_multi_clip_window(tmp_path)
         {
             "asset_id": "broll_y",
             "score": 70.0,
-            "reason": "施工过程",
+            "reason": "完整施工过程",
             "metadata": {
                 "clip_id": "clip_y",
                 "source_start": 0.0,
-                "source_end": 3.0,
+                "source_end": 6.0,
                 "scene_name": "施工过程",
                 "matched_keywords": ["施工"],
-                "description": "施工过程细节",
+                "description": "完整施工过程细节",
             },
         }
     )
@@ -1185,7 +1185,7 @@ def test_llm_path_repairs_and_stitches_full_coverage_multi_clip_window(tmp_path)
             "semantics": "authoritative_full_coverage_main_visual_track",
             "downstream_may_skip": False,
             "downstream_may_resize": False,
-            "downstream_may_stitch": True,
+            "downstream_may_stitch": False,
         }
     }
     windows["broll_windows"][0]["source_length_frames"] = 180
@@ -1211,14 +1211,12 @@ def test_llm_path_repairs_and_stitches_full_coverage_multi_clip_window(tmp_path)
         (overlay["window_id"], overlay["asset_id"], overlay["timeline_start_frame"], overlay["timeline_end_frame"])
         for overlay in broll["overlays"]
     ] == [
-        ("bslot_000", "broll_x", 0, 90),
-        ("bslot_000", "broll_y", 90, 180),
+        ("bslot_000", "broll_y", 0, 180),
     ]
     assert [choice["candidate_id"] for choice in diagnostics["broll_choices"]] == [
-        "bc_000",
         "bc_001",
     ]
-    assert diagnostics["repair_trace"][-1]["actions"][-1]["action"] == "added"
+    assert diagnostics["repair_trace"][-1]["actions"][-1]["action"] == "replaced"
 
 
 def test_agent_slots_come_from_compiled_windows_not_base_slots(tmp_path):

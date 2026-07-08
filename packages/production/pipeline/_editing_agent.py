@@ -297,7 +297,7 @@ def build_agent_input(
             **slot,
             "required_frames": need,
             "required_seconds": round(to_seconds(need), 3),
-            "multi_clip_allowed": full_coverage_broll,
+            "multi_clip_allowed": False,
         }
         if _slot_has_retrieval_constraint(slot, retrieval_topk_by_window):
             payload["retrieval_topk_candidate_ids"] = _topk_for_slot(
@@ -308,7 +308,7 @@ def build_agent_input(
 
     max_broll_inserts = request.broll.max_inserts if request.broll.enabled else 0
     if full_coverage_broll:
-        max_broll_inserts = max(len(broll_slots), len(candidates.broll_by_id))
+        max_broll_inserts = len(broll_slots)
 
     return {
         "script": request.script,
@@ -463,12 +463,11 @@ def validate_selection(
     seen_broll_candidates: set[str] = set()
     broll_asset_slots: dict[str, str] = {}
     broll_diversity_slots: dict[str, str] = {}
-    broll_covered_frames_by_slot: dict[str, int] = {}
     for choice in selection.broll:
         if choice.slot_id not in broll_slots:
             errors.append(f"broll slot_id '{choice.slot_id}' is not a known broll slot")
             continue
-        if not allow_broll_asset_diversity_reuse and choice.slot_id in seen_broll:
+        if choice.slot_id in seen_broll:
             errors.append(f"broll slot '{choice.slot_id}' is covered more than once")
             continue
         seen_broll.add(choice.slot_id)
@@ -493,11 +492,7 @@ def validate_selection(
         slot = broll_slots[choice.slot_id]
         need = _slot_required_frames(slot)
         available = _broll_source_frames_available(cand)
-        if allow_broll_asset_diversity_reuse:
-            broll_covered_frames_by_slot[choice.slot_id] = (
-                broll_covered_frames_by_slot.get(choice.slot_id, 0) + max(0, available)
-            )
-        elif available < need:
+        if available < need:
             errors.append(
                 f"broll candidate '{choice.candidate_id}' source is too short: has "
                 f"{available} frames but slot '{choice.slot_id}' requires {need} frames"
@@ -539,16 +534,6 @@ def validate_selection(
             + "for each missing slot_id."
             + hint_text
         )
-
-    if allow_broll_asset_diversity_reuse:
-        missing_broll = []
-        for slot_id, slot in broll_slots.items():
-            need = _slot_required_frames(slot)
-            covered = broll_covered_frames_by_slot.get(slot_id, 0)
-            if covered < need:
-                missing_broll.append(f"{slot_id} ({covered}/{need} frames)")
-        if missing_broll:
-            errors.append("broll slots not fully covered: " + ", ".join(sorted(missing_broll)))
 
     # Font / BGM: an explicit choice must reference a real candidate; null is fine
     # (empty candidate pool → default font / no BGM).
@@ -639,7 +624,6 @@ def deterministic_selection(
                 broll_pool = _topk_for_slot(slot, retrieval_topk_by_window)
             else:
                 broll_pool = ranked_broll
-            covered = 0
             for candidate_id in broll_pool:
                 if len(broll) >= max(0, max_inserts):
                     break
@@ -649,8 +633,7 @@ def deterministic_selection(
                 source_frames = _broll_source_frames_available(candidate)
                 if (
                     candidate_id in used_broll_candidates
-                    or source_frames <= 0
-                    or (not allow_broll_asset_diversity_reuse and source_frames < need)
+                    or source_frames < need
                     or (
                         not allow_broll_asset_diversity_reuse
                         and _as_str(candidate.get("asset_id")) in used_broll_assets
@@ -677,9 +660,7 @@ def deterministic_selection(
                         confidence=0.5,
                     )
                 )
-                covered += source_frames
-                if not allow_broll_asset_diversity_reuse or covered >= need:
-                    break
+                break
     return EditingSelection(
         portrait=portrait,
         broll=broll,

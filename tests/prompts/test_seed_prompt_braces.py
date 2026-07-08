@@ -131,7 +131,9 @@ def test_editing_agent_seed_prompt_documents_line_candidate_format_and_json_outp
         "available_seconds | description"
     ) in content
     assert "multi_clip_allowed" in content
-    assert "同一 slot 可以输出多条不同 candidate_id" in content
+    assert "每个 B-roll slot 最多只能输出一条 candidate_id" in content
+    assert "available_seconds >= required_seconds" in content
+    assert "同一 slot 可以输出多条不同 candidate_id" not in content
 
 
 def test_prompt_template_view_exposes_seed_variable_hints():

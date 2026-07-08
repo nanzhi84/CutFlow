@@ -303,7 +303,7 @@ def _full_coverage_broll_windows() -> dict:
                 "semantics": "authoritative_full_coverage_main_visual_track",
                 "downstream_may_skip": False,
                 "downstream_may_resize": False,
-                "downstream_may_stitch": True,
+                "downstream_may_stitch": False,
             }
         },
         "portrait_windows": [],
@@ -352,7 +352,7 @@ def _stitched_full_coverage_windows() -> dict:
                 "semantics": "authoritative_full_coverage_main_visual_track",
                 "downstream_may_skip": False,
                 "downstream_may_resize": False,
-                "downstream_may_stitch": True,
+                "downstream_may_stitch": False,
             }
         },
         "portrait_windows": [],
@@ -952,7 +952,7 @@ def test_window_material_retrieval_uses_material_pack_pool_and_sql_hnsw_index(
     assert adapter.repository.clip_embedding_index == {}
 
 
-def test_window_material_retrieval_allows_partial_full_coverage_candidates(tmp_path):
+def test_window_material_retrieval_rejects_partial_full_coverage_candidates(tmp_path):
     adapter = _adapter(tmp_path)
     material = _stitched_material()
     candidates = index_candidates(material)
@@ -965,7 +965,7 @@ def test_window_material_retrieval_allows_partial_full_coverage_candidates(tmp_p
         required_frames=180,
         candidate_pool=candidates.broll_by_id,
         diagnostics=diagnostics,
-        allow_partial_source=True,
+        allow_partial_source=False,
     )
     nodes.window_material_retrieval._record_full_coverage_window_capacity(
         diagnostics=diagnostics,
@@ -974,25 +974,45 @@ def test_window_material_retrieval_allows_partial_full_coverage_candidates(tmp_p
         eligible=eligible,
     )
 
-    assert [item.candidate_id for item in eligible] == ["bc_000", "bc_001"]
-    assert diagnostics["rejected_candidates"] == []
+    assert eligible == []
+    assert [item["reason"] for item in diagnostics["rejected_candidates"]] == [
+        "source_too_short",
+        "source_too_short",
+    ]
     assert diagnostics["full_coverage_capacity_by_window"]["bwin_000"] == {
         "required_frames": 180,
-        "eligible_candidate_count": 2,
-        "total_source_frames": 180,
-        "longest_source_frames": 90,
-        "sufficient_by_sum": True,
+        "eligible_candidate_count": 0,
+        "total_source_frames": 0,
+        "longest_source_frames": 0,
+        "sufficient_by_single": False,
+        "sufficient_by_sum": False,
     }
 
 
-def test_window_material_retrieval_run_uses_partial_full_coverage_capacity(
+def test_window_material_retrieval_run_requires_single_full_coverage_candidate(
     tmp_path,
     db_session_factory,
 ):
     adapter = _adapter(tmp_path)
     adapter.production_repository = SqlAlchemyProductionRepository(db_session_factory)
     material = _stitched_material()
-    for asset_id in ("broll_a", "broll_b"):
+    material["broll_candidates"].append(
+        {
+            "asset_id": "broll_full",
+            "score": 1.0,
+            "reason": "single full-window b-roll clip",
+            "metadata": {
+                "clip_id": "clip_full",
+                "source_start": 0.0,
+                "source_end": 6.0,
+                "source_frames_available": 180,
+                "matched_keywords": ["施工前", "补漆后"],
+                "scene_name": "施工全流程",
+                "diversity_key": "scene:full",
+            },
+        }
+    )
+    for asset_id in ("broll_a", "broll_b", "broll_full"):
         adapter.repository.media_assets[asset_id] = MediaAssetRecord(
             id=asset_id,
             case_id="case_demo",
@@ -1017,7 +1037,7 @@ def test_window_material_retrieval_run_uses_partial_full_coverage_capacity(
     query_artifact = query_output.artifacts[0]
     broll_intent = query_artifact.payload["window_queries"][0]["retrieval_intent"]
     indexed = index_candidates(material)
-    for candidate_id in ("bc_000", "bc_001"):
+    for candidate_id in ("bc_002",):
         candidate = indexed.broll_by_id[candidate_id]
         record = build_clip_embedding_record(
             candidate=candidate,
@@ -1049,16 +1069,19 @@ def test_window_material_retrieval_run_uses_partial_full_coverage_capacity(
     diagnostics = payload["diagnostics"]
     assert output.status == NodeStatus.succeeded
     assert [item["candidate_id"] for item in payload["candidates_by_window"]["bwin_000"]] == [
-        "bc_000",
-        "bc_001",
+        "bc_002",
     ]
-    assert diagnostics["full_coverage_partial_clip_stitching"] is True
-    assert diagnostics["rejected_candidates"] == []
+    assert diagnostics["full_coverage_single_clip_required"] is True
+    assert [item["reason"] for item in diagnostics["rejected_candidates"]] == [
+        "source_too_short",
+        "source_too_short",
+    ]
     assert diagnostics["full_coverage_capacity_by_window"]["bwin_000"] == {
         "required_frames": 180,
-        "eligible_candidate_count": 2,
+        "eligible_candidate_count": 1,
         "total_source_frames": 180,
-        "longest_source_frames": 90,
+        "longest_source_frames": 180,
+        "sufficient_by_single": True,
         "sufficient_by_sum": True,
     }
 
@@ -1807,21 +1830,15 @@ def test_deterministic_editing_planning_hard_fails_full_coverage_missing_window(
     assert exc.value.error.details["missing_broll_window_ids"] == ["bwin_001"]
 
 
-def test_deterministic_editing_planning_stitches_full_coverage_window(tmp_path):
+def test_deterministic_editing_planning_selects_one_candidate_per_full_coverage_window(tmp_path):
     adapter = _adapter(tmp_path)
     retrieval = {
         "candidates_by_window": {
             "bwin_000": [
                 {
-                    "candidate_id": "bc_000",
+                    "candidate_id": "bc_002",
                     "retrieval_score": 0.99,
-                    "source_frames_available": 90,
-                    "required_frames": 180,
-                },
-                {
-                    "candidate_id": "bc_001",
-                    "retrieval_score": 0.98,
-                    "source_frames_available": 90,
+                    "source_frames_available": 180,
                     "required_frames": 180,
                 },
             ]
@@ -1830,14 +1847,32 @@ def test_deterministic_editing_planning_stitches_full_coverage_window(tmp_path):
             "full_coverage_capacity_by_window": {
                 "bwin_000": {
                     "required_frames": 180,
-                    "eligible_candidate_count": 2,
+                    "eligible_candidate_count": 1,
                     "total_source_frames": 180,
-                    "longest_source_frames": 90,
+                    "longest_source_frames": 180,
+                    "sufficient_by_single": True,
                     "sufficient_by_sum": True,
                 }
             }
         },
     }
+    material = _stitched_material()
+    material["broll_candidates"].append(
+        {
+            "asset_id": "broll_full",
+            "score": 1.0,
+            "reason": "single full-window b-roll clip",
+            "metadata": {
+                "clip_id": "clip_full",
+                "source_start": 0.0,
+                "source_end": 6.0,
+                "source_frames_available": 180,
+                "matched_keywords": ["施工前", "补漆后"],
+                "scene_name": "施工全流程",
+                "diversity_key": "scene:full",
+            },
+        }
+    )
     windows_artifact = _artifact(
         ArtifactKind.plan_timeline_windows,
         _stitched_full_coverage_windows(),
@@ -1848,7 +1883,7 @@ def test_deterministic_editing_planning_stitches_full_coverage_window(tmp_path):
         {
             ArtifactKind.plan_material_pack: _artifact(
                 ArtifactKind.plan_material_pack,
-                _stitched_material(),
+                material,
             ),
             ArtifactKind.plan_timeline_windows: windows_artifact,
             ArtifactKind.plan_window_material_retrieval: _artifact(
@@ -1880,12 +1915,10 @@ def test_deterministic_editing_planning_stitches_full_coverage_window(tmp_path):
         )
         for overlay in overlays
     ] == [
-        ("bwin_000", "broll_a", 0, 90, 0, 90),
-        ("bwin_000", "broll_b", 90, 180, 0, 90),
+        ("bwin_000", "broll_full", 0, 180, 0, 180),
     ]
     assert [choice["candidate_id"] for choice in media_assignment["broll"]] == [
-        "bc_000",
-        "bc_001",
+        "bc_002",
     ]
     assert media_assignment["diagnostics"]["broll_drops"] == []
     for artifact in (
@@ -1920,7 +1953,7 @@ def test_deterministic_editing_planning_stitches_full_coverage_window(tmp_path):
     assert [
         (segment["timeline_start_frame"], segment["timeline_end_frame"])
         for segment in broll_track
-    ] == [(0, 90), (90, 180)]
+    ] == [(0, 180)]
     assert timeline["validation"]["valid"] is True
 
 

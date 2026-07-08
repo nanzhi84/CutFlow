@@ -295,7 +295,7 @@ def test_index_and_build_agent_input_number_candidates():
     assert payload["max_broll_inserts"] == 4
 
 
-def test_agent_input_allows_multi_clip_slots_for_full_coverage():
+def test_agent_input_caps_full_coverage_inserts_to_window_count():
     boundary = _boundary()
     boundary["broll_slots"] = [boundary["broll_slots"][0]]
     request = DigitalHumanVideoRequest(
@@ -314,13 +314,13 @@ def test_agent_input_allows_multi_clip_slots_for_full_coverage():
         duration=12.0,
     )
 
-    assert payload["max_broll_inserts"] == 2
+    assert payload["max_broll_inserts"] == 1
     assert payload["broll_slots"] == [
         {
             **boundary["broll_slots"][0],
             "required_frames": 60,
             "required_seconds": 2.0,
-            "multi_clip_allowed": True,
+            "multi_clip_allowed": False,
         }
     ]
 
@@ -435,6 +435,30 @@ def test_full_coverage_validation_reports_missing_broll_slots_for_repair():
     assert "broll slots not covered: bslot_001" in joined
     assert "full_coverage requires every broll slot" in joined
     assert "bslot_001 topK: bc_001" in joined
+
+
+def test_full_coverage_validation_rejects_multi_clip_same_slot():
+    selection = EditingSelection(
+        portrait=_valid_selection().portrait,
+        broll=[
+            BrollChoice(slot_id="bslot_000", candidate_id="bc_000"),
+            BrollChoice(slot_id="bslot_000", candidate_id="bc_001"),
+            BrollChoice(slot_id="bslot_001", candidate_id="bc_001"),
+        ],
+        font_id="font_yst",
+        bgm_id="bgm_001",
+    )
+
+    errors = validate_selection(
+        selection,
+        boundary=_boundary(),
+        candidates=index_candidates(_material()),
+        bgm_enabled=True,
+        allow_broll_asset_diversity_reuse=True,
+        require_broll_coverage=True,
+    )
+
+    assert any("broll slot 'bslot_000' is covered more than once" in error for error in errors)
 
 
 def test_select_with_repair_sends_missing_broll_slots_back_to_agent():

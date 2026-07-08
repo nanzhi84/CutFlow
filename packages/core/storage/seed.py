@@ -44,6 +44,14 @@ _EDITING_AGENT_LINE_FORMAT_MARKERS = (
     "candidate_id | asset_id | scene_name | allowed_slot_ids | matched_keywords | "
     "available_seconds | description",
 )
+_LEGACY_EDITING_AGENT_FULL_COVERAGE_MARKERS = (
+    "full_coverage 窗口可用多条候选顺序拼接",
+    "同一 slot 可以输出多条不同 candidate_id 以累计覆盖 required_seconds",
+    "slot 可用多条不同 candidate_id 顺序拼接",
+)
+_EDITING_AGENT_FULL_COVERAGE_SINGLE_CLIP_MARKER = (
+    "每个 B-roll slot 最多只能输出一条 candidate_id"
+)
 
 
 def seed_rows(
@@ -373,6 +381,8 @@ def _needs_prompt_version_sync(existing: PromptVersionRow) -> bool:
             or "允许重复使用同一素材" in content
             or "{portrait_uniqueness_rule}" not in content
             or "multi_clip_allowed" not in content
+            or any(marker in content for marker in _LEGACY_EDITING_AGENT_FULL_COVERAGE_MARKERS)
+            or _EDITING_AGENT_FULL_COVERAGE_SINGLE_CLIP_MARKER not in content
         )
     if existing.id == "prompt_window_query_v1":
         content = existing.content or ""

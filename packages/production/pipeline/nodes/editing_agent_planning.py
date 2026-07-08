@@ -713,7 +713,7 @@ def _repair_broll_selection_to_constraints(
             return False
         source_frames = _broll_source_frames(candidate)
         if allow_asset_diversity_reuse:
-            return source_frames > 0
+            return source_frames >= _slot_source_required_frames(slot)
         return source_frames >= _slot_source_required_frames(slot)
 
     def reserve(candidate_id: str) -> None:
@@ -756,7 +756,7 @@ def _repair_broll_selection_to_constraints(
             )
             continue
         slot = broll_slots.get(choice.slot_id)
-        if slot is None or (choice.slot_id in used_slots and not allow_asset_diversity_reuse):
+        if slot is None or choice.slot_id in used_slots:
             actions.append(
                 {
                     "slot_id": choice.slot_id,
@@ -784,8 +784,7 @@ def _repair_broll_selection_to_constraints(
                     "reason": "no legal broll candidate remains",
                 }
             )
-            if not allow_asset_diversity_reuse:
-                used_slots.add(choice.slot_id)
+            used_slots.add(choice.slot_id)
             continue
         used_slots.add(choice.slot_id)
         reserve(candidate_id)
@@ -811,7 +810,7 @@ def _repair_broll_selection_to_constraints(
                 }
             )
 
-    if allow_asset_diversity_reuse or require_broll_coverage:
+    if require_broll_coverage:
         covered_by_slot: dict[str, int] = {}
         for choice in repaired_broll:
             candidate = candidates.broll_by_id.get(choice.candidate_id)
@@ -1437,7 +1436,7 @@ def materialize_editing_outputs(
 def _broll_assignment_limit(*, request, windows: dict, broll_candidate_count: int = 0) -> int:
     if broll_full_coverage_enabled(request):
         window_count = len([w for w in (windows.get("broll_windows") or []) if isinstance(w, dict)])
-        return max(window_count, int(broll_candidate_count or 0))
+        return window_count
     return request.broll.max_inserts
 
 

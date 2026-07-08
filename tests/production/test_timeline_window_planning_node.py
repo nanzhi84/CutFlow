@@ -136,7 +136,18 @@ def _state(
                 "metadata": _metadata(cid),
             }
             for cid in candidate_ids
-        ]
+        ],
+        "broll_candidates": [
+            {
+                "asset_id": "broll_source",
+                "score": 1.0,
+                "metadata": {
+                    "clip_id": "broll_source_clip",
+                    "source_start": source_window[0],
+                    "source_end": source_window[1],
+                },
+            }
+        ],
     }
     narration = {"source": "estimated", "units": _units(duration), "strict": False}
     material_artifact = Artifact(
@@ -370,7 +381,7 @@ def test_full_coverage_broll_windows_cover_entire_audio_and_skip_portrait(monkey
         "semantics": "authoritative_full_coverage_main_visual_track",
         "downstream_may_skip": False,
         "downstream_may_resize": False,
-        "downstream_may_stitch": True,
+        "downstream_may_stitch": False,
     }
     assert payload["compile_diagnostics"]["selected_cut_source_counts"]["audio_pause"] == 1
     assert payload["compile_diagnostics"]["selected_cut_source_counts"]["safe_cut"] == 1
@@ -420,6 +431,27 @@ def test_full_coverage_splits_overlong_windows_with_deterministic_fallback(
     ] == [(0, 165), (165, 300)]
     assert diagnostics["max_segment_frames"] == 165
     assert diagnostics["fallback_cut_count"] == 1
+
+
+def test_full_coverage_window_compiler_caps_segments_to_broll_candidate_capacity():
+    from packages.production.pipeline.nodes import timeline_window_planning as twp
+
+    windows, diagnostics = twp.compile_full_coverage_broll_windows(
+        narration_units=[],
+        pause_windows=[],
+        safe_cut_boundaries=[],
+        total_frames=360,
+        min_segment_duration=3.0,
+        max_source_frames_available=120,
+    )
+
+    assert [(window["start_frame"], window["end_frame"]) for window in windows] == [
+        (0, 120),
+        (120, 240),
+        (240, 360),
+    ]
+    assert diagnostics["max_segment_frames"] == 120
+    assert diagnostics["candidate_max_source_frames"] == 120
 
 
 def test_full_coverage_cut_selection_prefers_midpoint_over_longest_candidate():
@@ -1161,72 +1193,20 @@ def _fc_candidate(candidate_id: str, *, source_start: float, source_end: float) 
     }
 
 
-def test_full_coverage_absorbs_sub_threshold_tail_into_previous_clip():
-    # Window 0-100; the only candidate has 97 source frames, leaving a 3-frame
-    # (<0.5s) tail. It is folded into the previous clip (timeline extended to the
-    # window end, renderer clone-pads the freeze) rather than dropped or minted as
-    # a jitter fragment.
-    windows = _fc_windows(start_frame=0, end_frame=100)
-    assignment = {"broll": [{"window_id": "w1", "candidate_id": "c1"}]}
-    candidates = {"broll_by_id": {"c1": _fc_candidate("c1", source_start=0.0, source_end=97 / 30)}}
-
-    plan, drops = materialize_full_coverage_broll_from_assignment(
-        windows=windows,
-        assignment=assignment,
-        candidates=candidates,
-        enabled=True,
-        max_inserts=8,
-    )
-
-    overlays = plan["overlays"]
-    assert len(overlays) == 1
-    assert overlays[0]["timeline_start_frame"] == 0
-    assert overlays[0]["timeline_end_frame"] == 100
-    # Source stays at its exhausted extent; the extra tail is a render-time freeze.
-    assert overlays[0]["source_start_frame"] == 0
-    assert overlays[0]["source_end_frame"] == 97
-    assert drops == []
-
-
-def test_full_coverage_drops_when_source_cannot_cover_window():
-    # Window 0-100; the only candidate has just 50 source frames. The 50-frame
-    # (>0.5s) shortfall is a real gap, so it is reported honestly instead of being
-    # clone-padded away.
-    windows = _fc_windows(start_frame=0, end_frame=100)
-    assignment = {"broll": [{"window_id": "w1", "candidate_id": "c1"}]}
-    candidates = {"broll_by_id": {"c1": _fc_candidate("c1", source_start=0.0, source_end=50 / 30)}}
-
-    plan, drops = materialize_full_coverage_broll_from_assignment(
-        windows=windows,
-        assignment=assignment,
-        candidates=candidates,
-        enabled=True,
-        max_inserts=8,
-    )
-
-    overlays = plan["overlays"]
-    assert len(overlays) == 1
-    assert overlays[0]["timeline_end_frame"] == 50
-    assert len(drops) == 1
-    assert drops[0]["reason"] == "insufficient_window_coverage"
-    assert drops[0]["covered_frames"] == 50
-    assert drops[0]["missing_frames"] == 50
-
-
-def test_full_coverage_skips_tiny_source_fragment_for_longer_candidate():
-    # A source-limited 5-frame candidate is offered first but the window has real
-    # room, so it is skipped and a longer candidate covers from the same cursor.
+def test_full_coverage_requires_single_candidate_to_cover_window():
+    # Window 0-100; the first candidate has only 97 source frames and is rejected.
+    # The second candidate can cover the whole window and is used by itself.
     windows = _fc_windows(start_frame=0, end_frame=100)
     assignment = {
         "broll": [
-            {"window_id": "w1", "candidate_id": "c_tiny"},
-            {"window_id": "w1", "candidate_id": "c_big"},
+            {"window_id": "w1", "candidate_id": "short"},
+            {"window_id": "w1", "candidate_id": "long"},
         ]
     }
     candidates = {
         "broll_by_id": {
-            "c_tiny": _fc_candidate("c_tiny", source_start=0.0, source_end=5 / 30),
-            "c_big": _fc_candidate("c_big", source_start=1.0, source_end=130 / 30),
+            "short": _fc_candidate("short", source_start=0.0, source_end=97 / 30),
+            "long": _fc_candidate("long", source_start=1.0, source_end=130 / 30),
         }
     }
 
@@ -1240,9 +1220,65 @@ def test_full_coverage_skips_tiny_source_fragment_for_longer_candidate():
 
     overlays = plan["overlays"]
     assert len(overlays) == 1
-    assert overlays[0]["asset_id"] == "asset_c_big"
+    assert overlays[0]["asset_id"] == "asset_long"
     assert overlays[0]["timeline_start_frame"] == 0
     assert overlays[0]["timeline_end_frame"] == 100
     assert overlays[0]["source_start_frame"] == 30
     assert overlays[0]["source_end_frame"] == 130
+    assert drops == []
+
+
+def test_full_coverage_drops_when_source_cannot_cover_window():
+    # Window 0-100; the only candidate has just 50 source frames, so it cannot
+    # cover the authoritative window and no partial overlay is emitted.
+    windows = _fc_windows(start_frame=0, end_frame=100)
+    assignment = {"broll": [{"window_id": "w1", "candidate_id": "c1"}]}
+    candidates = {"broll_by_id": {"c1": _fc_candidate("c1", source_start=0.0, source_end=50 / 30)}}
+
+    plan, drops = materialize_full_coverage_broll_from_assignment(
+        windows=windows,
+        assignment=assignment,
+        candidates=candidates,
+        enabled=True,
+        max_inserts=8,
+    )
+
+    overlays = plan["overlays"]
+    assert overlays == []
+    assert len(drops) == 1
+    assert drops[0]["reason"] == "insufficient_window_coverage"
+    assert drops[0]["covered_frames"] == 0
+    assert drops[0]["missing_frames"] == 100
+
+
+def test_full_coverage_ignores_extra_choices_after_window_is_filled():
+    windows = _fc_windows(start_frame=0, end_frame=100)
+    assignment = {
+        "broll": [
+            {"window_id": "w1", "candidate_id": "c_first"},
+            {"window_id": "w1", "candidate_id": "c_extra"},
+        ]
+    }
+    candidates = {
+        "broll_by_id": {
+            "c_first": _fc_candidate("c_first", source_start=0.0, source_end=100 / 30),
+            "c_extra": _fc_candidate("c_extra", source_start=1.0, source_end=130 / 30),
+        }
+    }
+
+    plan, drops = materialize_full_coverage_broll_from_assignment(
+        windows=windows,
+        assignment=assignment,
+        candidates=candidates,
+        enabled=True,
+        max_inserts=8,
+    )
+
+    overlays = plan["overlays"]
+    assert len(overlays) == 1
+    assert overlays[0]["asset_id"] == "asset_c_first"
+    assert overlays[0]["timeline_start_frame"] == 0
+    assert overlays[0]["timeline_end_frame"] == 100
+    assert overlays[0]["source_start_frame"] == 0
+    assert overlays[0]["source_end_frame"] == 100
     assert drops == []

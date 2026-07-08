@@ -84,7 +84,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         windows=windows,
         max_inserts=broll_limit,
         allow_asset_diversity_reuse=broll_full_coverage_enabled(state.request),
-        allow_multi_clip_windows=broll_full_coverage_enabled(state.request),
+        allow_multi_clip_windows=False,
     )
     broll_candidate_index = candidates
     broll_fallback_diagnostics: dict = {}
@@ -100,7 +100,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             units=units,
             max_inserts=broll_limit,
             allow_asset_diversity_reuse=broll_full_coverage_enabled(state.request),
-            allow_multi_clip_windows=broll_full_coverage_enabled(state.request),
+            allow_multi_clip_windows=False,
         )
         if fallback_assignment:
             broll_assignment = fallback_assignment
@@ -530,7 +530,7 @@ def _ensure_portrait_coverage(
 def _broll_assignment_limit(*, request, windows: dict, broll_candidate_count: int = 0) -> int:
     if broll_full_coverage_enabled(request):
         window_count = len([w for w in (windows.get("broll_windows") or []) if isinstance(w, dict)])
-        return max(window_count, int(broll_candidate_count or 0))
+        return window_count
     return request.broll.max_inserts
 
 

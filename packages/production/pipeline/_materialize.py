@@ -14,7 +14,6 @@ The B-roll and style helpers are shared by both paths. They contain no
 from __future__ import annotations
 
 import math
-from dataclasses import replace
 from typing import Any
 
 from packages.core.contracts import DegradationNotice, WarningCode, normalize_bgm_mood
@@ -88,12 +87,6 @@ _SUBTITLE_COLOR_DEFAULTS = {
         "emphasis_outline_color": "#000000",
     },
 }
-# Floor for a full-coverage stitched clip. A slice shorter than this renders as a
-# visual jitter fragment, so a sub-threshold candidate is skipped (a longer one
-# fills instead) and a sub-threshold window tail is folded into the previous clip.
-_MIN_STITCH_FRAMES = 15  # 0.5s @ 30fps
-
-
 def materialize_portrait_from_assignment(
     *,
     windows: dict,
@@ -313,12 +306,12 @@ def materialize_full_coverage_broll_from_assignment(
     enabled: bool,
     max_inserts: int,
 ) -> tuple[dict, list[dict]]:
-    """Materialize full-coverage B-roll windows, stitching clips inside a window.
+    """Materialize full-coverage B-roll windows, one clip per window.
 
-    Insert mode requires one candidate to cover one optional slot. Full coverage is
-    the main visual track: an authoritative window may be longer than a clean source
-    clip, so multiple selected candidates can cover contiguous slices of the same
-    window. Candidate IDs still remain single-use per run.
+    Full coverage is the main visual track. TimelineWindowPlanning already shapes
+    windows against available source capacity, so a selected candidate must cover
+    its whole authoritative window by itself. Candidate IDs remain single-use per
+    run, and extra choices for the same window are ignored after the first fit.
     """
     if not enabled:
         return BrollPlanArtifact(enabled=False).model_dump(mode="json"), []
@@ -348,17 +341,11 @@ def materialize_full_coverage_broll_from_assignment(
         end_frame = int(window_data.get("end_frame", 0) or 0)
         if not window_id or end_frame <= start_frame:
             continue
-        cursor = start_frame
+        required_frames = end_frame - start_frame
         window_choices = choices_by_window.get(window_id, [])
-        last_accepted_index: int | None = None
+        accepted_for_window = False
         for choice in window_choices:
-            window_remaining = end_frame - cursor
-            if window_remaining <= 0 or len(accepted) >= max(0, max_inserts):
-                break
-            if window_remaining < _MIN_STITCH_FRAMES:
-                # Only a sub-threshold tail is left; no candidate can beat it and a
-                # tiny stitched clip jitters, so stop here and let the tail-absorb
-                # step below fold the remainder into the previous clip.
+            if len(accepted) >= max(0, max_inserts):
                 break
             candidate_id = _as_str(choice.get("candidate_id"))
             if not candidate_id or candidate_id in used_candidate_ids:
@@ -372,21 +359,16 @@ def materialize_full_coverage_broll_from_assignment(
             source_start_frame = _frame_index_at_fps(source_start, fps=fps)
             source_end_frame_limit = _frame_index_at_fps(source_end, fps=fps)
             source_frames_available = max(0, source_end_frame_limit - source_start_frame)
-            take_frames = min(source_frames_available, window_remaining)
-            if take_frames <= 0:
-                continue
-            if take_frames < _MIN_STITCH_FRAMES:
-                # Source-limited fragment while the window still has real room: skip
-                # so a longer candidate can cover from the same cursor.
+            if source_frames_available < required_frames:
                 continue
             diversity_key = _as_str(meta.get("diversity_key"))
             insert = BrollInsertion(
                 asset_id=_as_str(candidate.get("asset_id")),
                 clip_id=_as_str(meta.get("clip_id")),
-                timeline_start=to_seconds(cursor),
-                timeline_end=to_seconds(cursor + take_frames),
+                timeline_start=to_seconds(start_frame),
+                timeline_end=to_seconds(end_frame),
                 source_start=to_seconds(source_start_frame),
-                source_end=to_seconds(source_start_frame + take_frames),
+                source_end=to_seconds(source_start_frame + required_frames),
                 confidence=_as_float(choice.get("confidence")),
                 matched_keywords=tuple(
                     _as_str(keyword)
@@ -394,45 +376,26 @@ def materialize_full_coverage_broll_from_assignment(
                     if _as_str(keyword)
                 ),
                 scene_name=_as_str(meta.get("scene_name")),
-                reason=_as_str(choice.get("reason")) or "full_coverage stitched selection",
+                reason=_as_str(choice.get("reason")) or "full_coverage window selection",
                 diversity_key=diversity_key,
-                timeline_start_frame=cursor,
-                timeline_end_frame=cursor + take_frames,
+                timeline_start_frame=start_frame,
+                timeline_end_frame=end_frame,
                 source_start_frame=source_start_frame,
-                source_end_frame=source_start_frame + take_frames,
+                source_end_frame=source_start_frame + required_frames,
             )
             accepted.append((window_id, insert))
             used_candidate_ids.add(candidate_id)
-            last_accepted_index = len(accepted) - 1
-            cursor += take_frames
+            accepted_for_window = True
+            break
 
-        remainder = end_frame - cursor
-        if 0 < remainder < _MIN_STITCH_FRAMES and last_accepted_index is not None:
-            # Fold the sub-threshold tail into the previous clip by extending its
-            # timeline to the window end. The renderer clone-pads a clip whose
-            # source is shorter than its timeline window (rendering/timeline.py),
-            # so the freeze covers the tail without a tiny standalone clip or a
-            # visible gap. A candidate that reaches a sub-threshold tail is always
-            # source-exhausted (a source-rich clip would have filled the window),
-            # so there is never spare source to extend instead of clone-padding.
-            prev_window_id, prev = accepted[last_accepted_index]
-            accepted[last_accepted_index] = (
-                prev_window_id,
-                replace(
-                    prev,
-                    timeline_end=to_seconds(end_frame),
-                    timeline_end_frame=end_frame,
-                ),
-            )
-            cursor = end_frame
-        if cursor < end_frame:
+        if not accepted_for_window:
             drop_diagnostics.append(
                 {
                     "slot_id": window_id,
                     "reason": "insufficient_window_coverage",
-                    "required_frames": end_frame - start_frame,
-                    "covered_frames": max(0, cursor - start_frame),
-                    "missing_frames": end_frame - cursor,
+                    "required_frames": required_frames,
+                    "covered_frames": 0,
+                    "missing_frames": required_frames,
                     "candidate_count": len(window_choices),
                 }
             )

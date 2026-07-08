@@ -58,6 +58,9 @@ def run(ctx: NodeContext) -> NodeOutput:
             boundary=boundary,
             duration=duration,
             audio_pauses=audio_pauses,
+            broll_candidate_frames=_broll_candidate_source_frames(
+                material.get("broll_candidates") or []
+            ),
         )
 
     hard_fail = state.request.strictness.portrait_insufficient_policy == "hard_fail"
@@ -195,16 +198,59 @@ def _full_coverage_output(
     boundary: dict,
     duration: float,
     audio_pauses: list[dict],
+    broll_candidate_frames: list[int],
 ) -> NodeOutput:
     total_frames = max(1, int(boundary.get("total_frames") or frame_index(duration)))
+    min_segment_frames = max(1, frame_index(ctx.state.request.broll.min_segment_duration))
+    if not broll_candidate_frames:
+        raise NodeExecutionError(
+            ErrorCode.material_insufficient_broll,
+            "B-roll full coverage requires at least one eligible B-roll candidate.",
+            details={
+                "reason": "full_coverage_no_broll_candidates",
+                "target_duration_sec": round(duration, 3),
+            },
+        )
+    longest_candidate_frames = max(broll_candidate_frames)
+    if longest_candidate_frames < min_segment_frames:
+        raise NodeExecutionError(
+            ErrorCode.material_insufficient_broll,
+            "B-roll candidate source windows are too short for full coverage planning.",
+            details={
+                "reason": "full_coverage_broll_capacity_below_min_segment",
+                "min_segment_frames": min_segment_frames,
+                "longest_candidate_frames": longest_candidate_frames,
+                "candidate_count": len(broll_candidate_frames),
+            },
+        )
     broll_windows, diagnostics = compile_full_coverage_broll_windows(
         narration_units=planner_units,
         pause_windows=audio_pauses,
         safe_cut_boundaries=boundary.get("safe_cut_boundaries") or [],
         total_frames=total_frames,
         min_segment_duration=ctx.state.request.broll.min_segment_duration,
+        max_source_frames_available=longest_candidate_frames,
         fps=TIMELINE_FPS,
     )
+    oversized_windows = [
+        {
+            "window_id": str(window.get("window_id") or ""),
+            "length_frames": int(window.get("length_frames", 0) or 0),
+        }
+        for window in broll_windows
+        if int(window.get("length_frames", 0) or 0) > longest_candidate_frames
+    ]
+    if oversized_windows:
+        raise NodeExecutionError(
+            ErrorCode.material_insufficient_broll,
+            "B-roll full coverage windows cannot be covered by available candidates.",
+            details={
+                "reason": "full_coverage_broll_window_exceeds_candidate_capacity",
+                "longest_candidate_frames": longest_candidate_frames,
+                "oversized_windows": oversized_windows,
+                "candidate_count": len(broll_candidate_frames),
+            },
+        )
     total_duration = round(total_frames / TIMELINE_FPS, 3)
     portrait_plan_payload = PortraitPlanArtifact(
         fps=TIMELINE_FPS,
@@ -227,7 +273,7 @@ def _full_coverage_output(
                 "semantics": "authoritative_full_coverage_main_visual_track",
                 "downstream_may_skip": False,
                 "downstream_may_resize": False,
-                "downstream_may_stitch": True,
+                "downstream_may_stitch": False,
             },
             "portrait_reuse": {"mode": "disabled_for_full_coverage"},
         },
@@ -246,6 +292,10 @@ def _full_coverage_output(
                 "min_segment_duration": ctx.state.request.broll.min_segment_duration,
                 "max_segment_duration": (
                     BROLL_GEOMETRY_POLICY.full_coverage_max_segment_seconds
+                ),
+                "candidate_max_segment_seconds": round(
+                    longest_candidate_frames / TIMELINE_FPS,
+                    3,
                 ),
             },
             "used_audio_pauses": bool(
@@ -278,14 +328,23 @@ def compile_full_coverage_broll_windows(
     safe_cut_boundaries: list[dict],
     total_frames: int,
     min_segment_duration: float,
+    max_source_frames_available: int | None = None,
     fps: int = TIMELINE_FPS,
 ) -> tuple[list[dict], dict]:
     total_frames = max(1, int(total_frames))
     min_frames = max(1, frame_index(float(min_segment_duration)))
-    max_frames = max(
+    policy_max_frames = max(
         min_frames,
         frame_index(BROLL_GEOMETRY_POLICY.full_coverage_max_segment_seconds),
     )
+    source_cap_frames = (
+        int(max_source_frames_available or 0)
+        if max_source_frames_available is not None
+        else None
+    )
+    max_frames = policy_max_frames
+    if source_cap_frames is not None and source_cap_frames > 0:
+        max_frames = max(min_frames, min(policy_max_frames, source_cap_frames))
     semantic_groups = _full_coverage_semantic_groups(narration_units)
     candidates = _full_coverage_cut_candidates(
         narration_units=narration_units,
@@ -301,6 +360,8 @@ def compile_full_coverage_broll_windows(
         "fallback_cut_count": 0,
         "min_segment_frames": min_frames,
         "max_segment_frames": max_frames,
+        "policy_max_segment_frames": policy_max_frames,
+        "candidate_max_source_frames": source_cap_frames,
         "raw_pause_window_count": len(pause_windows),
         "semantic_group_count": len(semantic_groups),
         "semantic_group_boundary_count": max(0, len(semantic_groups) - 1),
@@ -363,6 +424,34 @@ def compile_full_coverage_broll_windows(
     diagnostics["selected_cut_source_counts"] = _selected_cut_source_counts(cuts, candidates)
     diagnostics["split_unit_count"] = text_assignments["split_unit_count"]
     return windows, diagnostics
+
+
+def _broll_candidate_source_frames(candidates: list[dict]) -> list[int]:
+    frames: list[int] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        meta = candidate.get("metadata")
+        if not isinstance(meta, dict):
+            continue
+        raw_frames = meta.get("source_frames_available")
+        if raw_frames is not None and not isinstance(raw_frames, bool):
+            try:
+                source_frames = int(raw_frames)
+            except (TypeError, ValueError):
+                source_frames = 0
+            if source_frames > 0:
+                frames.append(source_frames)
+                continue
+        try:
+            source_start = float(meta.get("source_start") or 0.0)
+            source_end = float(meta.get("source_end") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        source_frames = max(0, frame_index(source_end) - frame_index(source_start))
+        if source_frames > 0:
+            frames.append(source_frames)
+    return frames
 
 
 def _full_coverage_cut_candidates(

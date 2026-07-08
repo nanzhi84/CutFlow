@@ -73,7 +73,7 @@ def run(ctx: NodeContext) -> NodeOutput:
     }
     full_coverage_broll = _full_coverage_broll_windows(windows)
     if full_coverage_broll:
-        diagnostics["full_coverage_partial_clip_stitching"] = True
+        diagnostics["full_coverage_single_clip_required"] = True
     provider_invocation_ids: list[str] = []
     candidates_by_window: dict[str, list[RetrievedWindowCandidate]] = {}
 
@@ -167,7 +167,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             query_keywords=query_keywords,
             provider_profile_id=profile.id,
             diagnostics=diagnostics,
-            allow_partial_source=full_coverage_broll and namespace == "broll",
+            record_full_coverage_capacity=full_coverage_broll and namespace == "broll",
         )
 
     return _output(
@@ -189,6 +189,7 @@ def _retrieve_for_window(
     provider_profile_id: str,
     diagnostics: dict[str, Any],
     allow_partial_source: bool = False,
+    record_full_coverage_capacity: bool = False,
 ) -> list[RetrievedWindowCandidate]:
     window_id = str(window.get("window_id") or "")
     required_frames = _required_frames(window)
@@ -201,7 +202,7 @@ def _retrieve_for_window(
         diagnostics=diagnostics,
         allow_partial_source=allow_partial_source,
     )
-    if allow_partial_source:
+    if record_full_coverage_capacity:
         _record_full_coverage_window_capacity(
             diagnostics=diagnostics,
             window_id=window_id,
@@ -504,6 +505,7 @@ def _record_full_coverage_window_capacity(
         "eligible_candidate_count": len(eligible),
         "total_source_frames": total_source_frames,
         "longest_source_frames": max(source_frames or [0]),
+        "sufficient_by_single": max(source_frames or [0]) >= required_frames,
         "sufficient_by_sum": total_source_frames >= required_frames,
     }
 
