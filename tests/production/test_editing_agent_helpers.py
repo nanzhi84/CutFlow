@@ -34,12 +34,13 @@ from packages.production.pipeline._materialize import (
 )
 
 
-def _request(**edit) -> DigitalHumanVideoRequest:
+def _request(*, subtitle: dict | None = None, **edit) -> DigitalHumanVideoRequest:
     return DigitalHumanVideoRequest(
         case_id="case_demo",
         script="今天带你看一下这套案例。第一步先看施工前的样子。",
         title="案例",
         voice={"voice_id": "voice_sandbox"},
+        subtitle=subtitle or {},
         edit=edit or {},
     )
 
@@ -193,7 +194,7 @@ def _valid_selection() -> EditingSelection:
                 slot_id="bslot_001", candidate_id="bc_001", reason="施工过程", confidence=0.7
             ),
         ],
-        font_id="font_yst",
+        font_id=None,
         bgm_id="bgm_001",
     )
 
@@ -293,6 +294,10 @@ def test_index_and_build_agent_input_number_candidates():
     assert payload["portrait_slots"][0]["required_seconds"] == 6.0
     assert payload["portrait_slots"][0]["legal_window_ids"] == ["pc_000", "pc_001"]
     assert payload["max_broll_inserts"] == 4
+    assert "font_candidates" not in payload
+    assert payload["placement_candidates"]
+    assert payload["animation_candidates"]
+    assert payload["sfx_candidates"] == [{"sfx_id": "none"}]
 
 
 def test_agent_input_caps_full_coverage_inserts_to_window_count():
@@ -402,6 +407,59 @@ def test_valid_selection_passes_validation():
     assert errors == []
 
 
+def test_huazi_event_id_allows_compressed_phrase():
+    selection = EditingSelection(
+        portrait=_valid_selection().portrait,
+        broll=_valid_selection().broll,
+        bgm_id="bgm_001",
+        huazi=[
+            _editing_agent.HuaziChoice(
+                event_id="hz_001",
+                phrase="限时五折",
+                placement_id="top_center_banner",
+                animation_id="pop_in",
+                sfx_id="none",
+            )
+        ],
+    )
+
+    errors = validate_selection(
+        selection,
+        boundary=_boundary(),
+        candidates=index_candidates(_material()),
+        bgm_enabled=True,
+        huazi_events=[{"event_id": "hz_001", "text": "现在到店可以限时五折"}],
+    )
+
+    assert errors == []
+
+
+def test_huazi_selection_is_rejected_when_candidate_pool_is_empty():
+    selection = EditingSelection(
+        portrait=_valid_selection().portrait,
+        broll=_valid_selection().broll,
+        bgm_id="bgm_001",
+        huazi=[
+            _editing_agent.HuaziChoice(
+                event_id="hz_fake",
+                placement_id="top_center_banner",
+                animation_id="pop_in",
+                sfx_id="none",
+            )
+        ],
+    )
+
+    errors = validate_selection(
+        selection,
+        boundary=_boundary(),
+        candidates=index_candidates(_material()),
+        bgm_enabled=True,
+        huazi_events=[],
+    )
+
+    assert "huazi event_id 'hz_fake' is not a known huazi event" in errors
+
+
 def test_full_coverage_validation_reports_missing_broll_slots_for_repair():
     selection = EditingSelection(
         portrait=_valid_selection().portrait,
@@ -470,7 +528,6 @@ def test_select_with_repair_sends_missing_broll_slots_back_to_agent():
                 {"slot_id": "pslot_001", "window_id": "pc_001"},
             ],
             "broll_plan": [{"slot_id": "bslot_000", "candidate_id": "bc_000"}],
-            "font_plan": {"font_id": "font_yst"},
             "bgm_plan": {"bgm_id": "bgm_001"},
         },
         {
@@ -482,7 +539,6 @@ def test_select_with_repair_sends_missing_broll_slots_back_to_agent():
                 {"slot_id": "bslot_000", "candidate_id": "bc_000"},
                 {"slot_id": "bslot_001", "candidate_id": "bc_001"},
             ],
-            "font_plan": {"font_id": "font_yst"},
             "bgm_plan": {"bgm_id": "bgm_001"},
         },
     ]
@@ -521,7 +577,6 @@ def test_invalid_ids_and_missing_coverage_are_rejected():
     assert "pc_999" in joined  # unknown portrait candidate
     assert "pslot_001" in joined  # uncovered slot
     assert "bc_404" in joined  # unknown broll candidate
-    assert "font_missing" in joined
     assert "bgm_missing" in joined
 
 
@@ -636,7 +691,7 @@ def test_deterministic_selection_is_valid_and_covers_all_slots():
     )
     assert {c.slot_id for c in selection.portrait} == {"pslot_000", "pslot_001"}
     assert [c.window_id for c in selection.portrait] == ["pc_000", "pc_001"]
-    assert selection.font_id == "font_yst"
+    assert selection.font_id is None
     assert selection.bgm_id == "bgm_001"
     assert (
         validate_selection(selection, boundary=boundary, candidates=candidates, bgm_enabled=True)
@@ -1102,16 +1157,17 @@ def test_editing_agent_helper_has_no_materializer_definitions():
 
 def test_materialize_style_uses_chosen_font_and_bgm():
     payload, warnings, degradations = materialize_style_from_selection(
-        request=_request(),
+        request=_request(subtitle={"font_id": "font_yst", "caption_style_pair_id": "local_promo_c"}),
         material=_material(),
         overlay_events=[],
-        font_id=_valid_selection().font_id,
+        font_id=None,
         bgm_id=_valid_selection().bgm_id,
     )
     assert warnings == []
     assert degradations == []
     assert payload["font_asset_id"] == "font_yst"
     assert payload["font"]["font_id"] == "font_yst"
+    assert payload["subtitle"]["caption_style_pair_id"] == "local_promo_c"
     assert payload["bgm"] is not None
     assert payload["bgm"]["asset_id"] == "bgm_001"
     assert payload["bgm"]["mood"] == "励志"
@@ -1133,6 +1189,7 @@ def test_materialize_style_empty_font_pool_falls_back_to_default():
         WarningCode.bgm_skipped_library_unannotated,
     ]
     assert [notice.code for notice in degradations] == [
+        WarningCode.font_default_used,
         WarningCode.bgm_skipped_library_unannotated
     ]
 
@@ -1142,13 +1199,14 @@ def test_materialize_style_bgm_disabled_yields_no_bgm():
         case_id="case_demo",
         script="脚本",
         voice={"voice_id": "voice_sandbox"},
+        subtitle={"font_id": "font_yst"},
         bgm={"enabled": False},
     )
     payload, warnings, degradations = materialize_style_from_selection(
         request=req,
         material=_material(),
         overlay_events=[],
-        font_id=_valid_selection().font_id,
+        font_id=None,
         bgm_id=_valid_selection().bgm_id,
     )
     assert warnings == []
@@ -1207,6 +1265,18 @@ def test_parse_selection_is_robust_to_garbage():
     assert parse_selection(None).portrait == []
 
 
+def test_parse_selection_rejects_agent_font_overreach():
+    parsed = parse_selection(
+        {
+            "portrait_plan": [],
+            "font_plan": {"font_id": "font_yst"},
+            "huazi_plan": [{"event_id": "hz_001", "font_size": 80, "phrase": "重点"}],
+        }
+    )
+    assert parsed.font_id is None
+    assert parsed.overreach_fields == ("font_plan", "huazi_plan.font_size")
+
+
 def test_select_with_repair_recovers_from_invalid_then_valid():
     boundary, candidates = _boundary(), index_candidates(_material())
     outputs = iter(
@@ -1218,7 +1288,6 @@ def test_select_with_repair_recovers_from_invalid_then_valid():
                     {"slot_id": "pslot_001", "window_id": "pc_001"},
                 ],
                 "broll_plan": [],
-                "font_plan": {"font_id": "font_yst"},
                 "bgm_plan": {"bgm_id": "bgm_001"},
             },
         ]

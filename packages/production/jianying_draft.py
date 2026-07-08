@@ -61,6 +61,10 @@ class JianyingTextSegment:
     start_us: int
     duration_us: int
     transform_y: float = -0.8
+    placement_id: str | None = None
+    animation_id: str | None = None
+    sfx_id: str | None = None
+    caption_style_pair_id: str | None = None
 
 
 def build_video_segments_from_plans(
@@ -177,6 +181,8 @@ def build_text_segments_from_narration(
                 )
             )
     style = style_plan or {}
+    subtitle_style = style.get("subtitle") if isinstance(style.get("subtitle"), dict) else {}
+    caption_style_pair_id = _str_or_none(subtitle_style.get("caption_style_pair_id"))
     overlay_events = style.get("overlay_events") if isinstance(style.get("overlay_events"), list) else []
     for event in overlay_events:
         if not isinstance(event, dict):
@@ -194,6 +200,10 @@ def build_text_segments_from_narration(
                     start_us=start_us,
                     duration_us=end_us - start_us,
                     transform_y=-0.48,
+                    placement_id=_str_or_none(event.get("placement_id")),
+                    animation_id=_str_or_none(event.get("animation_id")),
+                    sfx_id=_str_or_none(event.get("sfx_id")) or "none",
+                    caption_style_pair_id=caption_style_pair_id,
                 )
             )
     return segments
@@ -353,6 +363,7 @@ class JianyingDraftBuilder:
                         text_segment.start_us,
                         max(1, text_segment.duration_us),
                         transform_y=text_segment.transform_y,
+                        effects=_text_segment_effects(text_segment),
                     )
                     text_tracks.setdefault(text_segment.track_name, []).append(segment)
                     if _is_huazi_track(text_segment.track_name):
@@ -778,7 +789,12 @@ def _track_effects(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _text_segment(
-    material_id: str, start: int, duration: int, *, transform_y: float = -0.8
+    material_id: str,
+    start: int,
+    duration: int,
+    *,
+    transform_y: float = -0.8,
+    effects: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = _base_segment(material_id, start, duration)
     payload.update(
@@ -792,7 +808,21 @@ def _text_segment(
             "uniform_scale": {"on": True, "value": 1.0},
         }
     )
+    if effects:
+        payload["cutflow_effects"] = effects
     return payload
+
+
+def _text_segment_effects(segment: JianyingTextSegment) -> dict[str, Any] | None:
+    if not _is_huazi_track(segment.track_name):
+        return None
+    effects: dict[str, Any] = {}
+    for key in ("placement_id", "animation_id", "sfx_id", "caption_style_pair_id"):
+        value = getattr(segment, key)
+        if value:
+            effects[key] = value
+    effects["manual_acceptance_required"] = True
+    return effects
 
 
 def _voice_audio_count(source: JianyingDraftInput, audio_path: str | None) -> int:
@@ -820,9 +850,21 @@ def _draft_effects_manifest(
                     **effects,
                 }
             )
+    huazi_effects = [
+        {
+            "track_name": segment.track_name,
+            "text": segment.text,
+            **effects,
+        }
+        for segment in source.text_segments
+        if _is_huazi_track(segment.track_name)
+        for effects in [_text_segment_effects(segment)]
+        if effects
+    ]
     return {
         "video_segments": video_effects,
         "huazi_segments": huazi_segments,
+        "huazi_segment_effects": huazi_effects,
         "manual_acceptance_required": bool(video_effects or huazi_segments),
         "effect_id_policy": "cutflow_effects metadata is authoritative when Jianying native effect_id drifts.",
     }

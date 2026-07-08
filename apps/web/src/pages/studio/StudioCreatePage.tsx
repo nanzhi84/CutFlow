@@ -183,6 +183,8 @@ export default function StudioCreatePage() {
       subtitle: {
         enabled: isSeedance ? false : form.subtitleEnabled,
         style_preset: form.subtitleStyle.trim() || "douyin",
+        font_id: form.subtitleFontId.trim() || null,
+        caption_style_pair_id: form.captionStylePairId,
         font_size: form.subtitleSize,
       },
       bgm: {

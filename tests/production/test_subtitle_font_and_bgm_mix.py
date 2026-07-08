@@ -193,7 +193,7 @@ def test_write_ass_subtitles_emits_selected_colors_and_overlay_styles(tmp_path):
     # No producer emits Pop/Warning/Soft; the unknown "pop" style falls back to Emphasis.
     assert "Style: Pop" not in text
     assert r"Dialogue: 1,0:00:00.20,0:00:00.80,Emphasis" in text
-    assert r"{\fad(80,120)\t(0,180,\fscx108\fscy108)}重点" in text
+    assert r"{\an8\pos(540,269)\fad(80,120)\t(0,180,\fscx108\fscy108)}重点" in text
 
 
 # --- gap 2: adaptive mix volume -------------------------------------------------

@@ -26,13 +26,20 @@ class MaterialCandidate(ContractModel):
 
 class SubtitleStylePlan(ContractModel):
     font_id: str | None = None
+    caption_style_pair_id: str | None = None
     font_size: int | None = None
     position: dict[str, float] | None = None
+    font_weight: int | None = None
     primary_color: str | None = None
     outline_color: str | None = None
     outline: float | None = None
+    emphasis_size_scale: float | None = None
+    emphasis_font_weight: int | None = None
     emphasis_primary_color: str | None = None
     emphasis_outline_color: str | None = None
+    emphasis_outline: float | None = None
+    default_emphasis_position_id: str | None = None
+    default_emphasis_animation_id: str | None = None
 
 
 class BgmPlan(ContractModel):
@@ -392,7 +399,12 @@ class OverlayEvent(ContractModel):
     start: float
     end: float
     text: str
+    event_id: str | None = None
     style: str = "emphasis"
+    placement_id: str = "top_center_banner"
+    animation_id: str = "pop_in"
+    sfx_id: str = "none"
+    reason: str = ""
 
 
 class StylePlanArtifact(ContractModel):

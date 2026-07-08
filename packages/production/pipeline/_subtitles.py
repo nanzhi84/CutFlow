@@ -4,6 +4,13 @@ from __future__ import annotations
 
 import unicodedata
 from pathlib import Path
+from typing import Any
+
+from packages.production.pipeline._caption_styles import (
+    HUAZI_ANIMATIONS,
+    HUAZI_SFX,
+    huazi_placement,
+)
 
 _ASS_MARGIN_L = 80
 _ASS_MARGIN_R = 80
@@ -111,6 +118,13 @@ def _ass_outline(value, fallback: float = 4.0) -> str:
     return f"{outline:g}"
 
 
+def _ass_bold(value, fallback: bool = True) -> str:
+    try:
+        return "1" if int(value) >= 600 else "0"
+    except (TypeError, ValueError):
+        return "1" if fallback else "0"
+
+
 def _overlay_style_name(value: object) -> str:
     return _OVERLAY_STYLE_ALIASES.get(str(value or "").strip().lower(), "Emphasis")
 
@@ -124,14 +138,72 @@ def _overlay_style_rows(
 ) -> list[str]:
     emphasis_primary = _ass_color(subtitle.get("emphasis_primary_color"), "#FFFF00")
     emphasis_outline = _ass_color(subtitle.get("emphasis_outline_color"), "#000000")
+    outline = subtitle.get("emphasis_outline")
+    if outline is None:
+        outline = subtitle.get("outline")
     return [
         (
             f"Style: Emphasis,{font_name},{font_size},{emphasis_primary},&H000000FF,"
-            f"{emphasis_outline},&H64000000,1,0,0,0,100,100,0,0,1,"
-            f"{_ass_outline(subtitle.get('outline'), 4.0)},1,8,"
+            f"{emphasis_outline},&H64000000,"
+            f"{_ass_bold(subtitle.get('emphasis_font_weight'))},0,0,0,100,100,0,0,1,"
+            f"{_ass_outline(outline, 5.0)},1,8,"
             f"{_ASS_MARGIN_L},{_ASS_MARGIN_R},{margin_v},1"
         ),
     ]
+
+
+def _normal_bold(subtitle: dict) -> str:
+    return _ass_bold(subtitle.get("font_weight"), fallback=True)
+
+
+def _overlay_animation_id(value: object) -> str:
+    text = str(value or "").strip()
+    return text if text in HUAZI_ANIMATIONS else "pop_in"
+
+
+def _overlay_sfx_id(value: object) -> str:
+    text = str(value or "").strip()
+    return text if text in HUAZI_SFX else "none"
+
+
+def _overlay_override_tags(
+    event: dict[str, Any],
+    *,
+    width: int,
+    height: int,
+    subtitle: dict,
+) -> str:
+    placement_id = str(
+        event.get("placement_id")
+        or subtitle.get("default_emphasis_position_id")
+        or "top_center_banner"
+    )
+    placement = huazi_placement(placement_id)
+    align = int(placement.get("align") or 8)
+    x = int(round(width * float(placement.get("x") or 0.5)))
+    y = int(round(height * float(placement.get("y") or 0.14)))
+    animation = _overlay_animation_id(
+        event.get("animation_id") or subtitle.get("default_emphasis_animation_id")
+    )
+    # First version records sfx intent in the event/manifest but does not synthesize audio.
+    # Keep non-none ids out of ASS rather than pretending a sound was mixed.
+    _overlay_sfx_id(event.get("sfx_id"))
+    tags = [f"\\an{align}"]
+    if animation == "slide_up":
+        tags.append(f"\\move({x},{y + 80},{x},{y},0,220)")
+        tags.append(r"\fad(80,120)")
+    elif animation == "slide_left":
+        tags.append(f"\\move({x + 90},{y},{x},{y},0,220)")
+        tags.append(r"\fad(80,120)")
+    else:
+        tags.append(f"\\pos({x},{y})")
+        if animation == "fade_in":
+            tags.append(r"\fad(180,100)")
+        elif animation == "pop_in":
+            tags.append(r"\fad(80,120)\t(0,180,\fscx108\fscy108)")
+        elif animation == "punch":
+            tags.append(r"\t(0,120,\fscx116\fscy116)\t(120,260,\fscx100\fscy100)")
+    return "{" + "".join(tags) + "}"
 
 
 def write_ass_subtitles(
@@ -159,7 +231,11 @@ def write_ass_subtitles(
         margin_v = max(20, int(height * (1 - float(position["y"]))))
     # Emphasis (花字) banner sizing: larger, top-anchored so it layers above the normal
     # bottom subtitle without overlapping it.
-    emphasis_size = int(round(font_size * 1.4))
+    try:
+        emphasis_scale = float(subtitle.get("emphasis_size_scale") or 1.4)
+    except (TypeError, ValueError):
+        emphasis_scale = 1.4
+    emphasis_size = int(round(font_size * max(1.0, emphasis_scale)))
     emphasis_margin_v = int(height * 0.12)
     lines = [
         "[Script Info]",
@@ -179,7 +255,8 @@ def write_ass_subtitles(
             f"Style: Default,{resolved_font},{font_size},"
             f"{_ass_color(subtitle.get('primary_color'), '#FFFFFF')},&H000000FF,"
             f"{_ass_color(subtitle.get('outline_color'), '#000000')},&H64000000,"
-            f"1,0,0,0,100,100,0,0,1,{_ass_outline(subtitle.get('outline'), 4.0)},"
+            f"{_normal_bold(subtitle)},0,0,0,100,100,0,0,1,"
+            f"{_ass_outline(subtitle.get('outline'), 4.0)},"
             f"1,2,{_ASS_MARGIN_L},{_ASS_MARGIN_R},{margin_v},1"
         ),
     ]
@@ -236,7 +313,7 @@ def write_ass_subtitles(
             f"{ass_time(float(event.get('start', 0) or 0))},"
             f"{ass_time(float(event.get('end', 0) or 0))},"
             f"{_overlay_style_name(event.get('style'))},,0,0,0,,"
-            r"{\fad(80,120)\t(0,180,\fscx108\fscy108)}"
+            f"{_overlay_override_tags(event, width=width, height=height, subtitle=subtitle)}"
             f"{text}"
         )
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

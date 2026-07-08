@@ -23991,6 +23991,17 @@
             ],
             "title": "Font Id"
           },
+          "caption_style_pair_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caption Style Pair Id"
+          },
           "font_size": {
             "anyOf": [
               {

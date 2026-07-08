@@ -210,6 +210,9 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
         "font_id": (
             ("packages/production/pipeline/_materialize.py", "request.subtitle.font_id"),
         ),
+        "caption_style_pair_id": (
+            ("packages/production/pipeline/_materialize.py", "request.subtitle.caption_style_pair_id"),
+        ),
         "font_size": (
             ("packages/production/pipeline/_materialize.py", "request.subtitle.font_size"),
         ),
@@ -340,7 +343,18 @@ _REMOVED_ARTIFACT_FIELDS = {
 # Sibling fields on the same models that ARE wired and must survive the cleanup.
 _RETAINED_ARTIFACT_FIELDS = {
     MaterialCandidate: ("asset_id", "score", "metadata"),
-    SubtitleStylePlan: ("font_id", "font_size", "position"),
+    SubtitleStylePlan: (
+        "caption_style_pair_id",
+        "font_id",
+        "font_size",
+        "position",
+        "font_weight",
+        "emphasis_size_scale",
+        "emphasis_font_weight",
+        "emphasis_outline",
+        "default_emphasis_position_id",
+        "default_emphasis_animation_id",
+    ),
     FontPlan: ("font_id",),
     StylePlanArtifact: ("subtitle", "bgm", "font", "font_asset_id", "overlay_events"),
     CaseContextArtifact: (

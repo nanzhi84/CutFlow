@@ -6,19 +6,30 @@ import {
   Play,
   Settings2,
   Sparkles,
+  Type,
   Volume2,
   type LucideIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { api, type MediaAssetRecord } from "../../api/client";
+import { FontFaceStyle } from "../library/FontFaceStyle";
+import { fontFamilyName, voiceDisplayLabel } from "../library/libraryModel";
+import { toDisplayUrl } from "../../lib/url";
+import {
+  captionPairLabel,
+  captionStylePairOptions,
+  captionStylePairs,
+  legacyStyleForCaptionPair,
+  type CaptionStylePairId,
+} from "./captionStyles";
 import {
   contentModeLabel,
   emotionOptions,
-  subtitleLabel,
   visualModeLabel,
   type FormState,
 } from "./studioCreateModel";
 import { SeedanceReferencePicker } from "./SeedanceReferencePicker";
-import { voiceDisplayLabel } from "../library/libraryModel";
 
 type SetField = <Key extends keyof FormState>(key: Key, value: FormState[Key]) => void;
 type VoiceOption = {
@@ -35,6 +46,35 @@ function seedanceReferenceSummary(count: number) {
 function lipsyncSummary(form: FormState) {
   return form.lipsyncEnabled ? `开启 · ${form.lipsyncTimeoutMinutes} 分钟` : "关闭";
 }
+
+function shortAssetId(assetId: string) {
+  return assetId.length > 12 ? `${assetId.slice(0, 8)}…` : assetId;
+}
+
+function useSubtitleFontLabel(form: FormState) {
+  const fontsQuery = useQuery({
+    queryKey: ["studio-create", "font-assets"],
+    queryFn: () => api.mediaAssets.list({ limit: 200, kind: "font" }),
+    enabled: form.contentMode !== "seedance" && form.subtitleEnabled && Boolean(form.subtitleFontId),
+  });
+  if (!form.subtitleFontId) return "默认字体";
+  const font = fontsQuery.data?.items.find((item) => item.asset.id === form.subtitleFontId)?.asset;
+  return font?.title ?? shortAssetId(form.subtitleFontId);
+}
+
+function captionConfigSummary(form: FormState, fontLabel: string) {
+  return `${fontLabel} · ${captionPairLabel(form.captionStylePairId)} · ${form.subtitleSize}px`;
+}
+
+const huaziPreviewPositions: Record<string, { x: number; y: number; align: string }> = {
+  top_center_banner: { x: 50, y: 14, align: "center" },
+  upper_left_badge: { x: 12, y: 18, align: "left" },
+  upper_right_badge: { x: 88, y: 18, align: "right" },
+  mid_left_callout: { x: 12, y: 46, align: "left" },
+  mid_right_callout: { x: 88, y: 46, align: "right" },
+  lower_left_tag: { x: 12, y: 72, align: "left" },
+  lower_right_tag: { x: 88, y: 72, align: "right" },
+};
 
 export function ScriptStep({
   form,
@@ -74,8 +114,8 @@ export function ScriptStep({
 
 export function TemplateStep({ form, setField, caseId }: { form: FormState; setField: SetField; caseId: string }) {
   const contentModeOptions: Array<{ value: FormState["contentMode"]; label: string; detail: string }> = [
-    { value: "deterministic", label: "确定算法剪辑", detail: "规则算法按脚本、时间线和案例素材稳定规划人像 / B-roll / 字体 / BGM。" },
-    { value: "editing_agent", label: "Agent智能剪辑", detail: "剪辑 Agent 结合额外要求统一规划人像 / B-roll / 字体 / BGM。" },
+    { value: "deterministic", label: "确定算法剪辑", detail: "规则算法按脚本、时间线和案例素材稳定规划人像 / B-roll / 花字 / BGM。" },
+    { value: "editing_agent", label: "Agent智能剪辑", detail: "剪辑 Agent 结合额外要求统一规划人像 / B-roll / 花字表现 / BGM。" },
     { value: "seedance", label: "seedance文生视频", detail: "一次性生成 15s / 3:4 / 720p 短片，可纯文本出片，也可附参考图。" },
   ];
   const isDeterministic = form.contentMode === "deterministic";
@@ -115,12 +155,12 @@ export function TemplateStep({ form, setField, caseId }: { form: FormState; setF
             onChange={(event) => setField("editInstruction", event.target.value)}
           />
           <span className="text-xs text-text-secondary">
-            剪辑 Agent 会在生成这条视频时参考它，统一规划人像 / B-roll / 字体 / BGM；留空则按通用最佳实践。
+            剪辑 Agent 会在生成这条视频时参考它，统一规划人像 / B-roll / 花字表现 / BGM；留空则按通用最佳实践。
           </span>
         </label>
       ) : isDeterministic ? (
         <div className="stateBox muted">
-          <span>确定算法剪辑会用规则算法稳定选择人像、B-roll、字幕和 BGM。</span>
+          <span>确定算法剪辑会用规则算法稳定选择人像、B-roll、花字和 BGM。</span>
         </div>
       ) : null}
     </div>
@@ -239,6 +279,37 @@ export function ProductionStep({
 }
 
 export function PostProcessStep({ form, setField }: { form: FormState; setField: SetField }) {
+  const [fontPreviewUrl, setFontPreviewUrl] = useState<string | null>(null);
+  const fontsQuery = useQuery({
+    queryKey: ["studio-create", "font-assets"],
+    queryFn: () => api.mediaAssets.list({ limit: 200, kind: "font" }),
+    enabled: form.contentMode !== "seedance" && form.subtitleEnabled,
+  });
+  const fonts = useMemo(
+    () => (fontsQuery.data?.items ?? []).map((item) => item.asset),
+    [fontsQuery.data?.items],
+  );
+  const selectedFont = fonts.find((font) => font.id === form.subtitleFontId) ?? null;
+
+  useEffect(() => {
+    if (!selectedFont) {
+      setFontPreviewUrl(null);
+      return;
+    }
+    let cancelled = false;
+    api.mediaAssets
+      .previewUrl(selectedFont.id)
+      .then((response) => {
+        if (!cancelled) setFontPreviewUrl(toDisplayUrl(response.url));
+      })
+      .catch(() => {
+        if (!cancelled) setFontPreviewUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedFont]);
+
   if (form.contentMode === "seedance") {
     return (
       <div className="grid gap-4">
@@ -254,22 +325,64 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
       <SectionTitle icon={Settings2} title="后处理" description="配置字幕、BGM 和封面策略。" />
       <ToggleLine checked={form.subtitleEnabled} onChange={(checked) => setField("subtitleEnabled", checked)} label="启用字幕" />
       {form.subtitleEnabled ? (
-        <div className="grid gap-3 md:grid-cols-2">
-          <label>
-            <span>字幕样式</span>
-            <select value={form.subtitleStyle} onChange={(event) => setField("subtitleStyle", event.target.value as FormState["subtitleStyle"])}>
-              <option value="douyin">抖音风</option>
-              <option value="clean">简洁风</option>
-              <option value="variety">综艺风</option>
-              <option value="news">新闻风</option>
-              <option value="movie">电影风</option>
-              <option value="youshe_title_black">标题黑风</option>
-            </select>
-          </label>
-          <label>
-            <span>字幕字号</span>
-            <input type="number" min={12} max={96} value={form.subtitleSize} onChange={(event) => setField("subtitleSize", Number(event.target.value))} />
-          </label>
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+          <div className="grid gap-3">
+            <div className="grid gap-3 md:grid-cols-2">
+              <label>
+                <span>字体包</span>
+                <select value={form.subtitleFontId} onChange={(event) => setField("subtitleFontId", event.target.value)}>
+                  <option value="">默认字体</option>
+                  {fonts.map((font) => (
+                    <option value={font.id} key={font.id}>
+                      {font.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>字幕组合</span>
+                <select
+                  value={form.captionStylePairId}
+                  onChange={(event) => {
+                    const value = event.target.value as CaptionStylePairId;
+                    setField("captionStylePairId", value);
+                    setField("subtitleStyle", legacyStyleForCaptionPair(value));
+                  }}
+                >
+                  {captionStylePairOptions.map((option) => (
+                    <option value={option.value} key={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <label>
+              <span>字幕字号</span>
+              <input
+                type="number"
+                min={12}
+                max={96}
+                value={form.subtitleSize}
+                onChange={(event) => setField("subtitleSize", Number(event.target.value))}
+              />
+            </label>
+            {fontsQuery.isLoading ? (
+              <div className="stateBox muted">
+                <span>字体库加载中</span>
+              </div>
+            ) : fonts.length === 0 ? (
+              <div className="stateBox muted">
+                <Type className="h-4 w-4" />
+                <span>字体库为空，可先使用默认字体。</span>
+              </div>
+            ) : null}
+          </div>
+          <CaptionPreview
+            form={form}
+            selectedFont={selectedFont}
+            previewUrl={fontPreviewUrl}
+          />
         </div>
       ) : null}
       <ToggleLine checked={form.bgmEnabled} onChange={(checked) => setField("bgmEnabled", checked)} label="启用 BGM" />
@@ -291,7 +404,125 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
   );
 }
 
+function CaptionPreview({
+  form,
+  selectedFont,
+  previewUrl,
+}: {
+  form: FormState;
+  selectedFont: MediaAssetRecord | null;
+  previewUrl: string | null;
+}) {
+  const pair = captionStylePairs[form.captionStylePairId] ?? captionStylePairs.douyin_bold_a;
+  const family = selectedFont && previewUrl ? fontFamilyName(selectedFont.id) : undefined;
+  const fontLabel = selectedFont?.title ?? "默认字体";
+  const normal = pair.normal;
+  const huazi = pair.huazi;
+  const baseSize = Math.max(12, Math.min(96, form.subtitleSize));
+  const primaryPlacement = huaziPreviewPositions[huazi.defaultPlacementId] ?? huaziPreviewPositions.top_center_banner;
+  const secondaryPlacement = huaziPreviewPositions.lower_right_tag;
+  return (
+    <div className="grid gap-2">
+      {selectedFont && previewUrl ? <FontFaceStyle assetId={selectedFont.id} url={previewUrl} /> : null}
+      <div className="mx-auto aspect-[9/16] w-full max-w-[260px] overflow-hidden rounded-lg bg-black shadow-glow">
+        <div className="relative h-full w-full">
+          <PreviewText
+            text="这是当前口播字幕预览"
+            style={previewTextStyle({
+              family,
+              color: normal.color,
+              outlineColor: normal.outlineColor,
+              outline: normal.outline,
+              fontWeight: normal.fontWeight,
+              fontSize: baseSize * normal.sizeScale,
+              x: normal.position.x * 100,
+              y: normal.position.y * 100,
+              align: "center",
+            })}
+          />
+          <PreviewText
+            text="限时五折"
+            style={previewTextStyle({
+              family,
+              color: huazi.color,
+              outlineColor: huazi.outlineColor,
+              outline: huazi.outline,
+              fontWeight: huazi.fontWeight,
+              fontSize: baseSize * huazi.sizeScale,
+              x: primaryPlacement.x,
+              y: primaryPlacement.y,
+              align: primaryPlacement.align,
+            })}
+          />
+          <PreviewText
+            text="到店立减"
+            style={previewTextStyle({
+              family,
+              color: huazi.color,
+              outlineColor: huazi.outlineColor,
+              outline: huazi.outline,
+              fontWeight: huazi.fontWeight,
+              fontSize: baseSize * Math.max(1.1, huazi.sizeScale * 0.86),
+              x: secondaryPlacement.x,
+              y: secondaryPlacement.y,
+              align: secondaryPlacement.align,
+            })}
+          />
+        </div>
+      </div>
+      <p className="truncate text-center text-xs text-text-secondary">
+        {fontLabel} · {captionPairLabel(form.captionStylePairId)}
+      </p>
+    </div>
+  );
+}
+
+function PreviewText({ text, style }: { text: string; style: CSSProperties }) {
+  return (
+    <span className="absolute max-w-[78%] whitespace-nowrap leading-tight" style={style}>
+      {text}
+    </span>
+  );
+}
+
+function previewTextStyle({
+  family,
+  color,
+  outlineColor,
+  outline,
+  fontWeight,
+  fontSize,
+  x,
+  y,
+  align,
+}: {
+  family?: string;
+  color: string;
+  outlineColor: string;
+  outline: number;
+  fontWeight: number;
+  fontSize: number;
+  x: number;
+  y: number;
+  align: string;
+}): CSSProperties {
+  const translateX = align === "left" ? "0" : align === "right" ? "-100%" : "-50%";
+  return {
+    left: `${x}%`,
+    top: `${y}%`,
+    transform: `translate(${translateX}, -50%)`,
+    color,
+    fontFamily: family,
+    fontSize: `${Math.max(12, Math.round(fontSize))}px`,
+    fontWeight,
+    textAlign: align as CSSProperties["textAlign"],
+    WebkitTextStroke: `${Math.max(1, outline * 0.55)}px ${outlineColor}`,
+    textShadow: `0 2px ${Math.max(2, Math.round(outline))}px ${outlineColor}`,
+  };
+}
+
 export function SubmitStep({ form, selectedVoiceLabel, scriptCount }: { form: FormState; selectedVoiceLabel: string; scriptCount: number }) {
+  const subtitleFontLabel = useSubtitleFontLabel(form);
   return (
     <div className="grid gap-4">
       <SectionTitle icon={Play} title="提交" description="确认配置后提交生产任务，成功后自动跳转到成片页。" />
@@ -329,7 +560,7 @@ export function SubmitStep({ form, selectedVoiceLabel, scriptCount }: { form: Fo
           <ReviewItem label="后处理" value="不生成字幕 / 跳过本地 BGM / AI 封面" />
         ) : (
           <>
-            <ReviewItem label="字幕" value={form.subtitleEnabled ? `${subtitleLabel(form.subtitleStyle)} · ${form.subtitleSize}px` : "关闭"} />
+            <ReviewItem label="字幕" value={form.subtitleEnabled ? captionConfigSummary(form, subtitleFontLabel) : "关闭"} />
             <ReviewItem label="BGM" value={form.bgmEnabled ? `${Math.round(form.bgmVolume * 100)}%` : "关闭"} />
           </>
         )}
@@ -339,6 +570,7 @@ export function SubmitStep({ form, selectedVoiceLabel, scriptCount }: { form: Fo
 }
 
 export function ConfigSummary({ form, selectedVoiceLabel, scriptCount }: { form: FormState; selectedVoiceLabel: string; scriptCount: number }) {
+  const subtitleFontLabel = useSubtitleFontLabel(form);
   return (
     <aside className="card grid content-start gap-4">
       <div>
@@ -379,7 +611,7 @@ export function ConfigSummary({ form, selectedVoiceLabel, scriptCount }: { form:
         ) : null}
         {form.contentMode === "seedance" ? null : (
           <>
-            <SummaryRow icon={Captions} label="字幕" value={form.subtitleEnabled ? `${subtitleLabel(form.subtitleStyle)} · ${form.subtitleSize}px` : "关闭"} />
+            <SummaryRow icon={Captions} label="字幕" value={form.subtitleEnabled ? captionConfigSummary(form, subtitleFontLabel) : "关闭"} />
             <SummaryRow icon={Music} label="BGM" value={form.bgmEnabled ? `${Math.round(form.bgmVolume * 100)}%` : "关闭"} />
           </>
         )}

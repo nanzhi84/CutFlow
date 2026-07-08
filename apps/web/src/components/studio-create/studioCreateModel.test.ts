@@ -62,6 +62,8 @@ describe("studioCreateModel", () => {
       brollEnabled: true,
       maxInserts: 6,
       subtitleEnabled: true,
+      subtitleFontId: "font_yst",
+      captionStylePairId: "clean_editorial_b",
       subtitleStyle: "movie",
       subtitleSize: 42,
       bgmEnabled: true,
@@ -76,6 +78,8 @@ describe("studioCreateModel", () => {
     expect(defaults.voice?.voice_id).toBe("voice_1");
     expect(defaults.broll?.allow_generic_coverage).toBe(true);
     expect(defaults.subtitle?.style_preset).toBe("movie");
+    expect(defaults.subtitle?.font_id).toBe("font_yst");
+    expect(defaults.subtitle?.caption_style_pair_id).toBe("clean_editorial_b");
     expect(defaults.bgm?.auto_mix).toBe(false);
     expect(defaults.cover?.mode).toBe("ai");
     expect(defaults.lipsync?.timeout_minutes).toBe(45);

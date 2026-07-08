@@ -70,6 +70,7 @@ class SubtitleOptions(ContractModel):
     enabled: bool = True
     style_preset: str = "douyin"
     font_id: str | None = None
+    caption_style_pair_id: str | None = None
     font_size: int | None = None
     position: dict[str, float] | None = None
 

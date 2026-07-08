@@ -49,6 +49,8 @@ const customForm = {
   brollEnabled: false,
   maxInserts: 7,
   subtitleEnabled: true,
+  subtitleFontId: "font_yst",
+  captionStylePairId: "local_promo_c",
   subtitleStyle: "news",
   subtitleSize: 36,
   bgmEnabled: true,
@@ -71,12 +73,16 @@ console.log(JSON.stringify({
   voiceSpeed: defaults.voice ? defaults.voice.speed : null,
   bgmVolume: defaults.bgm ? defaults.bgm.volume : null,
   bgmAutoMix: defaults.bgm ? defaults.bgm.auto_mix : null,
+  subtitleFontId: defaults.subtitle ? defaults.subtitle.font_id : null,
+  captionStylePairId: defaults.subtitle ? defaults.subtitle.caption_style_pair_id : null,
   coverMode: defaults.cover ? defaults.cover.mode : null,
   hydratedVoiceId: hydrated.voiceId,
   hydratedSpeed: hydrated.speed,
   hydratedEmotion: hydrated.emotion,
   hydratedBrollEnabled: hydrated.brollEnabled,
   hydratedMaxInserts: hydrated.maxInserts,
+  hydratedSubtitleFontId: hydrated.subtitleFontId,
+  hydratedCaptionStylePairId: hydrated.captionStylePairId,
   hydratedSubtitleStyle: hydrated.subtitleStyle,
   hydratedSubtitleSize: hydrated.subtitleSize,
   hydratedBgmEnabled: hydrated.bgmEnabled,
@@ -97,6 +103,8 @@ console.log(JSON.stringify({
     assert result["voiceSpeed"] == 1.25
     assert result["bgmVolume"] == 0.5
     assert result["bgmAutoMix"] is False
+    assert result["subtitleFontId"] == "font_yst"
+    assert result["captionStylePairId"] == "local_promo_c"
     assert result["coverMode"] == "ai"
     # round-trip hydration must reproduce the preference values
     assert result["hydratedVoiceId"] == "voice_42"
@@ -104,6 +112,8 @@ console.log(JSON.stringify({
     assert result["hydratedEmotion"] == "energetic"
     assert result["hydratedBrollEnabled"] is False
     assert result["hydratedMaxInserts"] == 7
+    assert result["hydratedSubtitleFontId"] == "font_yst"
+    assert result["hydratedCaptionStylePairId"] == "local_promo_c"
     assert result["hydratedSubtitleStyle"] == "news"
     assert result["hydratedSubtitleSize"] == 36
     assert result["hydratedBgmEnabled"] is True

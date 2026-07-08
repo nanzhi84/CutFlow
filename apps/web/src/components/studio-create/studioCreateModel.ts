@@ -1,4 +1,12 @@
 import type { components } from "../../api/schema";
+import {
+  captionPairFromLegacyStyle,
+  isCaptionStylePairId,
+  isLegacySubtitleStyle,
+  legacyStyleForCaptionPair,
+  type CaptionStylePairId,
+  type LegacySubtitleStyle,
+} from "./captionStyles";
 
 export type UserGenerationDefaults = components["schemas"]["UserGenerationDefaults"];
 
@@ -25,7 +33,9 @@ export type FormState = {
   brollEnabled: boolean;
   maxInserts: number;
   subtitleEnabled: boolean;
-  subtitleStyle: "douyin" | "clean" | "variety" | "news" | "movie" | "youshe_title_black";
+  subtitleStyle: LegacySubtitleStyle;
+  subtitleFontId: string;
+  captionStylePairId: CaptionStylePairId;
   subtitleSize: number;
   bgmEnabled: boolean;
   bgmVolume: number;
@@ -56,6 +66,8 @@ const defaultForm: FormState = {
   maxInserts: 4,
   subtitleEnabled: true,
   subtitleStyle: "douyin",
+  subtitleFontId: "",
+  captionStylePairId: "douyin_bold_a",
   subtitleSize: 28,
   bgmEnabled: false,
   bgmVolume: 0.25,
@@ -106,12 +118,22 @@ export function loadStoredForm(): FormState {
     const seedanceReferenceAssetIds = Array.isArray(parsed.seedanceReferenceAssetIds)
       ? parsed.seedanceReferenceAssetIds.filter((id): id is string => typeof id === "string")
       : defaultForm.seedanceReferenceAssetIds;
+    const captionStylePairId = isCaptionStylePairId(parsed.captionStylePairId)
+      ? parsed.captionStylePairId
+      : captionPairFromLegacyStyle(parsed.subtitleStyle);
+    const subtitleStyle = isLegacySubtitleStyle(parsed.subtitleStyle)
+      ? parsed.subtitleStyle
+      : legacyStyleForCaptionPair(captionStylePairId);
+    const subtitleFontId = typeof parsed.subtitleFontId === "string" ? parsed.subtitleFontId : "";
     return {
       ...defaultForm,
       ...(parsed as Partial<FormState>),
       contentMode,
       visualMode,
       seedanceReferenceAssetIds,
+      subtitleStyle,
+      subtitleFontId,
+      captionStylePairId,
       speed: clampNumber(Number(parsed.speed ?? defaultForm.speed), 0.5, 2, defaultForm.speed),
       maxInserts: clampNumber(Number(parsed.maxInserts ?? defaultForm.maxInserts), 0, 20, defaultForm.maxInserts),
       subtitleSize: clampNumber(Number(parsed.subtitleSize ?? defaultForm.subtitleSize), 12, 96, defaultForm.subtitleSize),
@@ -168,7 +190,7 @@ export function subtitleLabel(value: FormState["subtitleStyle"]) {
   return "抖音风";
 }
 
-const SUBTITLE_STYLES: FormState["subtitleStyle"][] = [
+const SUBTITLE_STYLES: LegacySubtitleStyle[] = [
   "douyin",
   "clean",
   "variety",
@@ -207,6 +229,8 @@ export function mapFormToDefaults(form: FormState): UserGenerationDefaults {
     subtitle: {
       enabled: form.subtitleEnabled,
       style_preset: form.subtitleStyle,
+      font_id: form.subtitleFontId.trim() || null,
+      caption_style_pair_id: form.captionStylePairId,
       font_size: form.subtitleSize,
     },
     bgm: {
@@ -255,6 +279,11 @@ export function mapDefaultsToForm(defaults: UserGenerationDefaults, base: FormSt
   if (defaults.subtitle) {
     next.subtitleEnabled = Boolean(defaults.subtitle.enabled);
     next.subtitleStyle = pickFrom(SUBTITLE_STYLES, defaults.subtitle.style_preset, base.subtitleStyle);
+    next.captionStylePairId = isCaptionStylePairId(defaults.subtitle.caption_style_pair_id)
+      ? defaults.subtitle.caption_style_pair_id
+      : captionPairFromLegacyStyle(defaults.subtitle.style_preset);
+    next.subtitleStyle = legacyStyleForCaptionPair(next.captionStylePairId);
+    next.subtitleFontId = defaults.subtitle.font_id ?? "";
     next.subtitleSize = clampNumber(
       Number(defaults.subtitle.font_size ?? base.subtitleSize),
       12,
