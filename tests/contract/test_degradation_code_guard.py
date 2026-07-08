@@ -11,7 +11,7 @@ construction under ``packages/`` and extracts literal ``code=WarningCode.<name>`
 arguments. Any name that is not also a ``DegradationCode`` member is a latent crash
 risk. New violating call sites make this test fail.
 
-Two pre-existing orphan sites are pinned in ``KNOWN_UNMAPPED`` rather than silently
+Pre-existing orphan sites are pinned in ``KNOWN_UNMAPPED`` rather than silently
 tolerated (see each entry). The set-equality assertion therefore also fails if a
 known site is removed — forcing the allowlist to stay honest — while any *new*
 orphan site (a different file, or a different orphan code) still fails the guard.
@@ -32,15 +32,10 @@ _CONSTRUCTOR_NAMES = {"degradation_notice", "DegradationNotice"}
 
 # Pre-existing ``code=WarningCode.<orphan>`` construction sites, keyed by the
 # repo-relative module path. These are documented, not fixed here:
-#   - narration_alignment: the ASR-estimated fallback puts this notice into
-#     RunState.degradations, so it CAN reach the public report and crash it. This
-#     is a genuine latent bug (an unmapped DegradationCode.timestamp_estimated is
-#     the proper fix, which is a contract change tracked separately).
 #   - budget_guard: a provider-gateway budget-block notice that is only logged /
 #     turned into a ProviderError and never enters RunState.degradations, so it
 #     cannot reach the DegradationCode sink today.
 KNOWN_UNMAPPED: set[tuple[str, str]] = {
-    ("packages/production/pipeline/nodes/narration_alignment.py", "timestamp_estimated"),
     ("packages/ops/budget_guard.py", "budget_exceeded"),
 }
 
@@ -109,3 +104,22 @@ def test_degradation_notice_codes_are_valid_degradation_codes():
         f"unexpected_new={sorted(orphans - KNOWN_UNMAPPED)} "
         f"unexpectedly_fixed={sorted(KNOWN_UNMAPPED - orphans)}"
     )
+
+
+def test_estimated_timestamp_degradation_survives_public_report():
+    """The ASR-estimated-timestamp fallback (narration_alignment) emits a graded
+    DegradationNotice; the public run report must accept its code instead of
+    raising ValidationError at run finalization (pre-fix crash path)."""
+    from packages.core.contracts import WarningCode
+    from packages.core.contracts.jobs import RunPublicReportArtifact
+    from packages.core.contracts.base import RunStatus
+
+    report = RunPublicReportArtifact(
+        run_id="run_ts_estimated",
+        status=RunStatus.succeeded,
+        summary="ok",
+        node_statuses={},
+        warnings=[WarningCode.timestamp_estimated],
+        degradations=[DegradationCode(WarningCode.timestamp_estimated.value)],
+    )
+    assert report.degradations == [DegradationCode.timestamp_estimated]

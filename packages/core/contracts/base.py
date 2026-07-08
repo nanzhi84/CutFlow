@@ -103,6 +103,7 @@ class DegradationCode(str, Enum):
     broll_insertions_dropped_geometry = "broll.insertions_dropped_geometry"
     editing_agent_deterministic_fallback = "editing_agent.deterministic_fallback"
     window_query_template_fallback = "window_query.template_fallback"
+    timestamp_estimated = "timestamp.estimated"
 
 
 class JobStatus(str, Enum):

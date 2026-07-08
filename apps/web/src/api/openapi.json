@@ -13698,7 +13698,8 @@
           "subtitle.burn_skipped",
           "broll.insertions_dropped_geometry",
           "editing_agent.deterministic_fallback",
-          "window_query.template_fallback"
+          "window_query.template_fallback",
+          "timestamp.estimated"
         ],
         "title": "DegradationCode"
       },
