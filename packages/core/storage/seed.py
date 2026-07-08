@@ -52,6 +52,18 @@ _LEGACY_EDITING_AGENT_FULL_COVERAGE_MARKERS = (
 _EDITING_AGENT_FULL_COVERAGE_SINGLE_CLIP_MARKER = (
     "每个 B-roll slot 最多只能输出一条 candidate_id"
 )
+_LEGACY_EDITING_AGENT_FONT_PLANNING_MARKERS = (
+    '"font_plan"',
+    "font_candidates",
+)
+_EDITING_AGENT_HUAZI_BOUNDARY_MARKERS = (
+    "huazi_plan",
+    "{huazi_events}",
+    "{placement_candidates}",
+    "{animation_candidates}",
+    "{sfx_candidates}",
+    "不要输出字体、字号、颜色、描边、自由坐标或时间",
+)
 
 
 def seed_rows(
@@ -383,6 +395,8 @@ def _needs_prompt_version_sync(existing: PromptVersionRow) -> bool:
             or "multi_clip_allowed" not in content
             or any(marker in content for marker in _LEGACY_EDITING_AGENT_FULL_COVERAGE_MARKERS)
             or _EDITING_AGENT_FULL_COVERAGE_SINGLE_CLIP_MARKER not in content
+            or any(marker in content for marker in _LEGACY_EDITING_AGENT_FONT_PLANNING_MARKERS)
+            or any(marker not in content for marker in _EDITING_AGENT_HUAZI_BOUNDARY_MARKERS)
         )
     if existing.id == "prompt_window_query_v1":
         content = existing.content or ""
@@ -409,4 +423,4 @@ def _prompt_sync_changelog(version_id: str) -> str:
         return "Synced built-in CreativeIntent prompt BGM mood contract."
     if version_id == "prompt_window_query_v1":
         return "Synced built-in WindowQueryPlanning prompt contract."
-    return "Synced built-in EditingAgentPlanning prompt contract."
+    return "Synced built-in EditingAgentPlanning prompt huazi-only style contract."

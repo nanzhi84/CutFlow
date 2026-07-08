@@ -8709,6 +8709,8 @@ export interface components {
             style_preset: string;
             /** Font Id */
             font_id?: string | null;
+            /** Caption Style Pair Id */
+            caption_style_pair_id?: string | null;
             /** Font Size */
             font_size?: number | null;
             /** Position */

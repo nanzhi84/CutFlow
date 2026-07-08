@@ -73,7 +73,10 @@ _JSON_VARS = frozenset(
         "safe_cut_boundaries",
         "portrait_slots",
         "broll_slots",
-        "font_candidates",
+        "huazi_events",
+        "placement_candidates",
+        "animation_candidates",
+        "sfx_candidates",
         "bgm_candidates",
     }
 )
@@ -101,6 +104,7 @@ class EditingAgentContext:
     shortlist_counts: dict
     candidates: IndexedCandidates
     retrieval_topk_by_window: dict[str, list[str]]
+    huazi_events: list[dict]
     agent_input: dict
 
 
@@ -343,6 +347,42 @@ def _assignment_payload(
     ).model_dump(mode="json")
 
 
+def _overlay_events_from_huazi_selection(
+    base_events: list[dict],
+    selection: EditingSelection,
+) -> list[dict]:
+    if not selection.huazi:
+        return []
+    by_event_id = {
+        str(event.get("event_id") or ""): event
+        for event in base_events
+        if isinstance(event, dict) and str(event.get("event_id") or "")
+    }
+    by_phrase = {
+        str(event.get("text") or ""): event
+        for event in base_events
+        if isinstance(event, dict) and str(event.get("text") or "")
+    }
+    events: list[dict] = []
+    used_ids: set[str] = set()
+    for choice in selection.huazi:
+        source = by_event_id.get(choice.event_id) or by_phrase.get(choice.phrase)
+        if not isinstance(source, dict):
+            continue
+        event_key = str(source.get("event_id") or source.get("text") or "")
+        if event_key and event_key in used_ids:
+            continue
+        if event_key:
+            used_ids.add(event_key)
+        event = dict(source)
+        event["placement_id"] = choice.placement_id
+        event["animation_id"] = choice.animation_id
+        event["sfx_id"] = choice.sfx_id
+        event["reason"] = choice.reason
+        events.append(event)
+    return events
+
+
 def _record_llm_request_artifact(
     *,
     ctx: NodeContext,
@@ -560,6 +600,7 @@ def _repair_portrait_selection_to_constraints(
     candidates: IndexedCandidates,
     bgm_enabled: bool,
     retrieval_topk_by_window: dict[str, list[str]],
+    huazi_events: list[dict],
     allow_broll_asset_diversity_reuse: bool = False,
 ) -> tuple[EditingSelection, list[dict], list[str]]:
     portrait_slots = {
@@ -652,7 +693,9 @@ def _repair_portrait_selection_to_constraints(
         broll=selection.broll,
         font_id=selection.font_id,
         bgm_id=selection.bgm_id,
+        huazi=selection.huazi,
         analysis=selection.analysis,
+        overreach_fields=selection.overreach_fields,
     )
     errors = validate_selection(
         repaired,
@@ -661,6 +704,7 @@ def _repair_portrait_selection_to_constraints(
         bgm_enabled=bgm_enabled,
         retrieval_topk_by_window=retrieval_topk_by_window,
         allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
+        huazi_events=huazi_events,
     )
     return repaired, actions, errors
 
@@ -673,6 +717,7 @@ def _repair_broll_selection_to_constraints(
     bgm_enabled: bool,
     max_inserts: int,
     retrieval_topk_by_window: dict[str, list[str]],
+    huazi_events: list[dict],
     allow_asset_diversity_reuse: bool = False,
     require_broll_coverage: bool = False,
 ) -> tuple[EditingSelection, list[dict], list[str]]:
@@ -870,7 +915,9 @@ def _repair_broll_selection_to_constraints(
         broll=repaired_broll,
         font_id=selection.font_id,
         bgm_id=selection.bgm_id,
+        huazi=selection.huazi,
         analysis=selection.analysis,
+        overreach_fields=selection.overreach_fields,
     )
     errors = validate_selection(
         repaired,
@@ -880,6 +927,7 @@ def _repair_broll_selection_to_constraints(
         retrieval_topk_by_window=retrieval_topk_by_window,
         allow_broll_asset_diversity_reuse=allow_asset_diversity_reuse,
         require_broll_coverage=require_broll_coverage,
+        huazi_events=huazi_events,
     )
     return repaired, actions, errors
 
@@ -934,10 +982,15 @@ def build_editing_agent_context(
     narration: dict,
     boundary: dict,
     windows: dict,
+    creative_intent,
     retrieval: dict | None = None,
 ) -> EditingAgentContext:
     raw_units = narration.get("units", []) or []
     duration = max([float(unit.get("end", 0) or 0) for unit in raw_units] or [1.0])
+    huazi_events = [
+        event.model_dump(mode="json")
+        for event in _derive_overlay_events(creative_intent.emphasis, raw_units)
+    ]
 
     agent_boundary = _boundary_with_compiled_windows(boundary, windows)
     shortlisted_material, shortlist_counts = shortlist_for_windows(
@@ -969,6 +1022,7 @@ def build_editing_agent_context(
         narration_units=raw_units,
         duration=duration,
         retrieval_topk_by_window=retrieval_topk_by_window,
+        huazi_events=huazi_events,
     )
     portrait_feasibility_failure = _portrait_feasibility_failure(agent_input)
     if portrait_feasibility_failure is not None:
@@ -991,6 +1045,7 @@ def build_editing_agent_context(
         shortlist_counts=shortlist_counts,
         candidates=candidates,
         retrieval_topk_by_window=retrieval_topk_by_window,
+        huazi_events=huazi_events,
         agent_input=agent_input,
     )
 
@@ -1049,6 +1104,7 @@ def select_editing_assignment(
             retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
             allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
             require_broll_coverage=require_broll_coverage,
+            huazi_events=agent_context.huazi_events,
         )
         if not errors:
             return
@@ -1084,6 +1140,7 @@ def select_editing_assignment(
             max_inserts=broll_limit,
             retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
             allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
+            huazi_events=agent_context.huazi_events,
         )
         _validate_deterministic_fallback(selection)
         engine = "deterministic_fallback"
@@ -1176,6 +1233,7 @@ def select_editing_assignment(
             retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
             allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
             require_broll_coverage=require_broll_coverage,
+            huazi_events=agent_context.huazi_events,
         )
         llm_repair_used = any(
             isinstance(item.get("attempt"), int) and int(item.get("error_count") or 0) > 0
@@ -1190,6 +1248,7 @@ def select_editing_assignment(
                     candidates=agent_context.candidates,
                     bgm_enabled=state.request.bgm.enabled,
                     retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
+                    huazi_events=agent_context.huazi_events,
                     allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
                 )
             )
@@ -1214,6 +1273,7 @@ def select_editing_assignment(
                         broll_candidate_count=len(agent_context.candidates.broll_by_id),
                     ),
                     retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
+                    huazi_events=agent_context.huazi_events,
                     allow_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
                     require_broll_coverage=require_broll_coverage,
                 )
@@ -1252,6 +1312,7 @@ def select_editing_assignment(
                 ),
                 retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
                 allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
+                huazi_events=agent_context.huazi_events,
             )
             _validate_deterministic_fallback(selection)
             engine = "deterministic_fallback"
@@ -1356,12 +1417,14 @@ def materialize_editing_outputs(
             ).model_copy(update={"details": {"broll_drops": broll_drops}})
         )
         warnings.append(WarningCode.broll_insertions_dropped_geometry)
-    overlay_events = _derive_overlay_events(creative_intent.emphasis, agent_context.raw_units)
+    overlay_events = _overlay_events_from_huazi_selection(
+        agent_context.huazi_events,
+        selection,
+    )
     style_payload, style_warnings, style_degradations = materialize_style_from_selection(
         request=request,
         material=agent_context.shortlisted_material,
         overlay_events=overlay_events,
-        font_id=selection.font_id,
         bgm_id=selection.bgm_id,
     )
     warnings.extend(style_warnings)
@@ -1381,7 +1444,7 @@ def materialize_editing_outputs(
         engine=selection_result.engine,
         portrait=portrait_assignment,
         broll=broll_assignment,
-        font_id=selection.font_id,
+        font_id=None,
         bgm_id=selection.bgm_id,
         diagnostics=assignment_diagnostics,
     )
@@ -1408,7 +1471,19 @@ def materialize_editing_outputs(
             for item in broll_assignment
         ],
         "broll_drops": broll_drops,
-        "font_id": selection.font_id,
+        "font_id": None,
+        "request_font_id": request.subtitle.font_id,
+        "huazi_choices": [
+            {
+                "event_id": choice.event_id,
+                "phrase": choice.phrase,
+                "placement_id": choice.placement_id,
+                "animation_id": choice.animation_id,
+                "sfx_id": choice.sfx_id,
+                "reason": choice.reason,
+            }
+            for choice in selection.huazi
+        ],
         "bgm_id": selection.bgm_id,
         "shortlist_counts": agent_context.shortlist_counts,
         "retrieval_topk_by_window": agent_context.retrieval_topk_by_window,
@@ -1483,6 +1558,7 @@ def run(ctx: NodeContext) -> NodeOutput:
     windows = state.require(ArtifactKind.plan_timeline_windows).payload or {}
     retrieval_artifact = state.artifacts.get(ArtifactKind.plan_window_material_retrieval)
     retrieval = retrieval_artifact.payload if retrieval_artifact is not None else None
+    creative_intent = load_creative_intent(state)
 
     agent_context = build_editing_agent_context(
         request=state.request,
@@ -1490,6 +1566,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         narration=narration,
         boundary=boundary,
         windows=windows,
+        creative_intent=creative_intent,
         retrieval=retrieval,
     )
     selection_result = select_editing_assignment(ctx=ctx, agent_context=agent_context)
@@ -1498,7 +1575,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         node_id=ctx.node_run.node_id,
         agent_context=agent_context,
         selection_result=selection_result,
-        creative_intent=load_creative_intent(state),
+        creative_intent=creative_intent,
     )
 
     return NodeOutput(

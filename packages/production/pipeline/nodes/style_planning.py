@@ -65,6 +65,7 @@ def _derive_overlay_events(emphasis: list[EmphasisHint], units: list[dict]) -> l
                 used.add(index)
                 events.append(
                     OverlayEvent(
+                        event_id=f"hz_{len(events) + 1:03d}",
                         start=float(unit.get("start", 0) or 0),
                         end=float(unit.get("end", 0) or 0),
                         text=hint.phrase,

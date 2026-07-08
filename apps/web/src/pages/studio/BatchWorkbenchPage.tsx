@@ -316,6 +316,8 @@ export default function BatchWorkbenchPage() {
       subtitle: {
         enabled: !isSeedance && subtitleEnabled,
         style_preset: subtitleDefaults?.style_preset ?? "douyin",
+        font_id: subtitleDefaults?.font_id ?? null,
+        caption_style_pair_id: subtitleDefaults?.caption_style_pair_id ?? null,
         ...(subtitleFontSize != null ? { font_size: subtitleFontSize } : {}),
       },
       bgm: {

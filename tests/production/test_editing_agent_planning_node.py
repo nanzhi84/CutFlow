@@ -265,6 +265,7 @@ def _state() -> RunState:
         case_id="case_demo",
         script=SCRIPT,
         voice={"voice_id": "voice_sandbox"},
+        subtitle={"font_id": "font_yst", "caption_style_pair_id": "douyin_bold_a"},
         edit={"instruction": "尽量用穿搭相近的人像"},
         strictness={"strict_timestamps": False},
     )
@@ -373,6 +374,7 @@ def _agent_context(state: RunState):
         narration=state.artifacts[ArtifactKind.narration_units].payload,
         boundary=state.artifacts[ArtifactKind.plan_narration_boundary].payload,
         windows=state.artifacts[ArtifactKind.plan_timeline_windows].payload,
+        creative_intent=SimpleNamespace(emphasis=[]),
     )
 
 
@@ -431,6 +433,7 @@ def test_build_context_limits_llm_input_to_retrieval_topk_candidates():
         boundary=state.artifacts[ArtifactKind.plan_narration_boundary].payload,
         windows=state.artifacts[ArtifactKind.plan_timeline_windows].payload,
         retrieval=retrieval,
+        creative_intent=SimpleNamespace(emphasis=[]),
     )
 
     assert set(context.candidates.portrait_by_id) == {"pc_000", "pc_001"}
@@ -567,6 +570,7 @@ def test_local_broll_constraint_repair_replaces_invalid_candidate():
         bgm_enabled=state.request.bgm.enabled,
         max_inserts=state.request.broll.max_inserts,
         retrieval_topk_by_window={"bslot_000": ["bc_001"]},
+        huazi_events=context.huazi_events,
     )
 
     assert errors == []
@@ -649,6 +653,7 @@ def test_local_broll_constraint_repair_fills_missing_full_coverage_slot():
         retrieval_topk_by_window={"bslot_000": ["bc_000"], "bslot_001": ["bc_001"]},
         require_broll_coverage=True,
         allow_asset_diversity_reuse=True,
+        huazi_events=context.huazi_events,
     )
 
     assert errors == []
@@ -680,7 +685,6 @@ def test_local_portrait_constraint_repair_replaces_topk_hallucination(tmp_path):
                         {"slot_id": "pslot_001", "window_id": "pc_001"},
                     ],
                     "broll_plan": [{"slot_id": "bslot_000", "candidate_id": "bc_000"}],
-                    "font_plan": {"font_id": "font_yst"},
                     "bgm_plan": {"bgm_id": "bgm_001"},
                 }
             }
@@ -739,7 +743,6 @@ def test_local_portrait_constraint_repair_replaces_second_asset_conflict(tmp_pat
                             {"slot_id": "pslot_001", "window_id": "pc_000"},
                         ],
                         "broll_plan": [{"slot_id": "bslot_000", "candidate_id": "bc_000"}],
-                        "font_plan": {"font_id": "font_yst"},
                         "bgm_plan": {"bgm_id": "bgm_001"},
                     }
                 }
@@ -791,7 +794,6 @@ def test_local_portrait_constraint_repair_without_replacement_keeps_failure_path
                             {"slot_id": "pslot_001", "window_id": "pc_000"},
                         ],
                         "broll_plan": [{"slot_id": "bslot_000", "candidate_id": "bc_000"}],
-                        "font_plan": {"font_id": "font_yst"},
                         "bgm_plan": {"bgm_id": "bgm_001"},
                     }
                 }
@@ -830,7 +832,6 @@ def test_llm_repair_path_is_visible(tmp_path):
                             {"slot_id": "pslot_001", "window_id": "pc_001"},
                         ],
                         "broll_plan": [{"slot_id": "bslot_000", "candidate_id": "bc_000"}],
-                        "font_plan": {"font_id": "font_yst"},
                         "bgm_plan": {"bgm_id": "bgm_001"},
                     }
                 },
@@ -1055,7 +1056,6 @@ def test_llm_path_records_broll_window_contract_drops(tmp_path):
                                 "confidence": 0.9,
                             }
                         ],
-                        "font_plan": {"font_id": "font_yst"},
                         "bgm_plan": {"bgm_id": "bgm_001"},
                     }
                 }
@@ -1136,7 +1136,6 @@ def test_llm_path_repairs_full_coverage_to_single_window_sized_candidate(tmp_pat
                             "confidence": 0.9,
                         }
                     ],
-                    "font_plan": {"font_id": "font_yst"},
                     "bgm_plan": {"bgm_id": "bgm_001"},
                 }
             }
@@ -1232,7 +1231,6 @@ def test_agent_slots_come_from_compiled_windows_not_base_slots(tmp_path):
                             {"slot_id": "pwin_001", "window_id": "pc_001"},
                         ],
                         "broll_plan": [],
-                        "font_plan": {"font_id": "font_yst"},
                         "bgm_plan": {"bgm_id": "bgm_001"},
                     }
                 }
@@ -1335,7 +1333,6 @@ def test_strict_uniqueness_uses_full_pool_not_shortlisted_prompt_budget(tmp_path
                 for index in range(slot_count)
             ],
             "broll_plan": [],
-            "font_plan": {"font_id": "font_yst"},
             "bgm_plan": {"bgm_id": "bgm_001"},
         }
     }
@@ -1498,7 +1495,6 @@ def test_llm_path_repairs_reused_portrait_asset(monkeypatch, tmp_path):
                 "confidence": 0.9,
             }
         ],
-        "font_plan": {"font_id": "font_yst"},
         "bgm_plan": {"bgm_id": "bgm_001"},
         "analysis": "统一穿搭",
     }
@@ -1601,7 +1597,6 @@ def test_llm_path_repairs_portrait_choice_using_clean_source_span(monkeypatch, t
             {"slot_id": "pslot_001", "window_id": "pc_000"},
         ],
         "broll_plan": [],
-        "font_plan": {"font_id": "font_yst"},
         "bgm_plan": {"bgm_id": "bgm_001"},
     }
     repaired_selection = {
