@@ -15,6 +15,7 @@ from packages.core.workflow import NodeExecutionError
 from packages.media.video.ffmpeg import (
     FfmpegRunner,
     ffmpeg_base_args,
+    ffmpeg_output_thread_args,
     probe_media,
     probe_video_frame_count,
 )
@@ -180,6 +181,7 @@ def generate_seed_video(
             f"{duration_sec:.3f}",
             "-pix_fmt",
             "yuv420p",
+            *ffmpeg_output_thread_args(),
             "-c:v",
             "libx264",
             "-preset",
@@ -231,6 +233,7 @@ def transcode_video_segment(
                 f"trim=start_frame={source_start_frame}:end_frame={source_end_frame},"
                 "setpts=PTS-STARTPTS,setsar=1"
             ),
+            *ffmpeg_output_thread_args(),
             "-c:v",
             "libx264",
             "-preset",
@@ -310,6 +313,7 @@ def fit_video_to_exact_duration(
             ),
             "-t",
             f"{duration:.3f}",
+            *ffmpeg_output_thread_args(),
             "-c:v",
             "libx264",
             "-preset",
@@ -435,6 +439,7 @@ def render_broll_montage(
             "-map",
             "[outv]",
             "-an",
+            *ffmpeg_output_thread_args(),
             "-c:v",
             "libx264",
             "-preset",
@@ -584,6 +589,7 @@ def render_video_timeline(
             "-map",
             f"[{previous_label}]",
             "-an",
+            *ffmpeg_output_thread_args(),
             "-c:v",
             "libx264",
             "-preset",

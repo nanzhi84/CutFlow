@@ -28,6 +28,9 @@ from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
 from packages.core.workflow import NodeExecutionError
 from packages.production.pipeline._editing_agent import build_agent_input, index_candidates
+from packages.production.pipeline._materialize import (
+    materialize_full_coverage_broll_from_assignment,
+)
 from packages.production.pipeline import nodes
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState
@@ -1134,3 +1137,112 @@ def test_sufficient_distinct_material_uses_fresh_unique_each_once(monkeypatch, t
     asset_ids = [seg["asset_id"] for seg in payload["segments"]]
     assert len(asset_ids) >= 2
     assert len(asset_ids) == len(set(asset_ids)), f"asset reused: {asset_ids}"
+
+
+def _fc_windows(*, start_frame: int, end_frame: int, window_id: str = "w1", fps: int = 30) -> dict:
+    return {
+        "fps": fps,
+        "broll_windows": [
+            {"window_id": window_id, "start_frame": start_frame, "end_frame": end_frame}
+        ],
+    }
+
+
+def _fc_candidate(candidate_id: str, *, source_start: float, source_end: float) -> dict:
+    return {
+        "asset_id": f"asset_{candidate_id}",
+        "metadata": {
+            "clip_id": f"clip_{candidate_id}",
+            "source_start": source_start,
+            "source_end": source_end,
+            "diversity_key": candidate_id,
+            "scene_name": "scene",
+        },
+    }
+
+
+def test_full_coverage_absorbs_sub_threshold_tail_into_previous_clip():
+    # Window 0-100; the only candidate has 97 source frames, leaving a 3-frame
+    # (<0.5s) tail. It is folded into the previous clip (timeline extended to the
+    # window end, renderer clone-pads the freeze) rather than dropped or minted as
+    # a jitter fragment.
+    windows = _fc_windows(start_frame=0, end_frame=100)
+    assignment = {"broll": [{"window_id": "w1", "candidate_id": "c1"}]}
+    candidates = {"broll_by_id": {"c1": _fc_candidate("c1", source_start=0.0, source_end=97 / 30)}}
+
+    plan, drops = materialize_full_coverage_broll_from_assignment(
+        windows=windows,
+        assignment=assignment,
+        candidates=candidates,
+        enabled=True,
+        max_inserts=8,
+    )
+
+    overlays = plan["overlays"]
+    assert len(overlays) == 1
+    assert overlays[0]["timeline_start_frame"] == 0
+    assert overlays[0]["timeline_end_frame"] == 100
+    # Source stays at its exhausted extent; the extra tail is a render-time freeze.
+    assert overlays[0]["source_start_frame"] == 0
+    assert overlays[0]["source_end_frame"] == 97
+    assert drops == []
+
+
+def test_full_coverage_drops_when_source_cannot_cover_window():
+    # Window 0-100; the only candidate has just 50 source frames. The 50-frame
+    # (>0.5s) shortfall is a real gap, so it is reported honestly instead of being
+    # clone-padded away.
+    windows = _fc_windows(start_frame=0, end_frame=100)
+    assignment = {"broll": [{"window_id": "w1", "candidate_id": "c1"}]}
+    candidates = {"broll_by_id": {"c1": _fc_candidate("c1", source_start=0.0, source_end=50 / 30)}}
+
+    plan, drops = materialize_full_coverage_broll_from_assignment(
+        windows=windows,
+        assignment=assignment,
+        candidates=candidates,
+        enabled=True,
+        max_inserts=8,
+    )
+
+    overlays = plan["overlays"]
+    assert len(overlays) == 1
+    assert overlays[0]["timeline_end_frame"] == 50
+    assert len(drops) == 1
+    assert drops[0]["reason"] == "insufficient_window_coverage"
+    assert drops[0]["covered_frames"] == 50
+    assert drops[0]["missing_frames"] == 50
+
+
+def test_full_coverage_skips_tiny_source_fragment_for_longer_candidate():
+    # A source-limited 5-frame candidate is offered first but the window has real
+    # room, so it is skipped and a longer candidate covers from the same cursor.
+    windows = _fc_windows(start_frame=0, end_frame=100)
+    assignment = {
+        "broll": [
+            {"window_id": "w1", "candidate_id": "c_tiny"},
+            {"window_id": "w1", "candidate_id": "c_big"},
+        ]
+    }
+    candidates = {
+        "broll_by_id": {
+            "c_tiny": _fc_candidate("c_tiny", source_start=0.0, source_end=5 / 30),
+            "c_big": _fc_candidate("c_big", source_start=1.0, source_end=130 / 30),
+        }
+    }
+
+    plan, drops = materialize_full_coverage_broll_from_assignment(
+        windows=windows,
+        assignment=assignment,
+        candidates=candidates,
+        enabled=True,
+        max_inserts=8,
+    )
+
+    overlays = plan["overlays"]
+    assert len(overlays) == 1
+    assert overlays[0]["asset_id"] == "asset_c_big"
+    assert overlays[0]["timeline_start_frame"] == 0
+    assert overlays[0]["timeline_end_frame"] == 100
+    assert overlays[0]["source_start_frame"] == 30
+    assert overlays[0]["source_end_frame"] == 130
+    assert drops == []

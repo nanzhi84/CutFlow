@@ -223,5 +223,143 @@ def test_transcode_video_segment_uses_output_frame_trim_without_input_seek(monke
     assert "trim=start=" not in vf
 
 
+def test_render_video_timeline_broll_overlay_fade_uses_frame_alpha_filters(monkeypatch, tmp_path):
+    captured: dict[str, list[str]] = {}
+
+    def capture_run(self, args):
+        captured["args"] = args
+
+    monkeypatch.setattr(rendering_timeline.FfmpegRunner, "run", capture_run)
+    artifact = _video_artifact("asset_a", tmp_path / "asset_a.mp4", duration_sec=10.0)
+
+    render_video_timeline(
+        main_path=tmp_path / "main.mp4",
+        output_path=tmp_path / "rendered.mp4",
+        broll_segments=[
+            {
+                "asset_id": "asset_a",
+                "source_start_frame": 30,
+                "source_end_frame": 120,
+                "timeline_start_frame": 0,
+                "timeline_end_frame": 90,
+                "fade_frames": 8,
+            }
+        ],
+        total_frames=120,
+        width=160,
+        height=90,
+        fps=30,
+        source_artifact_for_asset=lambda _asset_id: artifact,
+        artifact_path=lambda source_artifact: Path(source_artifact.local_path),
+    )
+
+    args = captured["args"]
+    filter_complex = args[args.index("-filter_complex") + 1]
+
+    assert (
+        "format=yuva420p,fade=t=in:s=0:n=8:alpha=1,fade=t=out:s=82:n=8:alpha=1,"
+        in filter_complex
+    )
+    assert "between(t," not in filter_complex
+    # Fades are frame-quantized (n=/s= integers), never float seconds.
+    assert re.search(r"fade=t=(?:in|out):s=\d+\.\d", filter_complex) is None
+
+
+def test_render_video_timeline_pip_placement_scales_and_positions_overlay(monkeypatch, tmp_path):
+    captured: dict[str, list[str]] = {}
+
+    def capture_run(self, args):
+        captured["args"] = args
+
+    monkeypatch.setattr(rendering_timeline.FfmpegRunner, "run", capture_run)
+    artifact = _video_artifact("asset_a", tmp_path / "asset_a.mp4", duration_sec=10.0)
+
+    render_video_timeline(
+        main_path=tmp_path / "main.mp4",
+        output_path=tmp_path / "rendered.mp4",
+        broll_segments=[
+            {
+                "asset_id": "asset_a",
+                "source_start_frame": 30,
+                "source_end_frame": 120,
+                "timeline_start_frame": 300,
+                "timeline_end_frame": 390,
+                "placement": "pip_fixed",
+            }
+        ],
+        total_frames=600,
+        width=1080,
+        height=1920,
+        fps=30,
+        source_artifact_for_asset=lambda _asset_id: artifact,
+        artifact_path=lambda source_artifact: Path(source_artifact.local_path),
+    )
+
+    args = captured["args"]
+    filter_complex = args[args.index("-filter_complex") + 1]
+
+    # 1080x1920 pip geometry: a 452x460 window pinned to the top-right.
+    assert (
+        "scale=452:460:force_original_aspect_ratio=increase,crop=452:460,setsar=1,"
+        in filter_complex
+    )
+    assert "x=580:y=192:eof_action=pass" in filter_complex
+
+
+def test_render_video_timeline_injects_output_threads_when_configured(monkeypatch, tmp_path):
+    monkeypatch.setenv("CUTAGENT_FFMPEG_THREADS", "2")
+    captured: dict[str, list[str]] = {}
+
+    def capture_run(self, args):
+        captured["args"] = list(args)
+
+    monkeypatch.setattr(rendering_timeline.FfmpegRunner, "run", capture_run)
+
+    render_video_timeline(
+        main_path=tmp_path / "main.mp4",
+        output_path=tmp_path / "rendered.mp4",
+        broll_segments=[],
+        total_frames=90,
+        width=160,
+        height=90,
+        fps=30,
+        source_artifact_for_asset=lambda _asset_id: (_ for _ in ()).throw(AssertionError("unused")),
+        artifact_path=lambda source_artifact: Path(source_artifact.local_path),
+    )
+
+    args = captured["args"]
+    # -threads is present on BOTH the input (decode) and output (encode) side.
+    assert args.count("-threads") == 2
+    an_index = args.index("-an")
+    codec_index = args.index("-c:v")
+    assert args[an_index + 1 : codec_index] == ["-threads", "2"]
+
+
+def test_render_video_timeline_output_args_unchanged_without_thread_cap(monkeypatch, tmp_path):
+    monkeypatch.delenv("CUTAGENT_FFMPEG_THREADS", raising=False)
+    captured: dict[str, list[str]] = {}
+
+    def capture_run(self, args):
+        captured["args"] = list(args)
+
+    monkeypatch.setattr(rendering_timeline.FfmpegRunner, "run", capture_run)
+
+    render_video_timeline(
+        main_path=tmp_path / "main.mp4",
+        output_path=tmp_path / "rendered.mp4",
+        broll_segments=[],
+        total_frames=90,
+        width=160,
+        height=90,
+        fps=30,
+        source_artifact_for_asset=lambda _asset_id: (_ for _ in ()).throw(AssertionError("unused")),
+        artifact_path=lambda source_artifact: Path(source_artifact.local_path),
+    )
+
+    args = captured["args"]
+    assert "-threads" not in args
+    assert args[args.index("-an") + 1] == "-c:v"
+
+
 def test_to_frame_rounds_half_frames_up():
     assert to_frame(12.5 / 30, 30) == 13

@@ -100,7 +100,13 @@ class ObjectStore:
     def exists(self, ref: ObjectRef) -> bool:
         raise NotImplementedError
 
-    def signed_url(self, uri: str, *, expires_in: timedelta = timedelta(minutes=15)) -> SignedUrlResponse:
+    def signed_url(
+        self,
+        uri: str,
+        *,
+        expires_in: timedelta = timedelta(minutes=15),
+        response_content_disposition: str | None = None,
+    ) -> SignedUrlResponse:
         raise NotImplementedError
 
     def delete(self, uri: str) -> None:
@@ -165,7 +171,16 @@ class LocalObjectStore(ObjectStore):
     def exists(self, ref: ObjectRef) -> bool:
         return self._path(ref).exists()
 
-    def signed_url(self, uri: str, *, expires_in: timedelta = timedelta(minutes=15)) -> SignedUrlResponse:
+    def signed_url(
+        self,
+        uri: str,
+        *,
+        expires_in: timedelta = timedelta(minutes=15),
+        response_content_disposition: str | None = None,
+    ) -> SignedUrlResponse:
+        # The local double serves the object URI directly; there is no HTTP layer
+        # to attach a Content-Disposition header to, so the hint is ignored (the
+        # API falls back to its own /download route for local URIs).
         return SignedUrlResponse(
             url=uri,
             expires_at=utcnow() + expires_in,
@@ -377,19 +392,32 @@ class S3ObjectStore(ObjectStore):
             raise
         return True
 
-    def signed_url(self, uri: str, *, expires_in: timedelta = timedelta(minutes=15)) -> SignedUrlResponse:
+    def signed_url(
+        self,
+        uri: str,
+        *,
+        expires_in: timedelta = timedelta(minutes=15),
+        response_content_disposition: str | None = None,
+    ) -> SignedUrlResponse:
         ref = parse_object_uri(uri)
         self._validate_read_ref(ref)
-        native_oss_url = self._native_oss_signed_url(ref, expires_in=expires_in)
+        native_oss_url = self._native_oss_signed_url(
+            ref,
+            expires_in=expires_in,
+            response_content_disposition=response_content_disposition,
+        )
         if native_oss_url is not None:
             return SignedUrlResponse(
                 url=native_oss_url,
                 expires_at=utcnow() + expires_in,
                 request_id="req_oss",
             )
+        params = {"Bucket": ref.bucket, "Key": ref.key}
+        if response_content_disposition:
+            params["ResponseContentDisposition"] = response_content_disposition
         url = self._client.generate_presigned_url(
             "get_object",
-            Params={"Bucket": ref.bucket, "Key": ref.key},
+            Params=params,
             ExpiresIn=int(expires_in.total_seconds()),
         )
         return SignedUrlResponse(url=url, expires_at=utcnow() + expires_in, request_id="req_s3")
@@ -480,12 +508,23 @@ class S3ObjectStore(ObjectStore):
         ref: ObjectRef,
         *,
         expires_in: timedelta,
+        response_content_disposition: str | None = None,
     ) -> str | None:
         endpoint = urlsplit(self.endpoint_url)
         if endpoint.scheme not in {"http", "https"} or "aliyuncs.com" not in endpoint.netloc:
             return None
         expires = int(time.time() + expires_in.total_seconds())
         canonical_resource = f"/{ref.bucket}/{ref.key}"
+        query_params = {
+            "OSSAccessKeyId": self._access_key,
+            "Expires": str(expires),
+        }
+        if response_content_disposition:
+            # response-content-disposition is a signed OSS sub-resource: it must be
+            # in BOTH the canonicalized resource (for the V1 signature) and the URL
+            # query, or the returned link 403s.
+            canonical_resource += f"?response-content-disposition={response_content_disposition}"
+            query_params["response-content-disposition"] = response_content_disposition
         string_to_sign = f"GET\n\n\n{expires}\n{canonical_resource}"
         signature = base64.b64encode(
             hmac.new(
@@ -494,13 +533,8 @@ class S3ObjectStore(ObjectStore):
                 hashlib.sha1,
             ).digest()
         ).decode("ascii")
-        query = urlencode(
-            {
-                "OSSAccessKeyId": self._access_key,
-                "Expires": str(expires),
-                "Signature": signature,
-            }
-        )
+        query_params["Signature"] = signature
+        query = urlencode(query_params)
         host = f"{ref.bucket}.{endpoint.netloc}"
         path = "/" + quote(ref.key, safe="/")
         return f"{endpoint.scheme}://{host}{path}?{query}"

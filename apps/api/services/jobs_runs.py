@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from datetime import timedelta
 from typing import Literal
@@ -770,17 +771,16 @@ def batch_feasibility(
         for asset in repo.media_assets.values()
         if asset.usable
         and asset.case_id in {None, case_id}
-        and asset.kind in {"video", "portrait", "broll"}
+        and asset.kind == "video"
         and asset.annotation_status == "annotated"
     ]
     portrait_assets = [
         asset
         for asset in video_assets
-        if asset.kind == "portrait"
-        or any(tag in {"portrait", "digital_human"} for tag in (asset.tags or []))
+        if any(tag in {"portrait", "digital_human"} for tag in (asset.tags or []))
     ] or video_assets
     portrait_duration = sum(float(asset.duration_sec or 0.0) for asset in portrait_assets)
-    estimated_windows = max(1, int((audio_duration + 3.999) // 4)) if audio_duration > 0 else 1
+    estimated_windows = max(1, math.ceil(audio_duration / 4.0)) if audio_duration > 0 else 1
     notes: list[str] = []
     portrait_ok = portrait_duration >= audio_duration if audio_duration > 0 else portrait_duration > 0
     broll_ok = len(video_assets) >= estimated_windows

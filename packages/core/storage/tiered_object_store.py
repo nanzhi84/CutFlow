@@ -102,12 +102,21 @@ class TieredObjectStore(ObjectStore):
         uri: str,
         *,
         expires_in: timedelta = timedelta(minutes=15),
+        response_content_disposition: str | None = None,
     ) -> SignedUrlResponse:
         try:
             ref = parse_object_uri(uri)
         except ValueError:
-            return self.durable.signed_url(uri, expires_in=expires_in)
-        return self._store_for_ref(ref).signed_url(uri, expires_in=expires_in)
+            return self.durable.signed_url(
+                uri,
+                expires_in=expires_in,
+                response_content_disposition=response_content_disposition,
+            )
+        return self._store_for_ref(ref).signed_url(
+            uri,
+            expires_in=expires_in,
+            response_content_disposition=response_content_disposition,
+        )
 
     def delete(self, uri: str) -> None:
         ref = parse_object_uri(uri)

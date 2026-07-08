@@ -121,6 +121,19 @@ def ffmpeg_base_args(
     return args
 
 
+def ffmpeg_output_thread_args() -> list[str]:
+    """Output-side ``-threads`` so the deployment cap also bounds the encoder.
+
+    ``ffmpeg_base_args`` puts ``-threads`` before the first ``-i``, which only
+    limits the decoder; libx264 spawns its own encode threads unless the cap is
+    repeated as an output option. Returns ``[]`` when unset so command strings
+    stay byte-for-byte unchanged."""
+    threads = build_settings().media.ffmpeg_threads
+    if threads is not None and threads > 0:
+        return ["-threads", str(threads)]
+    return []
+
+
 def _resolve_bin(configured: str | None, executable: str) -> str:
     if configured:
         return configured
@@ -355,7 +368,7 @@ def stabilize_video(
         runner.run(
             [
                 *base_args, "-map", "0:v:0", "-map", "0:a:0?", "-vf", transform_vf,
-                *VIDEO_ENCODE_ARGS, *hdr_output_args, str(output),
+                *ffmpeg_output_thread_args(), *VIDEO_ENCODE_ARGS, *hdr_output_args, str(output),
             ],
             timeout_sec=timeout_sec,
         )
@@ -422,6 +435,7 @@ def compress_video_to_budget(
     for strategy in strategies:
         args = [
             *ffmpeg_base_args(), "-i", str(source),
+            *ffmpeg_output_thread_args(),
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
             "-b:v", f"{strategy.video_kbps}k",
             "-maxrate", f"{strategy.video_kbps}k",
@@ -497,7 +511,7 @@ def trim_to_valid_segments(
             runner.run(
                 [
                     *ffmpeg_base_args(), "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(source),
-                    "-map", "0:v:0", "-map", "0:a:0?", *VIDEO_ENCODE_ARGS, str(target),
+                    "-map", "0:v:0", "-map", "0:a:0?", *ffmpeg_output_thread_args(), *VIDEO_ENCODE_ARGS, str(target),
                 ],
                 timeout_sec=timeout_sec,
             )
@@ -614,6 +628,7 @@ def normalize_for_upload(
             *ffmpeg_base_args(), "-i", str(source),
             "-map", "0:v:0", "-map", "0:a:0?",
             "-vf", vf,
+            *ffmpeg_output_thread_args(),
             "-c:v", "libx264", "-preset", UPLOAD_NORMALIZE_PRESET, "-crf", UPLOAD_NORMALIZE_CRF,
             "-profile:v", "high", "-pix_fmt", "yuv420p",
             "-color_range", "tv", "-colorspace", "bt709",

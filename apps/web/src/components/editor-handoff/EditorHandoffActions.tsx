@@ -3,7 +3,7 @@ import { Download, Loader2, Scissors } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
 import { editorHandoffApi, type JianyingDraftResult } from "../../api/r6";
-import { toDisplayUrl } from "../../lib/url";
+import { triggerDownload } from "../../lib/download";
 import { useToast } from "../ui/Toast";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 
@@ -140,18 +140,4 @@ function downloadFilename(result: JianyingDraftResult): string {
   if (lastSegment?.endsWith(".zip")) return lastSegment;
   const draftName = readString(manifest, "draft_name") ?? result.package_artifact.artifact_id;
   return `${draftName}.zip`;
-}
-
-function triggerDownload(url: string | null | undefined, filename: string): boolean {
-  const safeUrl = toDisplayUrl(url);
-  if (!safeUrl || typeof document === "undefined") return false;
-  const link = document.createElement("a");
-  link.href = safeUrl;
-  link.target = "_blank";
-  link.rel = "noopener noreferrer";
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  return true;
 }

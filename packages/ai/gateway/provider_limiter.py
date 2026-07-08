@@ -119,6 +119,9 @@ class DistributedRateLimiter:
         self.namespace = namespace.rstrip(":")
         self.max_inflight = max_inflight if max_inflight and max_inflight > 0 else _max_inflight()
         self.max_qps = max_qps if max_qps and max_qps > 0 else _max_qps()
+        # Per-key limit overrides are a startup snapshot (settings read env once),
+        # so resolve them here rather than on every slot() acquisition (hot path).
+        self._limits = build_providers_settings().limits
         self.lease_ttl_ms = max(1000, int(lease_ttl_seconds * 1000))
         self.acquire_sleep_seconds = acquire_sleep_seconds
         self._registry_lock = threading.Lock()
@@ -188,8 +191,7 @@ class DistributedRateLimiter:
         return entry[1]
 
     def _limits_for(self, key: str, provider_id: str) -> tuple[int, int]:
-        settings = build_providers_settings()
-        configured = settings.limits.get(key) or settings.limits.get(provider_id)
+        configured = self._limits.get(key) or self._limits.get(provider_id)
         max_inflight = self.max_inflight
         max_qps = self.max_qps
         if configured is not None:

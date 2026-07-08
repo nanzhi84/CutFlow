@@ -8,12 +8,7 @@ from pathlib import Path
 _ASS_MARGIN_L = 80
 _ASS_MARGIN_R = 80
 _ASS_WRAP_BREAK_CHARS = set("，,、：:；;。！？!? ")
-_OVERLAY_STYLE_ALIASES = {
-    "emphasis": "Emphasis",
-    "pop": "Pop",
-    "warning": "Warning",
-    "soft": "Soft",
-}
+_OVERLAY_STYLE_ALIASES = {"emphasis": "Emphasis"}
 
 
 def ass_time(seconds: float) -> str:
@@ -92,18 +87,20 @@ def ass_wrap_text(
 
 
 def _ass_color(value: str | None, fallback: str) -> str:
-    text = str(value or fallback).strip()
+    red, green, blue = _parse_hex_rgb(value) or _parse_hex_rgb(fallback) or (255, 255, 255)
+    return f"&H00{blue:02X}{green:02X}{red:02X}"
+
+
+def _parse_hex_rgb(value: str | None) -> tuple[int, int, int] | None:
+    text = str(value or "").strip()
     if text.startswith("#"):
         text = text[1:]
     if len(text) != 6:
-        text = fallback.lstrip("#")
+        return None
     try:
-        red = int(text[0:2], 16)
-        green = int(text[2:4], 16)
-        blue = int(text[4:6], 16)
+        return int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16)
     except ValueError:
-        red, green, blue = (255, 255, 255)
-    return f"&H00{blue:02X}{green:02X}{red:02X}"
+        return None
 
 
 def _ass_outline(value, fallback: float = 4.0) -> str:
@@ -132,21 +129,6 @@ def _overlay_style_rows(
             f"Style: Emphasis,{font_name},{font_size},{emphasis_primary},&H000000FF,"
             f"{emphasis_outline},&H64000000,1,0,0,0,100,100,0,0,1,"
             f"{_ass_outline(subtitle.get('outline'), 4.0)},1,8,"
-            f"{_ASS_MARGIN_L},{_ASS_MARGIN_R},{margin_v},1"
-        ),
-        (
-            f"Style: Pop,{font_name},{font_size},{_ass_color('#FFFFFF', '#FFFFFF')},&H000000FF,"
-            f"{_ass_color('#175CFF', '#175CFF')},&H64000000,1,0,0,0,100,100,0,0,1,5,1,8,"
-            f"{_ASS_MARGIN_L},{_ASS_MARGIN_R},{margin_v},1"
-        ),
-        (
-            f"Style: Warning,{font_name},{font_size},{_ass_color('#FFE15A', '#FFE15A')},&H000000FF,"
-            f"{_ass_color('#8A1F11', '#8A1F11')},&H64000000,1,0,0,0,100,100,0,0,1,5,1,8,"
-            f"{_ASS_MARGIN_L},{_ASS_MARGIN_R},{margin_v},1"
-        ),
-        (
-            f"Style: Soft,{font_name},{font_size},{_ass_color('#F4F1E8', '#F4F1E8')},&H000000FF,"
-            f"{_ass_color('#2A2A2A', '#2A2A2A')},&H64000000,1,0,0,0,100,100,0,0,1,3,1,8,"
             f"{_ASS_MARGIN_L},{_ASS_MARGIN_R},{margin_v},1"
         ),
     ]
