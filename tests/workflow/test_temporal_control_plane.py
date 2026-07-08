@@ -333,7 +333,12 @@ def test_admit_case_runs_starts_selected_rows_and_updates_summary(monkeypatch):
         lambda: WorkflowRuntimeSettings(runtime="temporal", case_max_inflight_runs=2),
     )
 
-    async def fake_start(_settings, *, job, run):
+    async def fake_connect(*_args, **_kwargs):
+        return object()
+
+    monkeypatch.setattr(Client, "connect", fake_connect)
+
+    async def fake_start(_settings, _client, *, job, run):
         assert job.id == "job_temporal"
         assert run.id == "run_temporal"
 
@@ -364,15 +369,12 @@ def test_start_admitted_workflow_treats_existing_run_as_success(monkeypatch):
                 run_id=run.id,
             )
 
-    async def fake_connect(*_args, **_kwargs):
-        return _FakeClient()
-
-    monkeypatch.setattr(Client, "connect", fake_connect)
     monkeypatch.setattr(ta, "_template_from_run", lambda _run: _template())
 
     asyncio.run(
         ta._start_admitted_workflow(
             WorkflowRuntimeSettings(runtime="temporal", temporal_task_queue="queue-a"),
+            _FakeClient(),
             job=job,
             run=run,
         )
@@ -383,6 +385,127 @@ def test_start_admitted_workflow_treats_existing_run_as_success(monkeypatch):
     assert seen["kwargs"]["id"] == run.id
     assert seen["kwargs"]["task_queue"] == "queue-a"
     assert seen["kwargs"]["rpc_timeout"] == ta.TEMPORAL_RPC_TIMEOUT
+
+
+def test_admit_case_runs_shares_one_client_across_batch(monkeypatch):
+    """R2: a whole admitted batch is started over a single Temporal client."""
+    job_a, run_a = _job_and_run()
+    run_b = run_a.model_copy(update={"id": "run_temporal_b"})
+
+    class _ProductionRepository:
+        def __init__(self) -> None:
+            self.started: list[str] = []
+
+        def admit_case_runs(self, *, case_id: str, max_inflight: int):
+            return {
+                "admitted": [(job_a, run_a), (job_a, run_b)],
+                "active_count": 0,
+                "queued_remaining": 2,
+            }
+
+        def mark_run_started(self, run_id: str) -> None:
+            self.started.append(run_id)
+
+    production_repository = _ProductionRepository()
+    monkeypatch.setattr(
+        ta,
+        "_activity_context",
+        ta.TemporalActivityContext(
+            repository=Repository(),
+            local_runtime=object(),
+            production_repository=production_repository,
+        ),
+    )
+    monkeypatch.setattr(
+        ta,
+        "load_workflow_runtime_settings",
+        lambda: WorkflowRuntimeSettings(runtime="temporal", case_max_inflight_runs=2),
+    )
+
+    connects = {"count": 0}
+    started_run_ids: list[str] = []
+
+    class _FakeClient:
+        async def start_workflow(self, _workflow_type, payload, **_kwargs):
+            started_run_ids.append(payload["run_id"])
+
+    async def fake_connect(*_args, **_kwargs):
+        connects["count"] += 1
+        return _FakeClient()
+
+    monkeypatch.setattr(Client, "connect", fake_connect)
+    monkeypatch.setattr(ta, "_template_from_run", lambda _run: _template())
+
+    summary = ta.admit_case_runs({"case_id": "case_1"})
+
+    assert connects["count"] == 1
+    assert started_run_ids == ["run_temporal", "run_temporal_b"]
+    assert production_repository.started == ["run_temporal", "run_temporal_b"]
+    assert summary["admitted_run_ids"] == ["run_temporal", "run_temporal_b"]
+    assert summary["start_error_run_ids"] == []
+    assert summary["active_count"] == 2
+    assert summary["queued_remaining"] == 0
+
+
+def test_admit_case_runs_connect_failure_leaves_whole_batch_admitted(monkeypatch):
+    """R2: an unreachable Temporal leaves every admitted run queued for retry."""
+    job_a, run_a = _job_and_run()
+    run_b = run_a.model_copy(update={"id": "run_temporal_b"})
+
+    class _ProductionRepository:
+        def __init__(self) -> None:
+            self.started: list[str] = []
+
+        def admit_case_runs(self, *, case_id: str, max_inflight: int):
+            return {
+                "admitted": [(job_a, run_a), (job_a, run_b)],
+                "active_count": 0,
+                "queued_remaining": 2,
+            }
+
+        def mark_run_started(self, run_id: str) -> None:
+            self.started.append(run_id)
+
+    production_repository = _ProductionRepository()
+    monkeypatch.setattr(
+        ta,
+        "_activity_context",
+        ta.TemporalActivityContext(
+            repository=Repository(),
+            local_runtime=object(),
+            production_repository=production_repository,
+        ),
+    )
+    monkeypatch.setattr(
+        ta,
+        "load_workflow_runtime_settings",
+        lambda: WorkflowRuntimeSettings(runtime="temporal", case_max_inflight_runs=2),
+    )
+
+    async def broken_connect(*_args, **_kwargs):
+        raise OSError("refused")
+
+    monkeypatch.setattr(Client, "connect", broken_connect)
+
+    summary = ta.admit_case_runs({"case_id": "case_1"})
+
+    assert production_repository.started == []
+    assert summary["admitted_run_ids"] == []
+    assert summary["start_error_run_ids"] == ["run_temporal", "run_temporal_b"]
+    # No run was started, so active stays 0 and the full queue remains.
+    assert summary["active_count"] == 0
+    assert summary["queued_remaining"] == 2
+
+
+def test_admission_summary_is_idle_only_when_no_queue_and_no_active():
+    """R1: the controller's terminal predicate — no queued and no running runs."""
+    assert ta._admission_summary_is_idle({"queued_remaining": 0, "active_count": 0})
+    assert ta._admission_summary_is_idle({})
+    assert not ta._admission_summary_is_idle({"queued_remaining": 1, "active_count": 0})
+    assert not ta._admission_summary_is_idle({"queued_remaining": 0, "active_count": 2})
+    assert not ta._admission_summary_is_idle({"queued_remaining": 3, "active_count": 4})
+    # Missing/None fields coerce to 0 so a partial summary still reads as idle.
+    assert ta._admission_summary_is_idle({"queued_remaining": None, "active_count": None})
 
 
 def test_signal_case_admission_starts_or_pokes_existing_controller():

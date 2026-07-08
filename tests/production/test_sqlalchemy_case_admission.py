@@ -199,7 +199,12 @@ def test_case_admission_start_failure_leaves_run_retryable(monkeypatch):
         lambda: SimpleNamespace(case_max_inflight_runs=1),
     )
 
-    async def fail_start(_settings, *, job, run):
+    async def fake_connect(*_args, **_kwargs):
+        return object()
+
+    monkeypatch.setattr(temporal_adapter.Client, "connect", fake_connect)
+
+    async def fail_start(_settings, _client, *, job, run):
         raise RuntimeError("temporal temporarily unavailable")
 
     monkeypatch.setattr(temporal_adapter, "_start_admitted_workflow", fail_start)
@@ -337,6 +342,188 @@ def test_run_overview_filters_and_aggregates_sql_rows(db_session_factory):
         owner_user_id="usr_admin",
     )
     assert [item.run_id for item in failed_only.items] == ["run_overview_failed"]
+
+
+def test_run_overview_degradation_aggregation_handles_mixed_element_forms(db_session_factory):
+    """SQL degradation counting must match the old Python normalization across the
+    whole visible window: object ``code``/``degradation_code`` keys and bare-string
+    elements are counted, empty/missing are skipped, and the owner filter excludes
+    hidden runs. The mixed/legacy-form run is placed off the current page (limit=1)
+    because ``node_run_row_to_contract`` strictly validates page items' degradations;
+    aggregation still spans it."""
+    repository = SqlAlchemyProductionRepository(db_session_factory)
+    now = utcnow()
+    with db_session_factory() as session:
+        session.add(
+            CaseRow(
+                id="case_deg",
+                name="Degradation demo",
+                owner_user_id="usr_admin",
+                status="active",
+                description=None,
+            )
+        )
+        # (run_id, owner, updated_at offset, degradations)
+        specs = [
+            (
+                "run_deg_page",
+                "usr_admin",
+                10,
+                [{"code": "subtitle.burn_skipped", "message": "Subtitle burn skipped."}],
+            ),
+            (
+                "run_deg_legacy",
+                "usr_admin",
+                5,
+                [
+                    {"degradation_code": "bgm.loudness_probe_failed"},
+                    "font.default_used",
+                    {"message": "no code key at all"},
+                    {"code": "", "degradation_code": "cover.frame_fallback"},
+                    "",
+                ],
+            ),
+            (
+                "run_deg_hidden",
+                None,
+                7,
+                [{"code": "subtitle.burn_skipped"}],
+            ),
+        ]
+        for run_id, created_by, offset, _degradations in specs:
+            job_id = f"job_{run_id}"
+            session.add(
+                JobRow(
+                    id=job_id,
+                    type=JobType.digital_human_video.value,
+                    status=RunStatus.failed.value,
+                    case_id="case_deg",
+                    created_by=created_by,
+                    request_schema="DigitalHumanVideoRequest.v1",
+                    request={**_request(run_id), "case_id": "case_deg"},
+                    created_at=now,
+                    updated_at=now + timedelta(seconds=offset),
+                )
+            )
+            session.add(
+                WorkflowRunRow(
+                    id=run_id,
+                    job_id=job_id,
+                    case_id="case_deg",
+                    workflow_template_id="digital_human_v2",
+                    workflow_version="v1",
+                    status=RunStatus.failed.value,
+                    requested_by=created_by,
+                    run_attempt=1,
+                    created_at=now,
+                    updated_at=now + timedelta(seconds=offset),
+                )
+            )
+        session.flush()
+        for run_id, _created_by, _offset, degradations in specs:
+            session.add(
+                NodeRunRow(
+                    id=f"node_{run_id}",
+                    run_id=run_id,
+                    node_id="SubtitleAndBgmMix",
+                    node_version="v1",
+                    status="degraded",
+                    input_manifest_hash="hash",
+                    degradations=degradations,
+                )
+            )
+        session.commit()
+
+    response = repository.run_overview(
+        request_id="req_deg", limit=1, owner_user_id="usr_admin"
+    )
+
+    # Only the newest owner-visible run is on the page (its degradations are valid).
+    assert [item.run_id for item in response.items] == ["run_deg_page"]
+    # Aggregation spans both owner-visible runs; the hidden run is excluded, the
+    # empty ``code`` falls back to ``degradation_code``, and the ``{"message": ...}``
+    # object plus the empty string are skipped.
+    assert response.degradation_code_counts == {
+        "subtitle.burn_skipped": 1,
+        "bgm.loudness_probe_failed": 1,
+        "font.default_used": 1,
+        "cover.frame_fallback": 1,
+    }
+
+
+def test_run_overview_aggregates_over_large_visible_window(db_session_factory):
+    """The visible window is a filtered subquery (never a materialized id list), so
+    aggregation stays correct across many runs without a per-run IN explosion."""
+    repository = SqlAlchemyProductionRepository(db_session_factory)
+    now = utcnow()
+    run_total = 130
+    with db_session_factory() as session:
+        session.add(
+            CaseRow(
+                id="case_bulk",
+                name="Bulk demo",
+                owner_user_id="usr_admin",
+                status="active",
+                description=None,
+            )
+        )
+        for index in range(run_total):
+            job_id = f"job_bulk_{index}"
+            run_id = f"run_bulk_{index}"
+            session.add(
+                JobRow(
+                    id=job_id,
+                    type=JobType.digital_human_video.value,
+                    status=RunStatus.failed.value,
+                    case_id="case_bulk",
+                    created_by="usr_admin",
+                    request_schema="DigitalHumanVideoRequest.v1",
+                    request={**_request(run_id), "case_id": "case_bulk"},
+                    created_at=now + timedelta(seconds=index),
+                    updated_at=now + timedelta(seconds=index),
+                )
+            )
+            session.add(
+                WorkflowRunRow(
+                    id=run_id,
+                    job_id=job_id,
+                    case_id="case_bulk",
+                    workflow_template_id="digital_human_v2",
+                    workflow_version="v1",
+                    status=RunStatus.failed.value,
+                    requested_by="usr_admin",
+                    run_attempt=1,
+                    created_at=now + timedelta(seconds=index),
+                    updated_at=now + timedelta(seconds=index),
+                )
+            )
+        session.flush()
+        for index in range(run_total):
+            session.add(
+                FailureTaxonomyRow(
+                    id=f"failure_bulk_{index}",
+                    target_type="run",
+                    target_id=f"run_bulk_{index}",
+                    failure_class="provider",
+                    error_code="provider_timeout",
+                    run_id=f"run_bulk_{index}",
+                    job_id=f"job_bulk_{index}",
+                    case_id="case_bulk",
+                    dedupe_key=f"failure_bulk_{index}",
+                )
+            )
+        session.commit()
+
+    response = repository.run_overview(
+        request_id="req_bulk", limit=50, owner_user_id="usr_admin"
+    )
+
+    assert response.total_hint == run_total
+    assert response.status_counts == {"failed": run_total}
+    assert response.failure_code_counts == {"provider_timeout": run_total}
+    # Page is capped; aggregation spans the whole window regardless of page size.
+    assert len(response.items) == 50
+    assert response.next_cursor == "50"
 
 
 def test_batch_feasibility_counts_annotated_materials(db_session_factory):
