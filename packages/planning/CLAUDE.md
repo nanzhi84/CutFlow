@@ -4,7 +4,7 @@
 
 ## 职责
 - material：jieba 关键词 + 同义扩展把脚本节拍与 b-roll 片段做 Jaccard 变体相似度匹配（`matching.py`），并据此对 b-roll（`broll_pack.py`）/ portrait·bgm·font（`portrait_pack.py`）候选打真实分。
-- material：把排好序的 b-roll 候选锚定到真实旁白窗口内、生成不重叠的插入计划（`broll_plan.py` 的 `plan_insertions`，供 broll_planning 消费）/ 确定性 b-roll 覆盖规划（同文件 `plan_coverage`，供 broll_coverage_planning 消费），素材不足时返回空（上游软降级）。
+- material：把排好序的 b-roll 候选锚定到真实旁白窗口内、生成不重叠的插入计划（`broll_plan.py` 的 `plan_insertions`，供 broll_planning 与主链 full-coverage 路径消费），素材不足时返回空（上游软降级）。
 - selection：从选择台账（`SelectionLedgerEntry`）算「近期使用」惩罚，让上一轮用过的素材这一轮被压到新素材之下（`recency.py`/`recency_context.py`）。生产链路只在 `MaterialPackPlanning` 读 ledger，再把 `recent_usage`/`recency_penalty` 写进候选 metadata，后续 planning 节点不再读 ledger。
 - editing：把旁白单元 + portrait 源窗口候选，经语义/停顿边界 → beam 搜索 → 容量打包 → 一次性量化到固定 30fps 帧网格，产出帧精确的 `BoundaryTimelinePlan`；人像主轨强制资产级唯一性（`template_id` 每 run 最多用一次，`max_uses=1`）。
 

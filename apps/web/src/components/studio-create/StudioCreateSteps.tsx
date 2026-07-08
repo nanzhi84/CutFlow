@@ -14,6 +14,7 @@ import {
   contentModeLabel,
   emotionOptions,
   subtitleLabel,
+  visualModeLabel,
   type FormState,
 } from "./studioCreateModel";
 import { SeedanceReferencePicker } from "./SeedanceReferencePicker";
@@ -73,18 +74,17 @@ export function ScriptStep({
 
 export function TemplateStep({ form, setField, caseId }: { form: FormState; setField: SetField; caseId: string }) {
   const contentModeOptions: Array<{ value: FormState["contentMode"]; label: string; detail: string }> = [
-    { value: "digital_human", label: "数字人口播", detail: "使用数字人模板、口型同步和 B-roll 插入。" },
-    { value: "broll_only", label: "仅 B_roll 画外音", detail: "不出现数字人，用画外音 + 素材画面铺满，保留字幕/BGM。" },
-    { value: "seedance", label: "Seedance 文生视频", detail: "一次性生成 15s / 3:4 / 720p 短片，可纯文本出片，也可附参考图。" },
-    { value: "editing_agent", label: "AI 综合剪辑", detail: "在数字人基础上，由剪辑 Agent 按你的额外要求统一规划人像 / B-roll / 字体 / BGM。" },
+    { value: "deterministic", label: "确定算法剪辑", detail: "规则算法按脚本、时间线和案例素材稳定规划人像 / B-roll / 字体 / BGM。" },
+    { value: "editing_agent", label: "Agent智能剪辑", detail: "剪辑 Agent 结合额外要求统一规划人像 / B-roll / 字体 / BGM。" },
+    { value: "seedance", label: "seedance文生视频", detail: "一次性生成 15s / 3:4 / 720p 短片，可纯文本出片，也可附参考图。" },
   ];
-  const isDigitalHuman = form.contentMode === "digital_human";
+  const isDeterministic = form.contentMode === "deterministic";
   const isSeedance = form.contentMode === "seedance";
   const isEditingAgent = form.contentMode === "editing_agent";
   return (
     <div className="grid gap-4">
-      <SectionTitle icon={Film} title="模板" description="选择内容模式；数字人口播由系统按脚本和案例素材自动选择人像模板。" />
-      <div className="divide-y divide-border/60 border-y border-border/60 md:grid md:grid-cols-2 md:divide-x lg:grid-cols-4">
+      <SectionTitle icon={Film} title="剪辑方式" description="选择本次视频的剪辑生成方式。" />
+      <div className="divide-y divide-border/60 border-y border-border/60 md:grid md:grid-cols-3 md:divide-x">
         {contentModeOptions.map((option) => (
           <button
             type="button"
@@ -118,15 +118,11 @@ export function TemplateStep({ form, setField, caseId }: { form: FormState; setF
             剪辑 Agent 会在生成这条视频时参考它，统一规划人像 / B-roll / 字体 / BGM；留空则按通用最佳实践。
           </span>
         </label>
-      ) : isDigitalHuman ? (
+      ) : isDeterministic ? (
         <div className="stateBox muted">
-          <span>数字人口播将由系统按脚本和案例素材自动选择人像模板。</span>
+          <span>确定算法剪辑会用规则算法稳定选择人像、B-roll、字幕和 BGM。</span>
         </div>
-      ) : (
-        <div className="stateBox muted">
-          <span>仅 B_roll 模式会跳过数字人模板和口型同步。</span>
-        </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -142,7 +138,7 @@ export function ProductionStep({
   selectedVoice: string;
   voiceOptions: VoiceOption[];
 }) {
-  const isBrollOnly = form.contentMode === "broll_only";
+  const isFullCoverageBroll = form.visualMode === "broll_full_coverage";
   if (form.contentMode === "seedance") {
     return (
       <div className="grid gap-4">
@@ -155,7 +151,7 @@ export function ProductionStep({
   }
   return (
     <div className="grid gap-4">
-      <SectionTitle icon={Mic2} title="成片配置" description="配置声音、口型同步和 B-roll 策略。" />
+      <SectionTitle icon={Mic2} title="成片配置" description="配置声音、画面模式和 B-roll 策略。" />
       <label>
         <span className={!selectedVoice ? "text-status-error" : undefined}>声音</span>
         <select value={selectedVoice} onChange={(event) => setField("voiceId", event.target.value)}>
@@ -187,9 +183,30 @@ export function ProductionStep({
           </select>
         </label>
       </div>
-      {isBrollOnly ? (
+      <div className="grid gap-2">
+        <span className="text-sm font-semibold text-text-primary">画面模式</span>
+        <div className="grid grid-cols-2 overflow-hidden rounded-2xl border border-border/70">
+          {[
+            { value: "digital_human", label: "数字人模式", detail: "数字人主轨 + 可选 B-roll 插入。" },
+            { value: "broll_full_coverage", label: "纯Broll模式", detail: "B-roll 铺满主画面，跳过口型同步。" },
+          ].map((option) => (
+            <button
+              type="button"
+              key={option.value}
+              onClick={() => setField("visualMode", option.value as FormState["visualMode"])}
+              className={`px-3 py-3 text-left transition-colors ${
+                form.visualMode === option.value ? "bg-accent/10 text-accent" : "hover:bg-hover"
+              }`}
+            >
+              <span className="block font-semibold text-text-primary">{option.label}</span>
+              <span className="mt-1 block text-xs text-text-secondary">{option.detail}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      {isFullCoverageBroll ? (
         <div className="stateBox muted">
-          <span>B_roll 已固定启用并铺满全片。</span>
+          <span>纯Broll模式会使用 B-roll 按时间线窗口铺满全片，并跳过数字人轨道与口型同步。</span>
         </div>
       ) : (
         <>
@@ -280,7 +297,7 @@ export function SubmitStep({ form, selectedVoiceLabel, scriptCount }: { form: Fo
       <SectionTitle icon={Play} title="提交" description="确认配置后提交生产任务，成功后自动跳转到成片页。" />
       <div className="grid gap-3 md:grid-cols-2">
         <ReviewItem label="脚本" value={form.contentMode === "seedance" ? `提示词 ${scriptCount} 字` : `${scriptCount} 字`} />
-        <ReviewItem label="内容模式" value={contentModeLabel(form.contentMode)} />
+        <ReviewItem label="剪辑方式" value={contentModeLabel(form.contentMode)} />
         {form.contentMode === "seedance" ? (
           <ReviewItem
             label="画面"
@@ -289,10 +306,24 @@ export function SubmitStep({ form, selectedVoiceLabel, scriptCount }: { form: Fo
         ) : (
           <ReviewItem label="声音" value={`${selectedVoiceLabel} · ${form.speed.toFixed(1)}x`} />
         )}
-        {form.contentMode === "digital_human" ? (
-          <ReviewItem label="口型" value={lipsyncSummary(form)} />
-        ) : form.contentMode === "broll_only" ? (
-          <ReviewItem label="画面" value="B_roll 铺满全片" />
+        {form.contentMode === "deterministic" || form.contentMode === "editing_agent" ? (
+          <>
+            <ReviewItem label="画面模式" value={visualModeLabel(form.visualMode)} />
+            <ReviewItem
+              label="口型"
+              value={form.visualMode === "broll_full_coverage" ? "跳过" : lipsyncSummary(form)}
+            />
+            <ReviewItem
+              label="B-roll"
+              value={
+                form.visualMode === "broll_full_coverage"
+                  ? "全覆盖 · 按时间线窗口"
+                  : form.brollEnabled
+                    ? `插入 · 最多 ${form.maxInserts} 段`
+                    : "关闭"
+              }
+            />
+          </>
         ) : null}
         {form.contentMode === "seedance" ? (
           <ReviewItem label="后处理" value="不生成字幕 / 跳过本地 BGM / AI 封面" />
@@ -315,7 +346,7 @@ export function ConfigSummary({ form, selectedVoiceLabel, scriptCount }: { form:
         <p className="text-sm">偏好会自动保存，刷新页面后继续沿用。</p>
       </div>
       <div className="divide-y divide-border/60">
-        <SummaryRow icon={Film} label="内容模式" value={contentModeLabel(form.contentMode)} />
+        <SummaryRow icon={Film} label="剪辑方式" value={contentModeLabel(form.contentMode)} />
         {form.contentMode === "seedance" ? (
           <SummaryRow
             icon={Sparkles}
@@ -325,8 +356,26 @@ export function ConfigSummary({ form, selectedVoiceLabel, scriptCount }: { form:
         ) : (
           <SummaryRow icon={Mic2} label="声音" value={`${selectedVoiceLabel} · ${form.speed.toFixed(1)}x`} />
         )}
-        {form.contentMode === "digital_human" ? (
-          <SummaryRow icon={Sparkles} label="口型" value={lipsyncSummary(form)} />
+        {form.contentMode === "deterministic" || form.contentMode === "editing_agent" ? (
+          <>
+            <SummaryRow icon={Film} label="画面模式" value={visualModeLabel(form.visualMode)} />
+            <SummaryRow
+              icon={Sparkles}
+              label="口型"
+              value={form.visualMode === "broll_full_coverage" ? "跳过" : lipsyncSummary(form)}
+            />
+            <SummaryRow
+              icon={Film}
+              label="B-roll"
+              value={
+                form.visualMode === "broll_full_coverage"
+                  ? "全覆盖 · 按时间线窗口"
+                  : form.brollEnabled
+                    ? `插入 · 最多 ${form.maxInserts} 段`
+                    : "关闭"
+              }
+            />
+          </>
         ) : null}
         {form.contentMode === "seedance" ? null : (
           <>

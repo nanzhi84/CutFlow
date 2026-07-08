@@ -4,7 +4,8 @@ export type UserGenerationDefaults = components["schemas"]["UserGenerationDefaul
 
 export type StudioStep = 0 | 1 | 2 | 3 | 4;
 
-type ContentMode = "digital_human" | "broll_only" | "seedance" | "editing_agent";
+type ContentMode = "deterministic" | "editing_agent" | "seedance";
+type VisualMode = "digital_human" | "broll_full_coverage";
 
 export type FormState = {
   title: string;
@@ -14,6 +15,7 @@ export type FormState = {
   // script_version_id instead of only the raw text. Cleared on manual script edits.
   scriptVersionId: string | null;
   contentMode: ContentMode;
+  visualMode: VisualMode;
   // Seedance (文生/图生视频) reference-image media-asset ids. Only used when
   // contentMode === "seedance"; submitted as DigitalHumanVideoRequest.reference_asset_ids.
   seedanceReferenceAssetIds: string[];
@@ -44,7 +46,8 @@ const defaultForm: FormState = {
   title: "",
   script: "",
   scriptVersionId: null,
-  contentMode: "digital_human",
+  contentMode: "deterministic",
+  visualMode: "digital_human",
   seedanceReferenceAssetIds: [],
   voiceId: "",
   speed: 1,
@@ -63,7 +66,7 @@ const defaultForm: FormState = {
   editInstruction: "",
 };
 
-export const steps = ["脚本", "模板", "成片配置", "后处理", "提交"] as const;
+export const steps = ["脚本", "剪辑方式", "成片配置", "后处理", "提交"] as const;
 
 export const emotionOptions = [
   { value: "neutral", label: "自然" },
@@ -82,20 +85,32 @@ export function loadStoredForm(): FormState {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) return defaultForm;
-    const parsed = JSON.parse(saved) as Partial<FormState>;
+    const parsed = JSON.parse(saved) as Record<string, unknown>;
+    const storedContentMode = parsed.contentMode;
     const contentMode =
-      parsed.contentMode === "broll_only" ||
-      parsed.contentMode === "seedance" ||
-      parsed.contentMode === "editing_agent"
-        ? parsed.contentMode
+      storedContentMode === "deterministic" ||
+      storedContentMode === "digital_human" ||
+      storedContentMode === "seedance" ||
+      storedContentMode === "editing_agent"
+        ? storedContentMode === "digital_human"
+          ? "deterministic"
+          : storedContentMode
         : defaultForm.contentMode;
+    const storedVisualMode = parsed.visualMode;
+    const visualMode =
+      storedVisualMode === "digital_human" || storedVisualMode === "broll_full_coverage"
+        ? storedVisualMode
+        : storedContentMode === "broll_only"
+          ? "broll_full_coverage"
+          : defaultForm.visualMode;
     const seedanceReferenceAssetIds = Array.isArray(parsed.seedanceReferenceAssetIds)
       ? parsed.seedanceReferenceAssetIds.filter((id): id is string => typeof id === "string")
       : defaultForm.seedanceReferenceAssetIds;
     return {
       ...defaultForm,
-      ...parsed,
+      ...(parsed as Partial<FormState>),
       contentMode,
+      visualMode,
       seedanceReferenceAssetIds,
       speed: clampNumber(Number(parsed.speed ?? defaultForm.speed), 0.5, 2, defaultForm.speed),
       maxInserts: clampNumber(Number(parsed.maxInserts ?? defaultForm.maxInserts), 0, 20, defaultForm.maxInserts),
@@ -134,10 +149,14 @@ export function validateAll(form: FormState, selectedVoice: string) {
 }
 
 export function contentModeLabel(value: FormState["contentMode"]) {
-  if (value === "broll_only") return "仅 B_roll 画外音";
-  if (value === "seedance") return "Seedance 文生视频";
-  if (value === "editing_agent") return "AI 综合剪辑";
-  return "数字人口播";
+  if (value === "editing_agent") return "Agent智能剪辑";
+  if (value === "seedance") return "seedance文生视频";
+  return "确定算法剪辑";
+}
+
+export function visualModeLabel(value: FormState["visualMode"]) {
+  if (value === "broll_full_coverage") return "纯Broll模式";
+  return "数字人模式";
 }
 
 export function subtitleLabel(value: FormState["subtitleStyle"]) {
@@ -170,6 +189,7 @@ function pickFrom<T extends string>(allowed: T[], value: unknown, fallback: T): 
  * are preferences, not content.
  */
 export function mapFormToDefaults(form: FormState): UserGenerationDefaults {
+  const fullCoverage = form.visualMode === "broll_full_coverage";
   return {
     voice: {
       voice_id: form.voiceId,
@@ -178,8 +198,8 @@ export function mapFormToDefaults(form: FormState): UserGenerationDefaults {
       volume: 1,
     },
     broll: {
-      enabled: form.brollEnabled,
-      mode: "insert",
+      enabled: fullCoverage ? true : form.brollEnabled,
+      mode: fullCoverage ? "full_coverage" : "insert",
       max_inserts: form.maxInserts,
       min_segment_duration: 3,
       allow_generic_coverage: true,
@@ -198,7 +218,7 @@ export function mapFormToDefaults(form: FormState): UserGenerationDefaults {
       mode: form.coverMode,
     },
     lipsync: {
-      enabled: form.lipsyncEnabled,
+      enabled: fullCoverage ? false : form.lipsyncEnabled,
       provider_profile_id: "runninghub.heygem.prod",
       timeout_minutes: form.lipsyncTimeoutMinutes,
     },
@@ -218,8 +238,19 @@ export function mapDefaultsToForm(defaults: UserGenerationDefaults, base: FormSt
     if (defaults.voice.emotion) next.emotion = defaults.voice.emotion;
   }
   if (defaults.broll) {
-    next.brollEnabled = Boolean(defaults.broll.enabled);
-    next.maxInserts = clampNumber(Number(defaults.broll.max_inserts ?? base.maxInserts), 0, 20, base.maxInserts);
+    if (defaults.broll.mode === "full_coverage") {
+      next.visualMode = "broll_full_coverage";
+      next.brollEnabled = true;
+    } else {
+      next.visualMode = "digital_human";
+      next.brollEnabled = Boolean(defaults.broll.enabled);
+    }
+    next.maxInserts = clampNumber(
+      Number(defaults.broll.max_inserts ?? base.maxInserts),
+      0,
+      20,
+      base.maxInserts,
+    );
   }
   if (defaults.subtitle) {
     next.subtitleEnabled = Boolean(defaults.subtitle.enabled);

@@ -41,22 +41,6 @@ NODE_SEQUENCE = [
     "FinalizeRunReport",
 ]
 
-BROLL_ONLY_SEQUENCE = [
-    "ValidateRequest",
-    "LoadCaseContext",
-    "ResolveCreativeIntent",
-    "TTS",
-    "MaterialPackPlanning",
-    "NarrationAlignment",
-    "BrollCoveragePlanning",
-    "StylePlanning",
-    "BrollTimelinePlanning",
-    "BrollRenderBase",
-    "SubtitleAndBgmMix",
-    "ExportFinishedVideo",
-    "FinalizeRunReport",
-]
-
 SEEDANCE_T2V_SEQUENCE = [
     "ValidateRequest",
     "LoadCaseContext",
@@ -95,7 +79,6 @@ EDITING_AGENT_SEQUENCE = [
 # so the count of existing node runs is not the denominator).
 WORKFLOW_TEMPLATE_NODE_COUNTS = {
     "digital_human_v2": len(NODE_SEQUENCE),
-    "broll_only_v1": len(BROLL_ONLY_SEQUENCE),
     "seedance_t2v_v1": len(SEEDANCE_T2V_SEQUENCE),
     "digital_human_editing_agent_v1": len(EDITING_AGENT_SEQUENCE),
 }
@@ -112,10 +95,6 @@ def _linear_edges(sequence: Sequence[str]) -> list[tuple[str, str]]:
 # ``from_node`` must complete before ``to_node`` becomes ready.
 WORKFLOW_GRAPHS: dict[str, dict[str, list]] = {
     "digital_human_v2": {"nodes": list(NODE_SEQUENCE), "edges": _linear_edges(NODE_SEQUENCE)},
-    "broll_only_v1": {
-        "nodes": list(BROLL_ONLY_SEQUENCE),
-        "edges": _linear_edges(BROLL_ONLY_SEQUENCE),
-    },
     "seedance_t2v_v1": {
         "nodes": list(SEEDANCE_T2V_SEQUENCE),
         "edges": _linear_edges(SEEDANCE_T2V_SEQUENCE),

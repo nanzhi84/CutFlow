@@ -386,6 +386,7 @@ def validate_selection(
     bgm_enabled: bool,
     retrieval_topk_by_window: dict[str, list[str]] | None = None,
     allow_broll_asset_diversity_reuse: bool = False,
+    require_broll_coverage: bool = False,
 ) -> list[str]:
     """Local hard constraints on the LLM's ID-only selection.
 
@@ -522,6 +523,22 @@ def validate_selection(
                     )
                 else:
                     broll_diversity_slots[diversity_key] = choice.slot_id
+    missing_broll = sorted(set(broll_slots) - seen_broll)
+    if require_broll_coverage and missing_broll:
+        hints = []
+        for slot_id in missing_broll[:5]:
+            slot = broll_slots[slot_id]
+            topk = _topk_for_slot(slot, retrieval_topk_by_window)
+            if topk:
+                hints.append(f"{slot_id} topK: {', '.join(topk[:12])}")
+        hint_text = f" ({'; '.join(hints)})" if hints else ""
+        errors.append(
+            "broll slots not covered: "
+            + ", ".join(missing_broll)
+            + "; full_coverage requires every broll slot. Add one broll_plan item "
+            + "for each missing slot_id."
+            + hint_text
+        )
 
     if allow_broll_asset_diversity_reuse:
         missing_broll = []
@@ -684,6 +701,7 @@ def select_with_repair(
     max_repair_attempts: int,
     retrieval_topk_by_window: dict[str, list[str]] | None = None,
     allow_broll_asset_diversity_reuse: bool = False,
+    require_broll_coverage: bool = False,
 ) -> tuple[EditingSelection, list[dict], list[str]]:
     """Drive one LLM selection + up to ``max_repair_attempts`` local repairs.
 
@@ -708,6 +726,7 @@ def select_with_repair(
             bgm_enabled=bgm_enabled,
             retrieval_topk_by_window=retrieval_topk_by_window,
             allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
+            require_broll_coverage=require_broll_coverage,
         )
         trace.append({"attempt": attempt, "error_count": len(errors), "errors": errors})
         if not errors:

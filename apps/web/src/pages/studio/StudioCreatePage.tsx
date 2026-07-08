@@ -151,9 +151,9 @@ export default function StudioCreatePage() {
     title?: string | null,
     scriptVersionId: string | null = null,
   ): VideoJobPayload {
-    const isBrollOnly = form.contentMode === "broll_only";
     const isSeedance = form.contentMode === "seedance";
     const isEditingAgent = form.contentMode === "editing_agent";
+    const isFullCoverageBroll = !isSeedance && form.visualMode === "broll_full_coverage";
     return {
       schema_version: "digital_human_video_request.v1",
       case_id: caseId,
@@ -174,10 +174,8 @@ export default function StudioCreatePage() {
         volume: 1,
       },
       broll: {
-        // Seedance generates the whole frame itself; B_roll-only is now the main
-        // chain's required full-coverage B-roll mode.
-        enabled: isSeedance ? false : isBrollOnly ? true : form.brollEnabled,
-        mode: isBrollOnly ? "full_coverage" : "insert",
+        enabled: isSeedance ? false : isFullCoverageBroll ? true : form.brollEnabled,
+        mode: isFullCoverageBroll ? "full_coverage" : "insert",
         max_inserts: form.maxInserts,
         min_segment_duration: 3,
         allow_generic_coverage: true,
@@ -199,10 +197,7 @@ export default function StudioCreatePage() {
         mode: isSeedance ? "frame" : form.coverMode,
       },
       lipsync: {
-        // Full-coverage B-roll and Seedance never run LipSync; force the block off so the
-        // run-config snapshot reflects the actual workflow instead of a phantom
-        // "口型同步: 开" the template can't perform.
-        enabled: isBrollOnly || isSeedance ? false : form.lipsyncEnabled,
+        enabled: isSeedance || isFullCoverageBroll ? false : form.lipsyncEnabled,
         provider_profile_id: "runninghub.heygem.prod",
         timeout_minutes: form.lipsyncTimeoutMinutes,
       },

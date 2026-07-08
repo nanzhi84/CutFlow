@@ -402,6 +402,87 @@ def test_valid_selection_passes_validation():
     assert errors == []
 
 
+def test_full_coverage_validation_reports_missing_broll_slots_for_repair():
+    selection = EditingSelection(
+        portrait=_valid_selection().portrait,
+        broll=[BrollChoice(slot_id="bslot_000", candidate_id="bc_000")],
+        font_id="font_yst",
+        bgm_id="bgm_001",
+    )
+    boundary = _boundary()
+    candidates = index_candidates(_material())
+
+    assert (
+        validate_selection(
+            selection,
+            boundary=boundary,
+            candidates=candidates,
+            bgm_enabled=True,
+        )
+        == []
+    )
+
+    errors = validate_selection(
+        selection,
+        boundary=boundary,
+        candidates=candidates,
+        bgm_enabled=True,
+        retrieval_topk_by_window={"bslot_001": ["bc_001"]},
+        require_broll_coverage=True,
+    )
+
+    joined = " | ".join(errors)
+    assert "broll slots not covered: bslot_001" in joined
+    assert "full_coverage requires every broll slot" in joined
+    assert "bslot_001 topK: bc_001" in joined
+
+
+def test_select_with_repair_sends_missing_broll_slots_back_to_agent():
+    attempts: list[list[str]] = []
+    outputs = [
+        {
+            "portrait_plan": [
+                {"slot_id": "pslot_000", "window_id": "pc_000"},
+                {"slot_id": "pslot_001", "window_id": "pc_001"},
+            ],
+            "broll_plan": [{"slot_id": "bslot_000", "candidate_id": "bc_000"}],
+            "font_plan": {"font_id": "font_yst"},
+            "bgm_plan": {"bgm_id": "bgm_001"},
+        },
+        {
+            "portrait_plan": [
+                {"slot_id": "pslot_000", "window_id": "pc_000"},
+                {"slot_id": "pslot_001", "window_id": "pc_001"},
+            ],
+            "broll_plan": [
+                {"slot_id": "bslot_000", "candidate_id": "bc_000"},
+                {"slot_id": "bslot_001", "candidate_id": "bc_001"},
+            ],
+            "font_plan": {"font_id": "font_yst"},
+            "bgm_plan": {"bgm_id": "bgm_001"},
+        },
+    ]
+
+    def invoke(previous_errors: list[str]):
+        attempts.append(previous_errors)
+        return outputs.pop(0)
+
+    selection, trace, errors = select_with_repair(
+        invoke=invoke,
+        boundary=_boundary(),
+        candidates=index_candidates(_material()),
+        bgm_enabled=True,
+        max_repair_attempts=1,
+        retrieval_topk_by_window={"bslot_000": ["bc_000"], "bslot_001": ["bc_001"]},
+        require_broll_coverage=True,
+    )
+
+    assert errors == []
+    assert [choice.slot_id for choice in selection.broll] == ["bslot_000", "bslot_001"]
+    assert trace[0]["error_count"] == 1
+    assert "broll slots not covered: bslot_001" in attempts[1][0]
+
+
 def test_invalid_ids_and_missing_coverage_are_rejected():
     candidates = index_candidates(_material())
     # unknown window + a portrait slot left uncovered
