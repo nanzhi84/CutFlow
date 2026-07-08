@@ -4884,7 +4884,7 @@ export interface components {
          * DegradationCode
          * @enum {string}
          */
-        DegradationCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "broll.insertions_dropped_geometry" | "editing_agent.deterministic_fallback" | "window_query.template_fallback";
+        DegradationCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "broll.insertions_dropped_geometry" | "editing_agent.deterministic_fallback" | "window_query.template_fallback" | "timestamp.estimated";
         /** DegradationNotice */
         DegradationNotice: {
             code: components["schemas"]["WarningCode"];
