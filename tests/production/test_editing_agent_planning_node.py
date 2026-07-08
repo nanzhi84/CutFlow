@@ -1642,7 +1642,8 @@ def test_llm_path_repairs_portrait_choice_using_clean_source_span(monkeypatch, t
     assert portrait["segments"][1]["source_end_frame"] == 210
 
 
-def test_llm_invalid_selection_records_raw_artifacts_before_failure(tmp_path):
+def test_llm_invalid_selection_records_raw_artifacts_before_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("CUTAGENT_ALLOW_SANDBOX_FALLBACK", "0")
     adapter = _adapter(tmp_path)
     _seed_fake_llm_profile(adapter)
     adapter.provider_gateway.register(
