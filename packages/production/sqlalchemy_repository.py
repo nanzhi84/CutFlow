@@ -836,12 +836,12 @@ class SqlAlchemyProductionRepository(BaseRepository):
                     .where(MediaAssetRow.usable.is_(True))
                 )
             )
-        video_rows = [row for row in media_rows if row.kind in {"video", "portrait", "broll"}]
+        video_rows = [row for row in media_rows if row.kind == "video"]
         annotated_rows = [row for row in video_rows if row.annotation_status == "annotated"]
         portrait_rows = [
             row
             for row in annotated_rows
-            if row.kind == "portrait" or any(tag in {"portrait", "digital_human"} for tag in (row.tags or []))
+            if any(tag in {"portrait", "digital_human"} for tag in (row.tags or []))
         ]
         if not portrait_rows:
             portrait_rows = annotated_rows
@@ -884,6 +884,15 @@ class SqlAlchemyProductionRepository(BaseRepository):
         max_inflight = max(1, int(max_inflight or 1))
         admitted: list[tuple[Job, WorkflowRun]] = []
         with self.session_factory() as session:
+            # Serialize the read-running-count + select-admitted decision per case:
+            # the Temporal admit activity runs at-least-once, so two concurrent
+            # invocations for the same case could each see the same running count
+            # and over-admit past ``max_inflight``. A transaction-scoped advisory
+            # lock (released on commit) makes the whole selection atomic per case.
+            session.execute(
+                text("select pg_advisory_xact_lock(hashtext(:cid))"),
+                {"cid": case_id},
+            )
             running_count = int(
                 session.scalar(
                     select(func.count())
@@ -909,7 +918,6 @@ class SqlAlchemyProductionRepository(BaseRepository):
                     job_row = session.get(JobRow, run_row.job_id, with_for_update=True)
                     if job_row is None:
                         continue
-                    session.flush()
                     admitted.append(
                         (job_row_to_contract(job_row), workflow_run_row_to_contract(run_row))
                     )
@@ -964,21 +972,6 @@ class SqlAlchemyProductionRepository(BaseRepository):
             if job_row is not None:
                 job_row.status = JobStatus.running.value
                 job_row.active_run_id = run_row.id
-                job_row.updated_at = now
-            session.commit()
-
-    def mark_run_start_failed(self, run_id: str, reason: str) -> None:
-        now = utcnow()
-        with self.session_factory() as session:
-            run_row = session.get(WorkflowRunRow, run_id)
-            if run_row is None:
-                return
-            job_row = session.get(JobRow, run_row.job_id)
-            run_row.status = RunStatus.failed.value
-            run_row.finished_at = now
-            run_row.updated_at = now
-            if job_row is not None:
-                job_row.status = JobStatus.failed.value
                 job_row.updated_at = now
             session.commit()
 

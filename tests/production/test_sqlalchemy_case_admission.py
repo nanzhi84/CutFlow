@@ -101,6 +101,68 @@ def test_case_admission_marks_running_only_after_temporal_start(db_session_facto
         assert job.active_run_id == "run_admission_1"
 
 
+def test_admit_case_runs_takes_case_advisory_lock(db_session_factory):
+    from sqlalchemy import event
+
+    repository = SqlAlchemyProductionRepository(db_session_factory)
+    now = utcnow()
+    with db_session_factory() as session:
+        session.add(
+            CaseRow(
+                id="case_lock",
+                name="Lock demo",
+                owner_user_id="usr_admin",
+                status="active",
+                description=None,
+            )
+        )
+        session.add(
+            JobRow(
+                id="job_lock",
+                type=JobType.digital_human_video.value,
+                status=JobStatus.queued.value,
+                case_id="case_lock",
+                created_by="usr_admin",
+                request_schema="DigitalHumanVideoRequest.v1",
+                request=_request(),
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.add(
+            WorkflowRunRow(
+                id="run_lock",
+                job_id="job_lock",
+                case_id="case_lock",
+                workflow_template_id="digital_human_v2",
+                workflow_version="v1",
+                status=RunStatus.admitted.value,
+                requested_by="usr_admin",
+                run_attempt=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+
+    engine = db_session_factory.kw["bind"]
+    executed_sql: list[str] = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        executed_sql.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        summary = repository.admit_case_runs(case_id="case_lock", max_inflight=1)
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
+    # The advisory lock statement is what serializes over-admission; assert it
+    # actually reached the driver, and that the run was still selected.
+    assert [run.id for _job, run in summary["admitted"]] == ["run_lock"]
+    assert any("pg_advisory_xact_lock" in statement for statement in executed_sql)
+
+
 def test_case_admission_start_failure_leaves_run_retryable(monkeypatch):
     run = SimpleNamespace(id="run_retry")
     job = SimpleNamespace(id="job_retry")
@@ -108,7 +170,6 @@ def test_case_admission_start_failure_leaves_run_retryable(monkeypatch):
     class _ProductionRepository:
         def __init__(self) -> None:
             self.marked_started: list[str] = []
-            self.marked_failed: list[tuple[str, str]] = []
 
         def admit_case_runs(self, *, case_id: str, max_inflight: int):
             assert case_id == "case_retry"
@@ -121,9 +182,6 @@ def test_case_admission_start_failure_leaves_run_retryable(monkeypatch):
 
         def mark_run_started(self, run_id: str) -> None:
             self.marked_started.append(run_id)
-
-        def mark_run_start_failed(self, run_id: str, reason: str) -> None:
-            self.marked_failed.append((run_id, reason))
 
     production_repository = _ProductionRepository()
     monkeypatch.setattr(
@@ -156,7 +214,6 @@ def test_case_admission_start_failure_leaves_run_retryable(monkeypatch):
         "queued_remaining": 1,
     }
     assert production_repository.marked_started == []
-    assert production_repository.marked_failed == []
 
 
 def test_run_overview_filters_and_aggregates_sql_rows(db_session_factory):
@@ -300,7 +357,7 @@ def test_batch_feasibility_counts_annotated_materials(db_session_factory):
                     id="asset_portrait",
                     case_id="case_feasibility",
                     title="Portrait",
-                    kind="portrait",
+                    kind="video",
                     tags=["digital_human"],
                     annotation_status="annotated",
                     usable=True,
@@ -310,7 +367,7 @@ def test_batch_feasibility_counts_annotated_materials(db_session_factory):
                     id="asset_broll",
                     case_id=None,
                     title="Global B-roll",
-                    kind="broll",
+                    kind="video",
                     tags=["store"],
                     annotation_status="annotated",
                     usable=True,

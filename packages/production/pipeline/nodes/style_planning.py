@@ -81,8 +81,4 @@ def _compact_text(value: str) -> str:
 def _target_bgm_mood(intent: dict | None) -> str:
     if not isinstance(intent, dict):
         return ""
-    for key in ("bgm_mood", "music_mood", "mood"):
-        mood = normalize_bgm_mood(intent.get(key))
-        if mood:
-            return mood
-    return ""
+    return normalize_bgm_mood(intent.get("bgm_mood"))

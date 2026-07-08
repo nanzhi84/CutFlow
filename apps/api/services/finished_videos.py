@@ -416,7 +416,9 @@ def _browser_download_fields(
     *,
     disposition: str | None = None,
 ) -> tuple[str, object]:
-    signed_url = object_store(request).signed_url(uri)
+    signed_url = object_store(request).signed_url(
+        uri, response_content_disposition=disposition
+    )
     url = signed_url.url
     if not url.startswith(_BROWSER_DOWNLOAD_PREFIXES):
         url = f"/api/artifacts/{artifact_id}/download"

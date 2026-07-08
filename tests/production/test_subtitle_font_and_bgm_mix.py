@@ -190,8 +190,9 @@ def test_write_ass_subtitles_emits_selected_colors_and_overlay_styles(tmp_path):
     text = out.read_text(encoding="utf-8")
     assert "Style: Default,Arial,85,&H00332211,&H000000FF,&H00665544" in text
     assert "Style: Emphasis,Arial,119,&H00DDEEFF,&H000000FF,&H00302010" in text
-    assert "Style: Pop,Arial,119," in text
-    assert r"Dialogue: 1,0:00:00.20,0:00:00.80,Pop" in text
+    # No producer emits Pop/Warning/Soft; the unknown "pop" style falls back to Emphasis.
+    assert "Style: Pop" not in text
+    assert r"Dialogue: 1,0:00:00.20,0:00:00.80,Emphasis" in text
     assert r"{\fad(80,120)\t(0,180,\fscx108\fscy108)}重点" in text
 
 

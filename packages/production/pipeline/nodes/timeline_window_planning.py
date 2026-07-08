@@ -427,26 +427,12 @@ def _full_coverage_group_payload(units) -> dict:
 
 
 def _full_coverage_is_semantic_group_boundary(unit) -> bool:
-    pause_after_ms = _full_coverage_int(getattr(unit, "pause_after_ms", 0))
-    boundary_score = _full_coverage_float(getattr(unit, "boundary_score", 0.0))
+    pause_after_ms = int(getattr(unit, "pause_after_ms", 0))
+    boundary_score = float(getattr(unit, "boundary_score", 0.0))
     return bool(getattr(unit, "hard_end", False)) or (
         pause_after_ms >= _FULL_COVERAGE_GROUP_PAUSE_MS
         or boundary_score >= _FULL_COVERAGE_GROUP_BOUNDARY_SCORE
     )
-
-
-def _full_coverage_int(value, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _full_coverage_float(value, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
 
 
 def _choose_full_coverage_cut(

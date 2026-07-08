@@ -20,6 +20,15 @@ export const caseAgentApi = {
       `/api/cases/${enc(caseId)}/scripts/generate-with-memory`,
       { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("script_memory") },
     ),
+  adoptScriptDraft: (
+    caseId: string,
+    draftId: string,
+    payload: JsonRequest<operations["adopt_script_draft_api_cases__case_id__agent_drafts__draft_id__adopt_post"]>,
+  ) =>
+    fetchJson<JsonResponse<operations["adopt_script_draft_api_cases__case_id__agent_drafts__draft_id__adopt_post"]>>(
+      `/api/cases/${enc(caseId)}/agent/drafts/${enc(draftId)}/adopt`,
+      { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("script_draft_adopt") },
+    ),
 };
 
 export const caseRubricApi = {

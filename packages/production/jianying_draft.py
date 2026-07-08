@@ -14,6 +14,7 @@ from typing import Any, Callable
 from packages.core.storage.object_store import ObjectStore
 from packages.media.video.ffmpeg import probe_media
 from . import jianying_draft_json as jy_json
+from ._broll_overlays import _placement_or_none
 
 
 _PORTABLE_PACKAGE_SCHEMA_VERSION = "jianying_draft_portable_v2"
@@ -589,11 +590,6 @@ def _int_or_none(value: Any) -> int | None:
         return max(0, int(value))
     except (TypeError, ValueError):
         return None
-
-
-def _placement_or_none(value: Any) -> str | None:
-    text = str(value or "").strip()
-    return text if text in {"fullscreen", "pip_fixed"} else None
 
 
 def _explicit_video_tracks(
