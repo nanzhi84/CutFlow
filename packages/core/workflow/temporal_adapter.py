@@ -227,6 +227,19 @@ class DigitalHumanVideoWorkflow:
         return {"run_id": run_id, "status": result["run_status"]}
 
 
+def _admission_summary_is_idle(summary: dict[str, Any]) -> bool:
+    """True when the case has no queued (admitted) and no active (running) runs.
+
+    This is the admission controller's terminal condition: nothing is waiting and
+    nothing is in flight, so the workflow can end. Deterministic (pure dict reads),
+    so it is safe to evaluate inside the workflow body.
+    """
+    return (
+        int(summary.get("queued_remaining") or 0) == 0
+        and int(summary.get("active_count") or 0) == 0
+    )
+
+
 @workflow.defn(name=CASE_ADMISSION_WORKFLOW_TYPE)
 class CaseRunAdmissionWorkflow:
     """Per-case FIFO admission controller for long-running batch production."""
@@ -248,6 +261,18 @@ class CaseRunAdmissionWorkflow:
                 retry_policy=TemporalRetryPolicy(maximum_attempts=3),
             )
             cycles += 1
+            # Idle exit: when the admit activity reports the case has no queued
+            # (admitted) and no active (running) runs, this controller has nothing
+            # left to do and ends instead of polling forever. Exit-race invariant:
+            # the next batch's submitter always re-drives admission via
+            # ``signal_case_admission_with_client`` (start-or-signal). Once this
+            # workflow is terminal, ``start_workflow`` spins up a fresh instance, so
+            # no admission is dropped. The only gap — a poke that lands as a signal
+            # on this run while it is mid-termination — is reconciled by the worker's
+            # 30s ``_admission_recovery_loop``, which re-pokes every case that still
+            # has admitted runs.
+            if _admission_summary_is_idle(self.current_summary):
+                return dict(self.current_summary)
             if cycles >= CASE_ADMISSION_CONTINUE_AS_NEW_CYCLES:
                 workflow.continue_as_new({"case_id": case_id})
             await workflow.wait_condition(
@@ -422,19 +447,20 @@ def admit_case_runs(payload: dict[str, Any]) -> dict[str, Any]:
     admitted = list(summary.get("admitted") or [])
     admitted_run_ids: list[str] = []
     start_error_run_ids: list[str] = []
-    for job, run in admitted:
-        try:
-            asyncio.run(_start_admitted_workflow(settings, job=job, run=run))
-            ctx.production_repository.mark_run_started(run.id)
-            admitted_run_ids.append(run.id)
-        except Exception:  # noqa: BLE001 - keep admitted rows retryable on transient start errors.
-            logger.warning(
-                "Temporal start failed for admitted case run; leaving run admitted for retry",
-                extra={"run_id": run.id, "case_id": case_id},
-                exc_info=True,
+    if admitted:
+        # Start the whole admitted batch over ONE event loop and ONE Temporal
+        # client. The previous per-run ``asyncio.run(Client.connect(...))`` opened
+        # (and leaked) a fresh connection for every run.
+        asyncio.run(
+            _start_admitted_workflows(
+                settings,
+                ctx.production_repository,
+                case_id=case_id,
+                admitted=admitted,
+                admitted_run_ids=admitted_run_ids,
+                start_error_run_ids=start_error_run_ids,
             )
-            start_error_run_ids.append(run.id)
-            record_temporal_activity_failure()
+        )
     return {
         "case_id": case_id,
         "admitted_run_ids": admitted_run_ids,
@@ -446,16 +472,57 @@ def admit_case_runs(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _start_admitted_workflow(
-    settings: WorkflowRuntimeSettings, *, job: Job, run: WorkflowRun
+async def _start_admitted_workflows(
+    settings: WorkflowRuntimeSettings,
+    production_repository: SqlAlchemyProductionRepository,
+    *,
+    case_id: str,
+    admitted: list[tuple[Job, WorkflowRun]],
+    admitted_run_ids: list[str],
+    start_error_run_ids: list[str],
 ) -> None:
-    client = await asyncio.wait_for(
-        Client.connect(
-            settings.temporal_address,
-            namespace=settings.temporal_namespace,
-        ),
-        timeout=TEMPORAL_CONNECT_TIMEOUT_SECONDS,
-    )
+    """Start every admitted run through a single shared Temporal client.
+
+    Fault isolation matches the original per-run semantics: a run whose start
+    fails stays durably ``admitted`` (never ``mark_run_started``) so the next
+    admission cycle retries it. A connect failure fails the whole batch the same
+    way — every run is left admitted for retry — since no run could be started.
+    """
+    try:
+        client = await asyncio.wait_for(
+            Client.connect(
+                settings.temporal_address,
+                namespace=settings.temporal_namespace,
+            ),
+            timeout=TEMPORAL_CONNECT_TIMEOUT_SECONDS,
+        )
+    except Exception:  # noqa: BLE001 - unreachable Temporal leaves the batch retryable.
+        logger.warning(
+            "Temporal connect failed for admitted case runs; leaving batch admitted for retry",
+            extra={"case_id": case_id, "run_ids": [run.id for _job, run in admitted]},
+            exc_info=True,
+        )
+        start_error_run_ids.extend(run.id for _job, run in admitted)
+        record_temporal_activity_failure()
+        return
+    for job, run in admitted:
+        try:
+            await _start_admitted_workflow(settings, client, job=job, run=run)
+            production_repository.mark_run_started(run.id)
+            admitted_run_ids.append(run.id)
+        except Exception:  # noqa: BLE001 - keep admitted rows retryable on transient start errors.
+            logger.warning(
+                "Temporal start failed for admitted case run; leaving run admitted for retry",
+                extra={"run_id": run.id, "case_id": case_id},
+                exc_info=True,
+            )
+            start_error_run_ids.append(run.id)
+            record_temporal_activity_failure()
+
+
+async def _start_admitted_workflow(
+    settings: WorkflowRuntimeSettings, client: Client, *, job: Job, run: WorkflowRun
+) -> None:
     try:
         await client.start_workflow(
             WORKFLOW_TYPE,

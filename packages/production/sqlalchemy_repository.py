@@ -4,7 +4,7 @@ import math
 from collections.abc import Sequence
 from pathlib import Path
 
-from sqlalchemy import Float, bindparam, func, or_, select, text, update
+from sqlalchemy import ARRAY, Float, Text, bindparam, case, cast, func, or_, select, text, true, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -746,62 +746,108 @@ class SqlAlchemyProductionRepository(BaseRepository):
             next_cursor = str(offset + limit) if len(run_rows) > limit else None
             run_rows = run_rows[:limit]
             status_counts = {str(key): int(value) for key, value in session.execute(count_statement)}
-            all_run_ids_statement = select(WorkflowRunRow.id)
-            if status is not None:
-                all_run_ids_statement = all_run_ids_statement.where(
-                    WorkflowRunRow.status == status.value
-                )
-            if run_ids:
-                all_run_ids_statement = all_run_ids_statement.where(WorkflowRunRow.id.in_(run_ids))
-            if owner_user_id is not None:
-                all_run_ids_statement = all_run_ids_statement.join(
-                    JobRow, JobRow.id == WorkflowRunRow.job_id
-                ).where(JobRow.created_by == owner_user_id)
-            visible_run_ids = list(session.scalars(all_run_ids_statement))
-            failure_counts: dict[str, int] = {}
-            degradation_counts: dict[str, int] = {}
-            if visible_run_ids:
-                failure_statement = (
-                    select(FailureTaxonomyRow.error_code, func.count())
-                    .where(FailureTaxonomyRow.run_id.in_(visible_run_ids))
-                    .group_by(FailureTaxonomyRow.error_code)
-                )
-                failure_counts = {
-                    str(code or "unknown"): int(value)
-                    for code, value in session.execute(failure_statement)
+
+            # The visible-run window is expressed as a filtered subquery, never a
+            # materialized id list: a large owner/status window could otherwise blow
+            # past Postgres' 32767 bind-parameter cap when spliced into an IN clause.
+            def _visible_run_ids():
+                stmt = select(WorkflowRunRow.id)
+                if status is not None:
+                    stmt = stmt.where(WorkflowRunRow.status == status.value)
+                if run_ids:
+                    stmt = stmt.where(WorkflowRunRow.id.in_(list(dict.fromkeys(run_ids))))
+                if owner_user_id is not None:
+                    stmt = stmt.join(JobRow, JobRow.id == WorkflowRunRow.job_id).where(
+                        JobRow.created_by == owner_user_id
+                    )
+                return stmt
+
+            failure_statement = (
+                select(FailureTaxonomyRow.error_code, func.count())
+                .where(FailureTaxonomyRow.run_id.in_(_visible_run_ids()))
+                .group_by(FailureTaxonomyRow.error_code)
+            )
+            failure_counts = {
+                str(code or "unknown"): int(value)
+                for code, value in session.execute(failure_statement)
+            }
+
+            # Count degradation codes inside the DB by expanding each node's
+            # ``degradations`` JSONB array with a lateral ``jsonb_array_elements``.
+            # Elements are either objects ({code|degradation_code}) or bare strings;
+            # the CASE mirrors the former Python normalization (empty/missing -> skip).
+            deg_elements = func.jsonb_array_elements(NodeRunRow.degradations).table_valued(
+                "value", name="degradation"
+            )
+            deg_value = deg_elements.c.value
+            degradation_code = case(
+                (
+                    func.jsonb_typeof(deg_value) == "object",
+                    func.coalesce(
+                        func.nullif(deg_value.op("->>")("code"), ""),
+                        func.nullif(deg_value.op("->>")("degradation_code"), ""),
+                    ),
+                ),
+                (
+                    func.jsonb_typeof(deg_value) == "string",
+                    func.nullif(deg_value.op("#>>")(cast([], ARRAY(Text))), ""),
+                ),
+                else_=None,
+            )
+            degradation_statement = (
+                select(degradation_code.label("code"), func.count())
+                .select_from(NodeRunRow)
+                .join(deg_elements, true())
+                .where(NodeRunRow.run_id.in_(_visible_run_ids()))
+                .where(degradation_code.is_not(None))
+                .group_by(degradation_code)
+            )
+            degradation_counts = {
+                str(code): int(value)
+                for code, value in session.execute(degradation_statement)
+            }
+
+            # Batch-prefetch the page's rows (<= 100 runs) in three IN queries rather
+            # than issuing per-run JobRow/NodeRunRow/FinishedVideoRow lookups (N+1).
+            page_run_ids = [run_row.id for run_row in run_rows]
+            jobs_by_id: dict[str, JobRow] = {}
+            node_runs_by_run: dict[str, list[NodeRun]] = {}
+            finished_by_run: dict[str, FinishedVideoRow] = {}
+            if page_run_ids:
+                page_job_ids = [run_row.job_id for run_row in run_rows]
+                jobs_by_id = {
+                    job_row.id: job_row
+                    for job_row in session.scalars(
+                        select(JobRow).where(JobRow.id.in_(page_job_ids))
+                    )
                 }
                 for node_row in session.scalars(
-                    select(NodeRunRow.degradations).where(NodeRunRow.run_id.in_(visible_run_ids))
+                    select(NodeRunRow)
+                    .where(NodeRunRow.run_id.in_(page_run_ids))
+                    .order_by(NodeRunRow.run_id.asc(), NodeRunRow.created_at.asc())
                 ):
-                    for notice in node_row or []:
-                        if isinstance(notice, dict):
-                            code = notice.get("code") or notice.get("degradation_code")
-                        else:
-                            code = str(notice)
-                        if code:
-                            degradation_counts[str(code)] = degradation_counts.get(str(code), 0) + 1
+                    node_runs_by_run.setdefault(node_row.run_id, []).append(
+                        node_run_row_to_contract(node_row)
+                    )
+                for fv_row in session.scalars(
+                    select(FinishedVideoRow)
+                    .where(FinishedVideoRow.run_id.in_(page_run_ids))
+                    .order_by(FinishedVideoRow.created_at.asc(), FinishedVideoRow.id.asc())
+                ):
+                    finished_by_run.setdefault(fv_row.run_id, fv_row)
+
             items: list[RunCard] = []
             for run_row in run_rows:
-                job_row = session.get(JobRow, run_row.job_id)
+                job_row = jobs_by_id.get(run_row.job_id)
                 if job_row is None:
                     continue
                 run = workflow_run_row_to_contract(run_row)
-                node_runs = [
-                    node_run_row_to_contract(row)
-                    for row in session.scalars(
-                        select(NodeRunRow)
-                        .where(NodeRunRow.run_id == run.id)
-                        .order_by(NodeRunRow.created_at.asc())
-                    )
-                ]
-                fv_row = session.scalar(
-                    select(FinishedVideoRow).where(FinishedVideoRow.run_id == run.id).limit(1)
-                )
+                fv_row = finished_by_run.get(run.id)
                 items.append(
                     _run_card_from_parts(
                         run=run,
                         job=job_row_to_contract(job_row),
-                        node_runs=node_runs,
+                        node_runs=node_runs_by_run.get(run.id, []),
                         has_finished_video=fv_row is not None,
                         finished_video_title=fv_row.title if fv_row is not None else None,
                         preview_url=self._signed_run_thumbnail(fv_row),
