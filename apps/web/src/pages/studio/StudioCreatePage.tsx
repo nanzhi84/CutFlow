@@ -154,6 +154,8 @@ export default function StudioCreatePage() {
     const isSeedance = form.contentMode === "seedance";
     const isEditingAgent = form.contentMode === "editing_agent";
     const isFullCoverageBroll = !isSeedance && form.visualMode === "broll_full_coverage";
+    const subtitleNormalEnabled = !isSeedance && form.normalSubtitleEnabled;
+    const subtitleEmphasisEnabled = !isSeedance && form.huaziEnabled;
     return {
       schema_version: "digital_human_video_request.v1",
       case_id: caseId,
@@ -181,11 +183,16 @@ export default function StudioCreatePage() {
         allow_generic_coverage: true,
       },
       subtitle: {
-        enabled: isSeedance ? false : form.subtitleEnabled,
+        enabled: subtitleNormalEnabled || subtitleEmphasisEnabled,
+        normal_enabled: subtitleNormalEnabled,
+        emphasis_enabled: subtitleEmphasisEnabled,
         style_preset: form.subtitleStyle.trim() || "douyin",
         font_id: form.subtitleFontId.trim() || null,
-        caption_style_pair_id: form.captionStylePairId,
+        emphasis_font_id: form.huaziFontId.trim() || null,
         font_size: form.subtitleSize,
+        emphasis_font_size: form.huaziSize,
+        emphasis_primary_color: form.huaziColor,
+        position: { x: 0.5, y: form.subtitlePositionY },
       },
       bgm: {
         enabled: isSeedance ? false : form.bgmEnabled,
@@ -234,6 +241,13 @@ export default function StudioCreatePage() {
       // Editing the script text by hand invalidates any adopted script_version_id —
       // the submitted version id must match the submitted text.
       if (key === "script") next.scriptVersionId = null;
+      if (key === "normalSubtitleEnabled" || key === "huaziEnabled") {
+        next.subtitleEnabled = Boolean(next.normalSubtitleEnabled || next.huaziEnabled);
+      }
+      if (key === "subtitleEnabled") {
+        next.normalSubtitleEnabled = Boolean(value);
+        next.huaziEnabled = Boolean(value);
+      }
       return next;
     });
   }

@@ -374,8 +374,48 @@ def test_spec_20_2_6_lipsync_timeout_can_resume_reusing_valid_prefix():
         resumed_run = resumed.json()["run"]
         assert resumed_run["status"] == "succeeded"
         detail = active_client.get(f"/api/runs/{resumed_run['id']}").json()
+        node_ids = {node["node_id"] for node in detail["node_runs"]}
         skipped = [node["node_id"] for node in detail["node_runs"] if node["status"] == "skipped"]
-        assert {"ValidateRequest", "LoadCaseContext", "ResolveCreativeIntent", "TTS"} <= set(skipped)
+        expected_skipped = {
+            "ValidateRequest",
+            "LoadCaseContext",
+            "ResolveCreativeIntent",
+            "TTS",
+            "MaterialPackPlanning",
+            "NarrationAlignment",
+            "NarrationBoundaryPlanning",
+            "TimelineWindowPlanning",
+            "WindowQueryPlanning",
+            "WindowMaterialRetrieval",
+            "TimelinePlanning",
+            "PortraitTrackBuild",
+        }
+        if "DeterministicEditingPlanning" in node_ids:
+            expected_skipped.add("DeterministicEditingPlanning")
+        if "EditingAgentPlanning" in node_ids:
+            expected_skipped.add("EditingAgentPlanning")
+        assert expected_skipped <= set(skipped)
+        assert "LipSync" not in skipped
+        artifact_by_id = {artifact["artifact_id"]: artifact for artifact in detail["artifacts"]}
+        skipped_artifact_ids = {
+            artifact_id
+            for node in detail["node_runs"]
+            if node["status"] == "skipped"
+            for artifact_id in node["output_artifact_ids"]
+        }
+        assert skipped_artifact_ids <= set(artifact_by_id)
+        payload_artifact_ids = set(detail["artifact_payloads"])
+        payload_backed_reused_ids = {
+            artifact_id
+            for artifact_id in skipped_artifact_ids
+            if artifact_by_id[artifact_id]["kind"]
+            in {
+                ArtifactKind.narration_units.value,
+                ArtifactKind.plan_portrait.value,
+                ArtifactKind.plan_timeline.value,
+            }
+        }
+        assert payload_backed_reused_ids <= payload_artifact_ids
 
 
 def test_spec_20_2_7_provider_quota_exceeded_is_retryable_hard_fail():

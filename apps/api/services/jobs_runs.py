@@ -866,13 +866,22 @@ def run_detail(request: Request, run_id: str) -> c.RunDetailResponse:
             return detail
     run = repository(request).runs[run_id]
     node_runs = repository(request).node_runs.get(run_id, [])
+    referenced_artifact_ids = {
+        artifact_id for node_run in node_runs for artifact_id in node_run.output_artifact_ids
+    }
+    related_artifacts = [
+        artifact
+        for artifact in repository(request).artifacts.values()
+        if artifact.run_id == run_id or artifact.id in referenced_artifact_ids
+    ]
     artifacts = [
-        repository(request).artifact_ref(artifact.id) for artifact in repository(request).artifacts.values() if artifact.run_id == run_id
+        repository(request).artifact_ref(artifact.id)
+        for artifact in related_artifacts
     ]
     payloads = {
         artifact.id: artifact.payload
-        for artifact in repository(request).artifacts.values()
-        if artifact.run_id == run_id and artifact.payload is not None
+        for artifact in related_artifacts
+        if artifact.payload is not None
     }
     job = repository(request).jobs.get(run.job_id)
     config = c.build_run_config_summary(run_id, job) if job is not None else None

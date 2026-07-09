@@ -39,12 +39,6 @@ from packages.planning.material.broll_plan import (
     BrollGeometryPolicy,
     BrollInsertion,
 )
-from packages.production.pipeline._caption_styles import (
-    CAPTION_STYLE_PAIRS,
-    caption_style_pair,
-    resolve_caption_style_pair_id,
-)
-
 TIMELINE_FPS = 30
 
 _SUBTITLE_PRESET_DEFAULTS = {
@@ -492,9 +486,12 @@ def materialize_style_from_selection(
 
     warnings: list[WarningCode] = []
     degradations: list[DegradationNotice] = []
+    normal_subtitle_enabled = bool(request.subtitle.enabled and request.subtitle.normal_enabled)
+    emphasis_subtitle_enabled = bool(request.subtitle.enabled and request.subtitle.emphasis_enabled)
     requested_font_id = _str_or_none(request.subtitle.font_id)
+    requested_emphasis_font_id = _str_or_none(request.subtitle.emphasis_font_id)
     font_asset_id = _selected_font_id(requested_font_id)
-    if not requested_font_id:
+    if normal_subtitle_enabled and not requested_font_id:
         warnings.append(WarningCode.font_default_used)
         degradations.append(
             DegradationNotice(
@@ -528,51 +525,40 @@ def materialize_style_from_selection(
     bgm_metadata = selected_bgm.get("metadata") if isinstance(selected_bgm, dict) else {}
     if not isinstance(bgm_metadata, dict):
         bgm_metadata = {}
-    requested_pair_id = _str_or_none(request.subtitle.caption_style_pair_id)
-    caption_style_pair_id = resolve_caption_style_pair_id(
-        requested_pair_id,
-        request.subtitle.style_preset,
-    )
-    style_pair = caption_style_pair(caption_style_pair_id)
-    explicit_pair = requested_pair_id in CAPTION_STYLE_PAIRS
-    subtitle_colors = (
-        _caption_style_colors(style_pair)
-        if explicit_pair
-        else _subtitle_colors(request.subtitle.style_preset)
-    )
+    subtitle_colors = _subtitle_colors(request.subtitle.style_preset)
+    if request.subtitle.emphasis_primary_color:
+        subtitle_colors["emphasis_primary_color"] = request.subtitle.emphasis_primary_color
     font_size = _subtitle_font_size(
         request.subtitle.style_preset,
         request.subtitle.font_size,
-        style_pair=style_pair if explicit_pair else None,
+    )
+    emphasis_font_size = _subtitle_emphasis_font_size(
+        getattr(request.subtitle, "emphasis_font_size", None),
+        font_size,
     )
     position = _subtitle_position(
         request.subtitle.style_preset,
         request.subtitle.position,
-        style_pair=style_pair if explicit_pair else None,
     )
-    normal_style = style_pair.get("normal") if isinstance(style_pair.get("normal"), dict) else {}
-    huazi_style = style_pair.get("huazi") if isinstance(style_pair.get("huazi"), dict) else {}
     payload = StylePlanArtifact(
         subtitle=SubtitleStylePlan(
+            normal_enabled=normal_subtitle_enabled,
+            emphasis_enabled=emphasis_subtitle_enabled,
             font_id=request.subtitle.font_id,
-            caption_style_pair_id=caption_style_pair_id,
+            emphasis_font_id=requested_emphasis_font_id,
             font_size=font_size,
+            emphasis_font_size=emphasis_font_size,
             position=position,
-            font_weight=_int_or_none(normal_style.get("font_weight")),
+            font_weight=600,
             primary_color=subtitle_colors["primary_color"],
             outline_color=subtitle_colors["outline_color"],
             outline=subtitle_colors["outline"],
-            emphasis_size_scale=_float_or_none(huazi_style.get("size_scale")),
-            emphasis_font_weight=_int_or_none(huazi_style.get("font_weight")),
+            emphasis_font_weight=900,
             emphasis_primary_color=subtitle_colors["emphasis_primary_color"],
             emphasis_outline_color=subtitle_colors["emphasis_outline_color"],
             emphasis_outline=subtitle_colors["emphasis_outline"],
-            default_emphasis_position_id=_str_or_none(
-                huazi_style.get("default_placement_id")
-            ),
-            default_emphasis_animation_id=_str_or_none(
-                huazi_style.get("default_animation_id")
-            ),
+            default_emphasis_position_id="top_center_banner",
+            default_emphasis_animation_id="pop_in",
         ),
         bgm=BgmPlan(
             enabled=request.bgm.enabled,
@@ -596,8 +582,9 @@ def materialize_style_from_selection(
             volume=request.bgm.volume,
             auto_mix=request.bgm.auto_mix,
         ),
-        font=FontPlan(font_id=font_asset_id),
+        font=FontPlan(font_id=font_asset_id, emphasis_font_id=requested_emphasis_font_id),
         font_asset_id=font_asset_id,
+        emphasis_font_asset_id=requested_emphasis_font_id,
         bgm_asset_id=bgm_asset_id,
         overlay_events=overlay_events,
     ).model_dump(mode="json")
@@ -630,31 +617,24 @@ def _subtitle_preset(style_preset: str) -> dict:
 def _subtitle_font_size(
     style_preset: str,
     explicit_size: int | None,
-    *,
-    style_pair: dict | None = None,
 ) -> int:
     if explicit_size is not None:
         return explicit_size
-    if style_pair is not None:
-        normal = style_pair.get("normal") if isinstance(style_pair.get("normal"), dict) else {}
-        if normal.get("font_size") is not None:
-            return int(normal["font_size"])
     return int(_subtitle_preset(style_preset)["font_size"])
+
+
+def _subtitle_emphasis_font_size(explicit_size: int | None, normal_size: int) -> int:
+    if explicit_size is not None:
+        return explicit_size
+    return int(round(normal_size * 1.4))
 
 
 def _subtitle_position(
     style_preset: str,
     explicit_position: dict[str, float] | None,
-    *,
-    style_pair: dict | None = None,
 ):
     if explicit_position is not None:
         return explicit_position
-    if style_pair is not None:
-        normal = style_pair.get("normal") if isinstance(style_pair.get("normal"), dict) else {}
-        position = normal.get("position")
-        if isinstance(position, dict):
-            return dict(position)
     return dict(_subtitle_preset(style_preset)["position"])
 
 
@@ -662,19 +642,6 @@ def _subtitle_colors(style_preset: str) -> dict[str, Any]:
     legacy = dict(_SUBTITLE_COLOR_DEFAULTS.get(style_preset, _SUBTITLE_COLOR_DEFAULTS["douyin"]))
     legacy["emphasis_outline"] = legacy["outline"]
     return legacy
-
-
-def _caption_style_colors(style_pair: dict) -> dict[str, Any]:
-    normal = style_pair.get("normal") if isinstance(style_pair.get("normal"), dict) else {}
-    huazi = style_pair.get("huazi") if isinstance(style_pair.get("huazi"), dict) else {}
-    return {
-        "primary_color": str(normal.get("color") or "#FFFFFF"),
-        "outline_color": str(normal.get("outline_color") or "#000000"),
-        "outline": _as_float(normal.get("outline"), 4.0),
-        "emphasis_primary_color": str(huazi.get("color") or "#FFE84A"),
-        "emphasis_outline_color": str(huazi.get("outline_color") or "#000000"),
-        "emphasis_outline": _as_float(huazi.get("outline"), 5.0),
-    }
 
 
 def _select_bgm_candidate(
@@ -800,15 +767,6 @@ def _str_or_none(value) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
-
-
-def _int_or_none(value: Any) -> int | None:
-    if value is None:
-        return None
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return None
 
 
 def _placement_or_none(value: Any) -> str | None:

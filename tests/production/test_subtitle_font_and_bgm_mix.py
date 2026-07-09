@@ -116,6 +116,23 @@ def test_write_ass_subtitles_uses_resolved_font_name(tmp_path):
     assert "Arial" not in text
 
 
+def test_write_ass_subtitles_uses_separate_emphasis_font_name(tmp_path):
+    out = tmp_path / "sub.ass"
+    write_ass_subtitles(
+        out,
+        narration={"units": [{"text": "普通字幕", "start": 0.0, "end": 1.0}]},
+        style={"subtitle": {"font_size": 48, "emphasis_font_size": 40}},
+        width=1080,
+        height=1080,
+        font_name="Readable Sans",
+        emphasis_font_name="Display Promo",
+        overlay_events=[{"text": "限时五折", "start": 0.2, "end": 0.8}],
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "Style: Default,Readable Sans,48," in text
+    assert "Style: Emphasis,Display Promo,40," in text
+
+
 def test_write_ass_subtitles_scales_ui_size_for_portrait_output(tmp_path):
     out = tmp_path / "sub.ass"
     write_ass_subtitles(
@@ -194,6 +211,38 @@ def test_write_ass_subtitles_emits_selected_colors_and_overlay_styles(tmp_path):
     assert "Style: Pop" not in text
     assert r"Dialogue: 1,0:00:00.20,0:00:00.80,Emphasis" in text
     assert r"{\an8\pos(540,269)\fad(80,120)\t(0,180,\fscx108\fscy108)}重点" in text
+
+
+def test_write_ass_subtitles_respects_caption_layer_toggles(tmp_path):
+    out = tmp_path / "sub.ass"
+
+    write_ass_subtitles(
+        out,
+        narration={"units": [{"text": "普通字幕", "start": 0.0, "end": 1.0}]},
+        style={"subtitle": {"normal_enabled": False, "emphasis_enabled": True}},
+        width=1080,
+        height=1920,
+        overlay_events=[{"text": "重点花字", "start": 0.2, "end": 0.8}],
+    )
+
+    text = out.read_text(encoding="utf-8")
+    assert "普通字幕" not in text
+    assert r"Dialogue: 1,0:00:00.20,0:00:00.80,Emphasis" in text
+    assert "重点花字" in text
+
+    write_ass_subtitles(
+        out,
+        narration={"units": [{"text": "普通字幕", "start": 0.0, "end": 1.0}]},
+        style={"subtitle": {"normal_enabled": True, "emphasis_enabled": False}},
+        width=1080,
+        height=1920,
+        overlay_events=[{"text": "重点花字", "start": 0.2, "end": 0.8}],
+    )
+
+    text = out.read_text(encoding="utf-8")
+    assert r"Dialogue: 0,0:00:00.00,0:00:01.00,Default" in text
+    assert "重点花字" not in text
+    assert "Style: Emphasis" not in text
 
 
 # --- gap 2: adaptive mix volume -------------------------------------------------

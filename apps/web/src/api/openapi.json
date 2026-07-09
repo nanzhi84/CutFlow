@@ -23975,6 +23975,16 @@
             "title": "Enabled",
             "default": true
           },
+          "normal_enabled": {
+            "type": "boolean",
+            "title": "Normal Enabled",
+            "default": true
+          },
+          "emphasis_enabled": {
+            "type": "boolean",
+            "title": "Emphasis Enabled",
+            "default": true
+          },
           "style_preset": {
             "type": "string",
             "title": "Style Preset",
@@ -23991,7 +24001,7 @@
             ],
             "title": "Font Id"
           },
-          "caption_style_pair_id": {
+          "emphasis_font_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -24000,7 +24010,7 @@
                 "type": "null"
               }
             ],
-            "title": "Caption Style Pair Id"
+            "title": "Emphasis Font Id"
           },
           "font_size": {
             "anyOf": [
@@ -24012,6 +24022,29 @@
               }
             ],
             "title": "Font Size"
+          },
+          "emphasis_font_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emphasis Font Size"
+          },
+          "emphasis_primary_color": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^#[0-9A-Fa-f]{6}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emphasis Primary Color"
           },
           "position": {
             "anyOf": [

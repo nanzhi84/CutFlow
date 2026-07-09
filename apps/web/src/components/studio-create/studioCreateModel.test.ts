@@ -5,6 +5,9 @@ import {
   loadStoredForm,
   mapDefaultsToForm,
   mapFormToDefaults,
+  subtitleAssFontSize,
+  subtitlePreviewCssFontSize,
+  subtitlePreviewCssOutlineWidth,
   validateAll,
   visualModeLabel,
 } from "./studioCreateModel";
@@ -62,10 +65,15 @@ describe("studioCreateModel", () => {
       brollEnabled: true,
       maxInserts: 6,
       subtitleEnabled: true,
+      normalSubtitleEnabled: true,
+      huaziEnabled: false,
       subtitleFontId: "font_yst",
-      captionStylePairId: "clean_editorial_b",
+      huaziFontId: "font_hz",
       subtitleStyle: "movie",
       subtitleSize: 42,
+      huaziSize: 58,
+      huaziColor: "#FF5C5C",
+      subtitlePositionY: 0.82,
       bgmEnabled: true,
       bgmVolume: 0.4,
       bgmAutoMix: false,
@@ -78,8 +86,14 @@ describe("studioCreateModel", () => {
     expect(defaults.voice?.voice_id).toBe("voice_1");
     expect(defaults.broll?.allow_generic_coverage).toBe(true);
     expect(defaults.subtitle?.style_preset).toBe("movie");
+    expect(defaults.subtitle?.enabled).toBe(true);
+    expect(defaults.subtitle?.normal_enabled).toBe(true);
+    expect(defaults.subtitle?.emphasis_enabled).toBe(false);
     expect(defaults.subtitle?.font_id).toBe("font_yst");
-    expect(defaults.subtitle?.caption_style_pair_id).toBe("clean_editorial_b");
+    expect(defaults.subtitle?.emphasis_font_id).toBe("font_hz");
+    expect(defaults.subtitle?.emphasis_font_size).toBe(58);
+    expect(defaults.subtitle?.emphasis_primary_color).toBe("#FF5C5C");
+    expect(defaults.subtitle?.position).toEqual({ x: 0.5, y: 0.82 });
     expect(defaults.bgm?.auto_mix).toBe(false);
     expect(defaults.cover?.mode).toBe("ai");
     expect(defaults.lipsync?.timeout_minutes).toBe(45);
@@ -104,7 +118,17 @@ describe("studioCreateModel", () => {
   it("hydrates defaults with clamped values and validates seedance voice exemption", () => {
     const defaults: UserGenerationDefaults = {
       voice: { voice_id: "voice_2", speed: 4, emotion: "serious", volume: 1 },
-      subtitle: { enabled: true, style_preset: "news", font_size: 8 },
+      subtitle: {
+        enabled: true,
+        normal_enabled: false,
+        emphasis_enabled: true,
+        style_preset: "news",
+        font_size: 8,
+        emphasis_font_size: 140,
+        emphasis_font_id: "font_hz",
+        emphasis_primary_color: "#38d9a9",
+        position: { x: 0.5, y: 0.91 },
+      },
       lipsync: { enabled: true, provider_profile_id: "runninghub.heygem.prod", timeout_minutes: 2 },
     };
     const form = mapDefaultsToForm(defaults, loadStoredForm());
@@ -112,7 +136,14 @@ describe("studioCreateModel", () => {
     expect(form.voiceId).toBe("voice_2");
     expect(form.speed).toBe(2);
     expect(form.subtitleStyle).toBe("news");
+    expect(form.subtitleEnabled).toBe(true);
+    expect(form.normalSubtitleEnabled).toBe(false);
+    expect(form.huaziEnabled).toBe(true);
     expect(form.subtitleSize).toBe(12);
+    expect(form.huaziSize).toBe(120);
+    expect(form.huaziFontId).toBe("font_hz");
+    expect(form.huaziColor).toBe("#38D9A9");
+    expect(form.subtitlePositionY).toBe(0.91);
     expect(form.lipsyncTimeoutMinutes).toBe(5);
     expect(validateAll({ ...form, script: "文案", contentMode: "seedance" }, "")).toBeNull();
     expect(contentModeLabel("editing_agent")).toBe("Agent智能剪辑");
@@ -140,5 +171,14 @@ describe("studioCreateModel", () => {
     expect(form.brollEnabled).toBe(true);
     expect(form.maxInserts).toBe(7);
     expect(validateAll({ ...form, script: "文案", voiceId: "voice_1", maxInserts: 0 }, "voice_1")).toBeNull();
+  });
+
+  it("scales subtitle preview font sizes like the final 1080x1920 render", () => {
+    expect(subtitleAssFontSize(38, 1920)).toBe(68);
+    expect(subtitlePreviewCssFontSize(17)).toBe(6.7);
+    expect(subtitlePreviewCssFontSize(34)).toBe(13.3);
+    expect(subtitlePreviewCssFontSize(60)).toBe(23.8);
+    expect(subtitlePreviewCssOutlineWidth(4)).toBe(1.2);
+    expect(subtitlePreviewCssFontSize(17)).toBeLessThan(12);
   });
 });

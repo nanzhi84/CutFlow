@@ -265,7 +265,7 @@ def _state() -> RunState:
         case_id="case_demo",
         script=SCRIPT,
         voice={"voice_id": "voice_sandbox"},
-        subtitle={"font_id": "font_yst", "caption_style_pair_id": "douyin_bold_a"},
+        subtitle={"font_id": "font_yst", "emphasis_font_size": 52},
         edit={"instruction": "尽量用穿搭相近的人像"},
         strictness={"strict_timestamps": False},
     )

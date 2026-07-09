@@ -25,15 +25,17 @@ class MaterialCandidate(ContractModel):
 
 
 class SubtitleStylePlan(ContractModel):
+    normal_enabled: bool | None = None
+    emphasis_enabled: bool | None = None
     font_id: str | None = None
-    caption_style_pair_id: str | None = None
+    emphasis_font_id: str | None = None
     font_size: int | None = None
+    emphasis_font_size: int | None = None
     position: dict[str, float] | None = None
     font_weight: int | None = None
     primary_color: str | None = None
     outline_color: str | None = None
     outline: float | None = None
-    emphasis_size_scale: float | None = None
     emphasis_font_weight: int | None = None
     emphasis_primary_color: str | None = None
     emphasis_outline_color: str | None = None
@@ -65,6 +67,7 @@ class BgmPlan(ContractModel):
 
 class FontPlan(ContractModel):
     font_id: str | None = None
+    emphasis_font_id: str | None = None
 
 
 class TimelineValidationReport(ContractModel):
@@ -412,6 +415,7 @@ class StylePlanArtifact(ContractModel):
     bgm: BgmPlan | None = None
     font: FontPlan | None = None
     font_asset_id: str | None = None
+    emphasis_font_asset_id: str | None = None
     bgm_asset_id: str | None = None
     overlay_events: list[OverlayEvent] = Field(default_factory=list)
 

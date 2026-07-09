@@ -99,9 +99,13 @@ def selection_entries_from_state(run: WorkflowRun, state: RunState) -> list[Sele
             "bgm",
             clip_id=bgm.get("segment_id"),
         )
-    add(
-        "font",
-        style_payload.get("font_asset_id") or font.get("font_id") or subtitle.get("font_id"),
-        "font",
+    normal_font_id = style_payload.get("font_asset_id") or font.get("font_id") or subtitle.get("font_id")
+    emphasis_font_id = (
+        style_payload.get("emphasis_font_asset_id")
+        or font.get("emphasis_font_id")
+        or subtitle.get("emphasis_font_id")
     )
+    add("font", normal_font_id, "font")
+    if emphasis_font_id and emphasis_font_id != normal_font_id:
+        add("font", emphasis_font_id, "font_emphasis")
     return entries

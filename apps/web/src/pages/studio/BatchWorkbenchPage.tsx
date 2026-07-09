@@ -150,7 +150,11 @@ export default function BatchWorkbenchPage() {
     hydratedDefaults.current = true;
     const defaults = generationDefaults.data;
     if (defaults.broll?.mode) setBrollMode(defaults.broll.mode === "full_coverage" ? "full_coverage" : "insert");
-    if (defaults.subtitle) setSubtitleEnabled(Boolean(defaults.subtitle.enabled));
+    if (defaults.subtitle) {
+      const normalEnabled = defaults.subtitle.normal_enabled ?? true;
+      const emphasisEnabled = defaults.subtitle.emphasis_enabled ?? true;
+      setSubtitleEnabled(Boolean(defaults.subtitle.enabled && (normalEnabled || emphasisEnabled)));
+    }
     if (defaults.bgm) setBgmEnabled(Boolean(defaults.bgm.enabled));
     if (defaults.voice?.voice_id) setSelectedVoice(defaults.voice.voice_id);
   }, [generationDefaults.data]);
@@ -294,6 +298,9 @@ export default function BatchWorkbenchPage() {
     const brollDefaults = defaults?.broll;
     const subtitleDefaults = defaults?.subtitle;
     const subtitleFontSize = subtitleDefaults?.font_size;
+    const subtitleEmphasisFontSize = subtitleDefaults?.emphasis_font_size;
+    const subtitleNormalEnabled = subtitleDefaults?.normal_enabled ?? true;
+    const subtitleEmphasisEnabled = subtitleDefaults?.emphasis_enabled ?? true;
     const bgmDefaults = defaults?.bgm;
     const lipsyncDefaults = defaults?.lipsync;
     return {
@@ -314,11 +321,16 @@ export default function BatchWorkbenchPage() {
         allow_generic_coverage: brollDefaults?.allow_generic_coverage ?? true,
       },
       subtitle: {
-        enabled: !isSeedance && subtitleEnabled,
+        enabled: !isSeedance && subtitleEnabled && (subtitleNormalEnabled || subtitleEmphasisEnabled),
+        normal_enabled: !isSeedance && subtitleEnabled ? subtitleNormalEnabled : false,
+        emphasis_enabled: !isSeedance && subtitleEnabled ? subtitleEmphasisEnabled : false,
         style_preset: subtitleDefaults?.style_preset ?? "douyin",
         font_id: subtitleDefaults?.font_id ?? null,
-        caption_style_pair_id: subtitleDefaults?.caption_style_pair_id ?? null,
+        emphasis_font_id: subtitleDefaults?.emphasis_font_id ?? null,
+        ...(subtitleDefaults?.emphasis_primary_color ? { emphasis_primary_color: subtitleDefaults.emphasis_primary_color } : {}),
         ...(subtitleFontSize != null ? { font_size: subtitleFontSize } : {}),
+        ...(subtitleEmphasisFontSize != null ? { emphasis_font_size: subtitleEmphasisFontSize } : {}),
+        ...(subtitleDefaults?.position ? { position: subtitleDefaults.position } : {}),
       },
       bgm: {
         enabled: !isSeedance && bgmEnabled,

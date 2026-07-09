@@ -131,7 +131,7 @@ def _overlay_style_name(value: object) -> str:
 
 def _overlay_style_rows(
     *,
-    font_name: str,
+    emphasis_font_name: str,
     font_size: int,
     margin_v: int,
     subtitle: dict,
@@ -143,7 +143,7 @@ def _overlay_style_rows(
         outline = subtitle.get("outline")
     return [
         (
-            f"Style: Emphasis,{font_name},{font_size},{emphasis_primary},&H000000FF,"
+            f"Style: Emphasis,{emphasis_font_name},{font_size},{emphasis_primary},&H000000FF,"
             f"{emphasis_outline},&H64000000,"
             f"{_ass_bold(subtitle.get('emphasis_font_weight'))},0,0,0,100,100,0,0,1,"
             f"{_ass_outline(outline, 5.0)},1,8,"
@@ -214,9 +214,12 @@ def write_ass_subtitles(
     width: int,
     height: int,
     font_name: str | None = None,
+    emphasis_font_name: str | None = None,
     overlay_events: list[dict] | None = None,
 ) -> None:
     subtitle = style.get("subtitle", {}) if isinstance(style.get("subtitle"), dict) else {}
+    normal_enabled = _subtitle_layer_enabled(subtitle, "normal_enabled")
+    emphasis_enabled = _subtitle_layer_enabled(subtitle, "emphasis_enabled")
     font_size = ass_font_size(subtitle.get("font_size"), height=height)
     overlay_events = overlay_events or []
     # libass matches the ASS ``Fontname`` against the family names of fonts in its
@@ -225,17 +228,17 @@ def write_ass_subtitles(
     # values are comma-separated, so a family name containing commas would corrupt
     # the style row -- strip them and fall back to Arial when nothing usable.
     resolved_font = (font_name or "").replace(",", " ").strip() or "Arial"
+    resolved_emphasis_font = (emphasis_font_name or font_name or "").replace(",", " ").strip() or resolved_font
     margin_v = int(height * 0.12)
     position = subtitle.get("position")
     if isinstance(position, dict) and "y" in position:
         margin_v = max(20, int(height * (1 - float(position["y"]))))
-    # Emphasis (花字) banner sizing: larger, top-anchored so it layers above the normal
-    # bottom subtitle without overlapping it.
-    try:
-        emphasis_scale = float(subtitle.get("emphasis_size_scale") or 1.4)
-    except (TypeError, ValueError):
-        emphasis_scale = 1.4
-    emphasis_size = int(round(font_size * max(1.0, emphasis_scale)))
+    # Emphasis (花字) uses its own user-selected size. Older style payloads that do
+    # not carry it keep the previous larger-than-normal fallback.
+    if subtitle.get("emphasis_font_size") is not None:
+        emphasis_size = ass_font_size(subtitle.get("emphasis_font_size"), height=height)
+    else:
+        emphasis_size = int(round(font_size * 1.4))
     emphasis_margin_v = int(height * 0.12)
     lines = [
         "[Script Info]",
@@ -262,10 +265,10 @@ def write_ass_subtitles(
     ]
     # The Emphasis style row is emitted ONLY when there are overlay events. Without
     # overlays, the subtitle style table stays unchanged. Yellow, larger, top-centered.
-    if overlay_events:
+    if emphasis_enabled and overlay_events:
         lines.extend(
             _overlay_style_rows(
-                font_name=resolved_font,
+                emphasis_font_name=resolved_emphasis_font,
                 font_size=emphasis_size,
                 margin_v=emphasis_margin_v,
                 subtitle=subtitle,
@@ -276,47 +279,54 @@ def write_ass_subtitles(
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    for unit in narration.get("units", []):
-        text = ass_escape(
-            ass_wrap_text(
-                str(unit.get("text", "")),
-                width=width,
-                font_size=font_size,
-                margin_l=_ASS_MARGIN_L,
-                margin_r=_ASS_MARGIN_R,
+    if normal_enabled:
+        for unit in narration.get("units", []):
+            text = ass_escape(
+                ass_wrap_text(
+                    str(unit.get("text", "")),
+                    width=width,
+                    font_size=font_size,
+                    margin_l=_ASS_MARGIN_L,
+                    margin_r=_ASS_MARGIN_R,
+                )
             )
-        )
-        if not text:
-            continue
-        lines.append(
-            "Dialogue: 0,"
-            f"{ass_time(float(unit.get('start', 0) or 0))},"
-            f"{ass_time(float(unit.get('end', 0) or 0))},"
-            f"Default,,0,0,0,,{text}"
-        )
+            if not text:
+                continue
+            lines.append(
+                "Dialogue: 0,"
+                f"{ass_time(float(unit.get('start', 0) or 0))},"
+                f"{ass_time(float(unit.get('end', 0) or 0))},"
+                f"Default,,0,0,0,,{text}"
+            )
     # Emphasis overlays on Layer 1 (above the Layer 0 narration). Each carries the key
     # phrase itself, timed to the narration sentence StylePlanning matched it to.
-    for event in overlay_events:
-        text = ass_escape(
-            ass_wrap_text(
-                str(event.get("text", "")),
-                width=width,
-                font_size=emphasis_size,
-                margin_l=_ASS_MARGIN_L,
-                margin_r=_ASS_MARGIN_R,
+    if emphasis_enabled:
+        for event in overlay_events:
+            text = ass_escape(
+                ass_wrap_text(
+                    str(event.get("text", "")),
+                    width=width,
+                    font_size=emphasis_size,
+                    margin_l=_ASS_MARGIN_L,
+                    margin_r=_ASS_MARGIN_R,
+                )
             )
-        )
-        if not text:
-            continue
-        lines.append(
-            "Dialogue: 1,"
-            f"{ass_time(float(event.get('start', 0) or 0))},"
-            f"{ass_time(float(event.get('end', 0) or 0))},"
-            f"{_overlay_style_name(event.get('style'))},,0,0,0,,"
-            f"{_overlay_override_tags(event, width=width, height=height, subtitle=subtitle)}"
-            f"{text}"
-        )
+            if not text:
+                continue
+            lines.append(
+                "Dialogue: 1,"
+                f"{ass_time(float(event.get('start', 0) or 0))},"
+                f"{ass_time(float(event.get('end', 0) or 0))},"
+                f"{_overlay_style_name(event.get('style'))},,0,0,0,,"
+                f"{_overlay_override_tags(event, width=width, height=height, subtitle=subtitle)}"
+                f"{text}"
+            )
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _subtitle_layer_enabled(subtitle: dict, key: str) -> bool:
+    value = subtitle.get(key)
+    return True if value is None else bool(value)
 
 
 def ass_font_size(requested_size, *, height: int) -> int:

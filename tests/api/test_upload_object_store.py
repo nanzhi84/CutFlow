@@ -27,7 +27,7 @@ from packages.media.assets import local_object_path
 from packages.media.video.ffmpeg import probe_media
 from tests.fixtures.media import generate_test_video, require_ffmpeg_filters
 from tests.api._upload_helpers import direct_upload
-from packages.core.storage.object_store import parse_local_uri
+from packages.core.storage.object_store import parse_local_uri, parse_object_uri
 
 
 client = TestClient(app)
@@ -188,6 +188,45 @@ def test_local_media_preview_url_is_browser_playable_content_route():
     assert preview_body["url"] == f"/api/media/assets/{asset_id}/content"
     assert preview_body["playable"] is True
     assert preview_body["content_type"].startswith("audio/")
+
+    media = client.get(preview_body["url"])
+    assert media.status_code == 200, media.text
+    assert media.headers["content-disposition"].startswith("inline;")
+    assert media.content == content
+
+
+def test_font_media_preview_uses_content_route_for_s3_objects():
+    login_admin()
+    content = b"fake-font-preview-bytes"
+    prepared, completed = direct_upload(
+        client,
+        kind="font",
+        filename="preview.ttf",
+        content_type="font/ttf",
+        body=content,
+    )
+    assert prepared.status_code == 201, prepared.text
+    assert completed.status_code == 200, completed.text
+    body = completed.json()
+    asset_id = body["media_asset"]["id"]
+    artifact_id = body["artifact"]["artifact_id"]
+
+    store = app.state.object_store
+    bucket = getattr(store, "bucket", None) or getattr(getattr(store, "durable", None), "bucket")
+    s3_uri = f"s3://{bucket}/font/preview/proxy-preview.ttf"
+    store.put_bytes(parse_object_uri(s3_uri), content)
+    with app.state.sqlalchemy_session_factory() as session:
+        artifact = session.get(ArtifactRow, artifact_id)
+        assert artifact is not None
+        artifact.uri = s3_uri
+        session.commit()
+
+    preview = client.get(f"/api/media/assets/{asset_id}/preview-url")
+    assert preview.status_code == 200, preview.text
+    preview_body = preview.json()
+    assert preview_body["url"] == f"/api/media/assets/{asset_id}/content"
+    assert preview_body["playable"] is False
+    assert preview_body["content_type"].startswith("font/")
 
     media = client.get(preview_body["url"])
     assert media.status_code == 200, media.text

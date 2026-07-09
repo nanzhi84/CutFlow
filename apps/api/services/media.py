@@ -64,9 +64,11 @@ def _with_browser_preview_url(
     response: c.SignedUrlResponse,
     uri: str | None,
     media_info: c.MediaInfo | None,
+    *,
+    proxy_content: bool = False,
 ) -> c.SignedUrlResponse:
     response = _with_preview_playback(response, uri, media_info)
-    if response.url.startswith("local://"):
+    if proxy_content or response.url.startswith("local://"):
         return response.model_copy(update={"url": f"/api/media/assets/{asset_id}/content"})
     return response
 
@@ -183,6 +185,7 @@ def media_asset_detail(request: Request, asset_id: str) -> c.MediaAssetDetail:
 
 
 def media_asset_preview(request: Request, asset_id: str) -> c.SignedUrlResponse:
+    asset = media_repository(request).asset_record(asset_id)
     source = _source_for_asset(request, asset_id)
     if source is None:
         raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
@@ -193,23 +196,25 @@ def media_asset_preview(request: Request, asset_id: str) -> c.SignedUrlResponse:
             object_store(request).signed_url(uri),
             uri,
             media_info,
+            proxy_content=asset is not None and asset.kind == "font",
         )
     return _with_preview_playback(signed(request, f"media/{asset_id}"), None, None)
 
 
 def media_asset_content(request: Request, asset_id: str) -> FileResponse:
+    asset = media_repository(request).asset_record(asset_id)
     source = _source_for_asset(request, asset_id)
     if source is None:
         raise NodeExecutionError(c.ErrorCode.artifact_missing, "Asset missing.")
     uri, media_info = source
-    if not uri.startswith("local://"):
-        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Local media object missing.")
+    if not uri.startswith("local://") and (asset is None or asset.kind != "font"):
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Media object is not proxyable.")
     try:
         path = local_object_path(object_store(request), uri)
     except (ValueError, OSError) as exc:
-        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Local media object missing.") from exc
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Media object is not readable.") from exc
     if not path.exists():
-        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Local media object missing.")
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Media object is not readable.")
     return FileResponse(
         path,
         media_type=_content_type_for(uri, media_info),

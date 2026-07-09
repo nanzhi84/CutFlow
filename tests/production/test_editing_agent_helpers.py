@@ -1157,7 +1157,17 @@ def test_editing_agent_helper_has_no_materializer_definitions():
 
 def test_materialize_style_uses_chosen_font_and_bgm():
     payload, warnings, degradations = materialize_style_from_selection(
-        request=_request(subtitle={"font_id": "font_yst", "caption_style_pair_id": "local_promo_c"}),
+        request=_request(
+            subtitle={
+                "normal_enabled": True,
+                "emphasis_enabled": False,
+                "font_id": "font_yst",
+                "emphasis_font_id": "font_huazi",
+                "font_size": 36,
+                "emphasis_font_size": 52,
+                "emphasis_primary_color": "#38D9A9",
+            }
+        ),
         material=_material(),
         overlay_events=[],
         font_id=None,
@@ -1166,8 +1176,17 @@ def test_materialize_style_uses_chosen_font_and_bgm():
     assert warnings == []
     assert degradations == []
     assert payload["font_asset_id"] == "font_yst"
+    assert payload["emphasis_font_asset_id"] == "font_huazi"
     assert payload["font"]["font_id"] == "font_yst"
-    assert payload["subtitle"]["caption_style_pair_id"] == "local_promo_c"
+    assert payload["font"]["emphasis_font_id"] == "font_huazi"
+    assert payload["subtitle"]["normal_enabled"] is True
+    assert payload["subtitle"]["emphasis_enabled"] is False
+    assert payload["subtitle"]["emphasis_font_id"] == "font_huazi"
+    assert payload["subtitle"]["font_size"] == 36
+    assert payload["subtitle"]["emphasis_font_size"] == 52
+    assert payload["subtitle"]["emphasis_primary_color"] == "#38D9A9"
+    assert "caption_style_pair_id" not in payload["subtitle"]
+    assert payload["subtitle"]["default_emphasis_position_id"] == "top_center_banner"
     assert payload["bgm"] is not None
     assert payload["bgm"]["asset_id"] == "bgm_001"
     assert payload["bgm"]["mood"] == "励志"

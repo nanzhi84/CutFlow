@@ -68,10 +68,14 @@ class LipSyncOptions(ContractModel):
 
 class SubtitleOptions(ContractModel):
     enabled: bool = True
+    normal_enabled: bool = True
+    emphasis_enabled: bool = True
     style_preset: str = "douyin"
     font_id: str | None = None
-    caption_style_pair_id: str | None = None
+    emphasis_font_id: str | None = None
     font_size: int | None = None
+    emphasis_font_size: int | None = None
+    emphasis_primary_color: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
     position: dict[str, float] | None = None
 
 

@@ -8703,16 +8703,30 @@ export interface components {
              */
             enabled: boolean;
             /**
+             * Normal Enabled
+             * @default true
+             */
+            normal_enabled: boolean;
+            /**
+             * Emphasis Enabled
+             * @default true
+             */
+            emphasis_enabled: boolean;
+            /**
              * Style Preset
              * @default douyin
              */
             style_preset: string;
             /** Font Id */
             font_id?: string | null;
-            /** Caption Style Pair Id */
-            caption_style_pair_id?: string | null;
+            /** Emphasis Font Id */
+            emphasis_font_id?: string | null;
             /** Font Size */
             font_size?: number | null;
+            /** Emphasis Font Size */
+            emphasis_font_size?: number | null;
+            /** Emphasis Primary Color */
+            emphasis_primary_color?: string | null;
             /** Position */
             position?: {
                 [key: string]: number;

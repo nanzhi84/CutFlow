@@ -1,6 +1,7 @@
 import {
   Captions,
   Film,
+  ImageOff,
   Mic2,
   Music,
   Play,
@@ -17,15 +18,13 @@ import { FontFaceStyle } from "../library/FontFaceStyle";
 import { fontFamilyName, voiceDisplayLabel } from "../library/libraryModel";
 import { toDisplayUrl } from "../../lib/url";
 import {
-  captionPairLabel,
-  captionStylePairOptions,
-  captionStylePairs,
-  legacyStyleForCaptionPair,
-  type CaptionStylePairId,
-} from "./captionStyles";
-import {
+  SUBTITLE_PREVIEW_OUTPUT_HEIGHT,
+  SUBTITLE_PREVIEW_OUTPUT_WIDTH,
+  SUBTITLE_PREVIEW_WIDTH,
   contentModeLabel,
   emotionOptions,
+  subtitlePreviewCssFontSize,
+  subtitlePreviewCssOutlineWidth,
   visualModeLabel,
   type FormState,
 } from "./studioCreateModel";
@@ -51,30 +50,60 @@ function shortAssetId(assetId: string) {
   return assetId.length > 12 ? `${assetId.slice(0, 8)}…` : assetId;
 }
 
-function useSubtitleFontLabel(form: FormState) {
+type SubtitleFontLabels = {
+  normal: string;
+  huazi: string;
+};
+
+function fontLabelFor(fonts: MediaAssetRecord[], fontId: string, fallback: string) {
+  if (!fontId) return fallback;
+  const font = fonts.find((item) => item.id === fontId);
+  return font?.title ?? shortAssetId(fontId);
+}
+
+function useSubtitleFontLabels(form: FormState): SubtitleFontLabels {
   const fontsQuery = useQuery({
     queryKey: ["studio-create", "font-assets"],
     queryFn: () => api.mediaAssets.list({ limit: 200, kind: "font" }),
-    enabled: form.contentMode !== "seedance" && form.subtitleEnabled && Boolean(form.subtitleFontId),
+    enabled:
+      form.contentMode !== "seedance" &&
+      subtitleLayersEnabled(form) &&
+      (Boolean(form.subtitleFontId) || Boolean(form.huaziFontId)),
   });
-  if (!form.subtitleFontId) return "默认字体";
-  const font = fontsQuery.data?.items.find((item) => item.asset.id === form.subtitleFontId)?.asset;
-  return font?.title ?? shortAssetId(form.subtitleFontId);
+  const fonts = (fontsQuery.data?.items ?? []).map((item) => item.asset);
+  const normal = fontLabelFor(fonts, form.subtitleFontId, "默认字体");
+  return {
+    normal,
+    huazi: form.huaziFontId ? fontLabelFor(fonts, form.huaziFontId, "默认字体") : normal,
+  };
 }
 
-function captionConfigSummary(form: FormState, fontLabel: string) {
-  return `${fontLabel} · ${captionPairLabel(form.captionStylePairId)} · ${form.subtitleSize}px`;
+function subtitleLayersEnabled(form: FormState) {
+  return form.normalSubtitleEnabled || form.huaziEnabled;
 }
 
-const huaziPreviewPositions: Record<string, { x: number; y: number; align: string }> = {
-  top_center_banner: { x: 50, y: 14, align: "center" },
-  upper_left_badge: { x: 12, y: 18, align: "left" },
-  upper_right_badge: { x: 88, y: 18, align: "right" },
-  mid_left_callout: { x: 12, y: 46, align: "left" },
-  mid_right_callout: { x: 88, y: 46, align: "right" },
-  lower_left_tag: { x: 12, y: 72, align: "left" },
-  lower_right_tag: { x: 88, y: 72, align: "right" },
+function captionConfigSummary(form: FormState, fontLabels: SubtitleFontLabels) {
+  const parts = [];
+  if (form.normalSubtitleEnabled) parts.push(`正文 ${fontLabels.normal} ${form.subtitleSize}px`);
+  if (form.huaziEnabled) parts.push(`花字 ${fontLabels.huazi} ${form.huaziSize}px`);
+  return parts.length > 0 ? parts.join(" / ") : "关闭";
+}
+
+const normalCaptionPreviewStyle = {
+  fontWeight: 700,
+  color: "#FFFFFF",
+  outlineColor: "#000000",
+  outline: 4,
 };
+
+const huaziCaptionPreviewStyle = {
+  fontWeight: 700,
+  outlineColor: "#000000",
+  outline: 4,
+};
+
+const huaziColorOptions = ["#FFE84A", "#FF5C5C", "#38D9A9", "#4DABF7", "#FFFFFF"] as const;
+const subtitlePreviewSafeWidthPercent = 85;
 
 export function ScriptStep({
   form,
@@ -279,36 +308,20 @@ export function ProductionStep({
 }
 
 export function PostProcessStep({ form, setField }: { form: FormState; setField: SetField }) {
-  const [fontPreviewUrl, setFontPreviewUrl] = useState<string | null>(null);
+  const subtitleEnabled = subtitleLayersEnabled(form);
   const fontsQuery = useQuery({
     queryKey: ["studio-create", "font-assets"],
     queryFn: () => api.mediaAssets.list({ limit: 200, kind: "font" }),
-    enabled: form.contentMode !== "seedance" && form.subtitleEnabled,
+    enabled: form.contentMode !== "seedance" && subtitleEnabled,
   });
   const fonts = useMemo(
     () => (fontsQuery.data?.items ?? []).map((item) => item.asset),
     [fontsQuery.data?.items],
   );
-  const selectedFont = fonts.find((font) => font.id === form.subtitleFontId) ?? null;
-
-  useEffect(() => {
-    if (!selectedFont) {
-      setFontPreviewUrl(null);
-      return;
-    }
-    let cancelled = false;
-    api.mediaAssets
-      .previewUrl(selectedFont.id)
-      .then((response) => {
-        if (!cancelled) setFontPreviewUrl(toDisplayUrl(response.url));
-      })
-      .catch(() => {
-        if (!cancelled) setFontPreviewUrl(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedFont]);
+  const selectedSubtitleFont = fonts.find((font) => font.id === form.subtitleFontId) ?? null;
+  const selectedHuaziFont = form.huaziFontId ? fonts.find((font) => font.id === form.huaziFontId) ?? null : null;
+  const subtitlePreviewUrl = useFontPreviewUrl(selectedSubtitleFont);
+  const huaziPreviewUrl = useFontPreviewUrl(selectedHuaziFont);
 
   if (form.contentMode === "seedance") {
     return (
@@ -321,52 +334,123 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
     );
   }
   return (
-    <div className="grid gap-4">
+    <div className="grid gap-3">
       <SectionTitle icon={Settings2} title="后处理" description="配置字幕、BGM 和封面策略。" />
-      <ToggleLine checked={form.subtitleEnabled} onChange={(checked) => setField("subtitleEnabled", checked)} label="启用字幕" />
-      {form.subtitleEnabled ? (
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
-          <div className="grid gap-3">
-            <div className="grid gap-3 md:grid-cols-2">
-              <label>
-                <span>字体包</span>
-                <select value={form.subtitleFontId} onChange={(event) => setField("subtitleFontId", event.target.value)}>
-                  <option value="">默认字体</option>
-                  {fonts.map((font) => (
-                    <option value={font.id} key={font.id}>
-                      {font.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>字幕组合</span>
-                <select
-                  value={form.captionStylePairId}
-                  onChange={(event) => {
-                    const value = event.target.value as CaptionStylePairId;
-                    setField("captionStylePairId", value);
-                    setField("subtitleStyle", legacyStyleForCaptionPair(value));
-                  }}
-                >
-                  {captionStylePairOptions.map((option) => (
-                    <option value={option.value} key={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <CompactToggle
+          checked={form.normalSubtitleEnabled}
+          onChange={(checked) => setField("normalSubtitleEnabled", checked)}
+          label="普通字幕"
+        />
+        <CompactToggle
+          checked={form.huaziEnabled}
+          onChange={(checked) => setField("huaziEnabled", checked)}
+          label="花字"
+        />
+      </div>
+      {subtitleEnabled ? (
+        <div className="grid gap-4 border-y border-border/60 py-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="grid content-start gap-3">
+            <div className="grid gap-3 2xl:grid-cols-2">
+              {form.normalSubtitleEnabled ? (
+                <section className="grid gap-2">
+                  <p className="text-xs font-semibold text-text-tertiary">普通字幕</p>
+                  <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_92px]">
+                    <label>
+                      <span>字体</span>
+                      <select value={form.subtitleFontId} onChange={(event) => setField("subtitleFontId", event.target.value)}>
+                        <option value="">默认字体</option>
+                        {fonts.map((font) => (
+                          <option value={font.id} key={font.id}>
+                            {font.title}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>字号</span>
+                      <input
+                        type="number"
+                        min={12}
+                        max={96}
+                        value={form.subtitleSize}
+                        onChange={(event) => setField("subtitleSize", Number(event.target.value))}
+                      />
+                    </label>
+                  </div>
+                  <label>
+                    <span>位置</span>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min={0.72}
+                        max={0.92}
+                        step={0.01}
+                        value={form.subtitlePositionY}
+                        onChange={(event) => setField("subtitlePositionY", Number(event.target.value))}
+                        className="min-w-0 flex-1 accent-accent"
+                      />
+                      <span className="w-10 text-right font-mono text-xs text-text-secondary">
+                        {Math.round(form.subtitlePositionY * 100)}
+                      </span>
+                    </div>
+                  </label>
+                </section>
+              ) : null}
+              {form.huaziEnabled ? (
+                <section className="grid gap-2">
+                  <p className="text-xs font-semibold text-text-tertiary">花字</p>
+                  <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_92px]">
+                    <label>
+                      <span>字体</span>
+                      <select value={form.huaziFontId} onChange={(event) => setField("huaziFontId", event.target.value)}>
+                        <option value="">跟随普通字幕</option>
+                        {fonts.map((font) => (
+                          <option value={font.id} key={font.id}>
+                            {font.title}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>字号</span>
+                      <input
+                        type="number"
+                        min={12}
+                        max={120}
+                        value={form.huaziSize}
+                        onChange={(event) => setField("huaziSize", Number(event.target.value))}
+                      />
+                    </label>
+                  </div>
+                  <label>
+                    <span>颜色</span>
+                    <div className="flex flex-wrap items-center gap-2 py-1 pl-1">
+                      {huaziColorOptions.map((color) => (
+                        <button
+                          type="button"
+                          key={color}
+                          aria-label={`花字颜色 ${color}`}
+                          onClick={() => setField("huaziColor", color)}
+                          className={`h-8 w-8 rounded-full border shadow-sm transition ${
+                            form.huaziColor.toUpperCase() === color ? "border-accent ring-2 ring-accent/25" : "border-border/70"
+                          }`}
+                          style={{ backgroundColor: color }}
+                        />
+                      ))}
+                      <input
+                        type="color"
+                        value={form.huaziColor}
+                        onChange={(event) => setField("huaziColor", event.target.value.toUpperCase())}
+                        className="h-8 w-10 cursor-pointer rounded-md border border-border/70 bg-white p-1"
+                        aria-label="自定义花字颜色"
+                      />
+                      <span className="font-mono text-xs text-text-secondary">{form.huaziColor.toUpperCase()}</span>
+                    </div>
+                  </label>
+                </section>
+              ) : null}
             </div>
-            <label>
-              <span>字幕字号</span>
-              <input
-                type="number"
-                min={12}
-                max={96}
-                value={form.subtitleSize}
-                onChange={(event) => setField("subtitleSize", Number(event.target.value))}
-              />
-            </label>
             {fontsQuery.isLoading ? (
               <div className="stateBox muted">
                 <span>字体库加载中</span>
@@ -380,106 +464,208 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
           </div>
           <CaptionPreview
             form={form}
-            selectedFont={selectedFont}
-            previewUrl={fontPreviewUrl}
+            selectedSubtitleFont={selectedSubtitleFont}
+            subtitlePreviewUrl={subtitlePreviewUrl}
+            selectedHuaziFont={selectedHuaziFont}
+            huaziPreviewUrl={huaziPreviewUrl}
           />
         </div>
-      ) : null}
-      <ToggleLine checked={form.bgmEnabled} onChange={(checked) => setField("bgmEnabled", checked)} label="启用 BGM" />
-      {form.bgmEnabled ? (
-        <div className="grid gap-3 border-t border-border/60 pt-4">
-          <VolumeSlider value={form.bgmVolume} onChange={(value) => setField("bgmVolume", value)} />
-          <ToggleLine checked={form.bgmAutoMix} onChange={(checked) => setField("bgmAutoMix", checked)} label="自动混音" />
+      ) : (
+        <div className="stateBox muted">
+          <Captions className="h-4 w-4" />
+          <span>未启用字幕或花字。</span>
         </div>
-      ) : null}
-      <label>
-        <span>封面</span>
-        <select value={form.coverMode} onChange={(event) => setField("coverMode", event.target.value as FormState["coverMode"])}>
-          <option value="frame">取帧</option>
-          <option value="ai">AI 生成</option>
-          <option value="none">不生成</option>
-        </select>
-      </label>
+      )}
+      <div className="grid gap-3 pt-2 md:grid-cols-2">
+        <BgmControlPanel form={form} setField={setField} />
+        <CoverModePanel value={form.coverMode} onChange={(value) => setField("coverMode", value)} />
+      </div>
     </div>
   );
 }
 
-function CaptionPreview({
-  form,
-  selectedFont,
-  previewUrl,
-}: {
-  form: FormState;
-  selectedFont: MediaAssetRecord | null;
-  previewUrl: string | null;
-}) {
-  const pair = captionStylePairs[form.captionStylePairId] ?? captionStylePairs.douyin_bold_a;
-  const family = selectedFont && previewUrl ? fontFamilyName(selectedFont.id) : undefined;
-  const fontLabel = selectedFont?.title ?? "默认字体";
-  const normal = pair.normal;
-  const huazi = pair.huazi;
-  const baseSize = Math.max(12, Math.min(96, form.subtitleSize));
-  const primaryPlacement = huaziPreviewPositions[huazi.defaultPlacementId] ?? huaziPreviewPositions.top_center_banner;
-  const secondaryPlacement = huaziPreviewPositions.lower_right_tag;
+function BgmControlPanel({ form, setField }: { form: FormState; setField: SetField }) {
   return (
-    <div className="grid gap-2">
-      {selectedFont && previewUrl ? <FontFaceStyle assetId={selectedFont.id} url={previewUrl} /> : null}
-      <div className="mx-auto aspect-[9/16] w-full max-w-[260px] overflow-hidden rounded-lg bg-black shadow-glow">
-        <div className="relative h-full w-full">
-          <PreviewText
-            text="这是当前口播字幕预览"
-            style={previewTextStyle({
-              family,
-              color: normal.color,
-              outlineColor: normal.outlineColor,
-              outline: normal.outline,
-              fontWeight: normal.fontWeight,
-              fontSize: baseSize * normal.sizeScale,
-              x: normal.position.x * 100,
-              y: normal.position.y * 100,
-              align: "center",
-            })}
-          />
-          <PreviewText
-            text="限时五折"
-            style={previewTextStyle({
-              family,
-              color: huazi.color,
-              outlineColor: huazi.outlineColor,
-              outline: huazi.outline,
-              fontWeight: huazi.fontWeight,
-              fontSize: baseSize * huazi.sizeScale,
-              x: primaryPlacement.x,
-              y: primaryPlacement.y,
-              align: primaryPlacement.align,
-            })}
-          />
-          <PreviewText
-            text="到店立减"
-            style={previewTextStyle({
-              family,
-              color: huazi.color,
-              outlineColor: huazi.outlineColor,
-              outline: huazi.outline,
-              fontWeight: huazi.fontWeight,
-              fontSize: baseSize * Math.max(1.1, huazi.sizeScale * 0.86),
-              x: secondaryPlacement.x,
-              y: secondaryPlacement.y,
-              align: secondaryPlacement.align,
-            })}
-          />
+    <section className="grid content-start gap-3 rounded-lg border border-border/60 bg-white/45 p-3">
+      <div className="grid grid-cols-[minmax(0,1fr)_52px] items-center gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Music className="h-4 w-4 shrink-0 text-accent" />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-text-primary">BGM</p>
+            <p className="text-xs text-text-tertiary">{form.bgmEnabled ? `${Math.round(form.bgmVolume * 100)}%` : "关闭"}</p>
+          </div>
+        </div>
+        <div className="justify-self-end">
+          <MiniSwitch checked={form.bgmEnabled} onChange={(checked) => setField("bgmEnabled", checked)} label="启用 BGM" />
         </div>
       </div>
-      <p className="truncate text-center text-xs text-text-secondary">
-        {fontLabel} · {captionPairLabel(form.captionStylePairId)}
-      </p>
+      {form.bgmEnabled ? (
+        <div className="grid gap-2 border-t border-border/50 pt-3">
+          <div className="grid grid-cols-[auto_minmax(0,1fr)_44px] items-center gap-2">
+            <Volume2 className="h-4 w-4 text-text-tertiary" />
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={form.bgmVolume}
+              onChange={(event) => setField("bgmVolume", Number(event.target.value))}
+              className="min-w-0 accent-accent"
+              aria-label="BGM 音量"
+            />
+            <span className="text-right font-mono text-xs font-medium text-text-secondary">{Math.round(form.bgmVolume * 100)}%</span>
+          </div>
+          <div className="grid min-h-9 grid-cols-[minmax(0,1fr)_52px] items-center gap-3 rounded-md bg-surface-hover/70 py-1 pl-3 pr-0">
+            <span className="text-sm font-medium text-text-primary">自动混音</span>
+            <div className="justify-self-end">
+              <MiniSwitch checked={form.bgmAutoMix} onChange={(checked) => setField("bgmAutoMix", checked)} label="自动混音" />
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+const coverModeOptions: Array<{ value: FormState["coverMode"]; label: string; icon: LucideIcon }> = [
+  { value: "frame", label: "取帧", icon: Film },
+  { value: "ai", label: "AI 生成", icon: Sparkles },
+  { value: "none", label: "不生成", icon: ImageOff },
+];
+
+function CoverModePanel({ value, onChange }: { value: FormState["coverMode"]; onChange: (value: FormState["coverMode"]) => void }) {
+  const activeLabel = coverModeOptions.find((option) => option.value === value)?.label ?? "取帧";
+  return (
+    <section className="grid content-start gap-3 rounded-lg border border-border/60 bg-white/45 p-3">
+      <div className="flex min-h-9 items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Film className="h-4 w-4 shrink-0 text-accent" />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-text-primary">封面</p>
+            <p className="text-xs text-text-tertiary">{activeLabel}</p>
+          </div>
+        </div>
+      </div>
+      <div className="h-2" aria-hidden="true" />
+      <div className="grid grid-cols-3 gap-1 rounded-lg bg-surface-hover p-1">
+        {coverModeOptions.map(({ value: optionValue, label, icon: Icon }) => (
+          <button
+            type="button"
+            key={optionValue}
+            onClick={() => onChange(optionValue)}
+            className={`flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-sm font-medium transition-colors ${
+              value === optionValue ? "bg-white text-text-primary shadow-sm" : "text-text-secondary hover:bg-white/60 hover:text-text-primary"
+            }`}
+          >
+            <Icon className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{label}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function useFontPreviewUrl(selectedFont: MediaAssetRecord | null) {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!selectedFont) {
+      setPreviewUrl(null);
+      return;
+    }
+    let cancelled = false;
+    api.mediaAssets
+      .previewUrl(selectedFont.id)
+      .then((response) => {
+        if (!cancelled) setPreviewUrl(toDisplayUrl(response.url));
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedFont]);
+  return previewUrl;
+}
+
+function CaptionPreview({
+  form,
+  selectedSubtitleFont,
+  subtitlePreviewUrl,
+  selectedHuaziFont,
+  huaziPreviewUrl,
+}: {
+  form: FormState;
+  selectedSubtitleFont: MediaAssetRecord | null;
+  subtitlePreviewUrl: string | null;
+  selectedHuaziFont: MediaAssetRecord | null;
+  huaziPreviewUrl: string | null;
+}) {
+  const normalFamily = selectedSubtitleFont && subtitlePreviewUrl ? fontFamilyName(selectedSubtitleFont.id) : undefined;
+  const huaziFamily = selectedHuaziFont && huaziPreviewUrl ? fontFamilyName(selectedHuaziFont.id) : normalFamily;
+  const normalSize = Math.max(12, Math.min(96, form.subtitleSize));
+  const huaziSize = Math.max(12, Math.min(120, form.huaziSize));
+  const normalPreviewSize = subtitlePreviewCssFontSize(normalSize);
+  const huaziPreviewSize = subtitlePreviewCssFontSize(huaziSize);
+  return (
+    <div className="grid gap-2">
+      {selectedSubtitleFont && subtitlePreviewUrl ? <FontFaceStyle assetId={selectedSubtitleFont.id} url={subtitlePreviewUrl} /> : null}
+      {selectedHuaziFont && huaziPreviewUrl && selectedHuaziFont.id !== selectedSubtitleFont?.id ? (
+        <FontFaceStyle assetId={selectedHuaziFont.id} url={huaziPreviewUrl} />
+      ) : null}
+      <div className="mx-auto w-full" style={{ maxWidth: SUBTITLE_PREVIEW_WIDTH }}>
+        <div
+          className="relative overflow-hidden rounded-md bg-[#07131f] shadow-glow"
+          style={{ aspectRatio: `${SUBTITLE_PREVIEW_OUTPUT_WIDTH} / ${SUBTITLE_PREVIEW_OUTPUT_HEIGHT}` }}
+        >
+          {form.normalSubtitleEnabled ? (
+            <PreviewText
+              text="这是当前口播字幕预览"
+              style={previewTextStyle({
+                family: normalFamily,
+                color: normalCaptionPreviewStyle.color,
+                outlineColor: normalCaptionPreviewStyle.outlineColor,
+                outline: normalCaptionPreviewStyle.outline,
+                fontWeight: normalCaptionPreviewStyle.fontWeight,
+                fontSize: normalPreviewSize,
+                x: 50,
+                y: form.subtitlePositionY * 100,
+                align: "center",
+                verticalAnchor: "bottom",
+                maxWidth: subtitlePreviewSafeWidthPercent,
+                nowrap: false,
+              })}
+            />
+          ) : null}
+          {form.huaziEnabled ? (
+            <PreviewText
+              text="限时五折"
+              style={previewTextStyle({
+                family: huaziFamily,
+                color: form.huaziColor,
+                outlineColor: huaziCaptionPreviewStyle.outlineColor,
+                outline: huaziCaptionPreviewStyle.outline,
+                fontWeight: huaziCaptionPreviewStyle.fontWeight,
+                fontSize: huaziPreviewSize,
+                x: 50,
+                y: 14,
+                align: "center",
+                verticalAnchor: "top",
+                maxWidth: subtitlePreviewSafeWidthPercent,
+                nowrap: true,
+              })}
+            />
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }
 
 function PreviewText({ text, style }: { text: string; style: CSSProperties }) {
   return (
-    <span className="absolute max-w-[78%] whitespace-nowrap leading-tight" style={style}>
+    <span className="absolute block leading-tight" style={style}>
       {text}
     </span>
   );
@@ -495,6 +681,9 @@ function previewTextStyle({
   x,
   y,
   align,
+  verticalAnchor,
+  maxWidth,
+  nowrap,
 }: {
   family?: string;
   color: string;
@@ -505,24 +694,52 @@ function previewTextStyle({
   x: number;
   y: number;
   align: string;
+  verticalAnchor: "top" | "center" | "bottom";
+  maxWidth: number;
+  nowrap: boolean;
 }): CSSProperties {
   const translateX = align === "left" ? "0" : align === "right" ? "-100%" : "-50%";
+  const translateY =
+    verticalAnchor === "top" ? "0" : verticalAnchor === "bottom" ? "-100%" : "-50%";
+  const renderedFontSize = Math.round(Math.max(4, fontSize) * 10) / 10;
+  const outlineWidth = subtitlePreviewCssOutlineWidth(outline);
   return {
     left: `${x}%`,
     top: `${y}%`,
-    transform: `translate(${translateX}, -50%)`,
+    transform: `translate(${translateX}, ${translateY})`,
+    width: `${maxWidth}%`,
     color,
     fontFamily: family,
-    fontSize: `${Math.max(12, Math.round(fontSize))}px`,
+    fontSize: `${renderedFontSize}px`,
     fontWeight,
     textAlign: align as CSSProperties["textAlign"],
-    WebkitTextStroke: `${Math.max(1, outline * 0.55)}px ${outlineColor}`,
-    textShadow: `0 2px ${Math.max(2, Math.round(outline))}px ${outlineColor}`,
+    whiteSpace: nowrap ? "nowrap" : "normal",
+    overflow: "hidden",
+    textOverflow: nowrap ? "ellipsis" : undefined,
+    overflowWrap: "anywhere",
+    wordBreak: "keep-all",
+    textShadow: previewOutlineShadow(outlineColor, outlineWidth),
+    textRendering: "geometricPrecision",
+    WebkitFontSmoothing: "antialiased",
   };
 }
 
+function previewOutlineShadow(outlineColor: string, outlineWidth: number) {
+  const offset = Math.max(0.3, outlineWidth);
+  return [
+    `${offset}px 0 0 ${outlineColor}`,
+    `-${offset}px 0 0 ${outlineColor}`,
+    `0 ${offset}px 0 ${outlineColor}`,
+    `0 -${offset}px 0 ${outlineColor}`,
+    `${offset}px ${offset}px 0 ${outlineColor}`,
+    `-${offset}px ${offset}px 0 ${outlineColor}`,
+    `${offset}px -${offset}px 0 ${outlineColor}`,
+    `-${offset}px -${offset}px 0 ${outlineColor}`,
+  ].join(", ");
+}
+
 export function SubmitStep({ form, selectedVoiceLabel, scriptCount }: { form: FormState; selectedVoiceLabel: string; scriptCount: number }) {
-  const subtitleFontLabel = useSubtitleFontLabel(form);
+  const subtitleFontLabels = useSubtitleFontLabels(form);
   return (
     <div className="grid gap-4">
       <SectionTitle icon={Play} title="提交" description="确认配置后提交生产任务，成功后自动跳转到成片页。" />
@@ -560,7 +777,7 @@ export function SubmitStep({ form, selectedVoiceLabel, scriptCount }: { form: Fo
           <ReviewItem label="后处理" value="不生成字幕 / 跳过本地 BGM / AI 封面" />
         ) : (
           <>
-            <ReviewItem label="字幕" value={form.subtitleEnabled ? captionConfigSummary(form, subtitleFontLabel) : "关闭"} />
+            <ReviewItem label="字幕" value={captionConfigSummary(form, subtitleFontLabels)} />
             <ReviewItem label="BGM" value={form.bgmEnabled ? `${Math.round(form.bgmVolume * 100)}%` : "关闭"} />
           </>
         )}
@@ -570,7 +787,7 @@ export function SubmitStep({ form, selectedVoiceLabel, scriptCount }: { form: Fo
 }
 
 export function ConfigSummary({ form, selectedVoiceLabel, scriptCount }: { form: FormState; selectedVoiceLabel: string; scriptCount: number }) {
-  const subtitleFontLabel = useSubtitleFontLabel(form);
+  const subtitleFontLabels = useSubtitleFontLabels(form);
   return (
     <aside className="card grid content-start gap-4">
       <div>
@@ -611,7 +828,7 @@ export function ConfigSummary({ form, selectedVoiceLabel, scriptCount }: { form:
         ) : null}
         {form.contentMode === "seedance" ? null : (
           <>
-            <SummaryRow icon={Captions} label="字幕" value={form.subtitleEnabled ? captionConfigSummary(form, subtitleFontLabel) : "关闭"} />
+            <SummaryRow icon={Captions} label="字幕" value={captionConfigSummary(form, subtitleFontLabels)} />
             <SummaryRow icon={Music} label="BGM" value={form.bgmEnabled ? `${Math.round(form.bgmVolume * 100)}%` : "关闭"} />
           </>
         )}
@@ -655,32 +872,73 @@ function ToggleLine({ checked, onChange, label }: { checked: boolean; onChange: 
   );
 }
 
-function VolumeSlider({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+function CompactToggle({ checked, onChange, label }: { checked: boolean; onChange: (checked: boolean) => void; label: string }) {
   return (
-    <div className="flex flex-wrap items-center gap-3 sm:flex-nowrap">
-      <span className="w-16 shrink-0 text-sm text-text-secondary">音量</span>
-      <Volume2 className="h-4 w-4 text-text-tertiary" />
-      <input
-        type="range"
-        min={0}
-        max={1}
-        step={0.05}
-        value={value}
-        onChange={(event) => onChange(Number(event.target.value))}
-        className="min-w-[150px] flex-1 accent-accent"
-      />
-      <span className="w-12 shrink-0 text-right font-mono text-sm text-text-primary">{Math.round(value * 100)}%</span>
-    </div>
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className="flex min-h-10 items-center justify-between gap-3 rounded-lg border border-border/60 bg-white/45 px-3 py-2 text-left transition-colors hover:bg-white/75"
+    >
+      <span className="text-sm font-medium text-text-primary">{label}</span>
+      <MiniSwitch checked={checked} onChange={onChange} label={label} isNested />
+    </button>
+  );
+}
+
+function MiniSwitch({
+  checked,
+  onChange,
+  label,
+  isNested = false,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  label: string;
+  isNested?: boolean;
+}) {
+  const switchClassName = `relative inline-flex h-[28px] w-[52px] shrink-0 items-center rounded-full border p-[3px] shadow-inner transition-colors ${
+    checked ? "border-accent/60 bg-accent/90" : "border-border/80 bg-surface-hover"
+  }`;
+  const knob = (
+    <span
+      className={`h-[22px] w-[22px] rounded-full bg-white shadow-[0_1px_4px_rgba(52,62,47,0.22)] transition-transform ${
+        checked ? "translate-x-[24px]" : "translate-x-0"
+      }`}
+    />
+  );
+  if (isNested) {
+    return (
+      <span aria-hidden="true" className={switchClassName}>
+        {knob}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={(event) => {
+        if (isNested) event.stopPropagation();
+        onChange(!checked);
+      }}
+      className={`${switchClassName} focus:outline-none focus:ring-2 focus:ring-accent/25`}
+    >
+      {knob}
+    </button>
   );
 }
 
 function SummaryRow({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
   return (
     <div className="flex items-center gap-3 py-3">
-      <Icon className="h-4 w-4 text-accent" />
-      <div className="min-w-0">
+      <Icon className="h-4 w-4 shrink-0 text-accent" />
+      <div className="min-w-0 flex-1">
         <p className="text-xs text-text-tertiary">{label}</p>
-        <p className="truncate text-sm font-medium text-text-primary">{value}</p>
+        <p className="mt-0.5 max-w-full break-words text-sm font-medium leading-snug text-text-primary">{value}</p>
       </div>
     </div>
   );

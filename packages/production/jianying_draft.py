@@ -64,7 +64,6 @@ class JianyingTextSegment:
     placement_id: str | None = None
     animation_id: str | None = None
     sfx_id: str | None = None
-    caption_style_pair_id: str | None = None
 
 
 def build_video_segments_from_plans(
@@ -181,8 +180,6 @@ def build_text_segments_from_narration(
                 )
             )
     style = style_plan or {}
-    subtitle_style = style.get("subtitle") if isinstance(style.get("subtitle"), dict) else {}
-    caption_style_pair_id = _str_or_none(subtitle_style.get("caption_style_pair_id"))
     overlay_events = style.get("overlay_events") if isinstance(style.get("overlay_events"), list) else []
     for event in overlay_events:
         if not isinstance(event, dict):
@@ -203,7 +200,6 @@ def build_text_segments_from_narration(
                     placement_id=_str_or_none(event.get("placement_id")),
                     animation_id=_str_or_none(event.get("animation_id")),
                     sfx_id=_str_or_none(event.get("sfx_id")) or "none",
-                    caption_style_pair_id=caption_style_pair_id,
                 )
             )
     return segments
@@ -817,7 +813,7 @@ def _text_segment_effects(segment: JianyingTextSegment) -> dict[str, Any] | None
     if not _is_huazi_track(segment.track_name):
         return None
     effects: dict[str, Any] = {}
-    for key in ("placement_id", "animation_id", "sfx_id", "caption_style_pair_id"):
+    for key in ("placement_id", "animation_id", "sfx_id"):
         value = getattr(segment, key)
         if value:
             effects[key] = value

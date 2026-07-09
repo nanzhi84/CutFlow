@@ -25,28 +25,45 @@ def _node(
     )
 
 
-def _run(node_runs: list[c.NodeRun]) -> ReuseSourceRun:
+def _run(
+    node_runs: list[c.NodeRun],
+    *,
+    status: c.RunStatus = c.RunStatus.succeeded,
+) -> ReuseSourceRun:
     return ReuseSourceRun(
         run=c.WorkflowRun(
             id="run_source",
             job_id="job_1",
             workflow_template_id="test",
             workflow_version="v1",
-            status=c.RunStatus.succeeded,
+            status=status,
         ),
         node_runs=node_runs,
     )
 
 
-def _node_run(node_id: str, artifact_id: str) -> c.NodeRun:
+def _node_run(
+    node_id: str,
+    artifact_id: str,
+    *,
+    status: c.NodeStatus = c.NodeStatus.succeeded,
+) -> c.NodeRun:
+    error = None
+    if status == c.NodeStatus.failed:
+        error = c.NodeError(
+            code=c.ErrorCode.provider_timeout,
+            message="transient provider failure",
+            retryable=True,
+        )
     return c.NodeRun(
         id=f"nr_{node_id}",
         run_id="run_source",
         node_id=node_id,
         node_version="v1",
-        status=c.NodeStatus.succeeded,
+        status=status,
         input_manifest_hash="same",
-        output_artifact_ids=[artifact_id],
+        output_artifact_ids=[] if status == c.NodeStatus.failed else [artifact_id],
+        error=error,
     )
 
 
@@ -81,6 +98,36 @@ def test_reuse_policy_never_forces_rerun_from_that_node(tmp_path):
     assert plan.rerun_from_node_id == "B"
     assert "B" not in plan.reused_node_ids
     assert plan.decisions[1].reason == "reuse_policy_forces_rerun"
+
+
+def test_failed_run_resume_bypasses_never_policy_until_failed_node(tmp_path):
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    template = _template(
+        _node("A"),
+        _node("NarrationBoundaryPlanning", reuse_policy="never"),
+        _node("LipSync"),
+    )
+    source = _run(
+        [
+            _node_run("A", "art_a"),
+            _node_run("NarrationBoundaryPlanning", "art_boundary"),
+            _node_run("LipSync", "art_lipsync", status=c.NodeStatus.failed),
+        ],
+        status=c.RunStatus.failed,
+    )
+    artifacts = {
+        "art_a": _artifact("art_a", first),
+        "art_boundary": _artifact("art_boundary", second),
+    }
+
+    plan = compute_reuse_plan(source, template, artifacts)
+
+    assert plan.reused_node_ids == ["A", "NarrationBoundaryPlanning"]
+    assert plan.rerun_from_node_id == "LipSync"
+    assert plan.decisions[-1].reason == "node_status_not_reusable"
 
 
 def test_default_strict_reuses_completed_nodes(tmp_path):

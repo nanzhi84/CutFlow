@@ -27,14 +27,31 @@ from packages.production.pipeline._subtitles import write_ass_subtitles
 _DEFAULT_FONT_SENTINEL = "case_default_font"
 
 
-def _resolve_selected_font(
-    ctx: NodeContext, style: dict, runtime_dir
+def _font_asset_id(style: dict, *, emphasis: bool = False) -> str | None:
+    subtitle = style.get("subtitle") if isinstance(style.get("subtitle"), dict) else {}
+    font = style.get("font") if isinstance(style.get("font"), dict) else {}
+    if emphasis:
+        return (
+            style.get("emphasis_font_asset_id")
+            or (font or {}).get("emphasis_font_id")
+            or (subtitle or {}).get("emphasis_font_id")
+            or _font_asset_id(style)
+        )
+    return (
+        style.get("font_asset_id")
+        or (font or {}).get("font_id")
+        or (subtitle or {}).get("font_id")
+    )
+
+
+def _resolve_font_asset(
+    ctx: NodeContext, font_asset_id: str | None, runtime_dir
 ) -> tuple[ResolvedFont | None, str | None]:
     """Stage the user/agent-selected subtitle font for libass, or None to default.
 
-    Reads the resolved font asset id from the style plan, loads its source file,
-    copies it into ``runtime_dir`` and derives the family name so the ASS style
-    burns the chosen font instead of silently falling back to Arial.
+    Loads the resolved font asset id, copies it into ``runtime_dir`` and derives
+    the family name so the ASS style burns the chosen font instead of silently
+    falling back to Arial.
 
     Returns ``(resolved_font, unresolved_font_asset_id)``. The second element is
     the requested font asset id when a font WAS selected but its file could not be
@@ -42,11 +59,6 @@ def _resolve_selected_font(
     of silently defaulting to Arial. It is ``None`` when no font was selected or
     the selected font resolved fine.
     """
-    subtitle = style.get("subtitle") if isinstance(style.get("subtitle"), dict) else {}
-    font = style.get("font") if isinstance(style.get("font"), dict) else {}
-    font_asset_id = (
-        style.get("font_asset_id") or (font or {}).get("font_id") or (subtitle or {}).get("font_id")
-    )
     if not font_asset_id or font_asset_id == _DEFAULT_FONT_SENTINEL:
         return None, None
     try:
@@ -82,12 +94,27 @@ def run(ctx: NodeContext) -> NodeOutput:
     try:
         with tempfile.TemporaryDirectory(prefix="cutagent-final-") as directory:
             temp_dir = Path(directory)
-            subtitle_path = temp_dir / "subtitle.ass" if state.request.subtitle.enabled else None
+            subtitle_layers_enabled = bool(
+                state.request.subtitle.enabled
+                and (state.request.subtitle.normal_enabled or state.request.subtitle.emphasis_enabled)
+            )
+            subtitle_path = temp_dir / "subtitle.ass" if subtitle_layers_enabled else None
+            fonts_dir = temp_dir / "fonts"
             resolved_font: ResolvedFont | None = None
+            resolved_emphasis_font: ResolvedFont | None = None
             if subtitle_path is not None:
-                resolved_font, unresolved_font_id = _resolve_selected_font(
-                    ctx, style, temp_dir / "fonts"
+                normal_font_asset_id = _font_asset_id(style)
+                emphasis_font_asset_id = _font_asset_id(style, emphasis=True)
+                resolved_font, unresolved_font_id = _resolve_font_asset(
+                    ctx, normal_font_asset_id, fonts_dir
                 )
+                unresolved_emphasis_font_id: str | None = None
+                if emphasis_font_asset_id and emphasis_font_asset_id != normal_font_asset_id:
+                    resolved_emphasis_font, unresolved_emphasis_font_id = _resolve_font_asset(
+                        ctx, emphasis_font_asset_id, fonts_dir
+                    )
+                else:
+                    resolved_emphasis_font = resolved_font
                 # No silent fallback: a selected font whose file can't be staged
                 # must surface, not quietly burn the default Arial.
                 if unresolved_font_id:
@@ -99,6 +126,15 @@ def run(ctx: NodeContext) -> NodeOutput:
                         )
                     )
                     warnings.append(WarningCode.font_resolution_failed)
+                if unresolved_emphasis_font_id:
+                    degradations.append(
+                        degradation_notice(
+                            WarningCode.font_resolution_failed,
+                            f"指定花字字体（{unresolved_emphasis_font_id}）文件无法加载，已使用普通字幕字体。",
+                            node_id=ctx.node_run.node_id,
+                        )
+                    )
+                    warnings.append(WarningCode.font_resolution_failed)
                 write_ass_subtitles(
                     subtitle_path,
                     narration=narration,
@@ -106,6 +142,9 @@ def run(ctx: NodeContext) -> NodeOutput:
                     width=state.request.output.width,
                     height=state.request.output.height,
                     font_name=resolved_font.family_name if resolved_font else None,
+                    emphasis_font_name=(
+                        resolved_emphasis_font.family_name if resolved_emphasis_font else None
+                    ),
                     overlay_events=style.get("overlay_events"),
                 )
             bgm_path = None
@@ -128,7 +167,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                 "bgm_volume": float((bgm_plan or {}).get("volume", state.request.bgm.volume)),
                 "duration": duration,
                 "fps": fps,
-                "fonts_dir": resolved_font.fonts_dir if resolved_font else None,
+                "fonts_dir": fonts_dir if resolved_font or resolved_emphasis_font else None,
                 "auto_mix": auto_mix,
                 "bgm_source_start": bgm_source_start,
                 "bgm_source_end": bgm_source_end,

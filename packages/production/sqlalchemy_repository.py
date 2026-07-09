@@ -1257,10 +1257,16 @@ class SqlAlchemyProductionRepository(BaseRepository):
                     .order_by(NodeRunRow.created_at.asc())
                 )
             ]
+            referenced_artifact_ids = {
+                artifact_id for node_run in node_runs for artifact_id in node_run.output_artifact_ids
+            }
+            artifact_filter = ArtifactRow.run_id == run_id
+            if referenced_artifact_ids:
+                artifact_filter = or_(artifact_filter, ArtifactRow.id.in_(referenced_artifact_ids))
             artifact_rows = list(
                 session.scalars(
                     select(ArtifactRow)
-                    .where(ArtifactRow.run_id == run_id)
+                    .where(artifact_filter)
                     .order_by(ArtifactRow.created_at.asc())
                 )
             )
