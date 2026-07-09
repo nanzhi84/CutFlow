@@ -211,6 +211,9 @@ export function warningLabel(value: string) {
   if (value === "window_query.template_fallback") {
     return "检索 query 已回退模板拼接（LLM 不可用）";
   }
+  if (value === "huazi.animation_fallback") return "花字动画降级";
+  if (value === "huazi.planning_failed") return "花字规划失败（本次无花字）";
+  if (value === "font.metrics_fallback") return "字体度量回退估算";
   return "未知警告";
 }
 

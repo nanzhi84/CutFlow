@@ -12,8 +12,12 @@ HUAZI_PLACEMENTS: dict[str, dict[str, float | int]] = {
     "lower_right_tag": {"x": 0.88, "y": 0.72, "align": 3},
 }
 
-HUAZI_ANIMATIONS = ("none", "fade_in", "pop_in", "slide_up", "slide_left", "punch")
+HUAZI_ANIMATIONS = ("none", "fade_in", "pop_in", "slide_up", "slide_left", "slide_right", "punch")
 HUAZI_SFX = ("none",)
+
+# Slide animations carry an enter direction; used to validate that a chosen
+# animation is compatible with the layout box's ``allowed_enter_directions``.
+HUAZI_ANIMATION_DIRECTIONS = {"slide_up": "up", "slide_left": "left", "slide_right": "right"}
 
 
 def huazi_placement(placement_id: str | None) -> dict[str, float | int]:

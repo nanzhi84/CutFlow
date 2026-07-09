@@ -56,13 +56,18 @@ _LEGACY_EDITING_AGENT_FONT_PLANNING_MARKERS = (
     '"font_plan"',
     "font_candidates",
 )
-_EDITING_AGENT_HUAZI_BOUNDARY_MARKERS = (
-    "huazi_plan",
+# Caption Display v2 (issue #188) moved huazi planning out of the main editing
+# agent into a separate HuaziPlanningSubagent. A stored editing-agent prompt that
+# still carries any of these legacy huazi markers must be re-synced to the
+# huazi-free content.
+_LEGACY_EDITING_AGENT_HUAZI_MARKERS = (
     "{huazi_events}",
     "{placement_candidates}",
     "{animation_candidates}",
     "{sfx_candidates}",
-    "不要输出字体、字号、颜色、描边、自由坐标或时间",
+    "花字位置候选",
+    "花字动画候选",
+    "花字音效候选",
 )
 
 
@@ -396,7 +401,7 @@ def _needs_prompt_version_sync(existing: PromptVersionRow) -> bool:
             or any(marker in content for marker in _LEGACY_EDITING_AGENT_FULL_COVERAGE_MARKERS)
             or _EDITING_AGENT_FULL_COVERAGE_SINGLE_CLIP_MARKER not in content
             or any(marker in content for marker in _LEGACY_EDITING_AGENT_FONT_PLANNING_MARKERS)
-            or any(marker not in content for marker in _EDITING_AGENT_HUAZI_BOUNDARY_MARKERS)
+            or any(marker in content for marker in _LEGACY_EDITING_AGENT_HUAZI_MARKERS)
         )
     if existing.id == "prompt_window_query_v1":
         content = existing.content or ""

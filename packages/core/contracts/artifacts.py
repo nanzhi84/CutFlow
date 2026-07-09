@@ -390,6 +390,15 @@ class BrollPlanArtifact(ContractModel):
     skipped_reason: str | None = None
 
 
+class OverlayRect(ContractModel):
+    # Normalised 0..1 box relative to the output canvas; materialized geometry the
+    # renderer consumes directly (falls back to placement_id when absent).
+    x: float
+    y: float
+    w: float
+    h: float
+
+
 class OverlayEvent(ContractModel):
     """StylePlanning 确定性派生的带时间轴字幕浮层事件（整句强调 / 花字地基）。
 
@@ -408,6 +417,10 @@ class OverlayEvent(ContractModel):
     animation_id: str = "pop_in"
     sfx_id: str = "none"
     reason: str = ""
+    layout_box_id: str | None = None
+    rect: OverlayRect | None = None
+    text_align: str = "center"
+    priority: int = 0
 
 
 class StylePlanArtifact(ContractModel):
@@ -418,6 +431,36 @@ class StylePlanArtifact(ContractModel):
     emphasis_font_asset_id: str | None = None
     bgm_asset_id: str | None = None
     overlay_events: list[OverlayEvent] = Field(default_factory=list)
+
+
+class CaptionCue(ContractModel):
+    start: float
+    end: float
+    lines: list[str]                       # 已断行，1-2 行
+    source_unit_ids: list[int]             # 源旁白 unit 下标
+    suppressed_by: str | None = None       # 整段被抑制时的花字 event_id
+
+
+class CaptionDisplayDiagnostics(ContractModel):
+    merged_units: int = 0
+    split_cues: int = 0
+    suppressed_duplicates: int = 0         # 被花字挖洞影响的 cue 数
+    dropped_fragments: int = 0             # <0.6s 丢弃片段数
+    animation_fallbacks: int = 0
+    font_metrics_source: str = "hmtx"      # hmtx | eaw_fallback
+
+
+class CaptionDisplayPlanArtifact(ContractModel):
+    """Caption Display v2 诊断产物（payload_schema ``CaptionDisplayPlan.v1``）。
+
+    照 ``EditingAgentDiagnostics`` 范式走独立 artifact，不进公共 run report 结构。
+    """
+
+    policy_version: str = "caption_display_v2"
+    normal_cues: list[CaptionCue]
+    suppressed_cues: list[CaptionCue]      # 被完全抑制（含 <0.6s 丢弃）的 cue
+    emphasis_events: list[OverlayEvent]
+    diagnostics: CaptionDisplayDiagnostics
 
 
 class TimelineTrackSegment(ContractModel):

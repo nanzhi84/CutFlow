@@ -9065,6 +9065,7 @@
           "plan.timeline",
           "plan.render",
           "plan.editing_diagnostics",
+          "plan.caption_display",
           "video.portrait_track",
           "video.lipsync",
           "lipsync.report",
@@ -13699,7 +13700,10 @@
           "broll.insertions_dropped_geometry",
           "editing_agent.deterministic_fallback",
           "window_query.template_fallback",
-          "timestamp.estimated"
+          "timestamp.estimated",
+          "huazi.animation_fallback",
+          "huazi.planning_failed",
+          "font.metrics_fallback"
         ],
         "title": "DegradationCode"
       },
@@ -25010,7 +25014,10 @@
           "editing_agent.llm_repair",
           "editing_agent.local_constraint_repair",
           "broll.insertions_dropped_geometry",
-          "window_query.template_fallback"
+          "window_query.template_fallback",
+          "huazi.animation_fallback",
+          "huazi.planning_failed",
+          "font.metrics_fallback"
         ],
         "title": "WarningCode"
       },

@@ -17,6 +17,21 @@ _ASS_MARGIN_R = 80
 _ASS_WRAP_BREAK_CHARS = set("，,、：:；;。！？!? ")
 _OVERLAY_STYLE_ALIASES = {"emphasis": "Emphasis"}
 
+# Emphasis animation timing. Events shorter than the threshold shrink the
+# animation span to 40% of the event so it plays fully inside the event window;
+# ``_ANIM_NATURAL_MS`` is each animation's natural span used as the shrink base.
+_ANIM_CLAMP_THRESHOLD_SEC = 0.55
+_ANIM_SHRINK_RATIO = 0.4
+_ANIM_NATURAL_MS = {
+    "fade_in": 180,
+    "pop_in": 180,
+    "punch": 260,
+    "slide_up": 220,
+    "slide_left": 220,
+    "slide_right": 220,
+}
+_DEFAULT_EMPHASIS_ANIMATION = "pop_in"
+
 
 def ass_time(seconds: float) -> str:
     centiseconds = round(max(seconds, 0) * 100)
@@ -156,9 +171,89 @@ def _normal_bold(subtitle: dict) -> str:
     return _ass_bold(subtitle.get("font_weight"), fallback=True)
 
 
-def _overlay_animation_id(value: object) -> str:
-    text = str(value or "").strip()
-    return text if text in HUAZI_ANIMATIONS else "pop_in"
+def _resolve_animation(value: object, default: object = None) -> tuple[str, bool]:
+    """Resolve an overlay animation id against the whitelist.
+
+    A missing/empty id falls back to the default emphasis animation (not a
+    fallback event). A non-empty *unknown* id renders as static ``none`` and is
+    reported as ``huazi.animation_fallback`` -- never silently coerced to pop_in.
+    Returns ``(animation_id, is_fallback)``.
+    """
+    raw = str(value or default or "").strip()
+    if not raw:
+        return _DEFAULT_EMPHASIS_ANIMATION, False
+    if raw in HUAZI_ANIMATIONS:
+        return raw, False
+    return "none", True
+
+
+def _scale_ms(value: int, scale: float) -> int:
+    return max(1, int(round(value * scale)))
+
+
+def _animation_scale(animation: str, start: float, end: float) -> float:
+    """Shrink an animation's timings when the event is very short (else 1.0).
+
+    Events >= 0.55s keep their natural timing; shorter events cap the animation
+    span at 40% of the event duration so it fully plays within the event window.
+    """
+    duration = end - start
+    if duration <= 0 or duration >= _ANIM_CLAMP_THRESHOLD_SEC:
+        return 1.0
+    natural = _ANIM_NATURAL_MS.get(animation, 0)
+    if natural <= 0:
+        return 1.0
+    budget_ms = duration * 1000.0 * _ANIM_SHRINK_RATIO
+    return min(1.0, budget_ms / natural)
+
+
+def _animation_body(animation: str, x: int, y: int, scale: float) -> list[str]:
+    """ASS override tags for one animation anchored at pixel (x, y).
+
+    Only time parameters are scaled; coordinates are never touched. slide_*
+    animations enter from an off-box offset toward (x, y).
+    """
+    if animation in ("slide_up", "slide_left", "slide_right"):
+        if animation == "slide_up":
+            start_x, start_y = x, y + 80
+        elif animation == "slide_left":
+            start_x, start_y = x + 90, y
+        else:  # slide_right
+            start_x, start_y = x - 90, y
+        return [
+            f"\\move({start_x},{start_y},{x},{y},0,{_scale_ms(220, scale)})",
+            f"\\fad({_scale_ms(80, scale)},{_scale_ms(120, scale)})",
+        ]
+    body = [f"\\pos({x},{y})"]
+    if animation == "fade_in":
+        body.append(f"\\fad({_scale_ms(180, scale)},{_scale_ms(100, scale)})")
+    elif animation == "pop_in":
+        body.append(
+            f"\\fad({_scale_ms(80, scale)},{_scale_ms(120, scale)})"
+            f"\\t(0,{_scale_ms(180, scale)},\\fscx108\\fscy108)"
+        )
+    elif animation == "punch":
+        body.append(
+            f"\\t(0,{_scale_ms(120, scale)},\\fscx116\\fscy116)"
+            f"\\t({_scale_ms(120, scale)},{_scale_ms(260, scale)},\\fscx100\\fscy100)"
+        )
+    # "none" (and any other static-position animation) emits just \pos.
+    return body
+
+
+def _rect_anchor(text_align: str, rect: dict, width: int, height: int) -> tuple[int, int, int]:
+    """(\\an, x_px, y_px) for a rect box: vertically centered, horizontally aligned."""
+    x = float(rect.get("x") or 0.0)
+    y = float(rect.get("y") or 0.0)
+    w = float(rect.get("w") or 0.0)
+    h = float(rect.get("h") or 0.0)
+    center_y = int(round((y + h / 2.0) * height))
+    align = str(text_align or "center").strip().lower()
+    if align == "left":
+        return 4, int(round(x * width)), center_y
+    if align == "right":
+        return 6, int(round((x + w) * width)), center_y
+    return 5, int(round((x + w / 2.0) * width)), center_y
 
 
 def _overlay_sfx_id(value: object) -> str:
@@ -166,13 +261,36 @@ def _overlay_sfx_id(value: object) -> str:
     return text if text in HUAZI_SFX else "none"
 
 
-def _overlay_override_tags(
+def _overlay_rect_tags(event: dict[str, Any], *, width: int, height: int) -> tuple[str, bool]:
+    """Override tags for a materialized-rect overlay (D7 render path).
+
+    Geometry comes from ``rect`` + ``text_align``; the animation timing shrinks for
+    very short events. Returns ``(tag_string, animation_fallback)``.
+    """
+    rect = event.get("rect") or {}
+    align, x, y = _rect_anchor(str(event.get("text_align") or "center"), rect, width, height)
+    animation, is_fallback = _resolve_animation(event.get("animation_id"))
+    # sfx intent is recorded upstream but never synthesized here (kept out of ASS).
+    _overlay_sfx_id(event.get("sfx_id"))
+    scale = _animation_scale(
+        animation, float(event.get("start") or 0.0), float(event.get("end") or 0.0)
+    )
+    tags = [f"\\an{align}"] + _animation_body(animation, x, y, scale)
+    return "{" + "".join(tags) + "}", is_fallback
+
+
+def _overlay_placement_tags(
     event: dict[str, Any],
     *,
     width: int,
     height: int,
     subtitle: dict,
-) -> str:
+) -> tuple[str, bool]:
+    """Legacy placement_id override path (rect-less / pre-#188 overlay events).
+
+    Byte-identical geometry/timing to the pre-#188 renderer for known animations;
+    an unknown animation now renders ``none`` + fallback instead of silent pop_in.
+    """
     placement_id = str(
         event.get("placement_id")
         or subtitle.get("default_emphasis_position_id")
@@ -182,41 +300,35 @@ def _overlay_override_tags(
     align = int(placement.get("align") or 8)
     x = int(round(width * float(placement.get("x") or 0.5)))
     y = int(round(height * float(placement.get("y") or 0.14)))
-    animation = _overlay_animation_id(
-        event.get("animation_id") or subtitle.get("default_emphasis_animation_id")
+    animation, is_fallback = _resolve_animation(
+        event.get("animation_id"), subtitle.get("default_emphasis_animation_id")
     )
-    # First version records sfx intent in the event/manifest but does not synthesize audio.
-    # Keep non-none ids out of ASS rather than pretending a sound was mixed.
     _overlay_sfx_id(event.get("sfx_id"))
-    tags = [f"\\an{align}"]
-    if animation == "slide_up":
-        tags.append(f"\\move({x},{y + 80},{x},{y},0,220)")
-        tags.append(r"\fad(80,120)")
-    elif animation == "slide_left":
-        tags.append(f"\\move({x + 90},{y},{x},{y},0,220)")
-        tags.append(r"\fad(80,120)")
-    else:
-        tags.append(f"\\pos({x},{y})")
-        if animation == "fade_in":
-            tags.append(r"\fad(180,100)")
-        elif animation == "pop_in":
-            tags.append(r"\fad(80,120)\t(0,180,\fscx108\fscy108)")
-        elif animation == "punch":
-            tags.append(r"\t(0,120,\fscx116\fscy116)\t(120,260,\fscx100\fscy100)")
-    return "{" + "".join(tags) + "}"
+    tags = [f"\\an{align}"] + _animation_body(animation, x, y, 1.0)
+    return "{" + "".join(tags) + "}", is_fallback
 
 
 def write_ass_subtitles(
     output_path: Path,
     *,
-    narration: dict,
     style: dict,
     width: int,
     height: int,
+    narration: dict | None = None,
+    caption_cues: list[dict] | None = None,
     font_name: str | None = None,
     emphasis_font_name: str | None = None,
     overlay_events: list[dict] | None = None,
-) -> None:
+) -> list[str]:
+    """Author the ASS subtitle file; return the event ids whose animation fell back.
+
+    Normal captions come from ``caption_cues`` (already line-broken by the display
+    compiler, ``lines`` joined with ``\\N``) when provided; otherwise the legacy
+    ``narration`` greedy-wrap path runs (kept for the deterministic-chain tests).
+    ``WrapStyle: 2`` disables libass auto-wrapping so manual breaks are honoured
+    (D11). Overlay events with a materialized ``rect`` use the rect render path;
+    rect-less events fall back to the legacy placement_id geometry.
+    """
     subtitle = style.get("subtitle", {}) if isinstance(style.get("subtitle"), dict) else {}
     normal_enabled = _subtitle_layer_enabled(subtitle, "normal_enabled")
     emphasis_enabled = _subtitle_layer_enabled(subtitle, "emphasis_enabled")
@@ -243,7 +355,7 @@ def write_ass_subtitles(
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
-        "WrapStyle: 0",
+        "WrapStyle: 2",
         "ScaledBorderAndShadow: yes",
         f"PlayResX: {width}",
         f"PlayResY: {height}",
@@ -280,37 +392,39 @@ def write_ass_subtitles(
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     if normal_enabled:
-        for unit in narration.get("units", []):
-            text = ass_escape(
-                ass_wrap_text(
-                    str(unit.get("text", "")),
-                    width=width,
-                    font_size=font_size,
-                    margin_l=_ASS_MARGIN_L,
-                    margin_r=_ASS_MARGIN_R,
-                )
-            )
+        for start, end, text in _normal_dialogues(caption_cues, narration, width, font_size):
             if not text:
                 continue
             lines.append(
                 "Dialogue: 0,"
-                f"{ass_time(float(unit.get('start', 0) or 0))},"
-                f"{ass_time(float(unit.get('end', 0) or 0))},"
+                f"{ass_time(start)},"
+                f"{ass_time(end)},"
                 f"Default,,0,0,0,,{text}"
             )
-    # Emphasis overlays on Layer 1 (above the Layer 0 narration). Each carries the key
-    # phrase itself, timed to the narration sentence StylePlanning matched it to.
+    animation_fallbacks: list[str] = []
+    # Emphasis overlays on Layer 1 (above the Layer 0 narration). Each carries the
+    # key phrase itself, timed to the narration sentence it was matched to.
     if emphasis_enabled:
         for event in overlay_events:
-            text = ass_escape(
-                ass_wrap_text(
-                    str(event.get("text", "")),
-                    width=width,
-                    font_size=emphasis_size,
-                    margin_l=_ASS_MARGIN_L,
-                    margin_r=_ASS_MARGIN_R,
+            rect = event.get("rect")
+            if isinstance(rect, dict) and rect:
+                tags, is_fallback = _overlay_rect_tags(event, width=width, height=height)
+                text = ass_escape(str(event.get("text", "")))
+            else:
+                tags, is_fallback = _overlay_placement_tags(
+                    event, width=width, height=height, subtitle=subtitle
                 )
-            )
+                text = ass_escape(
+                    ass_wrap_text(
+                        str(event.get("text", "")),
+                        width=width,
+                        font_size=emphasis_size,
+                        margin_l=_ASS_MARGIN_L,
+                        margin_r=_ASS_MARGIN_R,
+                    )
+                )
+            if is_fallback:
+                animation_fallbacks.append(str(event.get("event_id") or ""))
             if not text:
                 continue
             lines.append(
@@ -318,10 +432,46 @@ def write_ass_subtitles(
                 f"{ass_time(float(event.get('start', 0) or 0))},"
                 f"{ass_time(float(event.get('end', 0) or 0))},"
                 f"{_overlay_style_name(event.get('style'))},,0,0,0,,"
-                f"{_overlay_override_tags(event, width=width, height=height, subtitle=subtitle)}"
+                f"{tags}"
                 f"{text}"
             )
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return animation_fallbacks
+
+
+def _normal_dialogues(
+    caption_cues: list[dict] | None,
+    narration: dict | None,
+    width: int,
+    font_size: int,
+) -> list[tuple[float, float, str]]:
+    """Yield ``(start, end, ass_text)`` for the normal caption layer.
+
+    Prefers the compiler's pre-broken ``caption_cues``; falls back to the legacy
+    per-unit greedy wrap when only ``narration`` is supplied.
+    """
+    rows: list[tuple[float, float, str]] = []
+    if caption_cues is not None:
+        for cue in caption_cues:
+            text = "\\N".join(ass_escape(line) for line in (cue.get("lines") or []))
+            rows.append(
+                (float(cue.get("start") or 0.0), float(cue.get("end") or 0.0), text)
+            )
+        return rows
+    for unit in (narration or {}).get("units", []):
+        text = ass_escape(
+            ass_wrap_text(
+                str(unit.get("text", "")),
+                width=width,
+                font_size=font_size,
+                margin_l=_ASS_MARGIN_L,
+                margin_r=_ASS_MARGIN_R,
+            )
+        )
+        rows.append(
+            (float(unit.get("start", 0) or 0), float(unit.get("end", 0) or 0), text)
+        )
+    return rows
 
 
 def _subtitle_layer_enabled(subtitle: dict, key: str) -> bool:

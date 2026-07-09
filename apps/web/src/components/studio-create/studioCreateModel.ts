@@ -253,8 +253,8 @@ export function validateStep(step: StudioStep, form: FormState, selectedVoice: s
     return "语速需在 0.5 到 2.0 之间";
   if (step === 3 && form.contentMode === "seedance") return null;
   if (step === 3 && form.normalSubtitleEnabled && (form.subtitleSize < 12 || form.subtitleSize > 96)) return "字幕字号需在 12 到 96 之间";
-  if (step === 3 && form.huaziEnabled && (form.huaziSize < 12 || form.huaziSize > 120)) return "花字字号需在 12 到 120 之间";
-  if (step === 3 && form.huaziEnabled && !/^#[0-9A-Fa-f]{6}$/.test(form.huaziColor)) return "花字颜色需为有效色值";
+  if (step === 3 && effectiveHuaziEnabled(form) && (form.huaziSize < 12 || form.huaziSize > 120)) return "花字字号需在 12 到 120 之间";
+  if (step === 3 && effectiveHuaziEnabled(form) && !/^#[0-9A-Fa-f]{6}$/.test(form.huaziColor)) return "花字颜色需为有效色值";
   if (step === 3 && form.normalSubtitleEnabled && (form.subtitlePositionY < 0.72 || form.subtitlePositionY > 0.92))
     return "字幕位置需在安全区内";
   if (step === 3 && form.bgmEnabled && (form.bgmVolume < 0 || form.bgmVolume > 1)) return "BGM 音量需在 0 到 100% 之间";
@@ -278,6 +278,21 @@ export function contentModeLabel(value: FormState["contentMode"]) {
 export function visualModeLabel(value: FormState["visualMode"]) {
   if (value === "broll_full_coverage") return "纯Broll模式";
   return "数字人模式";
+}
+
+/**
+ * 花字（整句强调 overlay）只有 Agent 智能剪辑链（digital_human_editing_agent_v1）会产出：
+ * 确定性链 digital_human_v2 已冻结、不再派生 overlay 事件，Seedance 无字幕层。前端据此
+ * 隐藏花字开关/设置并在提交时强制 emphasis_enabled=false，避免向后端请求一个当前模板
+ * 不会渲染的花字层。
+ */
+export function supportsEmphasisCaption(mode: FormState["contentMode"]): boolean {
+  return mode === "editing_agent";
+}
+
+/** 当前表单实际会提交的花字启用态（叠加了模板能力约束）。 */
+export function effectiveHuaziEnabled(form: FormState): boolean {
+  return supportsEmphasisCaption(form.contentMode) && form.huaziEnabled;
 }
 
 export function subtitleLabel(value: FormState["subtitleStyle"]) {
@@ -315,7 +330,8 @@ function isLegacySubtitleStyle(value: unknown): value is LegacySubtitleStyle {
  */
 export function mapFormToDefaults(form: FormState): UserGenerationDefaults {
   const fullCoverage = form.visualMode === "broll_full_coverage";
-  const subtitleEnabled = form.normalSubtitleEnabled || form.huaziEnabled;
+  const emphasisEnabled = effectiveHuaziEnabled(form);
+  const subtitleEnabled = form.normalSubtitleEnabled || emphasisEnabled;
   return {
     voice: {
       voice_id: form.voiceId,
@@ -333,7 +349,7 @@ export function mapFormToDefaults(form: FormState): UserGenerationDefaults {
     subtitle: {
       enabled: subtitleEnabled,
       normal_enabled: form.normalSubtitleEnabled,
-      emphasis_enabled: form.huaziEnabled,
+      emphasis_enabled: emphasisEnabled,
       style_preset: form.subtitleStyle,
       font_id: form.subtitleFontId.trim() || null,
       emphasis_font_id: form.huaziFontId.trim() || null,

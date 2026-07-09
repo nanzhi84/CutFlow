@@ -22,9 +22,11 @@ import {
   SUBTITLE_PREVIEW_OUTPUT_WIDTH,
   SUBTITLE_PREVIEW_WIDTH,
   contentModeLabel,
+  effectiveHuaziEnabled,
   emotionOptions,
   subtitlePreviewCssFontSize,
   subtitlePreviewCssOutlineWidth,
+  supportsEmphasisCaption,
   visualModeLabel,
   type FormState,
 } from "./studioCreateModel";
@@ -79,13 +81,13 @@ function useSubtitleFontLabels(form: FormState): SubtitleFontLabels {
 }
 
 function subtitleLayersEnabled(form: FormState) {
-  return form.normalSubtitleEnabled || form.huaziEnabled;
+  return form.normalSubtitleEnabled || effectiveHuaziEnabled(form);
 }
 
 function captionConfigSummary(form: FormState, fontLabels: SubtitleFontLabels) {
   const parts = [];
   if (form.normalSubtitleEnabled) parts.push(`正文 ${fontLabels.normal} ${form.subtitleSize}px`);
-  if (form.huaziEnabled) parts.push(`花字 ${fontLabels.huazi} ${form.huaziSize}px`);
+  if (effectiveHuaziEnabled(form)) parts.push(`花字 ${fontLabels.huazi} ${form.huaziSize}px`);
   return parts.length > 0 ? parts.join(" / ") : "关闭";
 }
 
@@ -309,6 +311,8 @@ export function ProductionStep({
 
 export function PostProcessStep({ form, setField }: { form: FormState; setField: SetField }) {
   const subtitleEnabled = subtitleLayersEnabled(form);
+  const emphasisConfigurable = supportsEmphasisCaption(form.contentMode);
+  const huaziVisible = effectiveHuaziEnabled(form);
   const fontsQuery = useQuery({
     queryKey: ["studio-create", "font-assets"],
     queryFn: () => api.mediaAssets.list({ limit: 200, kind: "font" }),
@@ -336,17 +340,19 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
   return (
     <div className="grid gap-3">
       <SectionTitle icon={Settings2} title="后处理" description="配置字幕、BGM 和封面策略。" />
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div className={emphasisConfigurable ? "grid gap-2 sm:grid-cols-2" : "grid gap-2"}>
         <CompactToggle
           checked={form.normalSubtitleEnabled}
           onChange={(checked) => setField("normalSubtitleEnabled", checked)}
           label="普通字幕"
         />
-        <CompactToggle
-          checked={form.huaziEnabled}
-          onChange={(checked) => setField("huaziEnabled", checked)}
-          label="花字"
-        />
+        {emphasisConfigurable ? (
+          <CompactToggle
+            checked={form.huaziEnabled}
+            onChange={(checked) => setField("huaziEnabled", checked)}
+            label="花字"
+          />
+        ) : null}
       </div>
       {subtitleEnabled ? (
         <div className="grid gap-4 border-y border-border/60 py-3 lg:grid-cols-[minmax(0,1fr)_320px]">
@@ -397,7 +403,7 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
                   </label>
                 </section>
               ) : null}
-              {form.huaziEnabled ? (
+              {huaziVisible ? (
                 <section className="grid gap-2">
                   <p className="text-xs font-semibold text-text-tertiary">花字</p>
                   <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_92px]">
@@ -602,6 +608,7 @@ function CaptionPreview({
   selectedHuaziFont: MediaAssetRecord | null;
   huaziPreviewUrl: string | null;
 }) {
+  const showHuazi = effectiveHuaziEnabled(form);
   const normalFamily = selectedSubtitleFont && subtitlePreviewUrl ? fontFamilyName(selectedSubtitleFont.id) : undefined;
   const huaziFamily = selectedHuaziFont && huaziPreviewUrl ? fontFamilyName(selectedHuaziFont.id) : normalFamily;
   const normalSize = Math.max(12, Math.min(96, form.subtitleSize));
@@ -638,7 +645,7 @@ function CaptionPreview({
               })}
             />
           ) : null}
-          {form.huaziEnabled ? (
+          {showHuazi ? (
             <PreviewText
               text="限时五折"
               style={previewTextStyle({

@@ -2,13 +2,16 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   STORAGE_KEY,
   contentModeLabel,
+  effectiveHuaziEnabled,
   loadStoredForm,
   mapDefaultsToForm,
   mapFormToDefaults,
   subtitleAssFontSize,
   subtitlePreviewCssFontSize,
   subtitlePreviewCssOutlineWidth,
+  supportsEmphasisCaption,
   validateAll,
+  validateStep,
   visualModeLabel,
 } from "./studioCreateModel";
 import type { UserGenerationDefaults } from "./studioCreateModel";
@@ -171,6 +174,48 @@ describe("studioCreateModel", () => {
     expect(form.brollEnabled).toBe(true);
     expect(form.maxInserts).toBe(7);
     expect(validateAll({ ...form, script: "文案", voiceId: "voice_1", maxInserts: 0 }, "voice_1")).toBeNull();
+  });
+
+  it("forces emphasis off under the deterministic template even with huazi toggled on", () => {
+    const base = loadStoredForm();
+    expect(base.contentMode).toBe("deterministic");
+    expect(base.huaziEnabled).toBe(true);
+
+    const defaults = mapFormToDefaults(base);
+    expect(defaults.subtitle?.emphasis_enabled).toBe(false);
+    // 普通字幕默认开启 → 字幕层整体仍启用
+    expect(defaults.subtitle?.enabled).toBe(true);
+
+    // 仅保留（隐藏的）花字、关闭普通字幕时，确定性模板下字幕层整体关闭
+    const huaziOnly = mapFormToDefaults({ ...base, normalSubtitleEnabled: false });
+    expect(huaziOnly.subtitle?.enabled).toBe(false);
+    expect(huaziOnly.subtitle?.emphasis_enabled).toBe(false);
+
+    expect(effectiveHuaziEnabled(base)).toBe(false);
+    expect(supportsEmphasisCaption("deterministic")).toBe(false);
+    expect(supportsEmphasisCaption("seedance")).toBe(false);
+  });
+
+  it("keeps emphasis on under the editing-agent template", () => {
+    const form = { ...loadStoredForm(), contentMode: "editing_agent" as const, huaziEnabled: true };
+    const defaults = mapFormToDefaults(form);
+
+    expect(defaults.subtitle?.emphasis_enabled).toBe(true);
+    expect(effectiveHuaziEnabled(form)).toBe(true);
+    expect(supportsEmphasisCaption("editing_agent")).toBe(true);
+  });
+
+  it("does not block the post-process step on a hidden huazi field", () => {
+    // 确定性模板下花字被隐藏：即便残留一个非法花字色值，也不该拦住第 3 步。
+    const form = {
+      ...loadStoredForm(),
+      contentMode: "deterministic" as const,
+      huaziEnabled: true,
+      huaziColor: "not-a-color",
+    };
+    expect(validateStep(3, form, "voice_1")).toBeNull();
+    // 切到 Agent 智能剪辑后花字重新生效，非法色值应被拦下。
+    expect(validateStep(3, { ...form, contentMode: "editing_agent" }, "voice_1")).toBe("花字颜色需为有效色值");
   });
 
   it("scales subtitle preview font sizes like the final 1080x1920 render", () => {

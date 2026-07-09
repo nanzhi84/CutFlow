@@ -117,6 +117,12 @@ def test_warning_code_is_single_spec_enum_and_degradation_notice_shape():
         # WindowQueryPlanning falls back to deterministic template queries when
         # the LLM path is unavailable.
         "window_query.template_fallback",
+        # Caption Display v2 (issue #188): huazi animation downgraded to a safe
+        # fallback, huazi planning subagent failed (run has no huazi), and font
+        # metrics could not be read so widths are EAW-estimated.
+        "huazi.animation_fallback",
+        "huazi.planning_failed",
+        "font.metrics_fallback",
     }
     assert DegradationCode.font_default_used.value == "font.default_used"
 

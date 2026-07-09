@@ -19,9 +19,11 @@
 - `pipeline/reuse.py` — resume 复用计划；`pipeline/_run_state.py` — 跨节点 `RunState` + `degradation_notice`
 - `pipeline/degradation_policies.py` — 具名降级策略（lipsync 故障转移 / ASR 估算回退 / 封面回退等版本化策略对象）；`pipeline/ephemeral_gc.py` — 终态 run 的 ephemeral 资产 GC
 - `pipeline/_timeline_grid.py` — 帧网格 helper（fps 由调用方传入，`TIMELINE_FPS=30` 在 `planning/editing/frame_grid.py`）；`pipeline/_subtitles.py` — ASS 字幕；`pipeline/_selection.py` — 选材 ledger 条目；`_broll_overlays.py` — `BrollPlanArtifact` 读边界，`overlays` 为 canonical，legacy `segments` 只在这里兼容。
+- Caption Display v2（issue #188）确定性模块群：`pipeline/_caption_display.py`（cue 合并/DP 中文断行/超长拆 cue/花字时段去重的纯编译器）、`pipeline/_font_metrics.py`（fontTools 读 hmtx/hhea，libass cell-height 折算；不可读走 EAW fallback + `font.metrics_fallback`）、`pipeline/_huazi_layout.py`（花字候选框确定性生成，取代 7 锚点白名单）、`pipeline/_huazi_candidates.py`（卖点短语→时间的候选事件派生，2-10 字过滤）。`SubtitleAndBgmMix` 产出 `plan.caption_display` 诊断 artifact。
 - `finished_video_numbering.py` — 成片编号（`V-NNN`）
 
 ## 约定与要求
+- **确定性剪辑链路已冻结（issue #188）**：`digital_human_v2` / `DeterministicEditingPlanning` 的能力边界到此为止——确定性链**不生产花字**（`plan_style.overlay_events` 恒空，deterministic fallback 也不得补花字），除阻断性缺陷、安全、依赖兼容和普通字幕/BGM 维护外不再新增剪辑能力。花字、智能选材、布局、动画等剪辑智能只在 `digital_human_editing_agent_v1` 演进（主 Editing Agent + HuaziPlanningSubagent），不得为兜底把 Agent 能力复制回确定性链。`HuaziPlanningSubagent` 是 `EditingAgentPlanning` 内部第二次 `llm.chat` 调用（prompt 查找键 `HuaziPlanningSubagent`），**不是** DAG 节点；失败显式降级为"本次无花字"（`huazi.planning_failed`）。`SubtitleAndBgmMix` 是两条链共用的通用消费节点，不按 `workflow_template_id` 分支：上游 overlay_events 为空只渲染普通字幕+BGM，非空才渲染花字。
 - 节点是纯 `run(ctx)`：输入读 `ctx.state`，输出经 `ctx.artifact(...)` 落库，跨节点服务只走 `NodeContext`，不直接传 adapter。
 - 降级必须显式上报为 `DegradationNotice`，禁止静默降级；节点 succeeded + 有 degradation 自动标 `degraded`。
 - 确定性选材，不得随机；失败/取消时只释放 uncommitted 预留，committed picks 保留作多样性记忆。

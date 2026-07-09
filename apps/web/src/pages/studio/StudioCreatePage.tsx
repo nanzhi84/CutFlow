@@ -16,6 +16,7 @@ import {
 } from "../../components/studio-create/StudioCreateSteps";
 import {
   STORAGE_KEY,
+  effectiveHuaziEnabled,
   loadStoredForm,
   mapDefaultsToForm,
   mapFormToDefaults,
@@ -155,7 +156,8 @@ export default function StudioCreatePage() {
     const isEditingAgent = form.contentMode === "editing_agent";
     const isFullCoverageBroll = !isSeedance && form.visualMode === "broll_full_coverage";
     const subtitleNormalEnabled = !isSeedance && form.normalSubtitleEnabled;
-    const subtitleEmphasisEnabled = !isSeedance && form.huaziEnabled;
+    // 花字仅 Agent 智能剪辑链会渲染；确定性链 digital_human_v2 与 Seedance 一律不请求花字（D4）。
+    const subtitleEmphasisEnabled = effectiveHuaziEnabled(form);
     return {
       schema_version: "digital_human_video_request.v1",
       case_id: caseId,

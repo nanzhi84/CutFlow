@@ -188,7 +188,11 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
     "PortraitTrackBuild": [ArtifactKind.video_portrait_track],
     "LipSync": [ArtifactKind.video_lipsync, ArtifactKind.lipsync_report],
     "RenderFinalTimeline": [ArtifactKind.video_rendered],
-    "SubtitleAndBgmMix": [ArtifactKind.video_final, ArtifactKind.subtitle_ass],
+    "SubtitleAndBgmMix": [
+        ArtifactKind.video_final,
+        ArtifactKind.subtitle_ass,
+        ArtifactKind.plan_caption_display,
+    ],
     "ExportFinishedVideo": [
         ArtifactKind.video_finished,
         ArtifactKind.cover_image,

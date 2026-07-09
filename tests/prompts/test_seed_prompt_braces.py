@@ -32,8 +32,10 @@ EXPECTED_PROMPT_GROUPS = {
     "editing": {
         # MVP (issue #136): a single editing-agent prompt bound to
         # EditingAgentPlanning; the steady/balanced/fast rhythm variants were
-        # dropped (no rhythm presets exposed).
+        # dropped (no rhythm presets exposed). Caption Display v2 (issue #188) added
+        # the huazi subagent as a second, separate LLM pass.
         "prompt_editing_agent": "prompt.editing.agent",
+        "prompt_huazi_subagent": "prompt.huazi.subagent",
         "prompt_window_query": "prompt.window_query.planning",
     },
 }

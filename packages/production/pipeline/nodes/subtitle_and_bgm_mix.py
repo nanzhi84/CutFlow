@@ -16,11 +16,22 @@ from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.media.assets import store_file
 from packages.media.rendering import validate_rendered_output
 from packages.media.video.ffmpeg import FfmpegCommandError, probe_media
+from packages.production.pipeline._caption_display import (
+    CaptionDisplayResult,
+    compile_caption_display,
+)
 from packages.production.pipeline._ffmpeg import render_final_media
+from packages.production.pipeline._font_metrics import load_font_metrics, make_text_measurer
 from packages.production.pipeline._fonts import ResolvedFont, resolve_subtitle_font
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
-from packages.production.pipeline._subtitles import write_ass_subtitles
+from packages.production.pipeline._subtitles import (
+    _ASS_MARGIN_L,
+    _ASS_MARGIN_R,
+    _subtitle_layer_enabled,
+    ass_font_size,
+    write_ass_subtitles,
+)
 
 # Sentinel font asset id meaning "no real font selected" (StylePlanning emits it
 # with a font.default_used warning); it has no uploaded file to register.
@@ -89,6 +100,7 @@ def run(ctx: NodeContext) -> NodeOutput:
     total_frames = int(timeline.get("total_frames") or 0)
     duration = total_frames / fps if total_frames else float(rendered.media_info.duration_sec or 0)
     subtitle_artifact = None
+    caption_display_payload: dict | None = None
     degradations: list[DegradationNotice] = []
     warnings: list[WarningCode] = []
     try:
@@ -135,18 +147,66 @@ def run(ctx: NodeContext) -> NodeOutput:
                         )
                     )
                     warnings.append(WarningCode.font_resolution_failed)
-                write_ass_subtitles(
+                width = state.request.output.width
+                height = state.request.output.height
+                subtitle_style = (
+                    style.get("subtitle") if isinstance(style.get("subtitle"), dict) else {}
+                ) or {}
+                normal_enabled = _subtitle_layer_enabled(subtitle_style, "normal_enabled")
+                emphasis_enabled = _subtitle_layer_enabled(subtitle_style, "emphasis_enabled")
+                caption_font_size = ass_font_size(subtitle_style.get("font_size"), height=height)
+                # Deterministic wrapping needs per-glyph widths. Only a *selected*
+                # font whose metrics can't be read is a degradation; the default
+                # (Arial, no bundled file) uses the EAW heuristic silently.
+                metrics = load_font_metrics(resolved_font.source_path) if resolved_font else None
+                if resolved_font is not None and metrics is None:
+                    degradations.append(
+                        degradation_notice(
+                            WarningCode.font_metrics_fallback,
+                            "无法读取所选字体度量，已按估算宽度断行（可能与实际渲染略有偏差）。",
+                            node_id=ctx.node_run.node_id,
+                        )
+                    )
+                    warnings.append(WarningCode.font_metrics_fallback)
+                measure, metrics_source = make_text_measurer(metrics, float(caption_font_size))
+                display = compile_caption_display(
+                    units=list(narration.get("units") or []),
+                    resolution=(width, height),
+                    margin_l=_ASS_MARGIN_L,
+                    margin_r=_ASS_MARGIN_R,
+                    measure=measure,
+                    metrics_source=metrics_source,
+                    normal_enabled=normal_enabled,
+                    emphasis_enabled=emphasis_enabled,
+                    overlay_events=list(style.get("overlay_events") or []),
+                )
+                caption_cues = [
+                    {"start": cue.start, "end": cue.end, "lines": cue.lines}
+                    for cue in display.normal_cues
+                ]
+                animation_fallbacks = write_ass_subtitles(
                     subtitle_path,
-                    narration=narration,
                     style=style,
-                    width=state.request.output.width,
-                    height=state.request.output.height,
+                    width=width,
+                    height=height,
+                    caption_cues=caption_cues,
+                    overlay_events=display.emphasis_events,
                     font_name=resolved_font.family_name if resolved_font else None,
                     emphasis_font_name=(
                         resolved_emphasis_font.family_name if resolved_emphasis_font else None
                     ),
-                    overlay_events=style.get("overlay_events"),
                 )
+                if animation_fallbacks:
+                    display.diagnostics.animation_fallbacks = len(animation_fallbacks)
+                    degradations.append(
+                        degradation_notice(
+                            WarningCode.huazi_animation_fallback,
+                            f"{len(animation_fallbacks)} 条花字动画不在白名单，已按无动画渲染。",
+                            node_id=ctx.node_run.node_id,
+                        )
+                    )
+                    warnings.append(WarningCode.huazi_animation_fallback)
+                caption_display_payload = _caption_display_payload(display)
             bgm_path = None
             bgm_plan = style.get("bgm") if isinstance(style.get("bgm"), dict) else {}
             bgm_asset_id = style.get("bgm_asset_id") or (bgm_plan or {}).get("asset_id")
@@ -235,12 +295,53 @@ def run(ctx: NodeContext) -> NodeOutput:
     artifacts = [final]
     if subtitle_artifact is not None:
         artifacts.append(subtitle_artifact)
+    if caption_display_payload is not None:
+        artifacts.append(
+            ctx.artifact(
+                ArtifactKind.plan_caption_display,
+                caption_display_payload,
+                "CaptionDisplayPlan.v1",
+            )
+        )
     return NodeOutput(
         status=NodeStatus.degraded if degradations else NodeStatus.succeeded,
         artifacts=artifacts,
         warnings=warnings,
         degradations=degradations,
     )
+
+
+def _caption_display_payload(display: CaptionDisplayResult) -> dict:
+    """Serialize the compiler result into the ``CaptionDisplayPlan.v1`` payload.
+
+    Emphasis events are already OverlayEvent-shaped dicts (from ``plan_style``),
+    passed through unchanged.
+    """
+
+    def cue(item) -> dict:
+        return {
+            "start": item.start,
+            "end": item.end,
+            "lines": list(item.lines),
+            "source_unit_ids": list(item.source_unit_ids),
+            "suppressed_by": item.suppressed_by,
+        }
+
+    diag = display.diagnostics
+    return {
+        "policy_version": "caption_display_v2",
+        "normal_cues": [cue(item) for item in display.normal_cues],
+        "suppressed_cues": [cue(item) for item in display.suppressed_cues],
+        "emphasis_events": [dict(event) for event in display.emphasis_events],
+        "diagnostics": {
+            "merged_units": diag.merged_units,
+            "split_cues": diag.split_cues,
+            "suppressed_duplicates": diag.suppressed_duplicates,
+            "dropped_fragments": diag.dropped_fragments,
+            "animation_fallbacks": diag.animation_fallbacks,
+            "font_metrics_source": diag.font_metrics_source,
+        },
+    }
 
 
 def _float_or_zero(value) -> float:
