@@ -1607,9 +1607,8 @@ def _compact_huazi_box(box: dict) -> dict:
     }
 
 
-def _huazi_track_summary(windows: dict, selection: EditingSelection) -> list[dict]:
+def _huazi_track_summary(windows: dict) -> list[dict]:
     fps = int(windows.get("fps") or 30) or 30
-    covered_broll = {choice.slot_id for choice in selection.broll}
     summary: list[dict] = []
     for window in windows.get("portrait_windows") or []:
         if not isinstance(window, dict):
@@ -1621,10 +1620,11 @@ def _huazi_track_summary(windows: dict, selection: EditingSelection) -> list[dic
                 "end": round(int(window.get("end_frame", 0) or 0) / fps, 2),
             }
         )
+    # B-roll windows are the final placement facts from TimelineWindowPlanning;
+    # broll selection choices carry slot_ids (bslot_*), not window_ids (bwin_*),
+    # so there is no per-choice filter here — include every placement window.
     for window in windows.get("broll_windows") or []:
         if not isinstance(window, dict):
-            continue
-        if str(window.get("window_id") or "") not in covered_broll:
             continue
         summary.append(
             {
@@ -1702,7 +1702,7 @@ def plan_huazi_overlays(
 
     agent_input = {
         "script": request.script,
-        "track_summary": _huazi_track_summary(agent_context.windows, selection_result.selection),
+        "track_summary": _huazi_track_summary(agent_context.windows),
         "normal_caption_zone": (
             f"普通字幕大致落在画面下方（归一化 y≈{position_y}）；只有 y<{top_y} 的上方区域才是"
             "花字安全区，候选框已按此过滤，不要担心遮挡普通字幕，专注避开人脸主体即可。"

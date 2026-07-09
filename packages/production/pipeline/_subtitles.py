@@ -8,7 +8,6 @@ from typing import Any
 
 from packages.production.pipeline._caption_styles import (
     HUAZI_ANIMATIONS,
-    HUAZI_SFX,
     huazi_placement,
 )
 
@@ -256,11 +255,6 @@ def _rect_anchor(text_align: str, rect: dict, width: int, height: int) -> tuple[
     return 5, int(round((x + w / 2.0) * width)), center_y
 
 
-def _overlay_sfx_id(value: object) -> str:
-    text = str(value or "").strip()
-    return text if text in HUAZI_SFX else "none"
-
-
 def _overlay_rect_tags(event: dict[str, Any], *, width: int, height: int) -> tuple[str, bool]:
     """Override tags for a materialized-rect overlay (D7 render path).
 
@@ -270,8 +264,6 @@ def _overlay_rect_tags(event: dict[str, Any], *, width: int, height: int) -> tup
     rect = event.get("rect") or {}
     align, x, y = _rect_anchor(str(event.get("text_align") or "center"), rect, width, height)
     animation, is_fallback = _resolve_animation(event.get("animation_id"))
-    # sfx intent is recorded upstream but never synthesized here (kept out of ASS).
-    _overlay_sfx_id(event.get("sfx_id"))
     scale = _animation_scale(
         animation, float(event.get("start") or 0.0), float(event.get("end") or 0.0)
     )
@@ -303,7 +295,6 @@ def _overlay_placement_tags(
     animation, is_fallback = _resolve_animation(
         event.get("animation_id"), subtitle.get("default_emphasis_animation_id")
     )
-    _overlay_sfx_id(event.get("sfx_id"))
     tags = [f"\\an{align}"] + _animation_body(animation, x, y, 1.0)
     return "{" + "".join(tags) + "}", is_fallback
 

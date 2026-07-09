@@ -116,7 +116,7 @@ export function CaptionDisplayPanel({ plan }: { plan: CaptionDisplayPlanView | n
       <section className="grid gap-3">
         <h4 className="text-base font-semibold text-text-primary">字幕显示计划</h4>
         <div className="rounded-2xl border border-dashed border-border/70 bg-white/40 px-4 py-6 text-center text-sm text-text-tertiary">
-          旧版本无详细字幕计划
+          本次运行没有字幕显示计划（旧版本任务，或未开启字幕）
         </div>
       </section>
     );
