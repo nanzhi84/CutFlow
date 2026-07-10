@@ -1783,8 +1783,8 @@ def plan_huazi_overlays(
     try:
         for attempt in range(_HUAZI_MAX_REPAIR_ATTEMPTS + 1):
             output = _invoke(errors)
-            choices, overreach = parse_huazi_plan(output)
-            errors = validate_huazi_plan(
+            choices, overreach, parse_errors = parse_huazi_plan(output)
+            errors = parse_errors + validate_huazi_plan(
                 choices,
                 candidate_events=candidate_events,
                 boxes_by_event=boxes_by_event,

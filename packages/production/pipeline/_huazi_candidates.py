@@ -169,25 +169,36 @@ def _as_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def parse_huazi_plan(output: Any) -> tuple[list[HuaziPlanChoice], list[str]]:
-    """Best-effort parse of ``{"huazi": [...]}`` into typed choices + overreach.
+def parse_huazi_plan(
+    output: Any,
+) -> tuple[list[HuaziPlanChoice], list[str], list[str]]:
+    """Parse ``{"huazi": [...]}`` into choices, overreach and shape errors.
 
-    Never raises: garbage entries degrade to being skipped so the validator (not a
-    parse crash) is the single rejection point. Forbidden keys are collected as
-    overreach strings that the validator turns into a repairable error.
+    Never raises. Structural errors are returned separately so the caller can repair
+    malformed provider output without misreporting it as forbidden-field overreach.
+    An explicit empty ``huazi`` list remains a valid "select nothing" response.
     """
-    data = output if isinstance(output, dict) else {}
-    items = data.get("huazi")
+    if not isinstance(output, dict):
+        return [], [], ["huazi response must be a JSON object"]
+    if "huazi" not in output:
+        return [], [], ["huazi response must include a 'huazi' array"]
+    items = output.get("huazi")
+    if not isinstance(items, list):
+        return [], [], ["huazi response field 'huazi' must be an array"]
+
     overreach: list[str] = []
+    parse_errors: list[str] = []
     choices: list[HuaziPlanChoice] = []
-    for item in items if isinstance(items, list) else []:
+    for index, item in enumerate(items):
         if not isinstance(item, dict):
+            parse_errors.append(f"huazi[{index}] must be an object")
             continue
         overreach.extend(
             f"huazi.{key}" for key in sorted(item) if key in _FORBIDDEN_HUAZI_OUTPUT_KEYS
         )
         event_id = _as_str(item.get("event_id"))
         if not event_id:
+            parse_errors.append(f"huazi[{index}].event_id is required")
             continue
         choices.append(
             HuaziPlanChoice(
@@ -198,7 +209,7 @@ def parse_huazi_plan(output: Any) -> tuple[list[HuaziPlanChoice], list[str]]:
                 reason=_as_str(item.get("reason")),
             )
         )
-    return choices, sorted(dict.fromkeys(overreach))
+    return choices, sorted(dict.fromkeys(overreach)), parse_errors
 
 
 def validate_huazi_plan(

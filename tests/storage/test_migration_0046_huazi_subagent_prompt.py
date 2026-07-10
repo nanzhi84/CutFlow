@@ -93,10 +93,13 @@ def test_upgrade_inserts_huazi_subagent_when_missing(db_session_factory):
         binding = session.get(PromptBindingRow, "prompt_binding_prompt_huazi_subagent")
 
     assert template is not None and template.status == "active"
+    assert template.schema_version == "v1"
     assert template.output_schema_ref == {"schema_id": "prompt.huazi.output"}
     assert version is not None and version.status == "published"
+    assert version.schema_version == "v1"
     assert version.content == seed_item["content"]
     assert binding is not None
+    assert binding.schema_version == "v1"
     assert binding.node_id == "HuaziPlanningSubagent"
     assert binding.prompt_version_id == "prompt_huazi_subagent_v1"
 

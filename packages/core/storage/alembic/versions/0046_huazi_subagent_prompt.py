@@ -84,11 +84,11 @@ def upgrade() -> None:
             """
             insert into prompt_templates
                 (id, name, purpose, variables_schema_ref, output_schema_ref, status,
-                 created_at, updated_at)
+                 schema_version, created_at, updated_at)
             values
                 (:id, :name, :purpose,
                  cast(:variables_schema_ref as jsonb), cast(:output_schema_ref as jsonb),
-                 'active', now(), now())
+                 'active', 'v1', now(), now())
             on conflict (id) do nothing
             """
         ),
@@ -107,10 +107,10 @@ def upgrade() -> None:
             """
             insert into prompt_versions
                 (id, prompt_template_id, content, status, changelog,
-                 approved_at, published_at, created_at, updated_at)
+                 approved_at, published_at, schema_version, created_at, updated_at)
             values
                 (:id, :template_id, :content, 'published',
-                 'Seed HuaziPlanningSubagent prompt (#188).', now(), now(), now(), now())
+                 'Seed HuaziPlanningSubagent prompt (#188).', now(), now(), 'v1', now(), now())
             on conflict (id) do nothing
             """
         ),
@@ -126,9 +126,9 @@ def upgrade() -> None:
                 """
                 insert into prompt_bindings
                     (id, prompt_template_id, prompt_version_id, node_id, priority, enabled,
-                     created_at, updated_at)
+                     schema_version, created_at, updated_at)
                 values
-                    (:id, :template_id, :version_id, :node_id, 1, true, now(), now())
+                    (:id, :template_id, :version_id, :node_id, 1, true, 'v1', now(), now())
                 on conflict (id) do nothing
                 """
             ),

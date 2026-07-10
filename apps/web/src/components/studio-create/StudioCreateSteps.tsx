@@ -573,26 +573,28 @@ function CoverModePanel({ value, onChange }: { value: FormState["coverMode"]; on
 }
 
 function useFontPreviewUrl(selectedFont: MediaAssetRecord | null) {
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const selectedAssetId = selectedFont?.id ?? null;
+  const [preview, setPreview] = useState<{ assetId: string; url: string } | null>(null);
   useEffect(() => {
-    if (!selectedFont) {
-      setPreviewUrl(null);
+    if (!selectedAssetId) {
+      setPreview(null);
       return;
     }
     let cancelled = false;
     api.mediaAssets
-      .previewUrl(selectedFont.id)
+      .previewUrl(selectedAssetId)
       .then((response) => {
-        if (!cancelled) setPreviewUrl(toDisplayUrl(response.url));
+        const url = toDisplayUrl(response.url);
+        if (!cancelled) setPreview(url ? { assetId: selectedAssetId, url } : null);
       })
       .catch(() => {
-        if (!cancelled) setPreviewUrl(null);
+        if (!cancelled) setPreview(null);
       });
     return () => {
       cancelled = true;
     };
-  }, [selectedFont]);
-  return previewUrl;
+  }, [selectedAssetId]);
+  return preview?.assetId === selectedAssetId ? preview.url : null;
 }
 
 function CaptionPreview({

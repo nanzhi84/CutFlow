@@ -11,6 +11,37 @@ export type BatchScriptInput = {
   scriptVersionId?: string | null;
 };
 
+export type BatchWorkflowTemplate =
+  | "digital_human_v2"
+  | "digital_human_editing_agent_v1"
+  | "seedance_t2v_v1";
+
+export type BatchSubtitleLayerFlags = {
+  enabled: boolean;
+  normal_enabled: boolean;
+  emphasis_enabled: boolean;
+};
+
+/** Apply the selected workflow's real subtitle capabilities to saved defaults. */
+export function batchSubtitleLayerFlags(
+  workflowTemplate: BatchWorkflowTemplate,
+  panelEnabled: boolean,
+  requestedNormal: boolean,
+  requestedEmphasis: boolean,
+): BatchSubtitleLayerFlags {
+  const supportsSubtitles = workflowTemplate !== "seedance_t2v_v1";
+  const normalEnabled = supportsSubtitles && panelEnabled && requestedNormal;
+  const emphasisEnabled =
+    workflowTemplate === "digital_human_editing_agent_v1" &&
+    panelEnabled &&
+    requestedEmphasis;
+  return {
+    enabled: normalEnabled || emphasisEnabled,
+    normal_enabled: normalEnabled,
+    emphasis_enabled: emphasisEnabled,
+  };
+}
+
 /**
  * Split a pasted multi-script blob into individual scripts. Scripts are
  * separated by one or more blank lines; surrounding whitespace is trimmed and

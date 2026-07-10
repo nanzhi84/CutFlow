@@ -117,7 +117,7 @@ def test_normal_caption_top_y_clamps_position_and_floor():
 # parse_huazi_plan
 # --------------------------------------------------------------------------- #
 def test_parse_valid_selection():
-    choices, overreach = parse_huazi_plan(
+    choices, overreach, parse_errors = parse_huazi_plan(
         {
             "huazi": [
                 {
@@ -131,6 +131,7 @@ def test_parse_valid_selection():
         }
     )
     assert overreach == []
+    assert parse_errors == []
     assert choices == [
         HuaziPlanChoice(
             event_id="hz_001",
@@ -143,25 +144,44 @@ def test_parse_valid_selection():
 
 
 def test_parse_defaults_animation_and_skips_garbage():
-    choices, overreach = parse_huazi_plan(
+    choices, overreach, parse_errors = parse_huazi_plan(
         {"huazi": ["nope", {"layout_box_id": "x"}, {"event_id": "hz_002", "layout_box_id": "b"}]}
     )
     assert overreach == []
+    assert parse_errors == [
+        "huazi[0] must be an object",
+        "huazi[1].event_id is required",
+    ]
     assert len(choices) == 1
     assert choices[0].event_id == "hz_002"
     assert choices[0].animation_id == "pop_in"
 
 
 def test_parse_flags_forbidden_fields_as_overreach():
-    _choices, overreach = parse_huazi_plan(
+    _choices, overreach, parse_errors = parse_huazi_plan(
         {"huazi": [{"event_id": "hz_001", "sfx_id": "ding", "y": 0.5, "text": "改写"}]}
     )
     assert overreach == ["huazi.sfx_id", "huazi.text", "huazi.y"]
+    assert parse_errors == []
 
 
-def test_parse_non_dict_returns_empty():
-    assert parse_huazi_plan(None) == ([], [])
-    assert parse_huazi_plan({"huazi": "nonsense"}) == ([], [])
+def test_parse_rejects_malformed_response_shape_but_allows_explicit_empty_selection():
+    assert parse_huazi_plan(None) == (
+        [],
+        [],
+        ["huazi response must be a JSON object"],
+    )
+    assert parse_huazi_plan({}) == (
+        [],
+        [],
+        ["huazi response must include a 'huazi' array"],
+    )
+    assert parse_huazi_plan({"huazi": "nonsense"}) == (
+        [],
+        [],
+        ["huazi response field 'huazi' must be an array"],
+    )
+    assert parse_huazi_plan({"huazi": []}) == ([], [], [])
 
 
 # --------------------------------------------------------------------------- #

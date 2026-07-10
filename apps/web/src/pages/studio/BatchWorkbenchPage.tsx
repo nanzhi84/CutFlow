@@ -22,6 +22,7 @@ import { StatusPill } from "../../components/ui/StatusPill";
 import { useToast } from "../../components/ui/Toast";
 import {
   BATCH_MAX_ITEMS,
+  batchSubtitleLayerFlags,
   parsePastedScripts,
   summarizeBatchResults,
 } from "../../components/studio-create/batchModel";
@@ -301,6 +302,12 @@ export default function BatchWorkbenchPage() {
     const subtitleEmphasisFontSize = subtitleDefaults?.emphasis_font_size;
     const subtitleNormalEnabled = subtitleDefaults?.normal_enabled ?? true;
     const subtitleEmphasisEnabled = subtitleDefaults?.emphasis_enabled ?? true;
+    const subtitleLayers = batchSubtitleLayerFlags(
+      workflowTemplate,
+      subtitleEnabled,
+      subtitleNormalEnabled,
+      subtitleEmphasisEnabled,
+    );
     const bgmDefaults = defaults?.bgm;
     const lipsyncDefaults = defaults?.lipsync;
     return {
@@ -321,9 +328,7 @@ export default function BatchWorkbenchPage() {
         allow_generic_coverage: brollDefaults?.allow_generic_coverage ?? true,
       },
       subtitle: {
-        enabled: !isSeedance && subtitleEnabled && (subtitleNormalEnabled || subtitleEmphasisEnabled),
-        normal_enabled: !isSeedance && subtitleEnabled ? subtitleNormalEnabled : false,
-        emphasis_enabled: !isSeedance && subtitleEnabled ? subtitleEmphasisEnabled : false,
+        ...subtitleLayers,
         style_preset: subtitleDefaults?.style_preset ?? "douyin",
         font_id: subtitleDefaults?.font_id ?? null,
         emphasis_font_id: subtitleDefaults?.emphasis_font_id ?? null,

@@ -1849,6 +1849,31 @@ def test_huazi_subagent_degrades_after_failed_repair(tmp_path):
     assert diagnostics["huazi_diagnostics"]["reason"] == "unrepairable"
 
 
+def test_huazi_subagent_repairs_then_degrades_on_malformed_payload(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    state = _state_with_emphasis()
+    _disable_llm_reprompt(state)
+    malformed = {"intent": {}}
+    provider = _FakeEditingLlmProvider([{"intent": _MAIN_SELECTION}, malformed, malformed])
+    adapter.provider_gateway.register(provider)
+
+    output = _run_node(adapter, state)
+
+    assert output.status == NodeStatus.degraded
+    assert WarningCode.huazi_planning_failed in output.warnings
+    assert len(provider.calls) == 3
+    assert _payload(output, ArtifactKind.plan_style)["overlay_events"] == []
+    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
+    huazi_diagnostics = diagnostics["huazi_diagnostics"]
+    assert huazi_diagnostics["reason"] == "unrepairable"
+    assert len(huazi_diagnostics["repair_trace"]) == 2
+    assert all(
+        any("must include a 'huazi' array" in error for error in trace["errors"])
+        for trace in huazi_diagnostics["repair_trace"]
+    )
+
+
 def test_huazi_subagent_skipped_when_emphasis_disabled(tmp_path):
     adapter = _adapter(tmp_path)
     _seed_fake_llm_profile(adapter)
