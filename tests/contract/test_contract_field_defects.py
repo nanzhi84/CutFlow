@@ -245,7 +245,10 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
         "enabled": (
             ("packages/production/pipeline/_materialize.py", "request.bgm.enabled"),
             ("packages/production/pipeline/nodes/material_pack_planning.py", "request.bgm.enabled"),
-            ("packages/production/pipeline/nodes/editing_agent_planning.py", "request.bgm.enabled"),
+            (
+                "packages/production/pipeline/nodes/postprocess_agent_planning.py",
+                "state.request.bgm.enabled",
+            ),
         ),
         "bgm_id": (
             ("packages/production/pipeline/_materialize.py", "request.bgm.bgm_id"),
@@ -296,12 +299,15 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
     },
     EditPlanningOptions: {
         "instruction": (
-            ("packages/production/pipeline/_editing_agent.py", "request.edit.instruction"),
+            (
+                "packages/production/pipeline/_media_selection_agent.py",
+                "request.edit.instruction",
+            ),
         ),
         "max_repair_attempts": (
             (
-                "packages/production/pipeline/nodes/editing_agent_planning.py",
-                "request.edit.max_repair_attempts",
+                "packages/production/pipeline/_media_selection_planning.py",
+                "state.request.edit.max_repair_attempts",
             ),
         ),
     },
