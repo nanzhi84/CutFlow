@@ -585,15 +585,26 @@ def test_provider_invoke_records_raw_request_response_and_exact_output():
             self.calls.append(call)
             return invocation, result
 
+    class _StoredInvocation:
+        def model_copy(self, *, update):
+            return SimpleNamespace(**update)
+
     class _Context:
         run = SimpleNamespace(id="run_1", case_id="case_demo")
         node_run = SimpleNamespace(id="node_1", node_id="PostProcessAgentPlanning")
-        repository = SimpleNamespace(provider_invocations={})
+        repository = SimpleNamespace(
+            provider_invocations={"inv_1": _StoredInvocation()}
+        )
         prompt_registry = _PromptRegistry()
         provider_gateway = _Gateway()
 
+        def __init__(self):
+            self.recorded_artifacts = []
+
         def artifact(self, kind, payload, payload_schema):
-            return _artifact(kind, payload, payload_schema)
+            artifact = _artifact(kind, payload, payload_schema)
+            self.recorded_artifacts.append(artifact)
+            return artifact
 
     context = _Context()
     invocation_ids: list[str] = []
@@ -619,6 +630,18 @@ def test_provider_invoke_records_raw_request_response_and_exact_output():
         "prompt_version_id": "prompt_v1",
         "output": output,
     }
+    assert [artifact.kind for artifact in context.recorded_artifacts] == [
+        ArtifactKind.provider_raw_request,
+        ArtifactKind.provider_raw_response,
+    ]
+    request_artifact, response_artifact = context.recorded_artifacts
+    assert request_artifact.payload["attempt"] == 1
+    assert request_artifact.payload["previous_errors"] == ["上一轮错误"]
+    assert response_artifact.payload["provider_invocation_id"] == "inv_1"
+    assert response_artifact.payload["output"] == output
+    linked = context.repository.provider_invocations["inv_1"]
+    assert linked.request_artifact_id == request_artifact.id
+    assert linked.response_artifact_id == response_artifact.id
 
 
 def _artifact(kind: ArtifactKind, payload: dict, payload_schema: str) -> Artifact:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import cv2
 import numpy as np
 import pytest
 
@@ -545,13 +546,20 @@ def test_option_safety_fails_closed_for_invalid_or_unmeasurable_envelopes(monkey
 
 
 def test_visual_geometry_helpers_cover_real_opencv_paths():
-    cv2 = pytest.importorskip("cv2")
     image = np.zeros((240, 320, 3), dtype=np.uint8)
     cv2.putText(image, "SALE 99", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
 
     regions = visual._detect_text_like_regions(cv2, np, image)
-    assert regions is not None
-    assert visual._busy_score(cv2, image, (0.0, 0.0, 0.5, 0.5)) is not None
+    assert regions
+    expected_text_zone = (0.04, 0.25, 0.5, 0.25)
+    assert any(visual._overlap_fraction(expected_text_zone, region) > 0.1 for region in regions)
+    smooth = np.zeros((240, 320, 3), dtype=np.uint8)
+    checker = (np.indices((240, 320)).sum(axis=0) % 2 * 255).astype(np.uint8)
+    textured = np.repeat(checker[:, :, None], 3, axis=2)
+    smooth_score = visual._busy_score(cv2, smooth, (0.0, 0.0, 1.0, 1.0))
+    textured_score = visual._busy_score(cv2, textured, (0.0, 0.0, 1.0, 1.0))
+    assert smooth_score is not None and textured_score is not None
+    assert textured_score > smooth_score
     assert visual._busy_score(cv2, None, (0.0, 0.0, 0.1, 0.1)) is None
     assert visual._text_region_shape_ok(0, 0, 80, 12, 320, 240)
     assert not visual._text_region_shape_ok(0, 0, 2, 2, 320, 240)
