@@ -471,6 +471,156 @@ def test_materialization_error_converges_to_normal_caption_only(monkeypatch):
     assert style["bgm"]["enabled"] is False
 
 
+def test_node_materializes_one_valid_caption_and_exact_bgm_segment(monkeypatch):
+    material = {
+        "bgm_candidates": [
+            _bgm_candidate("asset_song", "clip_1", 0.0, 20.0, "energetic"),
+            _bgm_candidate("asset_song", "clip_2", 25.0, 50.0, "calm"),
+        ]
+    }
+    selected_id = eligible_bgm_candidates(material)[1]["candidate_id"]
+    request = DigitalHumanVideoRequest(
+        case_id="case_demo",
+        script="脚本",
+        voice={"voice_id": "voice_demo"},
+        subtitle={"normal_enabled": True, "emphasis_enabled": True},
+        bgm={"enabled": True},
+    )
+    state = RunState(
+        request=request,
+        artifacts={
+            ArtifactKind.plan_material_pack: _artifact(
+                ArtifactKind.plan_material_pack,
+                material,
+                "MaterialPackArtifact.v1",
+            ),
+            ArtifactKind.plan_caption_windows: _artifact(
+                ArtifactKind.plan_caption_windows,
+                _caption_plan([_window("e1", 0, 30)]),
+                "CaptionWindowsPlan.v1",
+            ),
+        },
+    )
+
+    def _invoke(**kwargs):
+        kwargs["provider_invocation_ids"].append("inv_postprocess")
+        return {
+            "bgm_id": selected_id,
+            "caption_choices": [
+                {
+                    "event_id": "e1",
+                    "caption_option_id": "e1__option",
+                    "priority": 80,
+                    "reason": "关键卖点",
+                }
+            ],
+            "analysis": "舒缓配乐与一次强调",
+        }
+
+    monkeypatch.setattr(postprocess_agent_planning, "_invoke", _invoke)
+
+    class _Context:
+        node_run = SimpleNamespace(node_id="PostProcessAgentPlanning")
+
+        def __init__(self, run_state):
+            self.state = run_state
+
+        def first_available_provider_profile(self, *_args, **_kwargs):
+            return SimpleNamespace(id="profile_llm")
+
+        def artifact(self, kind, payload, payload_schema):
+            return _artifact(kind, payload, payload_schema)
+
+    output = postprocess_agent_planning.run(_Context(state))
+
+    assert output.provider_invocation_ids == ["inv_postprocess"]
+    style = next(
+        artifact.payload
+        for artifact in output.artifacts
+        if artifact.kind == ArtifactKind.plan_style
+    )
+    assert style["bgm_asset_id"] == "asset_song"
+    assert style["bgm"]["segment_id"] == "clip_2"
+    assert [event["event_id"] for event in style["overlay_events"]] == ["e1"]
+    diagnostics = next(
+        artifact.payload
+        for artifact in output.artifacts
+        if artifact.kind == ArtifactKind.plan_postprocess_diagnostics
+    )
+    assert diagnostics["planned"] is True
+    assert diagnostics["candidate_id"] == selected_id
+    assert diagnostics["asset_id"] == "asset_song"
+    assert diagnostics["segment_id"] == "clip_2"
+
+
+def test_provider_invoke_records_raw_request_response_and_exact_output():
+    output = {"bgm_id": None, "caption_choices": [], "analysis": "克制后处理"}
+    prompt_invocation = SimpleNamespace(id="prompt_inv", prompt_version_id="prompt_v1")
+    invocation = SimpleNamespace(
+        id="inv_1",
+        error=None,
+        status=SimpleNamespace(value="succeeded"),
+        provider_profile_id="profile_1",
+        provider_id="dashscope",
+        model_id="qwen",
+        prompt_version_id="prompt_v1",
+    )
+    result = SimpleNamespace(output=output)
+
+    class _PromptRegistry:
+        def __init__(self):
+            self.validated = None
+
+        def render(self, **_kwargs):
+            return prompt_invocation, "rendered postprocess prompt"
+
+        def validate_output(self, **kwargs):
+            self.validated = kwargs
+
+    class _Gateway:
+        def __init__(self):
+            self.calls = []
+
+        def invoke(self, call):
+            self.calls.append(call)
+            return invocation, result
+
+    class _Context:
+        run = SimpleNamespace(id="run_1", case_id="case_demo")
+        node_run = SimpleNamespace(id="node_1", node_id="PostProcessAgentPlanning")
+        repository = SimpleNamespace(provider_invocations={})
+        prompt_registry = _PromptRegistry()
+        provider_gateway = _Gateway()
+
+        def artifact(self, kind, payload, payload_schema):
+            return _artifact(kind, payload, payload_schema)
+
+    context = _Context()
+    invocation_ids: list[str] = []
+    profile = SimpleNamespace(
+        id="profile_1",
+        provider_id="dashscope",
+        model_id="qwen",
+    )
+
+    returned = postprocess_agent_planning._invoke(
+        ctx=context,
+        profile=profile,
+        agent_input={"script": "脚本", "bgm_candidates": [], "caption_windows": []},
+        previous_errors=["上一轮错误"],
+        attempt=1,
+        provider_invocation_ids=invocation_ids,
+    )
+
+    assert returned == output
+    assert invocation_ids == ["inv_1"]
+    assert context.provider_gateway.calls[0].idempotency_key.endswith(":postprocess_agent:1")
+    assert context.prompt_registry.validated == {
+        "prompt_version_id": "prompt_v1",
+        "output": output,
+    }
+
+
 def _artifact(kind: ArtifactKind, payload: dict, payload_schema: str) -> Artifact:
     return Artifact(
         id=f"art_{kind.value}",

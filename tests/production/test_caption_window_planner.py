@@ -466,6 +466,116 @@ def test_visual_safety_fails_closed_when_face_detection_raises(monkeypatch):
     assert result.unavailable_detector == "face"
 
 
+def test_visual_safety_rejects_face_text_and_busy_anchors_independently(monkeypatch):
+    monkeypatch.setattr(visual, "face_detector_available", lambda: True)
+    monkeypatch.setattr(
+        visual,
+        "detect_faces_strict",
+        lambda _image: [
+            FaceDetection(
+                bbox=(0.0, 0.0, 120.0, 120.0),
+                score=0.9,
+                landmarks=(),
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        visual,
+        "_detect_text_like_regions",
+        lambda *_args: [(0.4, 0.4, 0.2, 0.2)],
+    )
+    monkeypatch.setattr(
+        visual,
+        "_busy_score",
+        lambda _cv2, _image, rect: 0.9 if rect[0] > 0.7 else 0.0,
+    )
+    anchors = [
+        {"anchor_id": "face", "rect": {"x": 0.0, "y": 0.0, "w": 0.15, "h": 0.15}},
+        {"anchor_id": "text", "rect": {"x": 0.4, "y": 0.4, "w": 0.2, "h": 0.2}},
+        {"anchor_id": "busy", "rect": {"x": 0.8, "y": 0.2, "w": 0.1, "h": 0.1}},
+        {
+            "anchor_id": "safe",
+            "rect": {"x": 0.2, "y": 0.7, "w": 0.1, "h": 0.1},
+            "text_align": "center",
+        },
+    ]
+
+    result = visual.evaluate_anchor_safety(
+        images=[np.zeros((1000, 1000, 3), dtype=np.uint8) for _ in range(3)],
+        sample_frames=[1, 10, 19],
+        anchors=anchors,
+    )
+
+    assert [anchor["anchor_id"] for anchor in result.anchors] == ["safe"]
+    assert result.rejected_face == 1
+    assert result.rejected_scene_text == 1
+    assert result.rejected_busy == 1
+    assert result.rejected_total == 3
+
+
+def test_option_safety_fails_closed_for_invalid_or_unmeasurable_envelopes(monkeypatch):
+    monkeypatch.setattr(visual, "face_detector_available", lambda: True)
+    monkeypatch.setattr(visual, "detect_faces_strict", lambda _image: [])
+    monkeypatch.setattr(visual, "_detect_text_like_regions", lambda *_args: [])
+    images = [np.zeros((100, 100, 3), dtype=np.uint8) for _ in range(3)]
+
+    invalid = visual.evaluate_option_safety(
+        images=images,
+        sample_frames=[1, 2, 3],
+        option_candidates=[
+            {"caption_option_id": "bad", "safety_envelope": {"x": 0, "y": 0, "w": 0, "h": 1}}
+        ],
+    )
+    assert invalid.options == []
+    assert invalid.rejected_total == 1
+
+    monkeypatch.setattr(visual, "_busy_score", lambda *_args: None)
+    unavailable = visual.evaluate_option_safety(
+        images=images,
+        sample_frames=[1, 2, 3],
+        option_candidates=[
+            {
+                "caption_option_id": "unmeasurable",
+                "safety_envelope": {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2},
+            }
+        ],
+    )
+    assert unavailable.options == []
+    assert unavailable.unavailable_detector == "busy"
+
+
+def test_visual_geometry_helpers_cover_real_opencv_paths():
+    cv2 = pytest.importorskip("cv2")
+    image = np.zeros((240, 320, 3), dtype=np.uint8)
+    cv2.putText(image, "SALE 99", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+
+    regions = visual._detect_text_like_regions(cv2, np, image)
+    assert regions is not None
+    assert visual._busy_score(cv2, image, (0.0, 0.0, 0.5, 0.5)) is not None
+    assert visual._busy_score(cv2, None, (0.0, 0.0, 0.1, 0.1)) is None
+    assert visual._text_region_shape_ok(0, 0, 80, 12, 320, 240)
+    assert not visual._text_region_shape_ok(0, 0, 2, 2, 320, 240)
+    assert visual._merge_regions([(0.1, 0.1, 0.2, 0.1), (0.1, 0.1, 0.2, 0.1)]) == [
+        (0.1, 0.1, 0.2, 0.1)
+    ]
+    assert visual._rect_tuple({"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2}) == (
+        0.1,
+        0.1,
+        0.2,
+        0.2,
+    )
+    assert visual._rect_tuple({"x": -1, "y": 0, "w": 1, "h": 1}) is None
+    assert visual._rect_tuple({"x": "bad", "y": 0, "w": 1, "h": 1}) is None
+    assert visual._overlap_fraction((0, 0, 1, 1), (0.5, 0.5, 1, 1)) == 0.25
+    padded = visual._normalize_padded_bbox((10, 10, 20, 20), 100, 100)
+    assert padded[0] < 0.1 and padded[1] < 0.1
+
+
+def test_short_caption_window_cannot_fake_three_safety_samples():
+    assert visual.sample_frame_indices(5, 7) == []
+    assert visual.sample_frame_indices(5, 8) == [5, 6, 7]
+
+
 def test_caption_window_emits_visual_degradation_on_face_runtime_failure(monkeypatch):
     cv2 = pytest.importorskip("cv2")
     request = DigitalHumanVideoRequest(
