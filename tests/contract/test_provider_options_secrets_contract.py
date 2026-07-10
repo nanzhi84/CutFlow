@@ -111,6 +111,9 @@ def test_warning_code_is_single_spec_enum_and_degradation_notice_shape():
         # only in debug diagnostics.
         "editing_agent.llm_repair",
         "editing_agent.local_constraint_repair",
+        "media_selection_agent.deterministic_fallback",
+        "media_selection_agent.llm_repair",
+        "media_selection_agent.local_constraint_repair",
         # Editing-agent drops B-roll inserts that cannot satisfy the shared geometry
         # policy; surfaced visibly instead of silently losing overlays.
         "broll.insertions_dropped_geometry",
@@ -123,6 +126,10 @@ def test_warning_code_is_single_spec_enum_and_degradation_notice_shape():
         "huazi.animation_fallback",
         "huazi.planning_failed",
         "font.metrics_fallback",
+        # Caption Display v2 active workflow: final-frame visual analysis and the
+        # isolated postprocess Agent expose their own explicit degradations.
+        "caption.visual_analysis_failed",
+        "postprocess.planning_failed",
     }
     assert DegradationCode.font_default_used.value == "font.default_used"
 

@@ -385,7 +385,15 @@ def _min_font_asset(repository, object_store, tmp_path, *, filename="brand.ttf")
     return "asset_font_demo"
 
 
-def _run_mix_node(tmp_path, monkeypatch, *, style_payload, narration_payload, subtitle_request):
+def _run_mix_node(
+    tmp_path,
+    monkeypatch,
+    *,
+    style_payload,
+    narration_payload,
+    subtitle_request,
+    subtitle_filter_available=True,
+):
     repository = Repository()
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr(
@@ -474,6 +482,7 @@ def _run_mix_node(tmp_path, monkeypatch, *, style_payload, narration_payload, su
     captured = {}
 
     def fake_render_final_media(**kwargs):
+        captured["render_calls"] = captured.get("render_calls", 0) + 1
         captured.update(kwargs)
         sub = kwargs.get("subtitle_path")
         captured["subtitle_text"] = sub.read_text(encoding="utf-8") if sub else None
@@ -483,6 +492,10 @@ def _run_mix_node(tmp_path, monkeypatch, *, style_payload, narration_payload, su
     monkeypatch.setattr(
         "packages.production.pipeline.nodes.subtitle_and_bgm_mix.render_final_media",
         fake_render_final_media,
+    )
+    monkeypatch.setattr(
+        "packages.production.pipeline.nodes.subtitle_and_bgm_mix.ffmpeg_filter_available",
+        lambda _name: subtitle_filter_available,
     )
     monkeypatch.setattr(
         "packages.production.pipeline.nodes.subtitle_and_bgm_mix.validate_rendered_output",
@@ -557,6 +570,38 @@ def test_node_emits_caption_display_plan_artifact(tmp_path, monkeypatch):
     # pop_in twin renders its animation; the unknown-animation twin renders static none.
     assert r"{\an5\pos(540,269)\fad(80,120)\t(0,180,\fscx108\fscy108)}限时特惠" in ass
     assert r"{\an5\pos(540,269)}限时特惠" in ass
+
+
+def test_node_probes_missing_subtitle_filter_before_single_render(tmp_path, monkeypatch):
+    output, captured, _repository = _run_mix_node(
+        tmp_path,
+        monkeypatch,
+        style_payload={
+            "subtitle": {
+                "normal_enabled": True,
+                "emphasis_enabled": False,
+                "font_size": 40,
+            },
+            "overlay_events": [],
+        },
+        narration_payload={
+            "source": "estimated",
+            "strict": False,
+            "units": [{"text": "普通字幕", "start": 0.0, "end": 2.0}],
+        },
+        subtitle_request={
+            "enabled": True,
+            "normal_enabled": True,
+            "emphasis_enabled": False,
+        },
+        subtitle_filter_available=False,
+    )
+
+    assert captured["render_calls"] == 1
+    assert captured["subtitle_path"] is None
+    assert captured["fonts_dir"] is None
+    assert WarningCode.subtitle_burn_skipped in output.warnings
+    assert any(artifact.kind == ArtifactKind.subtitle_ass for artifact in output.artifacts)
 
 
 def test_node_reports_font_metrics_fallback_for_unreadable_selected_font(tmp_path, monkeypatch):

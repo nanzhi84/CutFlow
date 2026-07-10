@@ -33,7 +33,11 @@ from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
 from packages.core.workflow import NodeExecutionError
 from packages.production.pipeline import nodes
-from packages.production.pipeline._editing_agent import BrollChoice, EditingSelection, PortraitChoice
+from packages.production.pipeline._editing_agent import (
+    BrollChoice,
+    EditingSelection,
+    PortraitChoice,
+)
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
@@ -363,6 +367,17 @@ def _run_node(adapter: LocalRuntimeAdapter, state: RunState):
     return nodes.editing_agent_planning.run(_node_ctx(adapter, state))
 
 
+def _run_media_selection_node(adapter: LocalRuntimeAdapter, state: RunState):
+    run = _run().model_copy(update={"workflow_template_id": "digital_human_editing_agent_v2"})
+    ctx = NodeContext(
+        adapter=adapter,
+        run=run,
+        node_run=_node_run("MediaSelectionAgentPlanning"),
+        state=state,
+    )
+    return nodes.media_selection_agent_planning.run(ctx)
+
+
 def _payload(output, kind: ArtifactKind) -> dict:
     return next(a.payload for a in output.artifacts if a.kind == kind)
 
@@ -440,12 +455,8 @@ def test_build_context_limits_llm_input_to_retrieval_topk_candidates():
     assert [item["candidate_id"] for item in context.agent_input["portrait_candidates"]] == [
         "pc_001"
     ]
-    assert [item["candidate_id"] for item in context.agent_input["broll_candidates"]] == [
-        "bc_000"
-    ]
-    assert context.agent_input["portrait_slots"][0]["retrieval_topk_candidate_ids"] == [
-        "pc_001"
-    ]
+    assert [item["candidate_id"] for item in context.agent_input["broll_candidates"]] == ["bc_000"]
+    assert context.agent_input["portrait_slots"][0]["retrieval_topk_candidate_ids"] == ["pc_001"]
 
 
 def test_compact_prompt_input_keeps_only_llm_decision_fields():
@@ -482,17 +493,14 @@ def test_compact_prompt_input_keeps_only_llm_decision_fields():
     assert portrait_lines[0] == (
         "candidate_id | asset_id | available_seconds | description | reason"
     )
-    assert portrait_lines[1] == (
-        "pc_000 | portrait_a | 15.0 | 白色上衣稳定口播 | 白色上衣"
-    )
+    assert portrait_lines[1] == ("pc_000 | portrait_a | 15.0 | 白色上衣稳定口播 | 白色上衣")
     broll_lines = compact["broll_candidates"].splitlines()
     assert broll_lines[0] == (
         "candidate_id | asset_id | scene_name | allowed_slot_ids | matched_keywords | "
         "available_seconds | description"
     )
     assert broll_lines[1] == (
-        "bc_000 | broll_x | 工地/施工前 | bslot_000 | 施工前 | 6.0 | "
-        "施工前墙面状态特写"
+        "bc_000 | broll_x | 工地/施工前 | bslot_000 | 施工前 | 6.0 | 施工前墙面状态特写"
     )
     assert "source_start" not in compact["portrait_candidates"]
     assert "source_end" not in compact["broll_candidates"]
@@ -874,9 +882,9 @@ def test_materialize_editing_outputs_runs_after_selection(tmp_path):
         ctx=_node_ctx(adapter, state),
         agent_context=context,
     )
-    default_portrait = state.artifacts[
-        ArtifactKind.plan_timeline_windows
-    ].payload["default_assignment"]["portrait_plan_payload"]
+    default_portrait = state.artifacts[ArtifactKind.plan_timeline_windows].payload[
+        "default_assignment"
+    ]["portrait_plan_payload"]
 
     materialized = nodes.editing_agent_planning.materialize_editing_outputs(
         request=state.request,
@@ -894,9 +902,9 @@ def test_materialize_editing_outputs_runs_after_selection(tmp_path):
 
 def test_fallback_path_emits_five_frame_exact_artifacts(tmp_path):
     state = _state()
-    default_portrait = state.artifacts[
-        ArtifactKind.plan_timeline_windows
-    ].payload["default_assignment"]["portrait_plan_payload"]
+    default_portrait = state.artifacts[ArtifactKind.plan_timeline_windows].payload[
+        "default_assignment"
+    ]["portrait_plan_payload"]
     output = _run_node(_adapter(tmp_path), state)
 
     kinds = {a.kind for a in output.artifacts}
@@ -964,6 +972,109 @@ def test_fallback_path_emits_five_frame_exact_artifacts(tmp_path):
             "reason": "compiler default",
         },
     ]
+
+
+def test_v2_media_selection_emits_media_only_and_does_not_require_creative_intent(tmp_path):
+    state = _state()
+
+    output = _run_media_selection_node(_adapter(tmp_path), state)
+
+    assert {artifact.kind for artifact in output.artifacts} == {
+        ArtifactKind.plan_media_assignment,
+        ArtifactKind.plan_portrait,
+        ArtifactKind.plan_broll,
+        ArtifactKind.plan_media_selection_diagnostics,
+    }
+    assert ArtifactKind.plan_style not in {artifact.kind for artifact in output.artifacts}
+    assignment = _payload(output, ArtifactKind.plan_media_assignment)
+    diagnostics = _payload(output, ArtifactKind.plan_media_selection_diagnostics)
+    assert "bgm_id" not in assignment
+    assert "font_id" not in assignment
+    assert "bgm_id" not in diagnostics
+    assert "huazi_choices" not in diagnostics
+    assert diagnostics["candidate_counts"] == {"portrait": 2, "broll": 1}
+
+
+def test_v2_media_selection_uses_its_own_media_only_prompt(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    provider = _FakeEditingLlmProvider(
+        [
+            {
+                "content": "media selection",
+                "intent": {
+                    "portrait_plan": [
+                        {"slot_id": "pslot_000", "candidate_id": "pc_000", "reason": "fit"},
+                        {"slot_id": "pslot_001", "candidate_id": "pc_001", "reason": "fit"},
+                    ],
+                    "broll_plan": [
+                        {"slot_id": "bslot_000", "candidate_id": "bc_000", "reason": "fit"}
+                    ],
+                    "analysis": "media only",
+                }
+            }
+        ]
+    )
+    adapter.provider_gateway.register(provider)
+
+    output = _run_media_selection_node(adapter, _state())
+
+    assert output.status == NodeStatus.succeeded
+    assert len(output.provider_invocation_ids) == 1
+    assert "bgm_candidates" not in provider.calls[0].input["prompt"]
+    assert {artifact.kind for artifact in output.artifacts} == {
+        ArtifactKind.plan_media_assignment,
+        ArtifactKind.plan_portrait,
+        ArtifactKind.plan_broll,
+        ArtifactKind.plan_media_selection_diagnostics,
+    }
+
+
+def test_v2_media_selection_hard_rejects_postprocess_and_geometry_overreach(monkeypatch, tmp_path):
+    monkeypatch.setenv("CUTAGENT_ALLOW_SANDBOX_FALLBACK", "0")
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    provider = _FakeEditingLlmProvider(
+        [
+            {
+                "content": "invalid overreach",
+                "intent": {
+                    "portrait_plan": [
+                        {
+                            "slot_id": "pslot_000",
+                            "candidate_id": "pc_000",
+                            "reason": "fit",
+                            "start": 0,
+                        },
+                        {
+                            "slot_id": "pslot_001",
+                            "candidate_id": "pc_001",
+                            "reason": "fit",
+                        },
+                    ],
+                    "broll_plan": [
+                        {
+                            "slot_id": "bslot_000",
+                            "candidate_id": "bc_000",
+                            "reason": "fit",
+                            "rect": [0, 0, 1, 1],
+                        }
+                    ],
+                    "analysis": "overreach",
+                    "bgm_id": "bgm_001",
+                }
+            }
+        ]
+    )
+    adapter.provider_gateway.register(provider)
+    state = _state()
+    _disable_llm_reprompt(state)
+
+    with pytest.raises(NodeExecutionError) as exc:
+        _run_media_selection_node(adapter, state)
+
+    assert exc.value.error.code == ErrorCode.prompt_output_invalid
+    assert len(provider.calls) == 1
 
 
 def test_editing_agent_artifacts_feed_timeline_planning(tmp_path):
@@ -1103,8 +1214,7 @@ def test_llm_path_records_broll_window_contract_drops(tmp_path):
     assert output.provider_invocation_ids
     assert WarningCode.broll_insertions_dropped_geometry in output.warnings
     assert any(
-        notice.code == WarningCode.broll_insertions_dropped_geometry
-        and notice.affects_true_yield
+        notice.code == WarningCode.broll_insertions_dropped_geometry and notice.affects_true_yield
         for notice in output.degradations
     )
     broll = _payload(output, ArtifactKind.plan_broll)
@@ -1205,7 +1315,12 @@ def test_llm_path_repairs_full_coverage_to_single_window_sized_candidate(tmp_pat
     assert output.status == NodeStatus.succeeded
     assert WarningCode.editing_agent_local_constraint_repair in output.warnings
     assert [
-        (overlay["window_id"], overlay["asset_id"], overlay["timeline_start_frame"], overlay["timeline_end_frame"])
+        (
+            overlay["window_id"],
+            overlay["asset_id"],
+            overlay["timeline_start_frame"],
+            overlay["timeline_end_frame"],
+        )
         for overlay in broll["overlays"]
     ] == [
         ("bslot_000", "broll_y", 0, 180),
@@ -1764,7 +1879,11 @@ def test_huazi_subagent_makes_second_call_and_materializes_rect(tmp_path):
     assert overlays[0]["layout_box_id"] == box_id
     assert overlays[0]["animation_id"] == "pop_in"
     assert overlays[0]["sfx_id"] == "none"
-    assert overlays[0]["rect"] is not None and overlays[0]["text_align"] in {"left", "center", "right"}
+    assert overlays[0]["rect"] is not None and overlays[0]["text_align"] in {
+        "left",
+        "center",
+        "right",
+    }
     diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
     assert diagnostics["huazi_choices"][0]["event_id"] == "hz_001"
     assert diagnostics["huazi_diagnostics"]["planned"] is True

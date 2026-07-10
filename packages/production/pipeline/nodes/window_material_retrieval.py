@@ -25,7 +25,7 @@ from packages.planning.material import (
     longest_clean_portrait_source_span,
     normalize_vector,
 )
-from packages.production.pipeline._editing_agent import index_candidates
+from packages.production.pipeline._media_selection_agent import index_media_candidates
 from packages.production.pipeline._node_context import NodeContext
 
 _TOP_K = 12
@@ -53,7 +53,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         for item in (queries.get("window_queries") or [])
         if isinstance(item, dict)
     }
-    indexed = index_candidates(material)
+    indexed = index_media_candidates(material)
     allow_sandbox_fallback = sandbox_fallback_allowed()
     profile = ctx.first_available_provider_profile(
         "multimodal.embedding",
@@ -155,9 +155,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             candidates_by_window[window_id] = []
             continue
 
-        candidate_pool = (
-            indexed.portrait_by_id if namespace == "portrait" else indexed.broll_by_id
-        )
+        candidate_pool = indexed.portrait_by_id if namespace == "portrait" else indexed.broll_by_id
         candidates_by_window[window_id] = _retrieve_for_window(
             ctx=ctx,
             namespace=namespace,
@@ -364,10 +362,7 @@ def _retrieved_candidate(
     )
     deterministic_tiebreaker = -float(item.index) / 1_000_000.0
     retrieval_score = (
-        semantic_similarity
-        + recency_adjustment
-        + keyword_adjustment
-        + deterministic_tiebreaker
+        semantic_similarity + recency_adjustment + keyword_adjustment + deterministic_tiebreaker
     )
     return RetrievedWindowCandidate(
         candidate_id=item.candidate_id,
@@ -404,7 +399,10 @@ def _valid_query_embedding(output: Any) -> list[float] | None:
         return None
     if _embedding_dimension(output.get("dimension")) != CLIP_EMBEDDING_DIMENSION:
         return None
-    if str(output.get("normalization") or CLIP_EMBEDDING_NORMALIZATION) != CLIP_EMBEDDING_NORMALIZATION:
+    if (
+        str(output.get("normalization") or CLIP_EMBEDDING_NORMALIZATION)
+        != CLIP_EMBEDDING_NORMALIZATION
+    ):
         return None
     if str(output.get("index_version") or CLIP_INDEX_VERSION) != CLIP_INDEX_VERSION:
         return None
@@ -532,7 +530,9 @@ def _source_frames_available(candidate: dict, *, namespace: str) -> int:
 def _recency_adjustment(candidate: dict) -> float:
     metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
     penalty = _as_float(metadata.get("recency_penalty"))
-    recent_usage = metadata.get("recent_usage") if isinstance(metadata.get("recent_usage"), dict) else {}
+    recent_usage = (
+        metadata.get("recent_usage") if isinstance(metadata.get("recent_usage"), dict) else {}
+    )
     penalty = max(penalty, _as_float(recent_usage.get("recency_penalty")))
     return -0.1 * penalty
 

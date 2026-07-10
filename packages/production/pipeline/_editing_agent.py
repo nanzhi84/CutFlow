@@ -281,6 +281,7 @@ def build_agent_input(
     narration_units: list[dict],
     duration: float,
     retrieval_topk_by_window: dict[str, list[str]] | None = None,
+    include_bgm: bool = True,
 ) -> dict:
     """Assemble the numbered, frame-free structure handed to the LLM.
 
@@ -291,7 +292,7 @@ def build_agent_input(
     IDs only, never authoritative frame values.
     """
     portrait_slots = []
-    for slot in (boundary.get("portrait_slots") or []):
+    for slot in boundary.get("portrait_slots") or []:
         if not isinstance(slot, dict):
             continue
         need = _slot_required_frames(slot)
@@ -312,7 +313,7 @@ def build_agent_input(
         "full_coverage"
     )
     broll_slots = []
-    for slot in (boundary.get("broll_slots") or []):
+    for slot in boundary.get("broll_slots") or []:
         if not isinstance(slot, dict):
             continue
         need = _slot_required_frames(slot)
@@ -386,7 +387,9 @@ def build_agent_input(
                 "score": _as_float(cand.get("score")),
             }
             for cid, cand in candidates.bgm_by_id.items()
-        ],
+        ]
+        if include_bgm
+        else [],
     }
 
 
@@ -402,6 +405,7 @@ def validate_selection(
     retrieval_topk_by_window: dict[str, list[str]] | None = None,
     allow_broll_asset_diversity_reuse: bool = False,
     require_broll_coverage: bool = False,
+    allow_bgm_selection: bool = True,
 ) -> list[str]:
     """Local hard constraints on the LLM's ID-only selection.
 
@@ -443,7 +447,9 @@ def validate_selection(
         if cand is None:
             errors.append(f"portrait window_id '{choice.window_id}' is not a known candidate")
             continue
-        retrieval_topk = set(_topk_for_slot(portrait_slots[choice.slot_id], retrieval_topk_by_window))
+        retrieval_topk = set(
+            _topk_for_slot(portrait_slots[choice.slot_id], retrieval_topk_by_window)
+        )
         if (
             _slot_has_retrieval_constraint(portrait_slots[choice.slot_id], retrieval_topk_by_window)
             and choice.window_id not in retrieval_topk
@@ -556,7 +562,9 @@ def validate_selection(
             + hint_text
         )
 
-    if (
+    if not allow_bgm_selection and selection.bgm_id is not None:
+        errors.append("bgm_plan belongs to PostProcessAgentPlanning, not media selection")
+    elif (
         bgm_enabled
         and selection.bgm_id is not None
         and selection.bgm_id not in candidates.bgm_by_id
@@ -700,6 +708,7 @@ def select_with_repair(
     retrieval_topk_by_window: dict[str, list[str]] | None = None,
     allow_broll_asset_diversity_reuse: bool = False,
     require_broll_coverage: bool = False,
+    allow_bgm_selection: bool = True,
 ) -> tuple[EditingSelection, list[dict], list[str]]:
     """Drive one LLM selection + up to ``max_repair_attempts`` local repairs.
 
@@ -725,6 +734,7 @@ def select_with_repair(
             retrieval_topk_by_window=retrieval_topk_by_window,
             allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
             require_broll_coverage=require_broll_coverage,
+            allow_bgm_selection=allow_bgm_selection,
         )
         trace.append({"attempt": attempt, "error_count": len(errors), "errors": errors})
         if not errors:

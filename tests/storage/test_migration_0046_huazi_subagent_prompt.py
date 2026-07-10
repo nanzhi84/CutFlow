@@ -1,10 +1,9 @@
-"""Regression for the HuaziPlanningSubagent prompt migration (issue #188).
+"""Regression for the Caption Display v2 prompt migration (issue #188).
 
-Caption Display v2 moved huazi planning out of the main editing agent into a
-separate ``HuaziPlanningSubagent`` (a second LLM pass). Migration 0046 keeps
-existing DBs correct on a migrate-only deploy path: it re-syncs the stored
-``prompt_editing_agent_v1`` content to the huazi-free version and inserts the new
-huazi subagent template / version / binding if they are missing.
+Migration 0046 keeps existing DBs correct on a migrate-only deploy path: it
+re-syncs the stored ``prompt_editing_agent_v1`` content to the huazi-free legacy
+v1 prompt, retains the legacy Huazi subagent, and inserts the active-v2 media-only
+and postprocess template / version / binding rows when missing.
 """
 
 from __future__ import annotations
@@ -27,6 +26,27 @@ MIGRATION_PATH = Path(
     "packages/core/storage/alembic/versions/0046_huazi_subagent_prompt.py"
 )
 _SEED_PATH = Path("packages/core/storage/prompt_group_defaults.json")
+
+_PROMPTS = {
+    "prompt_huazi_subagent": {
+        "version_id": "prompt_huazi_subagent_v1",
+        "binding_id": "prompt_binding_prompt_huazi_subagent",
+        "node_id": "HuaziPlanningSubagent",
+        "output_schema_id": "prompt.huazi.output",
+    },
+    "prompt_media_selection_agent": {
+        "version_id": "prompt_media_selection_agent_v1",
+        "binding_id": "prompt_binding_prompt_media_selection_agent",
+        "node_id": "MediaSelectionAgentPlanning",
+        "output_schema_id": "prompt.media_selection.output",
+    },
+    "prompt_postprocess_agent": {
+        "version_id": "prompt_postprocess_agent_v1",
+        "binding_id": "prompt_binding_prompt_postprocess_agent",
+        "node_id": "PostProcessAgentPlanning",
+        "output_schema_id": "prompt.postprocess.output",
+    },
+}
 
 
 def _load_migration():
@@ -75,33 +95,35 @@ def test_upgrade_resyncs_legacy_editing_prompt_to_huazi_free(db_session_factory)
     assert "{narration_units}" in content
 
 
-def test_upgrade_inserts_huazi_subagent_when_missing(db_session_factory):
-    # The reseed baseline already inserts the huazi rows; drop them to exercise the
-    # migrate-only insert path, then assert the migration restores them.
+def test_upgrade_inserts_caption_display_v2_prompts_when_missing(db_session_factory):
+    # The reseed baseline already inserts these rows; drop them to exercise the
+    # migrate-only insert path, then assert the migration restores all three sets.
     with db_session_factory() as session:
-        session.query(PromptBindingRow).filter_by(id="prompt_binding_prompt_huazi_subagent").delete()
-        session.query(PromptVersionRow).filter_by(id="prompt_huazi_subagent_v1").delete()
-        session.query(PromptTemplateRow).filter_by(id="prompt_huazi_subagent").delete()
+        for template_id, expected in _PROMPTS.items():
+            session.query(PromptBindingRow).filter_by(id=expected["binding_id"]).delete()
+            session.query(PromptVersionRow).filter_by(id=expected["version_id"]).delete()
+            session.query(PromptTemplateRow).filter_by(id=template_id).delete()
         session.commit()
 
     _run_upgrade(db_session_factory)
 
-    seed_item = _seed_item("prompt_huazi_subagent_v1")
     with db_session_factory() as session:
-        template = session.get(PromptTemplateRow, "prompt_huazi_subagent")
-        version = session.get(PromptVersionRow, "prompt_huazi_subagent_v1")
-        binding = session.get(PromptBindingRow, "prompt_binding_prompt_huazi_subagent")
+        for template_id, expected in _PROMPTS.items():
+            seed_item = _seed_item(expected["version_id"])
+            template = session.get(PromptTemplateRow, template_id)
+            version = session.get(PromptVersionRow, expected["version_id"])
+            binding = session.get(PromptBindingRow, expected["binding_id"])
 
-    assert template is not None and template.status == "active"
-    assert template.schema_version == "v1"
-    assert template.output_schema_ref == {"schema_id": "prompt.huazi.output"}
-    assert version is not None and version.status == "published"
-    assert version.schema_version == "v1"
-    assert version.content == seed_item["content"]
-    assert binding is not None
-    assert binding.schema_version == "v1"
-    assert binding.node_id == "HuaziPlanningSubagent"
-    assert binding.prompt_version_id == "prompt_huazi_subagent_v1"
+            assert template is not None and template.status == "active"
+            assert template.schema_version == "v1"
+            assert template.output_schema_ref == {"schema_id": expected["output_schema_id"]}
+            assert version is not None and version.status == "published"
+            assert version.schema_version == "v1"
+            assert version.content == seed_item["content"]
+            assert binding is not None
+            assert binding.schema_version == "v1"
+            assert binding.node_id == expected["node_id"]
+            assert binding.prompt_version_id == expected["version_id"]
 
 
 def test_upgrade_is_idempotent(db_session_factory):
@@ -109,15 +131,15 @@ def test_upgrade_is_idempotent(db_session_factory):
     _run_upgrade(db_session_factory)
 
     with db_session_factory.kw["bind"].connect() as conn:
-        template_count = conn.execute(
-            text("select count(*) from prompt_templates where id = 'prompt_huazi_subagent'")
-        ).scalar_one()
-        binding_count = conn.execute(
-            text(
-                "select count(*) from prompt_bindings "
-                "where id = 'prompt_binding_prompt_huazi_subagent'"
-            )
-        ).scalar_one()
+        for template_id, expected in _PROMPTS.items():
+            template_count = conn.execute(
+                text("select count(*) from prompt_templates where id = :id"),
+                {"id": template_id},
+            ).scalar_one()
+            binding_count = conn.execute(
+                text("select count(*) from prompt_bindings where id = :id"),
+                {"id": expected["binding_id"]},
+            ).scalar_one()
 
-    assert template_count == 1
-    assert binding_count == 1
+            assert template_count == 1
+            assert binding_count == 1

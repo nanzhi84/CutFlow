@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  batchLipsyncEnabled,
   batchSubtitleLayerFlags,
   buildBatchRequest,
   parsePastedScripts,
@@ -56,7 +57,7 @@ describe("batchModel", () => {
 
   it("keeps huazi-only defaults for editing-agent batch runs", () => {
     expect(
-      batchSubtitleLayerFlags("digital_human_editing_agent_v1", true, false, true),
+      batchSubtitleLayerFlags("digital_human_editing_agent_v2", true, false, true),
     ).toEqual({
       enabled: true,
       normal_enabled: false,
@@ -71,11 +72,20 @@ describe("batchModel", () => {
       emphasis_enabled: false,
     });
     expect(
-      batchSubtitleLayerFlags("digital_human_editing_agent_v1", false, true, true),
+      batchSubtitleLayerFlags("digital_human_editing_agent_v2", false, true, true),
     ).toEqual({
       enabled: false,
       normal_enabled: false,
       emphasis_enabled: false,
     });
+  });
+
+  it("keeps LipSync enabled for both digital-human templates", () => {
+    expect(batchLipsyncEnabled("digital_human_v2", "insert")).toBe(true);
+    expect(batchLipsyncEnabled("digital_human_editing_agent_v2", "insert")).toBe(true);
+    expect(batchLipsyncEnabled("digital_human_editing_agent_v2", "full_coverage")).toBe(
+      false,
+    );
+    expect(batchLipsyncEnabled("seedance_t2v_v1", "insert")).toBe(false);
   });
 });

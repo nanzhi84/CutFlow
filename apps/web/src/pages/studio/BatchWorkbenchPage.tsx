@@ -22,6 +22,7 @@ import { StatusPill } from "../../components/ui/StatusPill";
 import { useToast } from "../../components/ui/Toast";
 import {
   BATCH_MAX_ITEMS,
+  batchLipsyncEnabled,
   batchSubtitleLayerFlags,
   parsePastedScripts,
   summarizeBatchResults,
@@ -63,7 +64,7 @@ type BatchRow = {
 
 const workflowOptions = [
   { value: "digital_human_v2", label: "主链" },
-  { value: "digital_human_editing_agent_v1", label: "剪辑 Agent" },
+  { value: "digital_human_editing_agent_v2", label: "剪辑 Agent" },
   { value: "seedance_t2v_v1", label: "Seedance" },
 ] as const;
 
@@ -343,7 +344,7 @@ export default function BatchWorkbenchPage() {
         auto_mix: bgmDefaults?.auto_mix ?? true,
       },
       lipsync: {
-        enabled: workflowTemplate === "digital_human_v2" && brollMode !== "full_coverage",
+        enabled: batchLipsyncEnabled(workflowTemplate, brollMode),
         provider_profile_id: lipsyncDefaults?.provider_profile_id ?? "runninghub.heygem.prod",
         timeout_minutes: lipsyncDefaults?.timeout_minutes ?? 30,
       },

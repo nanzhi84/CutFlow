@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from packages.production.pipeline.nodes import (
     broll_planning,
+    caption_window_planning,
     deterministic_editing_planning,
     editing_agent_planning,
     export_finished_video,
@@ -18,9 +19,11 @@ from packages.production.pipeline.nodes import (
     lipsync,
     load_case_context,
     material_pack_planning,
+    media_selection_agent_planning,
     narration_alignment,
     narration_boundary_planning,
     portrait_track_build,
+    postprocess_agent_planning,
     render_final_timeline,
     resolve_creative_intent,
     seedance_generate_video,
@@ -36,6 +39,7 @@ from packages.production.pipeline.nodes import (
 
 __all__ = [
     "broll_planning",
+    "caption_window_planning",
     "deterministic_editing_planning",
     "editing_agent_planning",
     "export_finished_video",
@@ -44,9 +48,11 @@ __all__ = [
     "lipsync",
     "load_case_context",
     "material_pack_planning",
+    "media_selection_agent_planning",
     "narration_alignment",
     "narration_boundary_planning",
     "portrait_track_build",
+    "postprocess_agent_planning",
     "render_final_timeline",
     "resolve_creative_intent",
     "seedance_generate_video",

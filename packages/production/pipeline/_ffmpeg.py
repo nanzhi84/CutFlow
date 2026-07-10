@@ -10,7 +10,12 @@ from typing import Any
 
 from packages.media.audio.loudness import measure_loudness_lufs
 from packages.media.rendering import _escape_subtitle_filter_value, render_slot
-from packages.media.video.ffmpeg import FfmpegRunner, ffmpeg_base_args
+from packages.media.video.ffmpeg import (
+    FfmpegCommandError,
+    FfmpegRunner,
+    ffmpeg_base_args,
+    ffmpeg_bin,
+)
 
 logger = logging.getLogger("packages.production.pipeline._ffmpeg")
 
@@ -25,6 +30,25 @@ AUTO_MIX_DUCKING_RATIO = 8.0
 # LUFS target as-is"; higher/lower shifts it as a taste preference.
 AUTO_MIX_NEUTRAL_VOLUME = 0.3
 BGM_FILTER_SAMPLE_RATE = 48000
+
+
+def ffmpeg_filter_available(filter_name: str) -> bool:
+    """Probe one ffmpeg filter before starting an expensive final render."""
+
+    expected = str(filter_name or "").strip()
+    if not expected:
+        return False
+    try:
+        result = FfmpegRunner(timeout_sec=10).run(
+            [ffmpeg_bin(), "-hide_banner", "-filters"]
+        )
+    except FfmpegCommandError:
+        return False
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[1] == expected:
+            return True
+    return False
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:

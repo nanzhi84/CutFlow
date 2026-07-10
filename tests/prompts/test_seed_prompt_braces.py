@@ -32,10 +32,13 @@ EXPECTED_PROMPT_GROUPS = {
     "editing": {
         # MVP (issue #136): a single editing-agent prompt bound to
         # EditingAgentPlanning; the steady/balanced/fast rhythm variants were
-        # dropped (no rhythm presets exposed). Caption Display v2 (issue #188) added
-        # the huazi subagent as a second, separate LLM pass.
+        # dropped (no rhythm presets exposed). Caption Display v2 (issue #188) keeps
+        # the huazi subagent only for legacy v1 runs and gives active v2 media and
+        # postprocess planning independent prompts.
         "prompt_editing_agent": "prompt.editing.agent",
         "prompt_huazi_subagent": "prompt.huazi.subagent",
+        "prompt_media_selection_agent": "prompt.media_selection.agent",
+        "prompt_postprocess_agent": "prompt.postprocess.agent",
         "prompt_window_query": "prompt.window_query.planning",
     },
 }
@@ -103,6 +106,31 @@ def test_prompt_group_seed_does_not_change_existing_bindings():
         assert (binding.prompt_template_id, binding.prompt_version_id, binding.node_id) == expected
 
 
+def test_caption_display_v2_seed_prompts_bind_to_separate_responsibility_nodes():
+    repository = Repository()
+
+    expected_bindings = {
+        "prompt_binding_prompt_huazi_subagent": (
+            "prompt_huazi_subagent",
+            "prompt_huazi_subagent_v1",
+            "HuaziPlanningSubagent",
+        ),
+        "prompt_binding_prompt_media_selection_agent": (
+            "prompt_media_selection_agent",
+            "prompt_media_selection_agent_v1",
+            "MediaSelectionAgentPlanning",
+        ),
+        "prompt_binding_prompt_postprocess_agent": (
+            "prompt_postprocess_agent",
+            "prompt_postprocess_agent_v1",
+            "PostProcessAgentPlanning",
+        ),
+    }
+    for binding_id, expected in expected_bindings.items():
+        binding = repository.prompt_bindings[binding_id]
+        assert (binding.prompt_template_id, binding.prompt_version_id, binding.node_id) == expected
+
+
 def test_seeded_ai_cover_prompt_targets_9_16():
     content = Repository().prompt_versions["prompt_cover_ai_cover_v1"].content
 
@@ -136,6 +164,49 @@ def test_editing_agent_seed_prompt_documents_line_candidate_format_and_json_outp
     assert "每个 B-roll slot 最多只能输出一条 candidate_id" in content
     assert "available_seconds >= required_seconds" in content
     assert "同一 slot 可以输出多条不同 candidate_id" not in content
+
+
+def test_media_selection_agent_prompt_is_media_only():
+    repository = Repository()
+    content = repository.prompt_versions["prompt_media_selection_agent_v1"].content
+    hints = prompt_variable_hints("prompt_media_selection_agent")
+    output_example = content.rsplit("只输出如下 JSON：", 1)[1]
+
+    assert _format_fields(content) == set(hints)
+    assert "bgm_candidates" not in hints
+    assert "caption_windows" not in hints
+    assert "portrait_plan" in output_example
+    assert "broll_plan" in output_example
+    assert "analysis" in output_example
+    assert "legal_candidate_ids" in content
+    assert '"candidate_id": "pc_000"' in output_example
+    assert "legal_window_ids" not in content
+    assert '"window_id"' not in output_example
+    assert '"source_mode"' not in output_example
+    assert '"confidence"' not in output_example
+    assert '"matched_keywords"' not in output_example
+    assert "bgm_id" not in output_example
+    assert "bgm_plan" not in output_example
+    assert "caption_option_id" not in output_example
+    assert "严格职责边界" in content
+
+
+def test_postprocess_agent_prompt_selects_only_bgm_and_complete_caption_option_ids():
+    repository = Repository()
+    content = repository.prompt_versions["prompt_postprocess_agent_v1"].content
+    hints = prompt_variable_hints("prompt_postprocess_agent")
+    output_example = content.rsplit("只输出如下 JSON：", 1)[1]
+
+    assert hints == ["script", "bgm_candidates", "caption_windows", "repair_feedback"]
+    assert _format_fields(content) == set(hints)
+    assert '"bgm_id"' in output_example
+    assert '"caption_choices"' in output_example
+    assert '"caption_option_id"' in output_example
+    assert '"analysis"' in output_example
+    assert '"font"' not in output_example
+    assert '"rect"' not in output_example
+    assert '"animation_id"' not in output_example
+    assert "三个顶层字段 bgm_id、caption_choices、analysis 必须全部显式存在" in content
 
 
 def test_prompt_template_view_exposes_seed_variable_hints():

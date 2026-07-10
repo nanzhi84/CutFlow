@@ -25,7 +25,8 @@ Case 是账号、品牌、素材、脚本、指标和学习反馈的长期边界
 系统保留主链模板和专用生成模板；纯 B-roll 画外音不再是独立模板，而是主链的 `broll.mode="full_coverage"`：
 
 - `digital_human_v2`：主链数字人成片。
-- `digital_human_editing_agent_v1`：主链的剪辑 Agent 指派变体。
+- `digital_human_editing_agent_v2`：活动剪辑 Agent 链；媒体选择与成片字幕/BGM 后处理拥有独立规划、调用、修复和复用边界。
+- `digital_human_editing_agent_v1`：仅保留给历史任务恢复的 legacy 模板，不再接受新任务。
 - `seedance_t2v_v1`：Seedance 文生视频链路。
 
 **素材和媒体内核**

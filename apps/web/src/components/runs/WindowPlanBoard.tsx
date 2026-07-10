@@ -142,6 +142,7 @@ export function buildWindowBoard(detail: RunDetailResponse | undefined, clips: E
 }
 
 function engineBadge(engine?: string): { label: string; className: string } | null {
+  if (engine === "media_selection_agent_llm") return { label: "媒体选择 Agent 指派", className: "badge-info" };
   if (engine === "editing_agent_llm") return { label: "LLM 剪辑 Agent 指派", className: "badge-info" };
   if (engine === "deterministic_default") return { label: "确定性算法指派", className: "badge bg-white/70 text-text-secondary" };
   if (engine === "deterministic_fallback") return { label: "确定性兜底指派（LLM 失败）", className: "badge-warning" };

@@ -66,7 +66,7 @@
 当前状态：
 
 - 主生产模板是 `digital_human_v2`。
-- 额外模板包括 `digital_human_editing_agent_v1` 和 `seedance_t2v_v1`；纯 B-roll 画外音走主链 `broll.mode="full_coverage"`。
+- 活动扩展模板包括 `digital_human_editing_agent_v2` 和 `seedance_t2v_v1`；`digital_human_editing_agent_v1` 仅用于历史任务恢复；纯 B-roll 画外音走主链 `broll.mode="full_coverage"`。
 - 素材选择确定性执行，并用 selection ledger 做近期降权。
 - Provider 调用经 `ProviderGateway`，prompt 经 `PromptRegistry`。
 - 真实 provider 需要 profile 和 active secret；sandbox fallback 只在显式配置时启用。

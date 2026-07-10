@@ -48,9 +48,15 @@ from packages.core.contracts.artifacts import NarrationUnit
 from packages.core.storage import Repository
 from packages.core.storage.object_store import get_object_store
 from packages.core.storage.repository import new_id
-from packages.core.workflow import NodeExecutionError, NodeOutput, WorkflowRuntimeAdapter, manifest_hash
+from packages.core.workflow import (
+    NodeExecutionError,
+    NodeOutput,
+    WorkflowRuntimeAdapter,
+    manifest_hash,
+)
 from packages.production.pipeline.node_sequence import (
     EDITING_AGENT_SEQUENCE,
+    EDITING_AGENT_V2_SEQUENCE,
     NODE_SEQUENCE,
     SEEDANCE_T2V_SEQUENCE,
     _linear_edges,
@@ -93,7 +99,9 @@ __all__ = [
     "NODE_SEQUENCE",
     "SEEDANCE_T2V_SEQUENCE",
     "EDITING_AGENT_SEQUENCE",
+    "EDITING_AGENT_V2_SEQUENCE",
     "digital_human_template",
+    "editing_agent_v2_template",
     "seedance_t2v_template",
     "template_for",
     "LocalRuntimeAdapter",
@@ -119,10 +127,13 @@ NODE_HANDLERS = {
     "BrollPlanning": nodes.broll_planning.run,
     "StylePlanning": nodes.style_planning.run,
     "EditingAgentPlanning": nodes.editing_agent_planning.run,
+    "MediaSelectionAgentPlanning": nodes.media_selection_agent_planning.run,
     "TimelinePlanning": nodes.timeline_planning.run,
     "PortraitTrackBuild": nodes.portrait_track_build.run,
     "LipSync": nodes.lipsync.run,
     "RenderFinalTimeline": nodes.render_final_timeline.run,
+    "CaptionWindowPlanning": nodes.caption_window_planning.run,
+    "PostProcessAgentPlanning": nodes.postprocess_agent_planning.run,
     "SubtitleAndBgmMix": nodes.subtitle_and_bgm_mix.run,
     "ExportFinishedVideo": nodes.export_finished_video.run,
     "SeedanceGenerateVideo": nodes.seedance_generate_video.run,
@@ -139,6 +150,8 @@ _PROVIDER_SIDE_EFFECT_NODES = {
     "ExportFinishedVideo",
     "SeedanceGenerateVideo",
     "EditingAgentPlanning",
+    "MediaSelectionAgentPlanning",
+    "PostProcessAgentPlanning",
     "WindowQueryPlanning",
     "WindowMaterialRetrieval",
 }
@@ -151,6 +164,7 @@ _TIMELINE_REUSE_BREAK_NODES = {
     "BrollPlanning",
     "TimelinePlanning",
     "EditingAgentPlanning",
+    "MediaSelectionAgentPlanning",
 }
 _MATERIAL_PACK_RETRY_POLICY = RetryPolicy(
     max_attempts=3,
@@ -184,10 +198,21 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
         ArtifactKind.plan_style,
         ArtifactKind.plan_editing_diagnostics,
     ],
+    "MediaSelectionAgentPlanning": [
+        ArtifactKind.plan_media_assignment,
+        ArtifactKind.plan_portrait,
+        ArtifactKind.plan_broll,
+        ArtifactKind.plan_media_selection_diagnostics,
+    ],
     "TimelinePlanning": [ArtifactKind.plan_timeline, ArtifactKind.plan_render],
     "PortraitTrackBuild": [ArtifactKind.video_portrait_track],
     "LipSync": [ArtifactKind.video_lipsync, ArtifactKind.lipsync_report],
     "RenderFinalTimeline": [ArtifactKind.video_rendered],
+    "CaptionWindowPlanning": [ArtifactKind.plan_caption_windows],
+    "PostProcessAgentPlanning": [
+        ArtifactKind.plan_style,
+        ArtifactKind.plan_postprocess_diagnostics,
+    ],
     "SubtitleAndBgmMix": [
         ArtifactKind.video_final,
         ArtifactKind.subtitle_ass,
@@ -290,10 +315,15 @@ def editing_agent_template() -> WorkflowTemplate:
     return _build_template("digital_human_editing_agent_v1", "v1", EDITING_AGENT_SEQUENCE)
 
 
+def editing_agent_v2_template() -> WorkflowTemplate:
+    return _build_template("digital_human_editing_agent_v2", "v1", EDITING_AGENT_V2_SEQUENCE)
+
+
 _TEMPLATE_BUILDERS = {
     "digital_human_v2": digital_human_template,
     "seedance_t2v_v1": seedance_t2v_template,
     "digital_human_editing_agent_v1": editing_agent_template,
+    "digital_human_editing_agent_v2": editing_agent_v2_template,
 }
 
 
@@ -386,7 +416,9 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                 media_info = probe_media(path)
                 stored = store_file(get_object_store(), path, purpose="seed-media", addressed=True)
             except FfmpegCommandError as exc:
-                raise NodeExecutionError(exc.error_code, "Demo seed media generation failed.") from exc
+                raise NodeExecutionError(
+                    exc.error_code, "Demo seed media generation failed."
+                ) from exc
             artifact = self.repository.create_artifact(
                 kind=ArtifactKind.uploaded_file,
                 payload_schema="UploadedFileArtifact.v1",
@@ -437,11 +469,18 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             reuse_plan=ReusePlan.model_validate(reuse_plan),
         )
 
-    def cancel_run(self, run_id: str, *, force: bool = False, reason: str | None = None) -> WorkflowRun:
+    def cancel_run(
+        self, run_id: str, *, force: bool = False, reason: str | None = None
+    ) -> WorkflowRun:
         run = self.repository.runs[run_id]
         if run.status == RunStatus.cancelled:
             return run
-        if run.status not in {RunStatus.created, RunStatus.admitted, RunStatus.running, RunStatus.cancelling}:
+        if run.status not in {
+            RunStatus.created,
+            RunStatus.admitted,
+            RunStatus.running,
+            RunStatus.cancelling,
+        }:
             raise NodeExecutionError(
                 ErrorCode.workflow_invalid_transition,
                 f"Run {run_id} cannot be cancelled from {run.status}.",
@@ -531,9 +570,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             self._complete_run(run_id)
         return self._node_activity_summary(run_id, node_id)
 
-    def apply_reuse_plan(
-        self, run_id: str, source_run_id: str, reuse_plan: ReusePlan
-    ) -> dict:
+    def apply_reuse_plan(self, run_id: str, source_run_id: str, reuse_plan: ReusePlan) -> dict:
         run = self.repository.runs[run_id]
         request = self._request(self.repository.jobs[run.job_id])
         state = _RunState(request=request)
@@ -545,7 +582,9 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             "rerun_from_node_id": reuse_plan.rerun_from_node_id,
         }
 
-    def request_cancel(self, run_id: str, *, force: bool = False, reason: str | None = None) -> WorkflowRun:
+    def request_cancel(
+        self, run_id: str, *, force: bool = False, reason: str | None = None
+    ) -> WorkflowRun:
         return self.cancel_run(run_id, force=force, reason=reason)
 
     def _sync_snapshot(self, run_id: str) -> None:
@@ -571,18 +610,20 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         edges = [(edge.from_node_id, edge.to_node_id) for edge in template.edges]
         return topological_node_order(node_ids, edges)
 
-    def _next_unfinished_node_id(
-        self, run: WorkflowRun, node_runs: list[NodeRun]
-    ) -> str | None:
+    def _next_unfinished_node_id(self, run: WorkflowRun, node_runs: list[NodeRun]) -> str | None:
         """First template node not yet completed — the node that was due to run."""
         done = {
             node_run.node_id
             for node_run in node_runs
             if node_run.status in {NodeStatus.succeeded, NodeStatus.skipped, NodeStatus.degraded}
         }
-        return next((node_id for node_id in self._sequence_for_run(run) if node_id not in done), None)
+        return next(
+            (node_id for node_id in self._sequence_for_run(run) if node_id not in done), None
+        )
 
-    def mark_run_failed(self, run_id: str, *, reason: str = "Worker lost or node activity timed out.") -> WorkflowRun:
+    def mark_run_failed(
+        self, run_id: str, *, reason: str = "Worker lost or node activity timed out."
+    ) -> WorkflowRun:
         """Fail a run whose node activity died without writing a terminal status.
 
         Used by the Temporal workflow when a ``run_node`` activity is lost to an
@@ -608,7 +649,11 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         # failed entry for the next node that was due to run.
         node_runs = self.repository.node_runs.setdefault(run_id, [])
         running_index = next(
-            (i for i in range(len(node_runs) - 1, -1, -1) if node_runs[i].status == NodeStatus.running),
+            (
+                i
+                for i in range(len(node_runs) - 1, -1, -1)
+                if node_runs[i].status == NodeStatus.running
+            ),
             None,
         )
         if running_index is not None:
@@ -656,7 +701,10 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                 "workflow.node.failed",
                 "run",
                 run_id,
-                {"node_id": failed_node.node_id, "error_code": ErrorCode.workflow_worker_lost.value},
+                {
+                    "node_id": failed_node.node_id,
+                    "error_code": ErrorCode.workflow_worker_lost.value,
+                },
                 dedupe_key=f"{failed_node.id}:{NodeStatus.failed.value}",
                 event_type="node_update",
                 node_id=failed_node.node_id,
@@ -806,7 +854,9 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         try:
             if not self._may_skip_without_running(node_id, state):
                 assert_transition("node", node_run.status, NodeStatus.running)
-                node_run = node_run.model_copy(update={"status": NodeStatus.running, "updated_at": utcnow()})
+                node_run = node_run.model_copy(
+                    update={"status": NodeStatus.running, "updated_at": utcnow()}
+                )
                 self.repository.node_runs[run.id][-1] = node_run
                 self.repository.create_event(
                     "workflow.node.updated",
@@ -858,7 +908,8 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                     "provider_invocation_ids": output.provider_invocation_ids,
                     "warnings": output.warnings,
                     "degradations": output.degradations,
-                    "degradation_reason": "; ".join(item.message for item in output.degradations) or None,
+                    "degradation_reason": "; ".join(item.message for item in output.degradations)
+                    or None,
                     "finished_at": utcnow(),
                     "updated_at": utcnow(),
                 }
@@ -1042,7 +1093,9 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                     status=RunStatus.cancelled,
                 )
             except Exception:
-                logger.warning("Failed to write cancelled report for run %s.", run_id, exc_info=True)
+                logger.warning(
+                    "Failed to write cancelled report for run %s.", run_id, exc_info=True
+                )
             self._terminal_ephemeral_gc(run_id, state, terminal_status=RunStatus.cancelled)
         record_workflow_run(self.repository.runs[run.id])
         self.repository.create_event(
@@ -1066,7 +1119,11 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
     def _node_activity_summary(self, run_id: str, node_id: str) -> dict:
         run = self.repository.runs[run_id]
         latest = next(
-            (node for node in reversed(self.repository.node_runs.get(run_id, [])) if node.node_id == node_id),
+            (
+                node
+                for node in reversed(self.repository.node_runs.get(run_id, []))
+                if node.node_id == node_id
+            ),
             None,
         )
         return {
@@ -1193,7 +1250,9 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             raise NodeExecutionError(ErrorCode.artifact_missing, "Media asset is missing.")
         asset = self.repository.media_assets.get(asset_id)
         if asset is None:
-            raise NodeExecutionError(ErrorCode.artifact_missing, f"Media asset is missing: {asset_id}")
+            raise NodeExecutionError(
+                ErrorCode.artifact_missing, f"Media asset is missing: {asset_id}"
+            )
         if not asset.source_artifact_id:
             raise NodeExecutionError(
                 ErrorCode.artifact_missing,
@@ -1213,7 +1272,9 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         try:
             return local_object_path(get_object_store(), artifact.uri)
         except ValueError as exc:
-            raise NodeExecutionError(ErrorCode.artifact_missing, "Artifact URI is not locally readable.") from exc
+            raise NodeExecutionError(
+                ErrorCode.artifact_missing, "Artifact URI is not locally readable."
+            ) from exc
 
     def _narration_units_from_segments(
         self,

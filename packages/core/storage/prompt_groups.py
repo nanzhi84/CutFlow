@@ -36,14 +36,20 @@ class PromptGroupSeed:
 #   - editing_agent prompt (EditingAgentPlanning) -> digital_human_editing_agent_v1
 #     LLM综合剪辑 node (issue #136).
 #   - huazi_subagent prompt (HuaziPlanningSubagent) -> EditingAgentPlanning's second
-#     LLM pass that plans emphasis captions (issue #188). The pseudo node_id is not
-#     a workflow node; it is the render() lookup key for the in-node subagent.
+#     LLM pass kept only for ``digital_human_editing_agent_v1`` resume compatibility.
+#     The pseudo node_id is not a workflow node; it is the legacy render() lookup key.
+#   - media_selection_agent prompt (MediaSelectionAgentPlanning) -> v2 media-only
+#     portrait / B-roll ID selection.
+#   - postprocess_agent prompt (PostProcessAgentPlanning) -> v2 one-pass BGM plus
+#     complete caption-option ID selection.
 #   - window query prompt (WindowQueryPlanning) -> per-window retrieval intent text.
 # This default seed only covers the in-memory runtime path.
 SEEDED_TEMPLATE_NODE_BINDINGS: dict[str, str] = {
     "prompt_cover_ai_cover": "PublishCover.ai_cover",
     "prompt_editing_agent": "EditingAgentPlanning",
     "prompt_huazi_subagent": "HuaziPlanningSubagent",
+    "prompt_media_selection_agent": "MediaSelectionAgentPlanning",
+    "prompt_postprocess_agent": "PostProcessAgentPlanning",
     "prompt_window_query": "WindowQueryPlanning",
 }
 

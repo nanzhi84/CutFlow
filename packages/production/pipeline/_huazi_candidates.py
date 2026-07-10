@@ -5,9 +5,9 @@ functions:
 
 1. ``derive_huazi_candidates`` places each emphasis phrase onto the narration
    sentence that contains it (moved out of ``style_planning`` in Caption Display
-   v2). The deterministic editing chain no longer derives huazi at all; this is
-   the single candidate source, consumed only by ``EditingAgentPlanning``'s second
-   LLM pass (the HuaziPlanningSubagent).
+   v2). The deterministic editing chain no longer derives huazi; the active v2
+   path further quantizes and validates these candidates in CaptionWindowPlanning,
+   while the frozen v1 path keeps its historical HuaziPlanningSubagent consumer.
 
 2. Parse / validate / finalize the subagent's ID-only selection. The subagent may
    only pick an ``event_id`` + ``layout_box_id`` + ``animation_id`` + ``priority``;

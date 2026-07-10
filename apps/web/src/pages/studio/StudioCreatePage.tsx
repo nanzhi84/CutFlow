@@ -168,7 +168,7 @@ export default function StudioCreatePage() {
       workflow_template_id: isSeedance
         ? "seedance_t2v_v1"
         : isEditingAgent
-            ? "digital_human_editing_agent_v1"
+            ? "digital_human_editing_agent_v2"
             : "digital_human_v2",
       reference_asset_ids: isSeedance ? form.seedanceReferenceAssetIds : [],
       voice: {
@@ -217,7 +217,7 @@ export default function StudioCreatePage() {
         portrait_insufficient_policy: "hard_fail",
       },
       edit: {
-        // Only consumed by digital_human_editing_agent_v1's EditingAgentPlanning node;
+        // Only consumed by digital_human_editing_agent_v2's media-selection agent;
         // ignored by other templates. Free-text steering, empty unless the editing-agent
         // template is selected.
         instruction: isEditingAgent ? form.editInstruction.trim() : "",

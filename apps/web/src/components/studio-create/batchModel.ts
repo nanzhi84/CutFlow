@@ -13,7 +13,7 @@ export type BatchScriptInput = {
 
 export type BatchWorkflowTemplate =
   | "digital_human_v2"
-  | "digital_human_editing_agent_v1"
+  | "digital_human_editing_agent_v2"
   | "seedance_t2v_v1";
 
 export type BatchSubtitleLayerFlags = {
@@ -21,6 +21,14 @@ export type BatchSubtitleLayerFlags = {
   normal_enabled: boolean;
   emphasis_enabled: boolean;
 };
+
+/** LipSync is available on both digital-human templates, never on Seedance/full coverage. */
+export function batchLipsyncEnabled(
+  workflowTemplate: BatchWorkflowTemplate,
+  brollMode: "insert" | "full_coverage",
+): boolean {
+  return workflowTemplate !== "seedance_t2v_v1" && brollMode !== "full_coverage";
+}
 
 /** Apply the selected workflow's real subtitle capabilities to saved defaults. */
 export function batchSubtitleLayerFlags(
@@ -32,7 +40,7 @@ export function batchSubtitleLayerFlags(
   const supportsSubtitles = workflowTemplate !== "seedance_t2v_v1";
   const normalEnabled = supportsSubtitles && panelEnabled && requestedNormal;
   const emphasisEnabled =
-    workflowTemplate === "digital_human_editing_agent_v1" &&
+    workflowTemplate === "digital_human_editing_agent_v2" &&
     panelEnabled &&
     requestedEmphasis;
   return {

@@ -2,8 +2,9 @@
 
 Caption Display v2 (issue #188) froze the deterministic chain out of huazi: this
 node no longer derives any emphasis overlay events (``overlay_events`` is always
-empty). Huazi is planned exclusively by the ``EditingAgentPlanning`` chain's
-HuaziPlanningSubagent.
+empty). The active Agent v2 chain plans presentation after the final composite in
+``CaptionWindowPlanning`` + ``PostProcessAgentPlanning``; the old in-node Huazi
+subagent exists only in the frozen v1 compatibility workflow.
 """
 
 from __future__ import annotations

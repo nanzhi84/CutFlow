@@ -74,7 +74,7 @@ class CaptionCueData:
     start: float
     end: float
     lines: list[str]
-    source_unit_ids: list[int]
+    source_unit_ids: list[int | str]
     suppressed_by: str | None = None
 
 
@@ -467,6 +467,73 @@ def compile_caption_display(
         normal_cues, suppressed_cues = _dedup(normal_cues, emphasis_events, diag)
 
     normal_cues.sort(key=lambda c: (c.start, c.end))
+    return CaptionDisplayResult(
+        normal_cues=normal_cues,
+        suppressed_cues=suppressed_cues,
+        emphasis_events=emphasis_events,
+        diagnostics=diag,
+    )
+
+
+def compile_planned_caption_display(
+    *,
+    caption_windows: dict,
+    normal_enabled: bool,
+    emphasis_enabled: bool,
+    overlay_events: list[dict],
+) -> CaptionDisplayResult:
+    """Materialize an already-planned caption track for the renderer.
+
+    ``CaptionWindowPlanning`` owns cue merge/split/wrap and publishes authoritative
+    frame windows.  This function deliberately performs no text layout and no font
+    IO: it only converts the persisted frame windows to seconds and, in mixed mode,
+    applies the existing deterministic pure-time suppression policy.
+    """
+
+    fps = max(1, int(caption_windows.get("fps") or 30))
+    diagnostics_payload = (
+        caption_windows.get("diagnostics")
+        if isinstance(caption_windows.get("diagnostics"), dict)
+        else {}
+    )
+    diag = CaptionDisplayDiagnostics(
+        merged_units=int(diagnostics_payload.get("merged_units") or 0),
+        split_cues=int(diagnostics_payload.get("split_cues") or 0),
+        font_metrics_source=str(
+            diagnostics_payload.get("font_metrics_source") or "eaw_fallback"
+        ),
+    )
+
+    normal_cues: list[CaptionCueData] = []
+    if normal_enabled:
+        for window in caption_windows.get("normal_windows") or []:
+            if not isinstance(window, dict):
+                continue
+            start_frame = max(0, int(window.get("start_frame") or 0))
+            end_frame = max(start_frame, int(window.get("end_frame") or 0))
+            if end_frame <= start_frame:
+                continue
+            lines = [str(line) for line in (window.get("lines") or []) if str(line)]
+            if not lines:
+                continue
+            source_ids = [
+                item for item in (window.get("source_unit_ids") or []) if item is not None
+            ]
+            normal_cues.append(
+                CaptionCueData(
+                    start=start_frame / fps,
+                    end=end_frame / fps,
+                    lines=lines,
+                    source_unit_ids=source_ids,
+                )
+            )
+
+    emphasis_events = list(overlay_events) if emphasis_enabled else []
+    suppressed_cues: list[CaptionCueData] = []
+    if normal_enabled and emphasis_enabled and emphasis_events:
+        normal_cues, suppressed_cues = _dedup(normal_cues, emphasis_events, diag)
+
+    normal_cues.sort(key=lambda cue: (cue.start, cue.end, tuple(map(str, cue.source_unit_ids))))
     return CaptionDisplayResult(
         normal_cues=normal_cues,
         suppressed_cues=suppressed_cues,

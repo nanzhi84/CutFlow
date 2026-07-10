@@ -48,7 +48,7 @@ export type FormState = {
   lipsyncEnabled: boolean;
   lipsyncTimeoutMinutes: number;
   // Per-video extra editing instruction for the LLM editing-agent template
-  // (contentMode === "editing_agent" -> digital_human_editing_agent_v1). Free text,
+  // (contentMode === "editing_agent" -> digital_human_editing_agent_v2). Free text,
   // optional; submitted as DigitalHumanVideoRequest.edit.instruction. It is per-video
   // content, not a saved preference, so it stays out of UserGenerationDefaults.
   editInstruction: string;
@@ -281,7 +281,7 @@ export function visualModeLabel(value: FormState["visualMode"]) {
 }
 
 /**
- * 花字（整句强调 overlay）只有 Agent 智能剪辑链（digital_human_editing_agent_v1）会产出：
+ * 花字（整句强调 overlay）只有 Agent 智能剪辑链（digital_human_editing_agent_v2）会产出：
  * 确定性链 digital_human_v2 已冻结、不再派生 overlay 事件，Seedance 无字幕层。前端据此
  * 隐藏花字开关/设置并在提交时强制 emphasis_enabled=false，避免向后端请求一个当前模板
  * 不会渲染的花字层。

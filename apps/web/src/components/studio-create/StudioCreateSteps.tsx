@@ -145,8 +145,8 @@ export function ScriptStep({
 
 export function TemplateStep({ form, setField, caseId }: { form: FormState; setField: SetField; caseId: string }) {
   const contentModeOptions: Array<{ value: FormState["contentMode"]; label: string; detail: string }> = [
-    { value: "deterministic", label: "确定算法剪辑", detail: "规则算法按脚本、时间线和案例素材稳定规划人像 / B-roll / 花字 / BGM。" },
-    { value: "editing_agent", label: "Agent智能剪辑", detail: "剪辑 Agent 结合额外要求统一规划人像 / B-roll / 花字表现 / BGM。" },
+    { value: "deterministic", label: "确定算法剪辑", detail: "规则算法按脚本、时间线和案例素材稳定规划人像 / B-roll，并完成普通字幕与 BGM。" },
+    { value: "editing_agent", label: "Agent智能剪辑", detail: "媒体 Agent 选择人像 / B-roll；成片后由独立后处理 Agent 选择花字表现与 BGM。" },
     { value: "seedance", label: "seedance文生视频", detail: "一次性生成 15s / 3:4 / 720p 短片，可纯文本出片，也可附参考图。" },
   ];
   const isDeterministic = form.contentMode === "deterministic";

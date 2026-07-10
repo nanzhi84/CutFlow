@@ -1,14 +1,15 @@
 """Deterministic huazi (emphasis caption) layout box generator.
 
-Produces the candidate placement boxes a huazi planning agent chooses from. This
+Produces the geometric seed boxes that CaptionWindowPlanning filters against the
+final composite before a postprocess Agent may choose a complete option. This
 is the position source of truth for huazi and supersedes the static 7-anchor
 whitelist in ``_caption_styles.HUAZI_PLACEMENTS`` (kept only for legacy
 placement_id rendering). Pure function, no IO, no randomness.
 
 The grid is 5 vertical bands x 3 horizontal anchors x 3 width tiers. Boxes whose
 estimated text width exceeds their capacity, or that intrude into the normal
-caption safety zone, are dropped. Survivors are ranked by a static collision
-score (lower = safer) and capped at 24 candidates.
+caption safety zone, are dropped. Survivors are ranked by a static prior and
+capped at 24; they are not considered safe until final-frame analysis passes.
 """
 
 from __future__ import annotations

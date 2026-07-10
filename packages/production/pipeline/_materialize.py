@@ -13,6 +13,8 @@ The B-roll and style helpers are shared by both paths. They contain no
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from typing import Any
 
@@ -478,11 +480,9 @@ def materialize_style_from_selection(
     font_id: str | None = None,
     bgm_id: str | None = None,
     target_bgm_mood: str | None = None,
+    strict_bgm_selection: bool = False,
 ) -> tuple[dict, list[WarningCode], list[DegradationNotice]]:
-    raw_bgm_candidates = [
-        item for item in (material.get("bgm_candidates") or []) if item.get("asset_id")
-    ]
-    bgm_candidates = [item for item in raw_bgm_candidates if _is_segmented_bgm_candidate(item)]
+    bgm_candidates = eligible_bgm_candidates(material)
 
     warnings: list[WarningCode] = []
     degradations: list[DegradationNotice] = []
@@ -501,18 +501,30 @@ def materialize_style_from_selection(
             )
         )
 
-    selected_bgm = (
-        _select_bgm_candidate(
+    requested_bgm_id = bgm_id if strict_bgm_selection else (bgm_id or request.bgm.bgm_id)
+    selected_bgm = None
+    if request.bgm.enabled and strict_bgm_selection and requested_bgm_id:
+        selected_bgm = next(
+            (
+                candidate
+                for candidate in bgm_candidates
+                if candidate.get("candidate_id") == requested_bgm_id
+            ),
+            None,
+        )
+    elif request.bgm.enabled and not strict_bgm_selection:
+        selected_bgm = _select_bgm_candidate(
             bgm_candidates,
-            requested_asset_id=bgm_id or request.bgm.bgm_id,
+            requested_asset_id=requested_bgm_id,
             script=request.script,
             target_mood=target_bgm_mood,
         )
-        if request.bgm.enabled
-        else None
-    )
     bgm_asset_id = selected_bgm.get("asset_id") if selected_bgm else None
-    if request.bgm.enabled and not bgm_asset_id:
+    if (
+        request.bgm.enabled
+        and not bgm_asset_id
+        and (not strict_bgm_selection or requested_bgm_id is not None)
+    ):
         degradations.append(
             DegradationNotice(
                 code=WarningCode.bgm_skipped_library_unannotated,
@@ -561,7 +573,10 @@ def materialize_style_from_selection(
             default_emphasis_animation_id="pop_in",
         ),
         bgm=BgmPlan(
-            enabled=request.bgm.enabled,
+            enabled=bool(
+                request.bgm.enabled
+                and (bgm_asset_id is not None or not strict_bgm_selection)
+            ),
             asset_id=bgm_asset_id,
             segment_id=_str_or_none(bgm_metadata.get("clip_id")),
             source_start=_float_or_none(bgm_metadata.get("source_start")),
@@ -589,6 +604,40 @@ def materialize_style_from_selection(
         overlay_events=overlay_events,
     ).model_dump(mode="json")
     return payload, warnings, degradations
+
+
+def eligible_bgm_candidates(material: dict) -> list[dict]:
+    """Return BGM candidates that can be materialized as a real source segment."""
+
+    return [
+        {**item, "candidate_id": stable_bgm_candidate_id(item)}
+        for item in (material.get("bgm_candidates") or [])
+        if isinstance(item, dict)
+        and item.get("asset_id")
+        and _is_segmented_bgm_candidate(item)
+    ]
+
+
+def stable_bgm_candidate_id(candidate: dict) -> str:
+    """Stable identity for one exact BGM source segment, not merely its asset."""
+
+    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    identity = json.dumps(
+        [
+            str(candidate.get("asset_id") or ""),
+            str(metadata.get("clip_id") or ""),
+            _stable_float(metadata.get("source_start")),
+            _stable_float(metadata.get("source_end")),
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return "bgmseg_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+
+
+def _stable_float(value: Any) -> str:
+    resolved = _float_or_none(value)
+    return f"{resolved:.6f}" if resolved is not None else ""
 
 
 def _candidate_group(candidates, attribute: str) -> dict[str, dict]:

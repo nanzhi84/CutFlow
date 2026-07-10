@@ -23,6 +23,7 @@ from packages.production.pipeline import digital_human as dh
 from packages.production.pipeline import node_sequence as ns
 from packages.production.pipeline.node_sequence import (
     EDITING_AGENT_SEQUENCE,
+    EDITING_AGENT_V2_SEQUENCE,
     NODE_SEQUENCE,
     SEEDANCE_T2V_SEQUENCE,
     ready_nodes,
@@ -40,7 +41,7 @@ REGISTERED_TEMPLATE_IDS = tuple(ns.WORKFLOW_GRAPHS.keys())
 
 @pytest.mark.parametrize(
     "sequence",
-    [NODE_SEQUENCE, SEEDANCE_T2V_SEQUENCE, EDITING_AGENT_SEQUENCE],
+    [NODE_SEQUENCE, SEEDANCE_T2V_SEQUENCE, EDITING_AGENT_SEQUENCE, EDITING_AGENT_V2_SEQUENCE],
 )
 def test_linear_template_topological_order_equals_its_sequence(sequence):
     edges = ns._linear_edges(sequence)
@@ -227,6 +228,28 @@ def test_editing_agent_template_replaces_legacy_planning_nodes():
     assert "PortraitPlanning" not in node_ids
     assert "BrollPlanning" not in node_ids
     assert "StylePlanning" not in node_ids
+
+
+def test_editing_agent_v2_separates_media_and_postprocess_planning():
+    template = dh.template_for("digital_human_editing_agent_v2")
+    node_ids = [spec.node_id for spec in template.nodes]
+
+    assert node_ids == EDITING_AGENT_V2_SEQUENCE
+    assert "EditingAgentPlanning" not in node_ids
+    assert node_ids[node_ids.index("WindowMaterialRetrieval") + 1] == (
+        "MediaSelectionAgentPlanning"
+    )
+    assert node_ids[node_ids.index("RenderFinalTimeline") + 1 :][:3] == [
+        "CaptionWindowPlanning",
+        "PostProcessAgentPlanning",
+        "SubtitleAndBgmMix",
+    ]
+    by_id = {spec.node_id: spec for spec in template.nodes}
+    assert by_id["MediaSelectionAgentPlanning"].reuse_policy == "never"
+    assert by_id["CaptionWindowPlanning"].reuse_policy == "strict"
+    assert by_id["PostProcessAgentPlanning"].reuse_policy == "strict"
+    assert "provider_call" in by_id["MediaSelectionAgentPlanning"].side_effects
+    assert "provider_call" in by_id["PostProcessAgentPlanning"].side_effects
 
 
 def test_validate_template_rejects_node_without_handler():

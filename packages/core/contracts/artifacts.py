@@ -241,9 +241,7 @@ class ClipEmbeddingRecord(ContractModel):
         if self.embedding_dimension != 1024:
             raise ValueError("clip embedding dimension must be 1024")
         if len(self.embedding) != self.embedding_dimension:
-            raise ValueError(
-                "clip embedding vector length must equal embedding_dimension"
-            )
+            raise ValueError("clip embedding vector length must equal embedding_dimension")
         if not all(math.isfinite(float(value)) for value in self.embedding):
             raise ValueError("clip embedding vector must contain only finite values")
         return self
@@ -291,6 +289,15 @@ class MediaAssignmentPlan(ContractModel):
     broll: list[MediaBrollAssignment] = Field(default_factory=list)
     font_id: str | None = None
     bgm_id: str | None = None
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
+class MediaSelectionAssignmentPlan(ContractModel):
+    """Active v2 media-only assignment; post-process choices cannot enter this type."""
+
+    engine: Literal["media_selection_agent_llm", "deterministic_fallback"]
+    portrait: list[MediaPortraitAssignment] = Field(default_factory=list)
+    broll: list[MediaBrollAssignment] = Field(default_factory=list)
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -393,10 +400,18 @@ class BrollPlanArtifact(ContractModel):
 class OverlayRect(ContractModel):
     # Normalised 0..1 box relative to the output canvas; materialized geometry the
     # renderer consumes directly (falls back to placement_id when absent).
-    x: float
-    y: float
-    w: float
-    h: float
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=1.0)
+    w: float = Field(gt=0.0, le=1.0)
+    h: float = Field(gt=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_canvas_bounds(self) -> "OverlayRect":
+        if self.x + self.w > 1.0 + 1e-9:
+            raise ValueError("normalized rect exceeds canvas width")
+        if self.y + self.h > 1.0 + 1e-9:
+            raise ValueError("normalized rect exceeds canvas height")
+        return self
 
 
 class OverlayEvent(ContractModel):
@@ -433,21 +448,210 @@ class StylePlanArtifact(ContractModel):
     overlay_events: list[OverlayEvent] = Field(default_factory=list)
 
 
+class NormalCaptionWindow(ContractModel):
+    """Frame-authoritative, display-ready normal-caption window.
+
+    CaptionWindowPlanning owns cue merge/split/wrap decisions. Downstream renderers
+    consume these lines and frames directly instead of recomputing layout from raw
+    narration units.
+    """
+
+    window_id: str = Field(min_length=1)
+    normalized_text: str = Field(min_length=1)
+    start_frame: int = Field(ge=0)
+    end_frame: int = Field(gt=0)
+    lines: list[str] = Field(min_length=1, max_length=2)
+    source_unit_ids: list[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_window(self) -> "NormalCaptionWindow":
+        if self.end_frame <= self.start_frame:
+            raise ValueError("normal caption end_frame must be greater than start_frame")
+        if any(not line.strip() for line in self.lines):
+            raise ValueError("normal caption lines must be non-empty")
+        return self
+
+
+class CaptionAnchorCandidate(ContractModel):
+    """A locally proven-safe placement candidate exposed to the postprocess Agent."""
+
+    anchor_id: str = Field(min_length=1)
+    rect: OverlayRect
+    text_align: Literal["left", "center", "right"] = "center"
+    allowed_animation_ids: list[str] = Field(default_factory=list)
+    region_tags: list[str] = Field(default_factory=list)
+    face_overlap: float = Field(0.0, ge=0.0, le=1.0)
+    scene_text_overlap: float = Field(0.0, ge=0.0, le=1.0)
+    busy_score: float = Field(0.0, ge=0.0, le=1.0)
+    sample_frames: list[int] = Field(default_factory=list)
+
+
+class CaptionOption(ContractModel):
+    """Opaque complete presentation choice; the Agent selects only its id."""
+
+    caption_option_id: str = Field(min_length=1)
+    anchor_id: str = Field(min_length=1)
+    typography_variant_id: str = Field(min_length=1)
+    animation_id: str = Field(min_length=1)
+
+
+class EmphasisCaptionWindow(ContractModel):
+    """Fixed-frame emphasis event and its locally validated presentation options."""
+
+    event_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    normalized_text: str = Field(min_length=1)
+    start_frame: int = Field(ge=0)
+    end_frame: int = Field(gt=0)
+    source_unit_ids: list[str] = Field(min_length=1)
+    anchor_candidates: list[CaptionAnchorCandidate] = Field(default_factory=list)
+    caption_options: list[CaptionOption] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_window_options(self) -> "EmphasisCaptionWindow":
+        if self.end_frame <= self.start_frame:
+            raise ValueError("emphasis caption end_frame must be greater than start_frame")
+        anchors = {candidate.anchor_id for candidate in self.anchor_candidates}
+        if len(anchors) != len(self.anchor_candidates):
+            raise ValueError("emphasis caption anchor_id values must be unique")
+        option_ids = {option.caption_option_id for option in self.caption_options}
+        if len(option_ids) != len(self.caption_options):
+            raise ValueError("emphasis caption option ids must be unique")
+        unknown_anchors = sorted(
+            {option.anchor_id for option in self.caption_options if option.anchor_id not in anchors}
+        )
+        if unknown_anchors:
+            raise ValueError(
+                "caption options reference unknown anchors: " + ", ".join(unknown_anchors)
+            )
+        allowed_by_anchor = {
+            candidate.anchor_id: set(candidate.allowed_animation_ids)
+            for candidate in self.anchor_candidates
+        }
+        disallowed_animations = sorted(
+            {
+                f"{option.anchor_id}:{option.animation_id}"
+                for option in self.caption_options
+                if option.animation_id not in allowed_by_anchor.get(option.anchor_id, set())
+            }
+        )
+        if disallowed_animations:
+            raise ValueError(
+                "caption options use animations not allowed by their anchors: "
+                + ", ".join(disallowed_animations)
+            )
+        return self
+
+
+class CaptionWindowDiagnostics(ContractModel):
+    """Deterministic compiler and final-frame visual-analysis diagnostics."""
+
+    merged_units: int = Field(0, ge=0)
+    split_cues: int = Field(0, ge=0)
+    font_metrics_source: Literal["hmtx", "eaw_fallback"] = "hmtx"
+    sampled_frames: int = Field(0, ge=0)
+    generated_anchor_candidates: int = Field(0, ge=0)
+    rejected_anchor_candidates: int = Field(0, ge=0)
+    visual_analysis_failed: bool = False
+    emphasis_candidates: int = Field(0, ge=0)
+    events_crossing_cuts_dropped: int = Field(0, ge=0)
+    events_without_options: int = Field(0, ge=0)
+    rejected_face: int = Field(0, ge=0)
+    rejected_scene_text: int = Field(0, ge=0)
+    rejected_busy: int = Field(0, ge=0)
+    unavailable_detectors: list[str] = Field(default_factory=list)
+    safe_anchor_candidates: int = Field(0, ge=0)
+    anchors_pruned_by_cap: int = Field(0, ge=0)
+    options_pruned_by_cap: int = Field(0, ge=0)
+
+
+class CaptionWindowsPlanArtifact(ContractModel):
+    """CaptionWindowPlanning output (payload schema ``CaptionWindowsPlan.v1``)."""
+
+    policy_version: Literal["caption_windows_v1"] = "caption_windows_v1"
+    source_video_artifact_id: str = Field(min_length=1)
+    source_timeline_artifact_id: str = Field(min_length=1)
+    fps: int = Field(gt=0)
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    normal_enabled: bool
+    emphasis_enabled: bool
+    normal_safe_rect: OverlayRect | None = None
+    normal_windows: list[NormalCaptionWindow] = Field(default_factory=list)
+    emphasis_windows: list[EmphasisCaptionWindow] = Field(default_factory=list)
+    diagnostics: CaptionWindowDiagnostics = Field(default_factory=CaptionWindowDiagnostics)
+
+    @model_validator(mode="after")
+    def validate_unique_ids(self) -> "CaptionWindowsPlanArtifact":
+        normal_ids = {window.window_id for window in self.normal_windows}
+        if len(normal_ids) != len(self.normal_windows):
+            raise ValueError("normal caption window ids must be unique")
+        emphasis_ids = {window.event_id for window in self.emphasis_windows}
+        if len(emphasis_ids) != len(self.emphasis_windows):
+            raise ValueError("emphasis caption event ids must be unique")
+        return self
+
+
+class PostProcessCaptionChoice(ContractModel):
+    event_id: str = Field(min_length=1)
+    caption_option_id: str = Field(min_length=1)
+    priority: int = Field(ge=0, le=100)
+    reason: str = ""
+
+
+class PostProcessAgentOutput(ContractModel):
+    """Strict ID-only LLM output; explicit empty choices are valid, ``{}`` is not."""
+
+    bgm_id: str | None
+    caption_choices: list[PostProcessCaptionChoice]
+    analysis: str
+
+
+class PostProcessCandidateCounts(ContractModel):
+    bgm: int = Field(0, ge=0)
+    caption_events: int = Field(0, ge=0)
+    caption_options: int = Field(0, ge=0)
+
+
+class PostProcessRepairTraceItem(ContractModel):
+    attempt: int = Field(ge=0)
+    error_count: int = Field(ge=0)
+    errors: list[str] = Field(default_factory=list)
+
+
+class PostProcessAgentDiagnosticsArtifact(ContractModel):
+    """PostProcessAgentPlanning diagnostics (``PostProcessAgentDiagnostics.v1``)."""
+
+    policy_version: Literal["postprocess_agent_v1"] = "postprocess_agent_v1"
+    planned: bool
+    reason: str = ""
+    bgm_id: str | None = None
+    candidate_id: str | None = None
+    asset_id: str | None = None
+    segment_id: str | None = None
+    caption_choices: list[PostProcessCaptionChoice] = Field(default_factory=list)
+    repair_trace: list[PostProcessRepairTraceItem] = Field(default_factory=list)
+    candidate_counts: PostProcessCandidateCounts = Field(default_factory=PostProcessCandidateCounts)
+    provider_invocation_ids: list[str] = Field(default_factory=list)
+
+
 class CaptionCue(ContractModel):
     start: float
     end: float
-    lines: list[str]                       # 已断行，1-2 行
-    source_unit_ids: list[int]             # 源旁白 unit 下标
-    suppressed_by: str | None = None       # 整段被抑制时的花字 event_id
+    lines: list[str]  # 已断行，1-2 行
+    # v2 uses stable NarrationUnit.unit_id strings; integers remain read-compatible
+    # with CaptionDisplayPlan.v1 artifacts written before CaptionWindowPlanning.
+    source_unit_ids: list[str | int]
+    suppressed_by: str | None = None  # 整段被抑制时的花字 event_id
 
 
 class CaptionDisplayDiagnostics(ContractModel):
     merged_units: int = 0
     split_cues: int = 0
-    suppressed_duplicates: int = 0         # 被花字挖洞影响的 cue 数
-    dropped_fragments: int = 0             # <0.6s 丢弃片段数
+    suppressed_duplicates: int = 0  # 被花字挖洞影响的 cue 数
+    dropped_fragments: int = 0  # <0.6s 丢弃片段数
     animation_fallbacks: int = 0
-    font_metrics_source: str = "hmtx"      # hmtx | eaw_fallback
+    font_metrics_source: str = "hmtx"  # hmtx | eaw_fallback
 
 
 class CaptionDisplayPlanArtifact(ContractModel):
@@ -458,7 +662,7 @@ class CaptionDisplayPlanArtifact(ContractModel):
 
     policy_version: str = "caption_display_v2"
     normal_cues: list[CaptionCue]
-    suppressed_cues: list[CaptionCue]      # 被完全抑制（含 <0.6s 丢弃）的 cue
+    suppressed_cues: list[CaptionCue]  # 被完全抑制（含 <0.6s 丢弃）的 cue
     emphasis_events: list[OverlayEvent]
     diagnostics: CaptionDisplayDiagnostics
 

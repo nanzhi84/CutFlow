@@ -19,10 +19,11 @@ from packages.media.video.ffmpeg import FfmpegCommandError, probe_media
 from packages.production.pipeline._caption_display import (
     CaptionDisplayResult,
     compile_caption_display,
+    compile_planned_caption_display,
 )
-from packages.production.pipeline._ffmpeg import render_final_media
+from packages.production.pipeline._ffmpeg import ffmpeg_filter_available, render_final_media
 from packages.production.pipeline._font_metrics import load_font_metrics, make_text_measurer
-from packages.production.pipeline._fonts import ResolvedFont, resolve_subtitle_font
+from packages.production.pipeline._fonts import ResolvedFont, resolve_font_asset
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
 from packages.production.pipeline._subtitles import (
@@ -32,11 +33,6 @@ from packages.production.pipeline._subtitles import (
     ass_font_size,
     write_ass_subtitles,
 )
-
-# Sentinel font asset id meaning "no real font selected" (StylePlanning emits it
-# with a font.default_used warning); it has no uploaded file to register.
-_DEFAULT_FONT_SENTINEL = "case_default_font"
-
 
 def _font_asset_id(style: dict, *, emphasis: bool = False) -> str | None:
     subtitle = style.get("subtitle") if isinstance(style.get("subtitle"), dict) else {}
@@ -55,40 +51,6 @@ def _font_asset_id(style: dict, *, emphasis: bool = False) -> str | None:
     )
 
 
-def _resolve_font_asset(
-    ctx: NodeContext, font_asset_id: str | None, runtime_dir
-) -> tuple[ResolvedFont | None, str | None]:
-    """Stage the user/agent-selected subtitle font for libass, or None to default.
-
-    Loads the resolved font asset id, copies it into ``runtime_dir`` and derives
-    the family name so the ASS style burns the chosen font instead of silently
-    falling back to Arial.
-
-    Returns ``(resolved_font, unresolved_font_asset_id)``. The second element is
-    the requested font asset id when a font WAS selected but its file could not be
-    staged — so the caller emits a ``font.resolution_failed`` degradation instead
-    of silently defaulting to Arial. It is ``None`` when no font was selected or
-    the selected font resolved fine.
-    """
-    if not font_asset_id or font_asset_id == _DEFAULT_FONT_SENTINEL:
-        return None, None
-    try:
-        font_artifact = ctx.source_artifact_for_asset(font_asset_id)
-        font_path = ctx.artifact_path(font_artifact)
-    except Exception:
-        return None, font_asset_id
-    asset = ctx.repository.media_assets.get(font_asset_id)
-    fallback_name = getattr(asset, "title", None) if asset is not None else None
-    return (
-        resolve_subtitle_font(
-            font_path=font_path,
-            runtime_dir=runtime_dir,
-            fallback_name=fallback_name,
-        ),
-        None,
-    )
-
-
 def run(ctx: NodeContext) -> NodeOutput:
     state = ctx.state
     rendered = state.require(ArtifactKind.video_rendered)
@@ -96,6 +58,10 @@ def run(ctx: NodeContext) -> NodeOutput:
     timeline = state.require(ArtifactKind.plan_timeline).payload or {}
     style = state.require(ArtifactKind.plan_style).payload or {}
     narration = state.require(ArtifactKind.narration_units).payload or {}
+    caption_windows_artifact = state.artifacts.get(ArtifactKind.plan_caption_windows)
+    caption_windows = (
+        caption_windows_artifact.payload or {} if caption_windows_artifact is not None else None
+    )
     fps = int(timeline.get("fps") or state.request.output.fps)
     total_frames = int(timeline.get("total_frames") or 0)
     duration = total_frames / fps if total_frames else float(rendered.media_info.duration_sec or 0)
@@ -117,13 +83,21 @@ def run(ctx: NodeContext) -> NodeOutput:
             if subtitle_path is not None:
                 normal_font_asset_id = _font_asset_id(style)
                 emphasis_font_asset_id = _font_asset_id(style, emphasis=True)
-                resolved_font, unresolved_font_id = _resolve_font_asset(
-                    ctx, normal_font_asset_id, fonts_dir
+                resolved_font, unresolved_font_id = resolve_font_asset(
+                    font_asset_id=normal_font_asset_id,
+                    runtime_dir=fonts_dir,
+                    source_artifact_for_asset=ctx.source_artifact_for_asset,
+                    artifact_path=ctx.artifact_path,
+                    media_assets=ctx.repository.media_assets,
                 )
                 unresolved_emphasis_font_id: str | None = None
                 if emphasis_font_asset_id and emphasis_font_asset_id != normal_font_asset_id:
-                    resolved_emphasis_font, unresolved_emphasis_font_id = _resolve_font_asset(
-                        ctx, emphasis_font_asset_id, fonts_dir
+                    resolved_emphasis_font, unresolved_emphasis_font_id = resolve_font_asset(
+                        font_asset_id=emphasis_font_asset_id,
+                        runtime_dir=fonts_dir,
+                        source_artifact_for_asset=ctx.source_artifact_for_asset,
+                        artifact_path=ctx.artifact_path,
+                        media_assets=ctx.repository.media_assets,
                     )
                 else:
                     resolved_emphasis_font = resolved_font
@@ -155,31 +129,42 @@ def run(ctx: NodeContext) -> NodeOutput:
                 normal_enabled = _subtitle_layer_enabled(subtitle_style, "normal_enabled")
                 emphasis_enabled = _subtitle_layer_enabled(subtitle_style, "emphasis_enabled")
                 caption_font_size = ass_font_size(subtitle_style.get("font_size"), height=height)
-                # Deterministic wrapping needs per-glyph widths. Only a *selected*
-                # font whose metrics can't be read is a degradation; the default
-                # (Arial, no bundled file) uses the EAW heuristic silently.
-                metrics = load_font_metrics(resolved_font.source_path) if resolved_font else None
-                if resolved_font is not None and metrics is None:
-                    degradations.append(
-                        degradation_notice(
-                            WarningCode.font_metrics_fallback,
-                            "无法读取所选字体度量，已按估算宽度断行（可能与实际渲染略有偏差）。",
-                            node_id=ctx.node_run.node_id,
-                        )
+                if caption_windows is not None:
+                    # The v2 post-process chain consumes frame-authoritative windows.
+                    # No line breaking or font measurement belongs in the renderer.
+                    display = compile_planned_caption_display(
+                        caption_windows=caption_windows,
+                        normal_enabled=normal_enabled,
+                        emphasis_enabled=emphasis_enabled,
+                        overlay_events=list(style.get("overlay_events") or []),
                     )
-                    warnings.append(WarningCode.font_metrics_fallback)
-                measure, metrics_source = make_text_measurer(metrics, float(caption_font_size))
-                display = compile_caption_display(
-                    units=list(narration.get("units") or []),
-                    resolution=(width, height),
-                    margin_l=_ASS_MARGIN_L,
-                    margin_r=_ASS_MARGIN_R,
-                    measure=measure,
-                    metrics_source=metrics_source,
-                    normal_enabled=normal_enabled,
-                    emphasis_enabled=emphasis_enabled,
-                    overlay_events=list(style.get("overlay_events") or []),
-                )
+                else:
+                    # Historical runs have no plan.caption_windows artifact. Keep the
+                    # old compiler only at this explicit read boundary.
+                    metrics = load_font_metrics(resolved_font.source_path) if resolved_font else None
+                    if resolved_font is not None and metrics is None:
+                        degradations.append(
+                            degradation_notice(
+                                WarningCode.font_metrics_fallback,
+                                "无法读取所选字体度量，已按估算宽度断行（可能与实际渲染略有偏差）。",
+                                node_id=ctx.node_run.node_id,
+                            )
+                        )
+                        warnings.append(WarningCode.font_metrics_fallback)
+                    measure, metrics_source = make_text_measurer(
+                        metrics, float(caption_font_size)
+                    )
+                    display = compile_caption_display(
+                        units=list(narration.get("units") or []),
+                        resolution=(width, height),
+                        margin_l=_ASS_MARGIN_L,
+                        margin_r=_ASS_MARGIN_R,
+                        measure=measure,
+                        metrics_source=metrics_source,
+                        normal_enabled=normal_enabled,
+                        emphasis_enabled=emphasis_enabled,
+                        overlay_events=list(style.get("overlay_events") or []),
+                    )
                 caption_cues = [
                     {"start": cue.start, "end": cue.end, "lines": cue.lines}
                     for cue in display.normal_cues
@@ -218,25 +203,9 @@ def run(ctx: NodeContext) -> NodeOutput:
             auto_mix = bool((bgm_plan or {}).get("auto_mix", state.request.bgm.auto_mix))
             bgm_source_start = _float_or_zero((bgm_plan or {}).get("source_start"))
             bgm_source_end = _float_or_none((bgm_plan or {}).get("source_end"))
-            render_kwargs = {
-                "rendered_path": ctx.artifact_path(rendered),
-                "audio_path": ctx.artifact_path(audio),
-                "output_path": output_path,
-                "subtitle_path": subtitle_path,
-                "bgm_path": bgm_path,
-                "bgm_volume": float((bgm_plan or {}).get("volume", state.request.bgm.volume)),
-                "duration": duration,
-                "fps": fps,
-                "fonts_dir": fonts_dir if resolved_font or resolved_emphasis_font else None,
-                "auto_mix": auto_mix,
-                "bgm_source_start": bgm_source_start,
-                "bgm_source_end": bgm_source_end,
-            }
-            try:
-                mix_result = render_final_media(**render_kwargs)
-            except FfmpegCommandError as exc:
-                if subtitle_path is None or not _subtitle_filter_unavailable(exc):
-                    raise
+            burn_subtitle_path = subtitle_path
+            burn_fonts_dir = fonts_dir if resolved_font or resolved_emphasis_font else None
+            if subtitle_path is not None and not ffmpeg_filter_available("subtitles"):
                 degradations.append(
                     degradation_notice(
                         WarningCode.subtitle_burn_skipped,
@@ -245,9 +214,23 @@ def run(ctx: NodeContext) -> NodeOutput:
                     )
                 )
                 warnings.append(WarningCode.subtitle_burn_skipped)
-                render_kwargs["subtitle_path"] = None
-                render_kwargs["fonts_dir"] = None
-                mix_result = render_final_media(**render_kwargs)
+                burn_subtitle_path = None
+                burn_fonts_dir = None
+            render_kwargs = {
+                "rendered_path": ctx.artifact_path(rendered),
+                "audio_path": ctx.artifact_path(audio),
+                "output_path": output_path,
+                "subtitle_path": burn_subtitle_path,
+                "bgm_path": bgm_path,
+                "bgm_volume": float((bgm_plan or {}).get("volume", state.request.bgm.volume)),
+                "duration": duration,
+                "fps": fps,
+                "fonts_dir": burn_fonts_dir,
+                "auto_mix": auto_mix,
+                "bgm_source_start": bgm_source_start,
+                "bgm_source_end": bgm_source_end,
+            }
+            mix_result = render_final_media(**render_kwargs)
             # No silent fallback: when auto-mix wanted LUFS targeting but the
             # loudness probe failed, the mixer quietly used the requested volume.
             # Surface that so the user knows the auto-balance was not applied.
@@ -356,11 +339,3 @@ def _float_or_none(value) -> float | None:
         return max(0.0, float(value))
     except (TypeError, ValueError):
         return None
-
-
-def _subtitle_filter_unavailable(exc: FfmpegCommandError) -> bool:
-    stderr = exc.stderr or ""
-    command = " ".join(str(part) for part in exc.command)
-    return "subtitles" in command and (
-        "No such filter: 'subtitles'" in stderr or "Filter not found" in stderr
-    )
