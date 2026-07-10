@@ -400,6 +400,32 @@ def test_style_planning_carries_selected_bgm_segment_into_style_plan(tmp_path, m
     assert payload["bgm"]["avoid_script"] == ["沉浸睡眠"]
 
 
+def test_style_planning_never_derives_huazi_overlays(tmp_path, monkeypatch):
+    # Caption Display v2 (issue #188) froze the deterministic chain out of huazi:
+    # StylePlanning emits an empty overlay_events even when emphasis phrases and
+    # matching narration units are present. Huazi lives only on the agent chain.
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
+    adapter = _adapter(object_store)
+    ctx = _ctx(adapter, _request(bgm={"enabled": False}), "StylePlanning")
+    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
+        ArtifactKind.plan_material_pack, {"bgm_candidates": [], "font_candidates": []}
+    )
+    ctx.state.artifacts[ArtifactKind.creative_intent] = _artifact(
+        ArtifactKind.creative_intent,
+        {"intent": {"hook": "h", "beats": ["a"]}, "emphasis": [{"phrase": "限时五折"}]},
+    )
+    ctx.state.artifacts[ArtifactKind.narration_units] = _artifact(
+        ArtifactKind.narration_units,
+        {"units": [{"text": "今天限时五折活动", "start": 0.0, "end": 2.0}]},
+    )
+
+    output = nodes.style_planning.run(ctx)
+    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
+
+    assert payload["overlay_events"] == []
+
+
 def test_style_planning_consumes_subtitle_preset_defaults(tmp_path, monkeypatch):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)

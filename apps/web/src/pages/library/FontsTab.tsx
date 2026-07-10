@@ -1,5 +1,5 @@
 import { Type, Upload } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type MediaAssetRecord } from "../../api/client";
 import { FontAssetCard } from "../../components/library/FontAssetCard";
@@ -68,6 +68,44 @@ export function FontsTab() {
       return null;
     }
   }
+
+  useEffect(() => {
+    if (!items.length) return;
+    let cancelled = false;
+    const missingAssets = items.map((card) => card.asset).filter((asset) => !previewUrls[asset.id]);
+    if (!missingAssets.length) return;
+
+    void Promise.all(
+      missingAssets.map(async (asset) => {
+        try {
+          const response = await api.mediaAssets.previewUrl(asset.id);
+          const displayUrl = toDisplayUrl(response.url);
+          return displayUrl ? ([asset.id, displayUrl] as const) : null;
+        } catch {
+          return null;
+        }
+      }),
+    ).then((entries) => {
+      if (cancelled) return;
+      const resolvedEntries = entries.filter((entry): entry is readonly [string, string] => entry !== null);
+      if (!resolvedEntries.length) return;
+      setPreviewUrls((current) => {
+        let changed = false;
+        const next = { ...current };
+        resolvedEntries.forEach(([assetId, url]) => {
+          if (!next[assetId]) {
+            next[assetId] = url;
+            changed = true;
+          }
+        });
+        return changed ? next : current;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [items, previewUrls]);
 
   function jumpToAsset(assetId: string) {
     if (!items.some((card) => card.asset.id === assetId)) {

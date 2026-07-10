@@ -33,7 +33,11 @@ from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
 from packages.core.workflow import NodeExecutionError
 from packages.production.pipeline import nodes
-from packages.production.pipeline._editing_agent import BrollChoice, EditingSelection, PortraitChoice
+from packages.production.pipeline._editing_agent import (
+    BrollChoice,
+    EditingSelection,
+    PortraitChoice,
+)
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
@@ -265,7 +269,7 @@ def _state() -> RunState:
         case_id="case_demo",
         script=SCRIPT,
         voice={"voice_id": "voice_sandbox"},
-        subtitle={"font_id": "font_yst", "caption_style_pair_id": "douyin_bold_a"},
+        subtitle={"font_id": "font_yst", "emphasis_font_size": 52},
         edit={"instruction": "尽量用穿搭相近的人像"},
         strictness={"strict_timestamps": False},
     )
@@ -363,6 +367,17 @@ def _run_node(adapter: LocalRuntimeAdapter, state: RunState):
     return nodes.editing_agent_planning.run(_node_ctx(adapter, state))
 
 
+def _run_media_selection_node(adapter: LocalRuntimeAdapter, state: RunState):
+    run = _run().model_copy(update={"workflow_template_id": "digital_human_editing_agent_v2"})
+    ctx = NodeContext(
+        adapter=adapter,
+        run=run,
+        node_run=_node_run("MediaSelectionAgentPlanning"),
+        state=state,
+    )
+    return nodes.media_selection_agent_planning.run(ctx)
+
+
 def _payload(output, kind: ArtifactKind) -> dict:
     return next(a.payload for a in output.artifacts if a.kind == kind)
 
@@ -440,12 +455,8 @@ def test_build_context_limits_llm_input_to_retrieval_topk_candidates():
     assert [item["candidate_id"] for item in context.agent_input["portrait_candidates"]] == [
         "pc_001"
     ]
-    assert [item["candidate_id"] for item in context.agent_input["broll_candidates"]] == [
-        "bc_000"
-    ]
-    assert context.agent_input["portrait_slots"][0]["retrieval_topk_candidate_ids"] == [
-        "pc_001"
-    ]
+    assert [item["candidate_id"] for item in context.agent_input["broll_candidates"]] == ["bc_000"]
+    assert context.agent_input["portrait_slots"][0]["retrieval_topk_candidate_ids"] == ["pc_001"]
 
 
 def test_compact_prompt_input_keeps_only_llm_decision_fields():
@@ -482,17 +493,14 @@ def test_compact_prompt_input_keeps_only_llm_decision_fields():
     assert portrait_lines[0] == (
         "candidate_id | asset_id | available_seconds | description | reason"
     )
-    assert portrait_lines[1] == (
-        "pc_000 | portrait_a | 15.0 | 白色上衣稳定口播 | 白色上衣"
-    )
+    assert portrait_lines[1] == ("pc_000 | portrait_a | 15.0 | 白色上衣稳定口播 | 白色上衣")
     broll_lines = compact["broll_candidates"].splitlines()
     assert broll_lines[0] == (
         "candidate_id | asset_id | scene_name | allowed_slot_ids | matched_keywords | "
         "available_seconds | description"
     )
     assert broll_lines[1] == (
-        "bc_000 | broll_x | 工地/施工前 | bslot_000 | 施工前 | 6.0 | "
-        "施工前墙面状态特写"
+        "bc_000 | broll_x | 工地/施工前 | bslot_000 | 施工前 | 6.0 | 施工前墙面状态特写"
     )
     assert "source_start" not in compact["portrait_candidates"]
     assert "source_end" not in compact["broll_candidates"]
@@ -570,7 +578,6 @@ def test_local_broll_constraint_repair_replaces_invalid_candidate():
         bgm_enabled=state.request.bgm.enabled,
         max_inserts=state.request.broll.max_inserts,
         retrieval_topk_by_window={"bslot_000": ["bc_001"]},
-        huazi_events=context.huazi_events,
     )
 
     assert errors == []
@@ -653,7 +660,6 @@ def test_local_broll_constraint_repair_fills_missing_full_coverage_slot():
         retrieval_topk_by_window={"bslot_000": ["bc_000"], "bslot_001": ["bc_001"]},
         require_broll_coverage=True,
         allow_asset_diversity_reuse=True,
-        huazi_events=context.huazi_events,
     )
 
     assert errors == []
@@ -876,16 +882,16 @@ def test_materialize_editing_outputs_runs_after_selection(tmp_path):
         ctx=_node_ctx(adapter, state),
         agent_context=context,
     )
-    default_portrait = state.artifacts[
-        ArtifactKind.plan_timeline_windows
-    ].payload["default_assignment"]["portrait_plan_payload"]
+    default_portrait = state.artifacts[ArtifactKind.plan_timeline_windows].payload[
+        "default_assignment"
+    ]["portrait_plan_payload"]
 
     materialized = nodes.editing_agent_planning.materialize_editing_outputs(
         request=state.request,
         node_id="EditingAgentPlanning",
         agent_context=context,
         selection_result=selection_result,
-        creative_intent=SimpleNamespace(emphasis=[]),
+        huazi_result=nodes.editing_agent_planning._empty_huazi_result("no_candidates"),
     )
 
     assert materialized.assignment_payload["engine"] == "deterministic_fallback"
@@ -896,9 +902,9 @@ def test_materialize_editing_outputs_runs_after_selection(tmp_path):
 
 def test_fallback_path_emits_five_frame_exact_artifacts(tmp_path):
     state = _state()
-    default_portrait = state.artifacts[
-        ArtifactKind.plan_timeline_windows
-    ].payload["default_assignment"]["portrait_plan_payload"]
+    default_portrait = state.artifacts[ArtifactKind.plan_timeline_windows].payload[
+        "default_assignment"
+    ]["portrait_plan_payload"]
     output = _run_node(_adapter(tmp_path), state)
 
     kinds = {a.kind for a in output.artifacts}
@@ -966,6 +972,109 @@ def test_fallback_path_emits_five_frame_exact_artifacts(tmp_path):
             "reason": "compiler default",
         },
     ]
+
+
+def test_v2_media_selection_emits_media_only_and_does_not_require_creative_intent(tmp_path):
+    state = _state()
+
+    output = _run_media_selection_node(_adapter(tmp_path), state)
+
+    assert {artifact.kind for artifact in output.artifacts} == {
+        ArtifactKind.plan_media_assignment,
+        ArtifactKind.plan_portrait,
+        ArtifactKind.plan_broll,
+        ArtifactKind.plan_media_selection_diagnostics,
+    }
+    assert ArtifactKind.plan_style not in {artifact.kind for artifact in output.artifacts}
+    assignment = _payload(output, ArtifactKind.plan_media_assignment)
+    diagnostics = _payload(output, ArtifactKind.plan_media_selection_diagnostics)
+    assert "bgm_id" not in assignment
+    assert "font_id" not in assignment
+    assert "bgm_id" not in diagnostics
+    assert "huazi_choices" not in diagnostics
+    assert diagnostics["candidate_counts"] == {"portrait": 2, "broll": 1}
+
+
+def test_v2_media_selection_uses_its_own_media_only_prompt(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    provider = _FakeEditingLlmProvider(
+        [
+            {
+                "content": "media selection",
+                "intent": {
+                    "portrait_plan": [
+                        {"slot_id": "pslot_000", "candidate_id": "pc_000", "reason": "fit"},
+                        {"slot_id": "pslot_001", "candidate_id": "pc_001", "reason": "fit"},
+                    ],
+                    "broll_plan": [
+                        {"slot_id": "bslot_000", "candidate_id": "bc_000", "reason": "fit"}
+                    ],
+                    "analysis": "media only",
+                }
+            }
+        ]
+    )
+    adapter.provider_gateway.register(provider)
+
+    output = _run_media_selection_node(adapter, _state())
+
+    assert output.status == NodeStatus.succeeded
+    assert len(output.provider_invocation_ids) == 1
+    assert "bgm_candidates" not in provider.calls[0].input["prompt"]
+    assert {artifact.kind for artifact in output.artifacts} == {
+        ArtifactKind.plan_media_assignment,
+        ArtifactKind.plan_portrait,
+        ArtifactKind.plan_broll,
+        ArtifactKind.plan_media_selection_diagnostics,
+    }
+
+
+def test_v2_media_selection_hard_rejects_postprocess_and_geometry_overreach(monkeypatch, tmp_path):
+    monkeypatch.setenv("CUTAGENT_ALLOW_SANDBOX_FALLBACK", "0")
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    provider = _FakeEditingLlmProvider(
+        [
+            {
+                "content": "invalid overreach",
+                "intent": {
+                    "portrait_plan": [
+                        {
+                            "slot_id": "pslot_000",
+                            "candidate_id": "pc_000",
+                            "reason": "fit",
+                            "start": 0,
+                        },
+                        {
+                            "slot_id": "pslot_001",
+                            "candidate_id": "pc_001",
+                            "reason": "fit",
+                        },
+                    ],
+                    "broll_plan": [
+                        {
+                            "slot_id": "bslot_000",
+                            "candidate_id": "bc_000",
+                            "reason": "fit",
+                            "rect": [0, 0, 1, 1],
+                        }
+                    ],
+                    "analysis": "overreach",
+                    "bgm_id": "bgm_001",
+                }
+            }
+        ]
+    )
+    adapter.provider_gateway.register(provider)
+    state = _state()
+    _disable_llm_reprompt(state)
+
+    with pytest.raises(NodeExecutionError) as exc:
+        _run_media_selection_node(adapter, state)
+
+    assert exc.value.error.code == ErrorCode.prompt_output_invalid
+    assert len(provider.calls) == 1
 
 
 def test_editing_agent_artifacts_feed_timeline_planning(tmp_path):
@@ -1105,8 +1214,7 @@ def test_llm_path_records_broll_window_contract_drops(tmp_path):
     assert output.provider_invocation_ids
     assert WarningCode.broll_insertions_dropped_geometry in output.warnings
     assert any(
-        notice.code == WarningCode.broll_insertions_dropped_geometry
-        and notice.affects_true_yield
+        notice.code == WarningCode.broll_insertions_dropped_geometry and notice.affects_true_yield
         for notice in output.degradations
     )
     broll = _payload(output, ArtifactKind.plan_broll)
@@ -1207,7 +1315,12 @@ def test_llm_path_repairs_full_coverage_to_single_window_sized_candidate(tmp_pat
     assert output.status == NodeStatus.succeeded
     assert WarningCode.editing_agent_local_constraint_repair in output.warnings
     assert [
-        (overlay["window_id"], overlay["asset_id"], overlay["timeline_start_frame"], overlay["timeline_end_frame"])
+        (
+            overlay["window_id"],
+            overlay["asset_id"],
+            overlay["timeline_start_frame"],
+            overlay["timeline_end_frame"],
+        )
         for overlay in broll["overlays"]
     ] == [
         ("bslot_000", "broll_y", 0, 180),
@@ -1674,3 +1787,262 @@ def test_llm_invalid_selection_records_raw_artifacts_before_failure(monkeypatch,
     assert "legal_window_ids" in raw_requests[0].payload["prompt"]
     portrait_plan = raw_responses[-1].payload["output"]["intent"]["portrait_plan"]
     assert portrait_plan[0]["window_id"] == "pc_999"
+
+
+# --------------------------------------------------------------------------- #
+# HuaziPlanningSubagent — the second LLM pass that plans emphasis captions (#188)
+# --------------------------------------------------------------------------- #
+_MAIN_SELECTION = {
+    "portrait_plan": [
+        {"slot_id": "pslot_000", "window_id": "pc_000"},
+        {"slot_id": "pslot_001", "window_id": "pc_001"},
+    ],
+    "broll_plan": [{"slot_id": "bslot_000", "candidate_id": "bc_000"}],
+    "bgm_plan": {"bgm_id": "bgm_001"},
+}
+
+
+def _state_with_emphasis() -> RunState:
+    # unit_1 contains "这套案例", unit_2 contains "施工前"; both are 2-10 visual chars.
+    state = _state()
+    state.artifacts[ArtifactKind.creative_intent] = Artifact(
+        id="art_ci",
+        case_id="case_demo",
+        run_id="run_1",
+        node_run_id="nr_ci",
+        kind=ArtifactKind.creative_intent,
+        payload={
+            "intent": {"hook": "h", "beats": ["a"]},
+            "emphasis": [{"phrase": "这套案例"}, {"phrase": "施工前"}],
+        },
+        payload_schema="CreativeIntentArtifact.v1",
+    )
+    return state
+
+
+def _first_huazi_box_id(request, text: str) -> str:
+    from packages.production.pipeline._huazi_candidates import normal_caption_top_y
+    from packages.production.pipeline._huazi_layout import generate_layout_boxes
+    from packages.production.pipeline._materialize import _subtitle_font_size, _subtitle_position
+
+    font_size = _subtitle_font_size(request.subtitle.style_preset, request.subtitle.font_size)
+    position = _subtitle_position(request.subtitle.style_preset, request.subtitle.position)
+    top_y = normal_caption_top_y(
+        position_y=position["y"], font_size=font_size, canvas_height=request.output.height
+    )
+    boxes = generate_layout_boxes(
+        event_text=text,
+        resolution=(request.output.width, request.output.height),
+        normal_caption_top_y=top_y,
+        neighbor_boxes=[],
+    )
+    return boxes[0]["layout_box_id"]
+
+
+def test_huazi_subagent_makes_second_call_and_materializes_rect(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    state = _state_with_emphasis()
+    _disable_llm_reprompt(state)
+    box_id = _first_huazi_box_id(state.request, "这套案例")
+    provider = _FakeEditingLlmProvider(
+        [
+            {"intent": _MAIN_SELECTION},
+            {
+                "intent": {
+                    "huazi": [
+                        {
+                            "event_id": "hz_001",
+                            "layout_box_id": box_id,
+                            "animation_id": "pop_in",
+                            "priority": 3,
+                            "reason": "醒目",
+                        }
+                    ]
+                }
+            },
+        ]
+    )
+    adapter.provider_gateway.register(provider)
+
+    output = _run_node(adapter, state)
+
+    assert output.status == NodeStatus.succeeded
+    # Two separate llm.chat passes happened: main editing agent + huazi subagent.
+    assert len(provider.calls) == 2
+    assert len(output.provider_invocation_ids) == 2
+    assert provider.calls[1].idempotency_key.endswith(":huazi_agent:0")
+    style = _payload(output, ArtifactKind.plan_style)
+    overlays = style["overlay_events"]
+    assert len(overlays) == 1
+    assert overlays[0]["event_id"] == "hz_001"
+    assert overlays[0]["layout_box_id"] == box_id
+    assert overlays[0]["animation_id"] == "pop_in"
+    assert overlays[0]["sfx_id"] == "none"
+    assert overlays[0]["rect"] is not None and overlays[0]["text_align"] in {
+        "left",
+        "center",
+        "right",
+    }
+    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
+    assert diagnostics["huazi_choices"][0]["event_id"] == "hz_001"
+    assert diagnostics["huazi_diagnostics"]["planned"] is True
+
+
+def test_huazi_subagent_unwraps_intent_from_real_provider_shape(monkeypatch, tmp_path):
+    # Regression for the intent-unwrap blocker: DashScope-style providers nest the
+    # parsed JSON under output["intent"] with sibling content. The huazi call must
+    # unwrap it exactly like the main agent, otherwise the selection is empty.
+    adapter = _adapter(tmp_path)
+    fake_profile = SimpleNamespace(id="dashscope.llm.prod")
+    monkeypatch.setattr(
+        adapter.provider_profiles,
+        "first_available",
+        lambda capability, *, include_sandbox=True: fake_profile,
+    )
+    state = _state_with_emphasis()
+    _disable_llm_reprompt(state)
+    huazi_box_id = _first_huazi_box_id(state.request, "施工前")
+    outputs = iter(
+        [
+            {"content": "...", "intent": _MAIN_SELECTION},
+            {
+                "content": "...",
+                "intent": {
+                    "huazi": [
+                        {
+                            "event_id": "hz_002",
+                            "layout_box_id": huazi_box_id,
+                            "animation_id": "pop_in",
+                            "priority": 2,
+                            "reason": "强调",
+                        }
+                    ]
+                },
+            },
+        ]
+    )
+    calls = []
+
+    def fake_invoke(call):
+        calls.append(call)
+        return (
+            SimpleNamespace(id=f"inv_{len(calls)}", error=None),
+            SimpleNamespace(output=next(outputs)),
+        )
+
+    monkeypatch.setattr(adapter.provider_gateway, "invoke", fake_invoke)
+
+    output = _run_node(adapter, state)
+
+    assert output.status == NodeStatus.succeeded
+    assert output.provider_invocation_ids == ["inv_1", "inv_2"]
+    style = _payload(output, ArtifactKind.plan_style)
+    assert [ov["event_id"] for ov in style["overlay_events"]] == ["hz_002"]
+
+
+def test_huazi_subagent_degrades_after_failed_repair(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    state = _state_with_emphasis()
+    _disable_llm_reprompt(state)
+    invalid = {"intent": {"huazi": [{"event_id": "hz_001", "layout_box_id": "no_such_box"}]}}
+    provider = _FakeEditingLlmProvider([{"intent": _MAIN_SELECTION}, invalid, invalid])
+    adapter.provider_gateway.register(provider)
+
+    output = _run_node(adapter, state)
+
+    assert output.status == NodeStatus.degraded
+    assert WarningCode.huazi_planning_failed in output.warnings
+    assert any(
+        notice.code == WarningCode.huazi_planning_failed and not notice.affects_true_yield
+        for notice in output.degradations
+    )
+    # main + huazi + one huazi repair, then degrade to no huazi (never fails node).
+    assert len(provider.calls) == 3
+    assert len(output.provider_invocation_ids) == 3
+    style = _payload(output, ArtifactKind.plan_style)
+    assert style["overlay_events"] == []
+    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
+    assert diagnostics["huazi_diagnostics"]["degraded"] is True
+    assert diagnostics["huazi_diagnostics"]["reason"] == "unrepairable"
+
+
+def test_huazi_subagent_repairs_then_degrades_on_malformed_payload(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    state = _state_with_emphasis()
+    _disable_llm_reprompt(state)
+    malformed = {"intent": {}}
+    provider = _FakeEditingLlmProvider([{"intent": _MAIN_SELECTION}, malformed, malformed])
+    adapter.provider_gateway.register(provider)
+
+    output = _run_node(adapter, state)
+
+    assert output.status == NodeStatus.degraded
+    assert WarningCode.huazi_planning_failed in output.warnings
+    assert len(provider.calls) == 3
+    assert _payload(output, ArtifactKind.plan_style)["overlay_events"] == []
+    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
+    huazi_diagnostics = diagnostics["huazi_diagnostics"]
+    assert huazi_diagnostics["reason"] == "unrepairable"
+    assert len(huazi_diagnostics["repair_trace"]) == 2
+    assert all(
+        any("must include a 'huazi' array" in error for error in trace["errors"])
+        for trace in huazi_diagnostics["repair_trace"]
+    )
+
+
+def test_huazi_subagent_skipped_when_emphasis_disabled(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    state = _state_with_emphasis()
+    state.request = state.request.model_copy(
+        update={"subtitle": state.request.subtitle.model_copy(update={"emphasis_enabled": False})}
+    )
+    _disable_llm_reprompt(state)
+    provider = _FakeEditingLlmProvider([{"intent": _MAIN_SELECTION}])
+    adapter.provider_gateway.register(provider)
+
+    output = _run_node(adapter, state)
+
+    assert output.status == NodeStatus.succeeded
+    assert len(provider.calls) == 1  # no huazi pass
+    assert WarningCode.huazi_planning_failed not in output.warnings
+    style = _payload(output, ArtifactKind.plan_style)
+    assert style["overlay_events"] == []
+
+
+def test_main_agent_huazi_plan_is_repaired_as_overreach(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    state = _state_with_emphasis()
+    box_id = _first_huazi_box_id(state.request, "这套案例")
+    provider = _FakeEditingLlmProvider(
+        [
+            {"intent": {**_MAIN_SELECTION, "huazi_plan": [{"event_id": "hz_001"}]}},
+            {"intent": _MAIN_SELECTION},
+            {
+                "intent": {
+                    "huazi": [
+                        {
+                            "event_id": "hz_001",
+                            "layout_box_id": box_id,
+                            "animation_id": "pop_in",
+                            "priority": 1,
+                        }
+                    ]
+                }
+            },
+        ]
+    )
+    adapter.provider_gateway.register(provider)
+
+    output = _run_node(adapter, state)
+
+    assert output.status == NodeStatus.succeeded
+    # main (overreach) -> main repair -> huazi call.
+    assert len(provider.calls) == 3
+    diagnostics = _payload(output, ArtifactKind.plan_editing_diagnostics)
+    assert diagnostics["repair_trace"][0]["error_count"] > 0
+    assert "forbidden visual style fields" in " ".join(diagnostics["repair_trace"][0]["errors"])

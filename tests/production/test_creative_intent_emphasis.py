@@ -157,48 +157,9 @@ def test_intent_to_artifact_caps_emphasis_count():
     assert len(art.emphasis) == _MAX_EMPHASIS
 
 
-# --- StylePlanning: _derive_overlay_events ---
-
-
-def _units(*triples):
-    return [{"text": t, "start": s, "end": e} for (t, s, e) in triples]
-
-
-def test_derive_overlay_matches_phrase_to_narration_sentence():
-    from packages.production.pipeline.nodes.style_planning import _derive_overlay_events
-
-    units = _units(("今天给大家带来限时五折活动", 0.0, 2.0), ("到店即可参与", 2.0, 3.0))
-    events = _derive_overlay_events([EmphasisHint(phrase="限时五折")], units)
-    assert len(events) == 1
-    assert events[0].text == "限时五折"
-    assert (events[0].start, events[0].end) == (0.0, 2.0)
-
-
-def test_derive_overlay_unmatched_phrase_dropped():
-    from packages.production.pipeline.nodes.style_planning import _derive_overlay_events
-
-    events = _derive_overlay_events(
-        [EmphasisHint(phrase="限时五折")], _units(("完全不相关的一句话", 0.0, 2.0))
-    )
-    assert events == []
-
-
-def test_derive_overlay_empty_emphasis_no_events():
-    from packages.production.pipeline.nodes.style_planning import _derive_overlay_events
-
-    assert _derive_overlay_events([], _units(("一句话", 0.0, 1.0))) == []
-
-
-def test_derive_overlay_one_per_sentence():
-    """两个短语命中同一句旁白时只出一条花字（避免同时同位置叠印）。"""
-    from packages.production.pipeline.nodes.style_planning import _derive_overlay_events
-
-    units = _units(("今天限时五折只要九块九", 0.0, 2.0), ("赶紧来", 2.0, 3.0))
-    events = _derive_overlay_events(
-        [EmphasisHint(phrase="限时五折"), EmphasisHint(phrase="九块九")], units
-    )
-    assert len(events) == 1
-    assert events[0].text == "限时五折"  # 保留 LLM 顺序里第一个命中该句的短语
+# --- 花字候选派生已搬到 _huazi_candidates.derive_huazi_candidates（见
+#     tests/production/test_huazi_candidates.py）；确定性链不再派生花字（见
+#     test_bgm_segment_selection.test_style_planning_never_derives_huazi_overlays）。
 
 
 # --- _subtitles: emphasis rendering ---

@@ -33,6 +33,14 @@ class FaceDetection:
     score: float
     landmarks: tuple[tuple[float, float], ...]  # 5 (x, y) points
 
+
+class FaceDetectionError(RuntimeError):
+    """YuNet could not produce a trustworthy result for one frame."""
+
+
+class FaceDetectorUnavailable(FaceDetectionError):
+    """YuNet cannot be constructed in this process."""
+
 # YuNet face-detection model bundled in the package (package-relative path).
 _MODEL_PATH = (
     Path(__file__).resolve().parent.parent
@@ -104,6 +112,18 @@ def _get_detector(score_threshold: float):
     return det
 
 
+def face_detector_available(*, score_threshold: float = _DEFAULT_SCORE) -> bool:
+    """Whether the bundled YuNet detector can be constructed in this process.
+
+    ``detect_faces`` intentionally fails open to an empty list, which is correct for
+    annotation gates but cannot tell a safety planner whether ``[]`` means "no face"
+    or "detector unavailable".  Caption placement uses this explicit capability
+    probe so it never treats missing detection as proof that an anchor is safe.
+    """
+
+    return _get_detector(score_threshold) is not None
+
+
 def detect_faces(
     image,
     *,
@@ -116,35 +136,59 @@ def detect_faces(
     caller decides which detections qualify. fail-open: empty image / detector
     unavailable / detect failure returns ``[]`` (no negative evidence).
     """
-    if image is None:
-        return []
-    det = _get_detector(score_threshold)
-    if det is None:
-        return []
     try:
-        h, w = int(image.shape[0]), int(image.shape[1])
-        det.setInputSize((w, h))
-        _, faces = det.detect(image)
-    except Exception as exc:  # pragma: no cover
+        return detect_faces_strict(image, score_threshold=score_threshold)
+    except Exception as exc:  # fail-open API retained for annotation gates
         logger.debug("[faces] detect failed: %s", exc)
         return []
+
+
+def detect_faces_strict(
+    image,
+    *,
+    score_threshold: float = _DEFAULT_SCORE,
+) -> list[FaceDetection]:
+    """Detect faces or raise when absence cannot be proven.
+
+    Caption placement is a pixel-safety boundary, so it must distinguish a real
+    empty result from a detector construction/runtime failure. Annotation callers
+    keep using :func:`detect_faces`, whose historical fail-open behavior is
+    intentionally unchanged.
+    """
+
+    if image is None:
+        raise FaceDetectionError("image is empty")
+    det = _get_detector(score_threshold)
+    if det is None:
+        raise FaceDetectorUnavailable("YuNet detector is unavailable")
+    try:
+        h, w = int(image.shape[0]), int(image.shape[1])
+        if h <= 0 or w <= 0:
+            raise ValueError("image dimensions must be positive")
+        det.setInputSize((w, h))
+        _, faces = det.detect(image)
+    except Exception as exc:
+        raise FaceDetectionError(f"YuNet detection failed: {exc}") from exc
     if faces is None:
         return []
-    detections: list[FaceDetection] = []
-    for f in faces:
-        # YuNet row: [x, y, w, h, x_re, y_re, x_le, y_le, x_nt, y_nt,
-        #             x_rcm, y_rcm, x_lcm, y_lcm, score]
-        landmarks = tuple(
-            (float(f[4 + 2 * i]), float(f[5 + 2 * i])) for i in range(5)
-        )
-        detections.append(
-            FaceDetection(
-                bbox=(float(f[0]), float(f[1]), float(f[2]), float(f[3])),
-                score=float(f[14]),
-                landmarks=landmarks,
+    try:
+        detections: list[FaceDetection] = []
+        for f in faces:
+            # YuNet row: [x, y, w, h, x_re, y_re, x_le, y_le, x_nt, y_nt,
+            #             x_rcm, y_rcm, x_lcm, y_lcm, score]
+            landmarks = tuple(
+                (float(f[4 + 2 * i]), float(f[5 + 2 * i])) for i in range(5)
             )
-        )
-    return detections
+            detections.append(
+                FaceDetection(
+                    bbox=(float(f[0]), float(f[1]), float(f[2]), float(f[3])),
+                    score=float(f[14]),
+                    landmarks=landmarks,
+                )
+            )
+        return detections
+    except Exception as exc:
+        raise FaceDetectionError(f"invalid YuNet result: {exc}") from exc
 
 
 def count_faces_in_image(

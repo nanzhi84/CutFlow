@@ -29,8 +29,10 @@ from packages.core.contracts import (
     NodeRun,
     NodeStatus,
     RunStatus,
+    WarningCode,
     WorkflowRun,
 )
+from packages.core.contracts.artifacts import CaptionDisplayPlanArtifact
 from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
 from packages.production.pipeline import _ffmpeg
@@ -116,6 +118,23 @@ def test_write_ass_subtitles_uses_resolved_font_name(tmp_path):
     assert "Arial" not in text
 
 
+def test_write_ass_subtitles_uses_separate_emphasis_font_name(tmp_path):
+    out = tmp_path / "sub.ass"
+    write_ass_subtitles(
+        out,
+        narration={"units": [{"text": "普通字幕", "start": 0.0, "end": 1.0}]},
+        style={"subtitle": {"font_size": 48, "emphasis_font_size": 40}},
+        width=1080,
+        height=1080,
+        font_name="Readable Sans",
+        emphasis_font_name="Display Promo",
+        overlay_events=[{"text": "限时五折", "start": 0.2, "end": 0.8}],
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "Style: Default,Readable Sans,48," in text
+    assert "Style: Emphasis,Display Promo,40," in text
+
+
 def test_write_ass_subtitles_scales_ui_size_for_portrait_output(tmp_path):
     out = tmp_path / "sub.ass"
     write_ass_subtitles(
@@ -194,6 +213,514 @@ def test_write_ass_subtitles_emits_selected_colors_and_overlay_styles(tmp_path):
     assert "Style: Pop" not in text
     assert r"Dialogue: 1,0:00:00.20,0:00:00.80,Emphasis" in text
     assert r"{\an8\pos(540,269)\fad(80,120)\t(0,180,\fscx108\fscy108)}重点" in text
+
+
+def test_write_ass_subtitles_respects_caption_layer_toggles(tmp_path):
+    out = tmp_path / "sub.ass"
+
+    write_ass_subtitles(
+        out,
+        narration={"units": [{"text": "普通字幕", "start": 0.0, "end": 1.0}]},
+        style={"subtitle": {"normal_enabled": False, "emphasis_enabled": True}},
+        width=1080,
+        height=1920,
+        overlay_events=[{"text": "重点花字", "start": 0.2, "end": 0.8}],
+    )
+
+    text = out.read_text(encoding="utf-8")
+    assert "普通字幕" not in text
+    assert r"Dialogue: 1,0:00:00.20,0:00:00.80,Emphasis" in text
+    assert "重点花字" in text
+
+    write_ass_subtitles(
+        out,
+        narration={"units": [{"text": "普通字幕", "start": 0.0, "end": 1.0}]},
+        style={"subtitle": {"normal_enabled": True, "emphasis_enabled": False}},
+        width=1080,
+        height=1920,
+        overlay_events=[{"text": "重点花字", "start": 0.2, "end": 0.8}],
+    )
+
+    text = out.read_text(encoding="utf-8")
+    assert r"Dialogue: 0,0:00:00.00,0:00:01.00,Default" in text
+    assert "重点花字" not in text
+    assert "Style: Emphasis" not in text
+
+
+# --- Caption Display v2 (#188): compiled cues + rect overlays + WrapStyle 2 -----
+def test_write_ass_uses_compiled_caption_cues(tmp_path):
+    out = tmp_path / "sub.ass"
+    fallbacks = write_ass_subtitles(
+        out,
+        style={"subtitle": {"font_size": 48}},
+        width=1080,
+        height=1920,
+        caption_cues=[{"start": 0.0, "end": 2.0, "lines": ["第一行文字", "第二行文字"]}],
+    )
+    text = out.read_text(encoding="utf-8")
+    assert fallbacks == []
+    assert "WrapStyle: 2" in text and "WrapStyle: 0" not in text
+    # Normal Dialogue is the compiler's pre-broken lines joined by \N (no re-wrap).
+    assert r"Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,第一行文字\N第二行文字" in text
+
+
+def test_write_ass_rect_overlay_alignment_and_anchor(tmp_path):
+    out = tmp_path / "sub.ass"
+    rect = {"x": 0.25, "y": 0.1, "w": 0.5, "h": 0.12}
+    # center/left/right all vertically centered (an4/5/6); box center_y = 0.16*1920 = 307.
+    write_ass_subtitles(
+        out,
+        style={"subtitle": {"font_size": 48}},
+        width=1080,
+        height=1920,
+        caption_cues=[],
+        overlay_events=[
+            {"start": 0.0, "end": 1.0, "text": "居中", "rect": rect, "text_align": "center",
+             "animation_id": "pop_in"},
+            {"start": 0.0, "end": 1.0, "text": "靠左", "rect": rect, "text_align": "left",
+             "animation_id": "none"},
+            {"start": 0.0, "end": 1.0, "text": "靠右", "rect": rect, "text_align": "right",
+             "animation_id": "none"},
+        ],
+    )
+    text = out.read_text(encoding="utf-8")
+    assert r"{\an5\pos(540,307)\fad(80,120)\t(0,180,\fscx108\fscy108)}居中" in text
+    assert r"{\an4\pos(270,307)}靠左" in text  # box left edge = 0.25*1080
+    assert r"{\an6\pos(810,307)}靠右" in text  # box right edge = 0.75*1080
+
+
+def test_write_ass_rect_overlay_slide_right(tmp_path):
+    out = tmp_path / "sub.ass"
+    write_ass_subtitles(
+        out,
+        style={"subtitle": {"font_size": 48}},
+        width=1080,
+        height=1920,
+        caption_cues=[],
+        overlay_events=[
+            {"start": 0.0, "end": 1.0, "text": "滑入", "text_align": "center",
+             "rect": {"x": 0.25, "y": 0.1, "w": 0.5, "h": 0.12}, "animation_id": "slide_right"},
+        ],
+    )
+    text = out.read_text(encoding="utf-8")
+    # slide_right enters from x-90 toward the anchor (540,307).
+    assert r"{\an5\move(450,307,540,307,0,220)\fad(80,120)}滑入" in text
+
+
+def test_write_ass_short_event_shrinks_animation_timing(tmp_path):
+    out = tmp_path / "sub.ass"
+    # 0.25s event, punch: budget = 250ms*0.4 = 100ms; natural 260 -> scale 0.3846.
+    write_ass_subtitles(
+        out,
+        style={"subtitle": {"font_size": 48}},
+        width=1080,
+        height=1920,
+        caption_cues=[],
+        overlay_events=[
+            {"start": 0.0, "end": 0.25, "text": "快闪", "text_align": "center",
+             "rect": {"x": 0.25, "y": 0.1, "w": 0.5, "h": 0.12}, "animation_id": "punch"},
+        ],
+    )
+    text = out.read_text(encoding="utf-8")
+    assert r"{\an5\pos(540,307)\t(0,46,\fscx116\fscy116)\t(46,100,\fscx100\fscy100)}快闪" in text
+
+
+def test_write_ass_unknown_animation_falls_back_to_none(tmp_path):
+    out = tmp_path / "sub.ass"
+    fallbacks = write_ass_subtitles(
+        out,
+        style={"subtitle": {"font_size": 48}},
+        width=1080,
+        height=1920,
+        caption_cues=[],
+        overlay_events=[
+            {"event_id": "e_fb", "start": 0.0, "end": 1.0, "text": "促销", "text_align": "center",
+             "rect": {"x": 0.25, "y": 0.1, "w": 0.5, "h": 0.12}, "animation_id": "wobble"},
+        ],
+    )
+    text = out.read_text(encoding="utf-8")
+    assert fallbacks == ["e_fb"]
+    # Unknown animation renders static (none) -- no \t / \move / \fad injected.
+    assert r"{\an5\pos(540,307)}促销" in text
+    assert "wobble" not in text
+
+
+def test_write_ass_rectless_overlay_uses_legacy_placement_path(tmp_path):
+    # A pre-#188 overlay (no rect) keeps the byte-identical placement_id geometry.
+    out = tmp_path / "sub.ass"
+    write_ass_subtitles(
+        out,
+        style={"subtitle": {"font_size": 48}},
+        width=1080,
+        height=1920,
+        caption_cues=[],
+        overlay_events=[{"start": 0.2, "end": 0.8, "text": "重点", "style": "emphasis"}],
+    )
+    text = out.read_text(encoding="utf-8")
+    assert r"{\an8\pos(540,269)\fad(80,120)\t(0,180,\fscx108\fscy108)}重点" in text
+
+
+# --- Caption Display v2: node integration (compiler + artifact + degradations) ---
+def _min_font_asset(repository, object_store, tmp_path, *, filename="brand.ttf"):
+    """Stage a name-table-only font (parseable family, unreadable metrics)."""
+    font_file = tmp_path / filename
+    font_file.write_bytes(_build_min_font("Brand Sans"))
+    stored = store_file(object_store, font_file, purpose=ArtifactKind.uploaded_file.value)
+    artifact = repository.create_artifact(
+        kind=ArtifactKind.uploaded_file,
+        payload_schema="uri-only",
+        payload=None,
+        case_id="case_demo",
+        uri=stored.ref.uri,
+        sha256=stored.sha256,
+    )
+    repository.media_assets["asset_font_demo"] = MediaAssetRecord(
+        id="asset_font_demo",
+        case_id="case_demo",
+        title="Brand Sans",
+        kind="font",
+        source_artifact_id=artifact.id,
+        usable=True,
+    )
+    return "asset_font_demo"
+
+
+def _run_mix_node(
+    tmp_path,
+    monkeypatch,
+    *,
+    style_payload,
+    narration_payload,
+    subtitle_request,
+    subtitle_filter_available=True,
+):
+    repository = Repository()
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store", lambda: object_store
+    )
+
+    def stored_artifact(kind, filename, *, media_type):
+        path = tmp_path / filename
+        path.write_bytes(b"test")
+        stored = store_file(object_store, path, purpose=kind.value)
+        return repository.create_artifact(
+            kind=kind,
+            payload_schema="uri-only",
+            payload=None,
+            case_id="case_demo",
+            uri=stored.ref.uri,
+            sha256=stored.sha256,
+            media_info=MediaInfo(
+                media_type=media_type,
+                codec="h264" if media_type == "video" else "mp3",
+                format="mp4" if media_type == "video" else "mp3",
+                duration_sec=6.0,
+            ),
+        )
+
+    rendered = stored_artifact(ArtifactKind.video_rendered, "rendered.mp4", media_type="video")
+    audio = stored_artifact(ArtifactKind.audio_tts, "voice.wav", media_type="audio")
+    timeline = repository.create_artifact(
+        kind=ArtifactKind.plan_timeline,
+        payload_schema="TimelinePlanArtifact.v1",
+        payload={"fps": 30, "total_frames": 180, "tracks": [], "validation": {"valid": True}},
+        case_id="case_demo",
+    )
+    style = repository.create_artifact(
+        kind=ArtifactKind.plan_style,
+        payload_schema="StylePlanArtifact.v1",
+        payload=style_payload,
+        case_id="case_demo",
+    )
+    narration = repository.create_artifact(
+        kind=ArtifactKind.narration_units,
+        payload_schema="NarrationUnitsArtifact.v1",
+        payload=narration_payload,
+        case_id="case_demo",
+    )
+
+    adapter = object.__new__(LocalRuntimeAdapter)
+    adapter.repository = repository
+    state = RunState(
+        request=DigitalHumanVideoRequest(
+            case_id="case_demo",
+            script="hello",
+            voice={"voice_id": "voice_sandbox"},
+            subtitle=subtitle_request,
+            bgm={"enabled": False},
+        ),
+        artifacts={
+            ArtifactKind.video_rendered: rendered,
+            ArtifactKind.audio_tts: audio,
+            ArtifactKind.plan_timeline: timeline,
+            ArtifactKind.plan_style: style,
+            ArtifactKind.narration_units: narration,
+        },
+    )
+    ctx = NodeContext(
+        adapter=adapter,
+        run=WorkflowRun(
+            id="run_mix",
+            job_id="job_mix",
+            case_id="case_demo",
+            workflow_template_id="digital_human_editing_agent_v1",
+            workflow_version="v1",
+            status=RunStatus.running,
+        ),
+        node_run=NodeRun(
+            id="nr_mix",
+            run_id="run_mix",
+            node_id="SubtitleAndBgmMix",
+            node_version="v1",
+            status=NodeStatus.running,
+            input_manifest_hash="sha256:test",
+        ),
+        state=state,
+    )
+
+    captured = {}
+
+    def fake_render_final_media(**kwargs):
+        captured["render_calls"] = captured.get("render_calls", 0) + 1
+        captured.update(kwargs)
+        sub = kwargs.get("subtitle_path")
+        captured["subtitle_text"] = sub.read_text(encoding="utf-8") if sub else None
+        kwargs["output_path"].write_bytes(b"fake video")
+        return None
+
+    monkeypatch.setattr(
+        "packages.production.pipeline.nodes.subtitle_and_bgm_mix.render_final_media",
+        fake_render_final_media,
+    )
+    monkeypatch.setattr(
+        "packages.production.pipeline.nodes.subtitle_and_bgm_mix.ffmpeg_filter_available",
+        lambda _name: subtitle_filter_available,
+    )
+    monkeypatch.setattr(
+        "packages.production.pipeline.nodes.subtitle_and_bgm_mix.validate_rendered_output",
+        lambda *_a, **_k: MediaInfo(
+            media_type="video", codec="h264", format="mp4", duration_sec=6.0
+        ),
+    )
+
+    from packages.production.pipeline import nodes
+
+    output = nodes.subtitle_and_bgm_mix.run(ctx)
+    return output, captured, repository
+
+
+def _rect_event(event_id, animation_id):
+    # Timed over the *second* unit so the long first unit survives dedup and keeps
+    # its two-line wrap (the compiler punches huazi windows out of normal cues).
+    return {
+        "start": 3.2,
+        "end": 4.0,
+        "text": "限时特惠",
+        "event_id": event_id,
+        "style": "emphasis",
+        "animation_id": animation_id,
+        "rect": {"x": 0.2, "y": 0.08, "w": 0.6, "h": 0.12},
+        "text_align": "center",
+    }
+
+
+def test_node_emits_caption_display_plan_artifact(tmp_path, monkeypatch):
+    output, captured, _repo = _run_mix_node(
+        tmp_path,
+        monkeypatch,
+        style_payload={
+            "subtitle": {
+                "enabled": True,
+                "normal_enabled": True,
+                "emphasis_enabled": True,
+                "font_size": 40,  # small enough that the long unit wraps to 2 lines
+            },
+            "overlay_events": [_rect_event("e1", "pop_in"), _rect_event("e2", "wobble")],
+        },
+        narration_payload={
+            "source": "estimated",
+            "strict": False,
+            "units": [
+                {"text": "全海南门店联保修完在哪都能享受售后服务真的很方便", "start": 0.0, "end": 3.0},
+                {"text": "赶紧来试试吧朋友们", "start": 3.0, "end": 5.0},
+            ],
+        },
+        subtitle_request={"enabled": True, "normal_enabled": True, "emphasis_enabled": True},
+    )
+
+    plan = next(a for a in output.artifacts if a.kind == ArtifactKind.plan_caption_display)
+    assert plan.payload_schema == "CaptionDisplayPlan.v1"
+    payload = plan.payload
+    # Payload conforms to the persisted contract (extra="forbid" validates it).
+    model = CaptionDisplayPlanArtifact.model_validate(payload)
+    assert model.policy_version == "caption_display_v2"
+    assert any(len(cue.lines) == 2 for cue in model.normal_cues)  # long unit wrapped
+    assert len(model.emphasis_events) == 2
+    # One overlay used an unknown animation -> fallback counted + degradation raised.
+    assert model.diagnostics.animation_fallbacks == 1
+    assert model.diagnostics.font_metrics_source == "eaw_fallback"  # default Arial, no file
+    assert WarningCode.huazi_animation_fallback in output.warnings
+    assert WarningCode.font_metrics_fallback not in output.warnings  # no font selected
+    assert output.status == NodeStatus.degraded
+
+    ass = captured["subtitle_text"]
+    assert "WrapStyle: 2" in ass
+    assert r"\N" in ass  # the long unit wrapped across two lines
+    # pop_in twin renders its animation; the unknown-animation twin renders static none.
+    assert r"{\an5\pos(540,269)\fad(80,120)\t(0,180,\fscx108\fscy108)}限时特惠" in ass
+    assert r"{\an5\pos(540,269)}限时特惠" in ass
+
+
+def test_node_probes_missing_subtitle_filter_before_single_render(tmp_path, monkeypatch):
+    output, captured, _repository = _run_mix_node(
+        tmp_path,
+        monkeypatch,
+        style_payload={
+            "subtitle": {
+                "normal_enabled": True,
+                "emphasis_enabled": False,
+                "font_size": 40,
+            },
+            "overlay_events": [],
+        },
+        narration_payload={
+            "source": "estimated",
+            "strict": False,
+            "units": [{"text": "普通字幕", "start": 0.0, "end": 2.0}],
+        },
+        subtitle_request={
+            "enabled": True,
+            "normal_enabled": True,
+            "emphasis_enabled": False,
+        },
+        subtitle_filter_available=False,
+    )
+
+    assert captured["render_calls"] == 1
+    assert captured["subtitle_path"] is None
+    assert captured["fonts_dir"] is None
+    assert WarningCode.subtitle_burn_skipped in output.warnings
+    assert any(artifact.kind == ArtifactKind.subtitle_ass for artifact in output.artifacts)
+
+
+def test_node_reports_font_metrics_fallback_for_unreadable_selected_font(tmp_path, monkeypatch):
+    # Pre-stage the font asset into the repository the node reads from.
+    repository = Repository()
+    object_store = LocalObjectStore(tmp_path / "objects")
+    font_asset_id = _min_font_asset(repository, object_store, tmp_path)
+
+    # Reuse the runner but inject the pre-built repository via monkeypatching is
+    # awkward; instead build a minimal standalone node invocation here.
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store", lambda: object_store
+    )
+
+    def stored_artifact(kind, filename, *, media_type):
+        path = tmp_path / filename
+        path.write_bytes(b"test")
+        stored = store_file(object_store, path, purpose=kind.value)
+        return repository.create_artifact(
+            kind=kind,
+            payload_schema="uri-only",
+            payload=None,
+            case_id="case_demo",
+            uri=stored.ref.uri,
+            sha256=stored.sha256,
+            media_info=MediaInfo(
+                media_type=media_type,
+                codec="h264" if media_type == "video" else "mp3",
+                format="mp4" if media_type == "video" else "mp3",
+                duration_sec=6.0,
+            ),
+        )
+
+    rendered = stored_artifact(ArtifactKind.video_rendered, "rendered.mp4", media_type="video")
+    audio = stored_artifact(ArtifactKind.audio_tts, "voice.wav", media_type="audio")
+    timeline = repository.create_artifact(
+        kind=ArtifactKind.plan_timeline,
+        payload_schema="TimelinePlanArtifact.v1",
+        payload={"fps": 30, "total_frames": 180, "tracks": [], "validation": {"valid": True}},
+        case_id="case_demo",
+    )
+    style = repository.create_artifact(
+        kind=ArtifactKind.plan_style,
+        payload_schema="StylePlanArtifact.v1",
+        payload={
+            "subtitle": {"enabled": True, "normal_enabled": True, "emphasis_enabled": False},
+            "font_asset_id": font_asset_id,
+        },
+        case_id="case_demo",
+    )
+    narration = repository.create_artifact(
+        kind=ArtifactKind.narration_units,
+        payload_schema="NarrationUnitsArtifact.v1",
+        payload={"source": "estimated", "strict": False,
+                 "units": [{"text": "测试字幕内容", "start": 0.0, "end": 2.0}]},
+        case_id="case_demo",
+    )
+
+    adapter = object.__new__(LocalRuntimeAdapter)
+    adapter.repository = repository
+    state = RunState(
+        request=DigitalHumanVideoRequest(
+            case_id="case_demo",
+            script="hello",
+            voice={"voice_id": "voice_sandbox"},
+            subtitle={"enabled": True, "normal_enabled": True, "emphasis_enabled": False},
+            bgm={"enabled": False},
+        ),
+        artifacts={
+            ArtifactKind.video_rendered: rendered,
+            ArtifactKind.audio_tts: audio,
+            ArtifactKind.plan_timeline: timeline,
+            ArtifactKind.plan_style: style,
+            ArtifactKind.narration_units: narration,
+        },
+    )
+    ctx = NodeContext(
+        adapter=adapter,
+        run=WorkflowRun(
+            id="run_mix",
+            job_id="job_mix",
+            case_id="case_demo",
+            workflow_template_id="digital_human_v2",
+            workflow_version="v1",
+            status=RunStatus.running,
+        ),
+        node_run=NodeRun(
+            id="nr_mix",
+            run_id="run_mix",
+            node_id="SubtitleAndBgmMix",
+            node_version="v1",
+            status=NodeStatus.running,
+            input_manifest_hash="sha256:test",
+        ),
+        state=state,
+    )
+
+    def fake_render_final_media(**kwargs):
+        kwargs["output_path"].write_bytes(b"fake video")
+        return None
+
+    monkeypatch.setattr(
+        "packages.production.pipeline.nodes.subtitle_and_bgm_mix.render_final_media",
+        fake_render_final_media,
+    )
+    monkeypatch.setattr(
+        "packages.production.pipeline.nodes.subtitle_and_bgm_mix.validate_rendered_output",
+        lambda *_a, **_k: MediaInfo(
+            media_type="video", codec="h264", format="mp4", duration_sec=6.0
+        ),
+    )
+
+    from packages.production.pipeline import nodes
+
+    output = nodes.subtitle_and_bgm_mix.run(ctx)
+
+    plan = next(a for a in output.artifacts if a.kind == ArtifactKind.plan_caption_display)
+    assert plan.payload["diagnostics"]["font_metrics_source"] == "eaw_fallback"
+    assert WarningCode.font_metrics_fallback in output.warnings
 
 
 # --- gap 2: adaptive mix volume -------------------------------------------------

@@ -172,7 +172,7 @@ export default function RunsPage() {
           <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(340px,1fr))]">
             {items.map((run) => (
               <article
-                className={`group flex cursor-pointer gap-4 self-start rounded-[24px] border bg-[linear-gradient(180deg,rgba(255,255,252,0.9),rgba(249,250,244,0.96))] p-3 shadow-glow transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/25 ${
+                className={`group flex min-h-[288px] cursor-pointer gap-4 rounded-[24px] border bg-[linear-gradient(180deg,rgba(255,255,252,0.9),rgba(249,250,244,0.96))] p-3 shadow-glow transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/25 ${
                   run.runId === selectedCard?.runId ? "border-accent/25" : "border-border/80"
                 } ${run.runId === highlightedRunId ? "ring-2 ring-accent/20" : ""}`}
                 onClick={() => openRunDetail(run)}
@@ -221,9 +221,9 @@ export default function RunsPage() {
                     </div>
                   </div>
 
-                  <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-3">
+                  <div className="mt-auto flex flex-col items-start gap-2 border-t border-border/60 pt-3">
                     <span className="badge-info">{run.canPublish ? "可创建发布包" : "等待成片"}</span>
-                    <div className="flex items-center gap-1.5" onClick={(event) => event.stopPropagation()}>
+                    <div className="flex w-full items-center justify-between gap-1.5" onClick={(event) => event.stopPropagation()}>
                       <button className="rounded-lg p-2 text-text-tertiary hover:bg-surface hover:text-text-primary" type="button" onClick={() => openRunDetail(run)} title="查看详情">
                         <Eye className="h-4 w-4" />
                       </button>

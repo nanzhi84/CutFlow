@@ -5,7 +5,7 @@ Case-first 数字人短视频内容生产系统。Python（FastAPI + Temporal）
 ## 仓库地图（改对应代码前先读该目录的 CLAUDE.md）
 
 - `apps/`：`api`（FastAPI）· `worker`（Temporal worker，独立进程）· `web`（React/Vite SPA）· `connectors`（OceanEngine 离线 ETL CLI）
-- `packages/`：`core`（contracts/storage【对象存储 local/S3/tiered + presigned upload、secret 信封加密】/config/auth/observability/workflow）· `ai`（gateway/prompts/providers）· `creative`（Case/脚本/自进化）· `media` · `planning` · `production`（多工作流流水线：主链 digital_human_v2 18 节点，另有 digital_human_editing_agent_v1 18 节点 / seedance_t2v_v1 5 节点模板；纯 B-roll 画外音走主链 `broll.mode="full_coverage"`）· `publishing` · `ops` · `migrations`（保留目录约定，**非** Alembic）
+- `packages/`：`core`（contracts/storage【对象存储 local/S3/tiered + presigned upload、secret 信封加密】/config/auth/observability/workflow）· `ai`（gateway/prompts/providers）· `creative`（Case/脚本/自进化）· `media` · `planning` · `production`（多工作流流水线：主链 digital_human_v2 18 节点，活动 Agent 链 digital_human_editing_agent_v2 20 节点，另保留历史恢复用 digital_human_editing_agent_v1 18 节点 / seedance_t2v_v1 5 节点；纯 B-roll 画外音走主链 `broll.mode="full_coverage"`）· `publishing` · `ops` · `migrations`（保留目录约定，**非** Alembic）
 - `tests/`（按域）· `scripts/` · `deploy/`（Temporal 配置）· `docs/`（入口：`docs/README.md`）
 
 ## 关键命令
@@ -28,7 +28,7 @@ python scripts/provision_oss_cors.py # S3/OSS 浏览器直传上传前配置 COR
 
 - **Contract-first**：改任何 API 形状 → 必须重生成 `apps/web/src/api/openapi.json` + `schema.d.ts`（CI 校验漂移）。`schema.d.ts` 是生成物，**禁止手改**。
 - 领域类型唯一来源 `packages/core/contracts`（Pydantic v2），跨包共享走它。
-- DB schema 迁移**只**在 `packages/core/storage/alembic/versions/`（当前 `0001…0033`，单一 head `0033_converge_visual_kind`；`0023`/`0024`/`0025` 是 contract 字段删除后的 JSONB 清理迁移，`0026` 把 visual asset kind 收敛为 `video`、`0027` 剥离已删的顶层 `portrait` 块，`0028` 清理用户默认配置里的遗留选项字段，`0029` 同步 editing agent prompt seed（仅修 pre-#136 legacy 库），`0030` 是 0029 之后的二次同步 editing agent prompt seed，`0031` 兼容旧 `0030_sync_editing_agent_slots` 并规范化 `publish_records.status`，`0032` 增加 voice↔case 绑定，`0033` 把 0026 之后被 seed 重造的残留 `portrait`/`broll` 行再次收敛为 `video`（#133 删 `UploadKind.portrait/broll` 枚举前的一次性幂等清理）；`0014` 合并过早期双 `0012` 分支，两个 `0018` 文件是线性顺接、非分叉）。
+- DB schema 迁移**只**在 `packages/core/storage/alembic/versions/`（当前 `0001…0046`，单一 head `0046_huazi_subagent_prompt`；`0023`/`0024`/`0025` 是 contract 字段删除后的 JSONB 清理迁移，`0026` 把 visual asset kind 收敛为 `video`、`0027` 剥离已删的顶层 `portrait` 块，`0028` 清理用户默认配置里的遗留选项字段，`0029` 同步 editing agent prompt seed（仅修 pre-#136 legacy 库），`0030` 是 0029 之后的二次同步 editing agent prompt seed，`0031` 兼容旧 `0030_sync_editing_agent_slots` 并规范化 `publish_records.status`，`0032` 增加 voice↔case 绑定，`0033` 把 0026 之后被 seed 重造的残留 `portrait`/`broll` 行再次收敛为 `video`（#133 删 `UploadKind.portrait/broll` 枚举前的一次性幂等清理），`0045` 剥离 preset 时代的 `caption_style_pair_id`/`emphasis_position_id`，`0046` 同步 legacy Huazi prompt 并插入 v2 MediaSelection/PostProcess Agent prompts（#188）；`0014` 合并过早期双 `0012` 分支，两个 `0018` 文件是线性顺接、非分叉）。
 - 存储/运行时/对象存储后端由 `Settings`（`CUTAGENT_*` env）切换，清单见 `.env.example`。
 - 浏览器上传走 `/api/uploads/prepare` → object-store presigned PUT → `/api/uploads/complete`；API 不代理文件字节，complete 阶段验证 HEAD/sha256/content-type/媒体探测并登记产物。
 - 外部 AI/媒体调用一律经 `ProviderGateway` 按能力分发；prompt 不得硬编码，经 registry + binding，生产只解析 published 版本。

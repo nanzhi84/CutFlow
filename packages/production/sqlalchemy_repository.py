@@ -191,10 +191,13 @@ NODE_LABELS = {
     "BrollPlanning": "规划 B-roll",
     "StylePlanning": "规划字幕与包装",
     "EditingAgentPlanning": "剪辑 Agent 规划",
+    "MediaSelectionAgentPlanning": "媒体选择 Agent 规划",
     "TimelinePlanning": "规划时间线",
     "PortraitTrackBuild": "生成数字人轨道",
     "LipSync": "口型同步",
     "RenderFinalTimeline": "渲染主时间线",
+    "CaptionWindowPlanning": "规划字幕窗口",
+    "PostProcessAgentPlanning": "后处理 Agent 规划",
     "SubtitleAndBgmMix": "混合字幕与 BGM",
     "ExportFinishedVideo": "导出成片",
     "FinalizeRunReport": "生成 Run 报告",
@@ -1257,10 +1260,16 @@ class SqlAlchemyProductionRepository(BaseRepository):
                     .order_by(NodeRunRow.created_at.asc())
                 )
             ]
+            referenced_artifact_ids = {
+                artifact_id for node_run in node_runs for artifact_id in node_run.output_artifact_ids
+            }
+            artifact_filter = ArtifactRow.run_id == run_id
+            if referenced_artifact_ids:
+                artifact_filter = or_(artifact_filter, ArtifactRow.id.in_(referenced_artifact_ids))
             artifact_rows = list(
                 session.scalars(
                     select(ArtifactRow)
-                    .where(ArtifactRow.run_id == run_id)
+                    .where(artifact_filter)
                     .order_by(ArtifactRow.created_at.asc())
                 )
             )

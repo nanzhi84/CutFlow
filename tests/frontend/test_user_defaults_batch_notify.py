@@ -49,10 +49,13 @@ const customForm = {
   brollEnabled: false,
   maxInserts: 7,
   subtitleEnabled: true,
+  normalSubtitleEnabled: true,
+  huaziEnabled: false,
   subtitleFontId: "font_yst",
-  captionStylePairId: "local_promo_c",
   subtitleStyle: "news",
   subtitleSize: 36,
+  huaziSize: 54,
+  huaziColor: "#4DABF7",
   bgmEnabled: true,
   bgmVolume: 0.5,
   bgmAutoMix: false,
@@ -74,7 +77,10 @@ console.log(JSON.stringify({
   bgmVolume: defaults.bgm ? defaults.bgm.volume : null,
   bgmAutoMix: defaults.bgm ? defaults.bgm.auto_mix : null,
   subtitleFontId: defaults.subtitle ? defaults.subtitle.font_id : null,
-  captionStylePairId: defaults.subtitle ? defaults.subtitle.caption_style_pair_id : null,
+  subtitleNormalEnabled: defaults.subtitle ? defaults.subtitle.normal_enabled : null,
+  subtitleHuaziEnabled: defaults.subtitle ? defaults.subtitle.emphasis_enabled : null,
+  huaziSize: defaults.subtitle ? defaults.subtitle.emphasis_font_size : null,
+  huaziColor: defaults.subtitle ? defaults.subtitle.emphasis_primary_color : null,
   coverMode: defaults.cover ? defaults.cover.mode : null,
   hydratedVoiceId: hydrated.voiceId,
   hydratedSpeed: hydrated.speed,
@@ -82,9 +88,12 @@ console.log(JSON.stringify({
   hydratedBrollEnabled: hydrated.brollEnabled,
   hydratedMaxInserts: hydrated.maxInserts,
   hydratedSubtitleFontId: hydrated.subtitleFontId,
-  hydratedCaptionStylePairId: hydrated.captionStylePairId,
+  hydratedNormalSubtitleEnabled: hydrated.normalSubtitleEnabled,
+  hydratedHuaziEnabled: hydrated.huaziEnabled,
   hydratedSubtitleStyle: hydrated.subtitleStyle,
   hydratedSubtitleSize: hydrated.subtitleSize,
+  hydratedHuaziSize: hydrated.huaziSize,
+  hydratedHuaziColor: hydrated.huaziColor,
   hydratedBgmEnabled: hydrated.bgmEnabled,
   hydratedBgmVolume: hydrated.bgmVolume,
   hydratedBgmAutoMix: hydrated.bgmAutoMix,
@@ -104,7 +113,10 @@ console.log(JSON.stringify({
     assert result["bgmVolume"] == 0.5
     assert result["bgmAutoMix"] is False
     assert result["subtitleFontId"] == "font_yst"
-    assert result["captionStylePairId"] == "local_promo_c"
+    assert result["subtitleNormalEnabled"] is True
+    assert result["subtitleHuaziEnabled"] is False
+    assert result["huaziSize"] == 54
+    assert result["huaziColor"] == "#4DABF7"
     assert result["coverMode"] == "ai"
     # round-trip hydration must reproduce the preference values
     assert result["hydratedVoiceId"] == "voice_42"
@@ -113,9 +125,12 @@ console.log(JSON.stringify({
     assert result["hydratedBrollEnabled"] is False
     assert result["hydratedMaxInserts"] == 7
     assert result["hydratedSubtitleFontId"] == "font_yst"
-    assert result["hydratedCaptionStylePairId"] == "local_promo_c"
+    assert result["hydratedNormalSubtitleEnabled"] is True
+    assert result["hydratedHuaziEnabled"] is False
     assert result["hydratedSubtitleStyle"] == "news"
     assert result["hydratedSubtitleSize"] == 36
+    assert result["hydratedHuaziSize"] == 54
+    assert result["hydratedHuaziColor"] == "#4DABF7"
     assert result["hydratedBgmEnabled"] is True
     assert result["hydratedBgmVolume"] == 0.5
     assert result["hydratedBgmAutoMix"] is False

@@ -2,10 +2,12 @@
 
 The editing agent lets an LLM make the *semantic* editing choices (which
 portrait source window fills each boundary slot, which b-roll clip covers which
-narration beat, which BGM, and which controlled huazi packaging choice) while every frame-exact boundary is
+narration beat, and which BGM) while every frame-exact boundary is
 computed locally by the deterministic frame-grid primitives. The LLM therefore
 only ever emits candidate IDs — never authoritative frame numbers — so a
-hallucinated timeline can never reach the renderer.
+hallucinated timeline can never reach the renderer. Huazi (emphasis captions) are
+planned by a separate second LLM pass (the HuaziPlanningSubagent, see
+``_huazi_candidates``); this module refuses any huazi field the main agent emits.
 
 This module is import-light and free of any ``NodeContext``/IO so the selection
 parsing, validation, and deterministic fallback can be unit-tested as pure
@@ -23,14 +25,6 @@ from packages.planning.editing.frame_grid import (
     to_seconds,
 )
 from packages.planning.material import longest_clean_portrait_source_span
-from packages.production.pipeline._caption_styles import (
-    HUAZI_ANIMATIONS,
-    HUAZI_PLACEMENTS,
-    HUAZI_SFX,
-    animation_candidates,
-    placement_candidates,
-    sfx_candidates,
-)
 
 TIMELINE_FPS = 30
 PORTRAIT_UNIQUENESS_RULE = (
@@ -60,22 +54,11 @@ class BrollChoice:
 
 
 @dataclass(frozen=True)
-class HuaziChoice:
-    event_id: str = ""
-    phrase: str = ""
-    placement_id: str = "top_center_banner"
-    animation_id: str = "pop_in"
-    sfx_id: str = "none"
-    reason: str = ""
-
-
-@dataclass(frozen=True)
 class EditingSelection:
     portrait: list[PortraitChoice] = field(default_factory=list)
     broll: list[BrollChoice] = field(default_factory=list)
     font_id: str | None = None
     bgm_id: str | None = None
-    huazi: list[HuaziChoice] = field(default_factory=list)
     analysis: str = ""
     overreach_fields: tuple[str, ...] = ()
 
@@ -138,36 +121,18 @@ def parse_selection(output: Any) -> EditingSelection:
             )
         )
     bgm_plan = data.get("bgm_plan") if isinstance(data.get("bgm_plan"), dict) else {}
-    huazi: list[HuaziChoice] = []
-    for item in data.get("huazi_plan") or []:
-        if not isinstance(item, dict):
-            continue
-        overreach.extend(f"huazi_plan.{field}" for field in _forbidden_huazi_fields(item))
-        event_id = _as_str(item.get("event_id"))
-        phrase = _as_str(item.get("phrase"))
-        if not event_id and not phrase:
-            continue
-        huazi.append(
-            HuaziChoice(
-                event_id=event_id,
-                phrase=phrase,
-                placement_id=_as_str(item.get("placement_id")) or "top_center_banner",
-                animation_id=_as_str(item.get("animation_id")) or "pop_in",
-                sfx_id=_as_str(item.get("sfx_id")) or "none",
-                reason=_as_str(item.get("reason")),
-            )
-        )
     return EditingSelection(
         portrait=portrait,
         broll=broll,
         font_id=None,
         bgm_id=_as_str(bgm_plan.get("bgm_id")) or None,
-        huazi=huazi,
         analysis=_as_str(data.get("analysis")),
         overreach_fields=tuple(dict.fromkeys(overreach)),
     )
 
 
+# Huazi is planned by a separate subagent; if the main agent emits any huazi field
+# it is an overreach (caught here and repaired), never silently honoured.
 _FORBIDDEN_SELECTION_KEYS = {
     "font_plan",
     "font_id",
@@ -176,34 +141,13 @@ _FORBIDDEN_SELECTION_KEYS = {
     "caption_style_pair_id",
     "subtitle_style_plan",
     "style_plan",
-}
-_FORBIDDEN_HUAZI_KEYS = {
-    "font_id",
-    "font_name",
-    "font_size",
-    "color",
-    "primary_color",
-    "outline",
-    "outline_color",
-    "x",
-    "y",
-    "position",
-    "coordinates",
-    "start",
-    "end",
-    "start_sec",
-    "end_sec",
-    "timeline_start",
-    "timeline_end",
+    "huazi_plan",
+    "huazi",
 }
 
 
 def _overreach_fields(data: dict) -> list[str]:
     return sorted(key for key in data if key in _FORBIDDEN_SELECTION_KEYS)
-
-
-def _forbidden_huazi_fields(data: dict) -> list[str]:
-    return sorted(key for key in data if key in _FORBIDDEN_HUAZI_KEYS)
 
 
 # --------------------------------------------------------------------------- #
@@ -337,7 +281,7 @@ def build_agent_input(
     narration_units: list[dict],
     duration: float,
     retrieval_topk_by_window: dict[str, list[str]] | None = None,
-    huazi_events: list[dict] | None = None,
+    include_bgm: bool = True,
 ) -> dict:
     """Assemble the numbered, frame-free structure handed to the LLM.
 
@@ -348,7 +292,7 @@ def build_agent_input(
     IDs only, never authoritative frame values.
     """
     portrait_slots = []
-    for slot in (boundary.get("portrait_slots") or []):
+    for slot in boundary.get("portrait_slots") or []:
         if not isinstance(slot, dict):
             continue
         need = _slot_required_frames(slot)
@@ -369,7 +313,7 @@ def build_agent_input(
         "full_coverage"
     )
     broll_slots = []
-    for slot in (boundary.get("broll_slots") or []):
+    for slot in boundary.get("broll_slots") or []:
         if not isinstance(slot, dict):
             continue
         need = _slot_required_frames(slot)
@@ -433,18 +377,6 @@ def build_agent_input(
             }
             for cid, cand in candidates.broll_by_id.items()
         ],
-        "huazi_events": [
-            {
-                "event_id": _as_str(event.get("event_id")),
-                "phrase": _as_str(event.get("text") or event.get("phrase")),
-            }
-            for event in (huazi_events or [])
-            if isinstance(event, dict)
-            and (_as_str(event.get("event_id")) or _as_str(event.get("text") or event.get("phrase")))
-        ],
-        "placement_candidates": placement_candidates(),
-        "animation_candidates": animation_candidates(),
-        "sfx_candidates": sfx_candidates(),
         "bgm_candidates": [
             {
                 "bgm_id": cid,
@@ -455,7 +387,9 @@ def build_agent_input(
                 "score": _as_float(cand.get("score")),
             }
             for cid, cand in candidates.bgm_by_id.items()
-        ],
+        ]
+        if include_bgm
+        else [],
     }
 
 
@@ -471,15 +405,13 @@ def validate_selection(
     retrieval_topk_by_window: dict[str, list[str]] | None = None,
     allow_broll_asset_diversity_reuse: bool = False,
     require_broll_coverage: bool = False,
-    huazi_events: list[dict] | None = None,
-    placement_ids: set[str] | None = None,
-    animation_ids: set[str] | None = None,
-    sfx_ids: set[str] | None = None,
+    allow_bgm_selection: bool = True,
 ) -> list[str]:
     """Local hard constraints on the LLM's ID-only selection.
 
     Returns a list of human-readable error strings (empty == valid). These are
-    fed back verbatim on the repair prompt so the model can correct itself.
+    fed back verbatim on the repair prompt so the model can correct itself. Huazi
+    is validated separately by the HuaziPlanningSubagent, not here.
     """
     errors: list[str] = []
     if selection.overreach_fields:
@@ -515,7 +447,9 @@ def validate_selection(
         if cand is None:
             errors.append(f"portrait window_id '{choice.window_id}' is not a known candidate")
             continue
-        retrieval_topk = set(_topk_for_slot(portrait_slots[choice.slot_id], retrieval_topk_by_window))
+        retrieval_topk = set(
+            _topk_for_slot(portrait_slots[choice.slot_id], retrieval_topk_by_window)
+        )
         if (
             _slot_has_retrieval_constraint(portrait_slots[choice.slot_id], retrieval_topk_by_window)
             and choice.window_id not in retrieval_topk
@@ -628,45 +562,9 @@ def validate_selection(
             + hint_text
         )
 
-    # Huazi: the LLM may only choose from deterministic phrase/placement/animation/sfx
-    # candidates. Font, color, size, coordinates, and timing stay local.
-    huazi_candidates = [event for event in (huazi_events or []) if isinstance(event, dict)]
-    event_ids = {
-        _as_str(event.get("event_id"))
-        for event in huazi_candidates
-        if _as_str(event.get("event_id"))
-    }
-    phrases = {
-        _as_str(event.get("text") or event.get("phrase"))
-        for event in huazi_candidates
-        if _as_str(event.get("text") or event.get("phrase"))
-    }
-    allowed_placements = placement_ids or set(HUAZI_PLACEMENTS)
-    allowed_animations = animation_ids or set(HUAZI_ANIMATIONS)
-    allowed_sfx = sfx_ids or set(HUAZI_SFX)
-    seen_huazi: set[str] = set()
-    for choice in selection.huazi:
-        identity = choice.event_id or choice.phrase
-        if identity and identity in seen_huazi:
-            errors.append(f"huazi event '{identity}' is selected more than once")
-            continue
-        if identity:
-            seen_huazi.add(identity)
-        if choice.event_id:
-            if choice.event_id not in event_ids:
-                errors.append(f"huazi event_id '{choice.event_id}' is not a known huazi event")
-        elif choice.phrase:
-            if choice.phrase not in phrases:
-                errors.append(f"huazi phrase '{choice.phrase}' is not a known huazi phrase")
-        else:
-            errors.append("huazi choice must include a known event_id or phrase")
-        if choice.placement_id not in allowed_placements:
-            errors.append(f"placement_id '{choice.placement_id}' is not a known placement candidate")
-        if choice.animation_id not in allowed_animations:
-            errors.append(f"animation_id '{choice.animation_id}' is not a known animation candidate")
-        if choice.sfx_id not in allowed_sfx:
-            errors.append(f"sfx_id '{choice.sfx_id}' is not a known sfx candidate")
-    if (
+    if not allow_bgm_selection and selection.bgm_id is not None:
+        errors.append("bgm_plan belongs to PostProcessAgentPlanning, not media selection")
+    elif (
         bgm_enabled
         and selection.bgm_id is not None
         and selection.bgm_id not in candidates.bgm_by_id
@@ -693,13 +591,13 @@ def deterministic_selection(
     max_inserts: int,
     retrieval_topk_by_window: dict[str, list[str]] | None = None,
     allow_broll_asset_diversity_reuse: bool = False,
-    huazi_events: list[dict] | None = None,
 ) -> EditingSelection:
     """Score-ranked default selection equivalent to the deterministic nodes.
 
-    Used when the agent falls back to local selection for b-roll/BGM/huazi. Portrait
+    Used when the agent falls back to local selection for b-roll/BGM. Portrait
     choices are strict-unique best effort only; the node's fallback portrait track
-    comes from ``TimelineWindowPlanning.default_assignment`` instead.
+    comes from ``TimelineWindowPlanning.default_assignment`` instead. Huazi is never
+    filled by this fallback (D16/D17: no deterministic huazi).
     """
     portrait_slots = [s for s in (boundary.get("portrait_slots") or []) if isinstance(s, dict)]
     broll_slots = [s for s in (boundary.get("broll_slots") or []) if isinstance(s, dict)]
@@ -788,24 +686,11 @@ def deterministic_selection(
                     )
                 )
                 break
-    huazi = [
-        HuaziChoice(
-            event_id=_as_str(event.get("event_id")),
-            phrase=_as_str(event.get("text") or event.get("phrase")),
-            placement_id=_as_str(event.get("placement_id")) or "top_center_banner",
-            animation_id=_as_str(event.get("animation_id")) or "pop_in",
-            sfx_id=_as_str(event.get("sfx_id")) or "none",
-            reason="deterministic huazi default",
-        )
-        for event in (huazi_events or [])
-        if isinstance(event, dict)
-    ]
     return EditingSelection(
         portrait=portrait,
         broll=broll,
         font_id=None,
         bgm_id=ranked_bgm[0] if (bgm_enabled and ranked_bgm) else None,
-        huazi=huazi,
         analysis="deterministic fallback selection",
     )
 
@@ -823,7 +708,7 @@ def select_with_repair(
     retrieval_topk_by_window: dict[str, list[str]] | None = None,
     allow_broll_asset_diversity_reuse: bool = False,
     require_broll_coverage: bool = False,
-    huazi_events: list[dict] | None = None,
+    allow_bgm_selection: bool = True,
 ) -> tuple[EditingSelection, list[dict], list[str]]:
     """Drive one LLM selection + up to ``max_repair_attempts`` local repairs.
 
@@ -849,7 +734,7 @@ def select_with_repair(
             retrieval_topk_by_window=retrieval_topk_by_window,
             allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
             require_broll_coverage=require_broll_coverage,
-            huazi_events=huazi_events,
+            allow_bgm_selection=allow_bgm_selection,
         )
         trace.append({"attempt": attempt, "error_count": len(errors), "errors": errors})
         if not errors:

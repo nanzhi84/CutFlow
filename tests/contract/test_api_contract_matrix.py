@@ -167,6 +167,8 @@ def value_for_schema(schema: dict[str, Any], spec: dict[str, Any]) -> Any:
             return "matrix@example.com"
         if schema.get("pattern") == "^[A-Z]{3}$":
             return "CNY"
+        if schema.get("pattern") == "^#[0-9A-Fa-f]{6}$":
+            return "#FFE84A"
         min_length = int(schema.get("minLength", 1) or 1)
         return "x" * max(min_length, 1)
     return {}

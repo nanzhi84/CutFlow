@@ -11,6 +11,7 @@ from packages.core.contracts import (
     ArtifactKind,
     NodeRun,
     NodeStatus,
+    RunStatus,
     WorkflowRun,
     WorkflowTemplate,
 )
@@ -67,9 +68,10 @@ def compute_reuse_plan(
     plan = ReusePlan(source_run_id=source_run.run.id)
     previous_by_node = {node.node_id: node for node in source_run.node_runs}
     template_by_node = {node.node_id: node for node in template.nodes}
+    failed_resume_anchor = _failed_resume_anchor(source_run, template, previous_by_node)
 
     for template_node in template.nodes:
-        if template_node.reuse_policy == "never":
+        if template_node.reuse_policy == "never" and failed_resume_anchor is None:
             return _stop(plan, template_node.node_id, "reuse_policy_forces_rerun")
         previous_node = previous_by_node.get(template_node.node_id)
         if previous_node is None:
@@ -121,6 +123,28 @@ def compute_reuse_plan(
         if previous_node.node_id not in template_by_node and plan.rerun_from_node_id is None:
             return _stop(plan, previous_node.node_id, "node_not_in_template")
     return plan
+
+
+def _failed_resume_anchor(
+    source_run: ReuseSourceRun,
+    template: WorkflowTemplate,
+    previous_by_node: Mapping[str, NodeRun],
+) -> str | None:
+    """First failed template node for a failed source run.
+
+    A failed-run resume is an operator continuation, so successful prefix nodes
+    should remain reusable even when their template spec carries
+    ``reuse_policy="never"`` for other resume shapes. Artifact/schema/hash checks
+    below still apply; only the policy break is bypassed until the actual failed
+    node stops the plan.
+    """
+    if source_run.run.status != RunStatus.failed:
+        return None
+    for template_node in template.nodes:
+        previous_node = previous_by_node.get(template_node.node_id)
+        if previous_node is not None and previous_node.status == NodeStatus.failed:
+            return template_node.node_id
+    return None
 
 
 def _stop(

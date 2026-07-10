@@ -8,6 +8,7 @@ import { TimeText } from "../TimeText";
 import { EditorHandoffActions } from "../editor-handoff/EditorHandoffActions";
 import { Modal } from "../ui/Modal";
 import { VideoPlayer } from "../ui/VideoPlayer";
+import { CaptionDisplayPanel, buildCaptionDisplay } from "./CaptionDisplayPanel";
 import { EditTimelinePreview, buildEditClips } from "./EditTimelinePreview";
 import { NodePipeline, type NodePipelineBadge } from "./NodePipeline";
 import { RunConfigPanel } from "./RunConfigPanel";
@@ -39,6 +40,12 @@ export function RunDetailModal({
   const stages = buildStages(nodes);
   const editClips = buildEditClips(detail);
   const windowBoard = buildWindowBoard(detail, editClips);
+  const captionPlan = buildCaptionDisplay(detail);
+  // 字幕计划区块只在数字人链混过字幕后出现：有 artifact 就展示明细，否则若 SubtitleAndBgmMix
+  // 已完成（老 run 无该产物）给兼容空态；Seedance / 未到该节点则整块不渲染，避免噪音。
+  const subtitleMixNode = nodes.find((node) => node.node_id === "SubtitleAndBgmMix");
+  const subtitleMixSettled = subtitleMixNode ? ["succeeded", "degraded"].includes(subtitleMixNode.status) : false;
+  const showCaptionSection = Boolean(captionPlan) || subtitleMixSettled;
   const coverSource = coverSourceInfo(detail, card);
   const nodeBadges = buildNodeProviderBadges(coverSource, finishedVideo);
   const [activeClipId, setActiveClipId] = useState<string | null>(null);
@@ -130,6 +137,9 @@ export function RunDetailModal({
           ) : (
             <EditTimelinePreview clips={editClips} activeClipId={activeClipId} onSelect={setActiveClipId} />
           )}
+
+          {/* 字幕显示计划（Caption Display v2 诊断产物） */}
+          {showCaptionSection ? <CaptionDisplayPanel plan={captionPlan} /> : null}
 
           {/* 节点时间线：按工作流模板顺序平铺全部节点（保留英文节点名） */}
           <section className="grid gap-3">

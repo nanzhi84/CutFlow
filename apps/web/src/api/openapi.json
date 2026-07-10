@@ -9065,6 +9065,10 @@
           "plan.timeline",
           "plan.render",
           "plan.editing_diagnostics",
+          "plan.media_selection_diagnostics",
+          "plan.caption_windows",
+          "plan.postprocess_diagnostics",
+          "plan.caption_display",
           "video.portrait_track",
           "video.lipsync",
           "lipsync.report",
@@ -13698,8 +13702,14 @@
           "subtitle.burn_skipped",
           "broll.insertions_dropped_geometry",
           "editing_agent.deterministic_fallback",
+          "media_selection_agent.deterministic_fallback",
           "window_query.template_fallback",
-          "timestamp.estimated"
+          "timestamp.estimated",
+          "huazi.animation_fallback",
+          "huazi.planning_failed",
+          "font.metrics_fallback",
+          "caption.visual_analysis_failed",
+          "postprocess.planning_failed"
         ],
         "title": "DegradationCode"
       },
@@ -13924,7 +13934,7 @@
         "additionalProperties": false,
         "type": "object",
         "title": "EditPlanningOptions",
-        "description": "Per-video extra editing steering for the LLM editing-agent template.\n\nConsumed only by ``digital_human_editing_agent_v1``'s ``EditingAgentPlanning``\nnode; ignored by every other template. ``instruction`` is a free-text hint the\nediting agent honours for this one video (e.g. \"尽量用穿搭相近的人像素材，B-roll\n只在讲施工细节时出现\")。``max_repair_attempts`` bounds how many times an invalid\nLLM selection is re-prompted before the node fail-fasts (0 = no repair)."
+        "description": "Per-video extra editing steering for the LLM editing-agent template.\n\nConsumed by ``digital_human_editing_agent_v2``'s ``MediaSelectionAgentPlanning``\nnode (and the frozen v1 compatibility node); ignored by every other template. ``instruction`` is a free-text hint the\nediting agent honours for this one video (e.g. \"尽量用穿搭相近的人像素材，B-roll\n只在讲施工细节时出现\")。``max_repair_attempts`` bounds how many times an invalid\nLLM selection is re-prompted before the node fail-fasts (0 = no repair)."
       },
       "EditorHandoffPackageArtifact": {
         "properties": {
@@ -23975,6 +23985,16 @@
             "title": "Enabled",
             "default": true
           },
+          "normal_enabled": {
+            "type": "boolean",
+            "title": "Normal Enabled",
+            "default": true
+          },
+          "emphasis_enabled": {
+            "type": "boolean",
+            "title": "Emphasis Enabled",
+            "default": true
+          },
           "style_preset": {
             "type": "string",
             "title": "Style Preset",
@@ -23991,7 +24011,7 @@
             ],
             "title": "Font Id"
           },
-          "caption_style_pair_id": {
+          "emphasis_font_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -24000,7 +24020,7 @@
                 "type": "null"
               }
             ],
-            "title": "Caption Style Pair Id"
+            "title": "Emphasis Font Id"
           },
           "font_size": {
             "anyOf": [
@@ -24012,6 +24032,29 @@
               }
             ],
             "title": "Font Size"
+          },
+          "emphasis_font_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emphasis Font Size"
+          },
+          "emphasis_primary_color": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^#[0-9A-Fa-f]{6}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emphasis Primary Color"
           },
           "position": {
             "anyOf": [
@@ -24976,8 +25019,16 @@
           "editing_agent.deterministic_fallback",
           "editing_agent.llm_repair",
           "editing_agent.local_constraint_repair",
+          "media_selection_agent.deterministic_fallback",
+          "media_selection_agent.llm_repair",
+          "media_selection_agent.local_constraint_repair",
           "broll.insertions_dropped_geometry",
-          "window_query.template_fallback"
+          "window_query.template_fallback",
+          "huazi.animation_fallback",
+          "huazi.planning_failed",
+          "font.metrics_fallback",
+          "caption.visual_analysis_failed",
+          "postprocess.planning_failed"
         ],
         "title": "WarningCode"
       },

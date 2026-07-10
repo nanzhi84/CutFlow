@@ -15,8 +15,12 @@ from .cv_quality import (
 )
 from .faces import (
     FaceDetection,
+    FaceDetectionError,
+    FaceDetectorUnavailable,
     count_faces_in_image,
     detect_faces,
+    detect_faces_strict,
+    face_detector_available,
     max_faces_in_frame_paths,
     reset_detector_cache,
 )
@@ -42,8 +46,12 @@ __all__ = [
     "refine_drop_window",
     "merge_adjacent_events",
     "FaceDetection",
+    "FaceDetectionError",
+    "FaceDetectorUnavailable",
     "count_faces_in_image",
     "detect_faces",
+    "detect_faces_strict",
+    "face_detector_available",
     "max_faces_in_frame_paths",
     "reset_detector_cache",
     "extract_frame_at_time",

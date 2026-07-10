@@ -16,6 +16,7 @@ import {
 } from "../../components/studio-create/StudioCreateSteps";
 import {
   STORAGE_KEY,
+  effectiveHuaziEnabled,
   loadStoredForm,
   mapDefaultsToForm,
   mapFormToDefaults,
@@ -154,6 +155,9 @@ export default function StudioCreatePage() {
     const isSeedance = form.contentMode === "seedance";
     const isEditingAgent = form.contentMode === "editing_agent";
     const isFullCoverageBroll = !isSeedance && form.visualMode === "broll_full_coverage";
+    const subtitleNormalEnabled = !isSeedance && form.normalSubtitleEnabled;
+    // 花字仅 Agent 智能剪辑链会渲染；确定性链 digital_human_v2 与 Seedance 一律不请求花字（D4）。
+    const subtitleEmphasisEnabled = effectiveHuaziEnabled(form);
     return {
       schema_version: "digital_human_video_request.v1",
       case_id: caseId,
@@ -164,7 +168,7 @@ export default function StudioCreatePage() {
       workflow_template_id: isSeedance
         ? "seedance_t2v_v1"
         : isEditingAgent
-            ? "digital_human_editing_agent_v1"
+            ? "digital_human_editing_agent_v2"
             : "digital_human_v2",
       reference_asset_ids: isSeedance ? form.seedanceReferenceAssetIds : [],
       voice: {
@@ -181,11 +185,16 @@ export default function StudioCreatePage() {
         allow_generic_coverage: true,
       },
       subtitle: {
-        enabled: isSeedance ? false : form.subtitleEnabled,
+        enabled: subtitleNormalEnabled || subtitleEmphasisEnabled,
+        normal_enabled: subtitleNormalEnabled,
+        emphasis_enabled: subtitleEmphasisEnabled,
         style_preset: form.subtitleStyle.trim() || "douyin",
         font_id: form.subtitleFontId.trim() || null,
-        caption_style_pair_id: form.captionStylePairId,
+        emphasis_font_id: form.huaziFontId.trim() || null,
         font_size: form.subtitleSize,
+        emphasis_font_size: form.huaziSize,
+        emphasis_primary_color: form.huaziColor,
+        position: { x: 0.5, y: form.subtitlePositionY },
       },
       bgm: {
         enabled: isSeedance ? false : form.bgmEnabled,
@@ -208,7 +217,7 @@ export default function StudioCreatePage() {
         portrait_insufficient_policy: "hard_fail",
       },
       edit: {
-        // Only consumed by digital_human_editing_agent_v1's EditingAgentPlanning node;
+        // Only consumed by digital_human_editing_agent_v2's media-selection agent;
         // ignored by other templates. Free-text steering, empty unless the editing-agent
         // template is selected.
         instruction: isEditingAgent ? form.editInstruction.trim() : "",
@@ -234,6 +243,13 @@ export default function StudioCreatePage() {
       // Editing the script text by hand invalidates any adopted script_version_id —
       // the submitted version id must match the submitted text.
       if (key === "script") next.scriptVersionId = null;
+      if (key === "normalSubtitleEnabled" || key === "huaziEnabled") {
+        next.subtitleEnabled = Boolean(next.normalSubtitleEnabled || next.huaziEnabled);
+      }
+      if (key === "subtitleEnabled") {
+        next.normalSubtitleEnabled = Boolean(value);
+        next.huaziEnabled = Boolean(value);
+      }
       return next;
     });
   }

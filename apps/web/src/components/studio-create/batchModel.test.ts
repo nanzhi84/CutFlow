@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildBatchRequest, parsePastedScripts, summarizeBatchResults } from "./batchModel";
+import {
+  batchLipsyncEnabled,
+  batchSubtitleLayerFlags,
+  buildBatchRequest,
+  parsePastedScripts,
+  summarizeBatchResults,
+} from "./batchModel";
 
 describe("batchModel", () => {
   it("splits pasted scripts on blank lines and trims empty blocks", () => {
@@ -39,5 +45,47 @@ describe("batchModel", () => {
         { status: "failed", job_id: null, run_id: null, index: 2, error: "bad script" },
       ]),
     ).toEqual({ created: 2, failed: 1, firstRunId: "run_1" });
+  });
+
+  it("disables huazi-only defaults for deterministic batch runs", () => {
+    expect(batchSubtitleLayerFlags("digital_human_v2", true, false, true)).toEqual({
+      enabled: false,
+      normal_enabled: false,
+      emphasis_enabled: false,
+    });
+  });
+
+  it("keeps huazi-only defaults for editing-agent batch runs", () => {
+    expect(
+      batchSubtitleLayerFlags("digital_human_editing_agent_v2", true, false, true),
+    ).toEqual({
+      enabled: true,
+      normal_enabled: false,
+      emphasis_enabled: true,
+    });
+  });
+
+  it("disables all subtitle layers for Seedance or an off panel toggle", () => {
+    expect(batchSubtitleLayerFlags("seedance_t2v_v1", true, true, true)).toEqual({
+      enabled: false,
+      normal_enabled: false,
+      emphasis_enabled: false,
+    });
+    expect(
+      batchSubtitleLayerFlags("digital_human_editing_agent_v2", false, true, true),
+    ).toEqual({
+      enabled: false,
+      normal_enabled: false,
+      emphasis_enabled: false,
+    });
+  });
+
+  it("keeps LipSync enabled for both digital-human templates", () => {
+    expect(batchLipsyncEnabled("digital_human_v2", "insert")).toBe(true);
+    expect(batchLipsyncEnabled("digital_human_editing_agent_v2", "insert")).toBe(true);
+    expect(batchLipsyncEnabled("digital_human_editing_agent_v2", "full_coverage")).toBe(
+      false,
+    );
+    expect(batchLipsyncEnabled("seedance_t2v_v1", "insert")).toBe(false);
   });
 });

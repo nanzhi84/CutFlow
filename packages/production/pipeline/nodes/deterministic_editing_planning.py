@@ -31,8 +31,6 @@ from packages.production.pipeline.nodes.broll_planning import (
     _indexed_broll_candidates,
     _narration_segments,
 )
-from packages.production.pipeline.nodes._creative_intent import load_creative_intent
-from packages.production.pipeline.nodes.style_planning import _derive_overlay_events
 
 
 def run(ctx: NodeContext) -> NodeOutput:
@@ -167,11 +165,12 @@ def run(ctx: NodeContext) -> NodeOutput:
         )
         broll_warnings.append(WarningCode.broll_insertions_dropped_geometry)
 
-    overlay_events = _derive_overlay_events(load_creative_intent(state).emphasis, units)
+    # Caption Display v2 (issue #188): the deterministic chain plans no huazi;
+    # emphasis captions are an EditingAgentPlanning-chain-only capability.
     style_payload, style_warnings, style_degradations = materialize_style_from_selection(
         request=state.request,
         material=material,
-        overlay_events=overlay_events,
+        overlay_events=[],
     )
     style_degradations = [
         notice.model_copy(update={"node_id": node_run.node_id}) for notice in style_degradations

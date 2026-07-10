@@ -22,6 +22,8 @@ import { StatusPill } from "../../components/ui/StatusPill";
 import { useToast } from "../../components/ui/Toast";
 import {
   BATCH_MAX_ITEMS,
+  batchLipsyncEnabled,
+  batchSubtitleLayerFlags,
   parsePastedScripts,
   summarizeBatchResults,
 } from "../../components/studio-create/batchModel";
@@ -62,7 +64,7 @@ type BatchRow = {
 
 const workflowOptions = [
   { value: "digital_human_v2", label: "主链" },
-  { value: "digital_human_editing_agent_v1", label: "剪辑 Agent" },
+  { value: "digital_human_editing_agent_v2", label: "剪辑 Agent" },
   { value: "seedance_t2v_v1", label: "Seedance" },
 ] as const;
 
@@ -150,7 +152,11 @@ export default function BatchWorkbenchPage() {
     hydratedDefaults.current = true;
     const defaults = generationDefaults.data;
     if (defaults.broll?.mode) setBrollMode(defaults.broll.mode === "full_coverage" ? "full_coverage" : "insert");
-    if (defaults.subtitle) setSubtitleEnabled(Boolean(defaults.subtitle.enabled));
+    if (defaults.subtitle) {
+      const normalEnabled = defaults.subtitle.normal_enabled ?? true;
+      const emphasisEnabled = defaults.subtitle.emphasis_enabled ?? true;
+      setSubtitleEnabled(Boolean(defaults.subtitle.enabled && (normalEnabled || emphasisEnabled)));
+    }
     if (defaults.bgm) setBgmEnabled(Boolean(defaults.bgm.enabled));
     if (defaults.voice?.voice_id) setSelectedVoice(defaults.voice.voice_id);
   }, [generationDefaults.data]);
@@ -294,6 +300,15 @@ export default function BatchWorkbenchPage() {
     const brollDefaults = defaults?.broll;
     const subtitleDefaults = defaults?.subtitle;
     const subtitleFontSize = subtitleDefaults?.font_size;
+    const subtitleEmphasisFontSize = subtitleDefaults?.emphasis_font_size;
+    const subtitleNormalEnabled = subtitleDefaults?.normal_enabled ?? true;
+    const subtitleEmphasisEnabled = subtitleDefaults?.emphasis_enabled ?? true;
+    const subtitleLayers = batchSubtitleLayerFlags(
+      workflowTemplate,
+      subtitleEnabled,
+      subtitleNormalEnabled,
+      subtitleEmphasisEnabled,
+    );
     const bgmDefaults = defaults?.bgm;
     const lipsyncDefaults = defaults?.lipsync;
     return {
@@ -314,11 +329,14 @@ export default function BatchWorkbenchPage() {
         allow_generic_coverage: brollDefaults?.allow_generic_coverage ?? true,
       },
       subtitle: {
-        enabled: !isSeedance && subtitleEnabled,
+        ...subtitleLayers,
         style_preset: subtitleDefaults?.style_preset ?? "douyin",
         font_id: subtitleDefaults?.font_id ?? null,
-        caption_style_pair_id: subtitleDefaults?.caption_style_pair_id ?? null,
+        emphasis_font_id: subtitleDefaults?.emphasis_font_id ?? null,
+        ...(subtitleDefaults?.emphasis_primary_color ? { emphasis_primary_color: subtitleDefaults.emphasis_primary_color } : {}),
         ...(subtitleFontSize != null ? { font_size: subtitleFontSize } : {}),
+        ...(subtitleEmphasisFontSize != null ? { emphasis_font_size: subtitleEmphasisFontSize } : {}),
+        ...(subtitleDefaults?.position ? { position: subtitleDefaults.position } : {}),
       },
       bgm: {
         enabled: !isSeedance && bgmEnabled,
@@ -326,7 +344,7 @@ export default function BatchWorkbenchPage() {
         auto_mix: bgmDefaults?.auto_mix ?? true,
       },
       lipsync: {
-        enabled: workflowTemplate === "digital_human_v2" && brollMode !== "full_coverage",
+        enabled: batchLipsyncEnabled(workflowTemplate, brollMode),
         provider_profile_id: lipsyncDefaults?.provider_profile_id ?? "runninghub.heygem.prod",
         timeout_minutes: lipsyncDefaults?.timeout_minutes ?? 30,
       },

@@ -29,6 +29,7 @@ dependencies = [
   # modern scikit-build-core; keep CI on the last stable wheel line.
   "pysilero-vad>=2.0,<3",
   "jieba>=0.42",
+  "fonttools>=4.50",
 ]
 
 [project.optional-dependencies]

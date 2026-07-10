@@ -295,9 +295,12 @@ def test_index_and_build_agent_input_number_candidates():
     assert payload["portrait_slots"][0]["legal_window_ids"] == ["pc_000", "pc_001"]
     assert payload["max_broll_inserts"] == 4
     assert "font_candidates" not in payload
-    assert payload["placement_candidates"]
-    assert payload["animation_candidates"]
-    assert payload["sfx_candidates"] == [{"sfx_id": "none"}]
+    # Huazi (candidates / placements / animations / sfx) left the main agent input
+    # in Caption Display v2; it is planned by a separate HuaziPlanningSubagent.
+    assert "huazi_events" not in payload
+    assert "placement_candidates" not in payload
+    assert "animation_candidates" not in payload
+    assert "sfx_candidates" not in payload
 
 
 def test_agent_input_caps_full_coverage_inserts_to_window_count():
@@ -407,57 +410,29 @@ def test_valid_selection_passes_validation():
     assert errors == []
 
 
-def test_huazi_event_id_allows_compressed_phrase():
-    selection = EditingSelection(
-        portrait=_valid_selection().portrait,
-        broll=_valid_selection().broll,
-        bgm_id="bgm_001",
-        huazi=[
-            _editing_agent.HuaziChoice(
-                event_id="hz_001",
-                phrase="限时五折",
-                placement_id="top_center_banner",
-                animation_id="pop_in",
-                sfx_id="none",
-            )
-        ],
+def test_main_agent_rejects_huazi_plan_as_overreach():
+    # Huazi moved to a separate subagent; the main agent must never honour a
+    # huazi field — parse_selection flags it as overreach so the validator fails.
+    parsed = parse_selection(
+        {
+            "portrait_plan": [
+                {"slot_id": "pslot_000", "window_id": "pc_000"},
+                {"slot_id": "pslot_001", "window_id": "pc_001"},
+            ],
+            "broll_plan": [],
+            "huazi_plan": [{"event_id": "hz_001", "placement_id": "top_center_banner"}],
+        }
     )
+    assert parsed.overreach_fields == ("huazi_plan",)
+    assert not hasattr(parsed, "huazi")
 
     errors = validate_selection(
-        selection,
+        parsed,
         boundary=_boundary(),
         candidates=index_candidates(_material()),
-        bgm_enabled=True,
-        huazi_events=[{"event_id": "hz_001", "text": "现在到店可以限时五折"}],
+        bgm_enabled=False,
     )
-
-    assert errors == []
-
-
-def test_huazi_selection_is_rejected_when_candidate_pool_is_empty():
-    selection = EditingSelection(
-        portrait=_valid_selection().portrait,
-        broll=_valid_selection().broll,
-        bgm_id="bgm_001",
-        huazi=[
-            _editing_agent.HuaziChoice(
-                event_id="hz_fake",
-                placement_id="top_center_banner",
-                animation_id="pop_in",
-                sfx_id="none",
-            )
-        ],
-    )
-
-    errors = validate_selection(
-        selection,
-        boundary=_boundary(),
-        candidates=index_candidates(_material()),
-        bgm_enabled=True,
-        huazi_events=[],
-    )
-
-    assert "huazi event_id 'hz_fake' is not a known huazi event" in errors
+    assert any("forbidden visual style fields" in error and "huazi_plan" in error for error in errors)
 
 
 def test_full_coverage_validation_reports_missing_broll_slots_for_repair():
@@ -1157,7 +1132,17 @@ def test_editing_agent_helper_has_no_materializer_definitions():
 
 def test_materialize_style_uses_chosen_font_and_bgm():
     payload, warnings, degradations = materialize_style_from_selection(
-        request=_request(subtitle={"font_id": "font_yst", "caption_style_pair_id": "local_promo_c"}),
+        request=_request(
+            subtitle={
+                "normal_enabled": True,
+                "emphasis_enabled": False,
+                "font_id": "font_yst",
+                "emphasis_font_id": "font_huazi",
+                "font_size": 36,
+                "emphasis_font_size": 52,
+                "emphasis_primary_color": "#38D9A9",
+            }
+        ),
         material=_material(),
         overlay_events=[],
         font_id=None,
@@ -1166,8 +1151,17 @@ def test_materialize_style_uses_chosen_font_and_bgm():
     assert warnings == []
     assert degradations == []
     assert payload["font_asset_id"] == "font_yst"
+    assert payload["emphasis_font_asset_id"] == "font_huazi"
     assert payload["font"]["font_id"] == "font_yst"
-    assert payload["subtitle"]["caption_style_pair_id"] == "local_promo_c"
+    assert payload["font"]["emphasis_font_id"] == "font_huazi"
+    assert payload["subtitle"]["normal_enabled"] is True
+    assert payload["subtitle"]["emphasis_enabled"] is False
+    assert payload["subtitle"]["emphasis_font_id"] == "font_huazi"
+    assert payload["subtitle"]["font_size"] == 36
+    assert payload["subtitle"]["emphasis_font_size"] == 52
+    assert payload["subtitle"]["emphasis_primary_color"] == "#38D9A9"
+    assert "caption_style_pair_id" not in payload["subtitle"]
+    assert payload["subtitle"]["default_emphasis_position_id"] == "top_center_banner"
     assert payload["bgm"] is not None
     assert payload["bgm"]["asset_id"] == "bgm_001"
     assert payload["bgm"]["mood"] == "励志"
@@ -1265,16 +1259,17 @@ def test_parse_selection_is_robust_to_garbage():
     assert parse_selection(None).portrait == []
 
 
-def test_parse_selection_rejects_agent_font_overreach():
+def test_parse_selection_rejects_agent_font_and_huazi_overreach():
     parsed = parse_selection(
         {
             "portrait_plan": [],
             "font_plan": {"font_id": "font_yst"},
-            "huazi_plan": [{"event_id": "hz_001", "font_size": 80, "phrase": "重点"}],
+            "huazi_plan": [{"event_id": "hz_001", "phrase": "重点"}],
         }
     )
     assert parsed.font_id is None
-    assert parsed.overreach_fields == ("font_plan", "huazi_plan.font_size")
+    # Both font_plan and huazi_plan (now a separate subagent's job) are overreach.
+    assert parsed.overreach_fields == ("font_plan", "huazi_plan")
 
 
 def test_select_with_repair_recovers_from_invalid_then_valid():

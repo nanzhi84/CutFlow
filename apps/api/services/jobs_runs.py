@@ -57,10 +57,13 @@ NODE_LABELS = {
     "BrollPlanning": "规划 B-roll",
     "StylePlanning": "规划字幕与包装",
     "EditingAgentPlanning": "剪辑 Agent 规划",
+    "MediaSelectionAgentPlanning": "媒体选择 Agent 规划",
     "TimelinePlanning": "规划时间线",
     "PortraitTrackBuild": "生成数字人轨道",
     "LipSync": "口型同步",
     "RenderFinalTimeline": "渲染主时间线",
+    "CaptionWindowPlanning": "规划字幕窗口",
+    "PostProcessAgentPlanning": "后处理 Agent 规划",
     "SubtitleAndBgmMix": "混合字幕与 BGM",
     "ExportFinishedVideo": "导出成片",
     "FinalizeRunReport": "生成 Run 报告",
@@ -74,6 +77,7 @@ DELETABLE_RUN_STATUSES = {c.RunStatus.succeeded, c.RunStatus.failed, c.RunStatus
 # close the connection on idle timeout. Kept well under typical 30–60s proxy
 # idle windows. Module-level so tests can shrink it.
 EVENT_STREAM_HEARTBEAT_INTERVAL_SECONDS = 15.0
+_LEGACY_EDITING_AGENT_TEMPLATE_ID = "digital_human_editing_agent_v1"
 
 
 def _sync_workflow_snapshot(request: Request, run: c.WorkflowRun) -> None:
@@ -94,6 +98,27 @@ def _admit_run(
 ) -> tuple[c.Job, c.WorkflowRun, c.WorkflowTemplate]:
     repo = repository(request)
     job = repo.jobs[job_id]
+    if job.request.workflow_template_id == _LEGACY_EDITING_AGENT_TEMPLATE_ID:
+        source_run = repo.runs.get(from_run_id or "")
+        valid_legacy_lineage = bool(
+            mode in {"retry", "resume"}
+            and source_run is not None
+            and source_run.job_id == job.id
+            and source_run.workflow_template_id == _LEGACY_EDITING_AGENT_TEMPLATE_ID
+        )
+        if not valid_legacy_lineage:
+            raise NodeExecutionError(
+                c.ErrorCode.validation_invalid_options,
+                "digital_human_editing_agent_v1 仅用于同一任务历史 v1 run "
+                "的恢复或重试；新任务必须使用 "
+                "digital_human_editing_agent_v2。",
+                details={
+                    "workflow_template_id": job.request.workflow_template_id,
+                    "replacement_workflow_template_id": "digital_human_editing_agent_v2",
+                    "mode": mode,
+                    "source_run_id": from_run_id,
+                },
+            )
     next_job_status = job.status
     if next_job_status == c.JobStatus.draft:
         assert_transition("job", next_job_status, c.JobStatus.queued)
@@ -209,10 +234,14 @@ def _run_progress(run: c.WorkflowRun, node_runs: list[c.NodeRun]) -> float:
 
 
 def _current_node_label(node_runs: list[c.NodeRun]) -> str | None:
-    running = next((node for node in reversed(node_runs) if node.status == c.NodeStatus.running), None)
+    running = next(
+        (node for node in reversed(node_runs) if node.status == c.NodeStatus.running), None
+    )
     if running is not None:
         return _node_label(running.node_id)
-    latest = next((node for node in reversed(node_runs) if node.status != c.NodeStatus.pending), None)
+    latest = next(
+        (node for node in reversed(node_runs) if node.status != c.NodeStatus.pending), None
+    )
     return _node_label(latest.node_id if latest else None)
 
 
@@ -231,7 +260,12 @@ def _run_title(job: c.Job, finished_video_title: str | None = None) -> str:
 def _run_warnings(node_runs: list[c.NodeRun]) -> list[str]:
     values: list[str] = []
     for node in node_runs:
-        values.extend([warning.value if hasattr(warning, "value") else str(warning) for warning in node.warnings])
+        values.extend(
+            [
+                warning.value if hasattr(warning, "value") else str(warning)
+                for warning in node.warnings
+            ]
+        )
         values.extend(
             [
                 notice.code.value if hasattr(notice.code, "value") else str(notice.code)
@@ -552,8 +586,17 @@ def create_digital_human_job(
         request=payload,
     )
     repository(request).jobs[job.id] = job
-    run = _start_submitted_run(request, job_id=job.id, mode="new", from_run_id=None, reason=None)
-    return c.CreateJobResponse(job=repository(request).jobs[job.id], initial_run=run, request_id=request_id())
+    try:
+        run = _start_submitted_run(
+            request, job_id=job.id, mode="new", from_run_id=None, reason=None
+        )
+    except Exception:
+        if not any(item.job_id == job.id for item in repository(request).runs.values()):
+            repository(request).jobs.pop(job.id, None)
+        raise
+    return c.CreateJobResponse(
+        job=repository(request).jobs[job.id], initial_run=run, request_id=request_id()
+    )
 
 
 # Option blocks that participate in the batch merge chain. Each maps to a field on
@@ -624,9 +667,7 @@ def create_digital_human_batch(
     batch (same ``Idempotency-Key``) reuse the already-created jobs."""
     user = current_user(request)
     get_case(request, payload.case_id)
-    my_defaults = (
-        get_my_generation_defaults(request) if payload.use_my_defaults else None
-    )
+    my_defaults = get_my_generation_defaults(request) if payload.use_my_defaults else None
     batch_key = request.headers.get("Idempotency-Key") or new_id("batch")
     repo = repository(request)
     use_case_admission = _uses_case_admission_controller(request)
@@ -675,9 +716,7 @@ def create_digital_human_batch(
                 raise
             repo.idempotency_records[idem_key] = {"job_id": job.id, "run_id": run.id}
             results.append(
-                c.BatchItemResult(
-                    index=index, job_id=job.id, run_id=run.id, status=created_status
-                )
+                c.BatchItemResult(index=index, job_id=job.id, run_id=run.id, status=created_status)
             )
         except Exception as exc:  # noqa: BLE001 — per-item fault tolerance
             results.append(c.BatchItemResult(index=index, status="failed", error=str(exc)))
@@ -734,7 +773,9 @@ def run_overview(
         status_counts[run.status.value] = status_counts.get(run.status.value, 0) + 1
         for node in repo.node_runs.get(run.id, []):
             if node.error is not None:
-                failure_counts[node.error.code.value] = failure_counts.get(node.error.code.value, 0) + 1
+                failure_counts[node.error.code.value] = (
+                    failure_counts.get(node.error.code.value, 0) + 1
+                )
             for notice in node.degradations:
                 code = notice.code.value if hasattr(notice.code, "value") else str(notice.code)
                 degradation_counts[code] = degradation_counts.get(code, 0) + 1
@@ -782,7 +823,9 @@ def batch_feasibility(
     portrait_duration = sum(float(asset.duration_sec or 0.0) for asset in portrait_assets)
     estimated_windows = max(1, math.ceil(audio_duration / 4.0)) if audio_duration > 0 else 1
     notes: list[str] = []
-    portrait_ok = portrait_duration >= audio_duration if audio_duration > 0 else portrait_duration > 0
+    portrait_ok = (
+        portrait_duration >= audio_duration if audio_duration > 0 else portrait_duration > 0
+    )
     broll_ok = len(video_assets) >= estimated_windows
     if not portrait_ok:
         notes.append("portrait_duration_insufficient")
@@ -866,13 +909,19 @@ def run_detail(request: Request, run_id: str) -> c.RunDetailResponse:
             return detail
     run = repository(request).runs[run_id]
     node_runs = repository(request).node_runs.get(run_id, [])
-    artifacts = [
-        repository(request).artifact_ref(artifact.id) for artifact in repository(request).artifacts.values() if artifact.run_id == run_id
+    referenced_artifact_ids = {
+        artifact_id for node_run in node_runs for artifact_id in node_run.output_artifact_ids
+    }
+    related_artifacts = [
+        artifact
+        for artifact in repository(request).artifacts.values()
+        if artifact.run_id == run_id or artifact.id in referenced_artifact_ids
     ]
+    artifacts = [repository(request).artifact_ref(artifact.id) for artifact in related_artifacts]
     payloads = {
         artifact.id: artifact.payload
-        for artifact in repository(request).artifacts.values()
-        if artifact.run_id == run_id and artifact.payload is not None
+        for artifact in related_artifacts
+        if artifact.payload is not None
     }
     job = repository(request).jobs.get(run.job_id)
     config = c.build_run_config_summary(run_id, job) if job is not None else None
@@ -898,7 +947,9 @@ def delete_run_record(run_id: str, request: Request) -> c.OkResponse:
     if run_id not in repository(request).runs:
         if not production_repository(request).run_exists(run_id):
             raise NodeExecutionError(c.ErrorCode.artifact_missing, f"Run {run_id} does not exist.")
-        production_repository(request).hydrate_workflow_runtime_snapshot(repository(request), run_id)
+        production_repository(request).hydrate_workflow_runtime_snapshot(
+            repository(request), run_id
+        )
     if run_id not in repository(request).runs:
         raise NodeExecutionError(c.ErrorCode.artifact_missing, f"Run {run_id} does not exist.")
     run = repository(request).runs[run_id]
@@ -917,10 +968,14 @@ def _delete_run_from_memory(repo, run: c.WorkflowRun) -> None:
     repo.node_runs.pop(run.id, None)
     for artifact_id, artifact in list(repo.artifacts.items()):
         if artifact.run_id == run.id:
-            repo.artifacts[artifact_id] = artifact.model_copy(update={"run_id": None, "node_run_id": None})
+            repo.artifacts[artifact_id] = artifact.model_copy(
+                update={"run_id": None, "node_run_id": None}
+            )
     for video_id, video in list(repo.finished_videos.items()):
         if video.run_id == run.id:
-            repo.finished_videos[video_id] = video.model_copy(update={"run_id": None, "updated_at": c.utcnow()})
+            repo.finished_videos[video_id] = video.model_copy(
+                update={"run_id": None, "updated_at": c.utcnow()}
+            )
     for invocation_id, invocation in list(repo.provider_invocations.items()):
         if invocation.run_id == run.id:
             repo.provider_invocations[invocation_id] = invocation.model_copy(
@@ -935,7 +990,9 @@ def _delete_run_from_memory(repo, run: c.WorkflowRun) -> None:
     )
     if remaining_runs:
         latest = remaining_runs[-1]
-        repo.jobs[job.id] = job.model_copy(update={"active_run_id": latest.id, "updated_at": c.utcnow()})
+        repo.jobs[job.id] = job.model_copy(
+            update={"active_run_id": latest.id, "updated_at": c.utcnow()}
+        )
     else:
         repo.jobs.pop(job.id, None)
 
@@ -960,7 +1017,10 @@ def resume_run(run_id: str, payload: c.ResumeRunRequest, request: Request) -> c.
         request,
         job_id=run.job_id,
         mode="resume",
-        from_run_id=run_id if payload.reuse_valid_artifacts else None,
+        # Lineage and artifact reuse are independent. Keep the real source run even
+        # when the caller requests a clean recomputation; legacy v1 admission relies
+        # on this provenance and the empty reuse plan still prevents artifact reuse.
+        from_run_id=run_id,
         reason=payload.reason,
         reuse_valid_artifacts=payload.reuse_valid_artifacts,
     )
@@ -978,11 +1038,15 @@ def run_report(request: Request, run_id: str) -> c.RunReportResponse:
         raise NodeExecutionError(c.ErrorCode.artifact_missing, "Run report is not available.")
     public_payload = repository(request).artifacts[run.public_report_artifact_id].payload
     debug_payload = (
-        repository(request).artifacts[run.debug_report_artifact_id].payload if run.debug_report_artifact_id else None
+        repository(request).artifacts[run.debug_report_artifact_id].payload
+        if run.debug_report_artifact_id
+        else None
     )
     return c.RunReportResponse(
         public_report=c.RunPublicReportArtifact.model_validate(public_payload),
-        debug_report=c.RunDebugReportArtifact.model_validate(debug_payload) if debug_payload else None,
+        debug_report=c.RunDebugReportArtifact.model_validate(debug_payload)
+        if debug_payload
+        else None,
         request_id=request_id(),
     )
 
@@ -993,14 +1057,20 @@ def run_artifacts(request: Request, run_id: str) -> c.RunArtifactsResponse:
         response = production_repository(request).run_artifacts(run_id, request_id())
         if response is not None:
             return response
-    refs = [repository(request).artifact_ref(item.id) for item in repository(request).artifacts.values() if item.run_id == run_id]
+    refs = [
+        repository(request).artifact_ref(item.id)
+        for item in repository(request).artifacts.values()
+        if item.run_id == run_id
+    ]
     return c.RunArtifactsResponse(run_id=run_id, artifacts=refs, request_id=request_id())
 
 
 def run_events(request: Request, run_id: str) -> c.EventStreamTokenResponse:
     assert_owner_or_404(current_user(request), run_owner(request, run_id))
     if not production_repository(request).run_exists(run_id):
-        raise NodeExecutionError(c.ErrorCode.validation_invalid_options, f"Run {run_id} does not exist.")
+        raise NodeExecutionError(
+            c.ErrorCode.validation_invalid_options, f"Run {run_id} does not exist."
+        )
     token = request.app.state.event_tokens.issue(run_id, timedelta(minutes=10))
     return c.EventStreamTokenResponse(
         stream_url=f"/ws/runs/{run_id}",

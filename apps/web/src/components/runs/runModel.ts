@@ -20,10 +20,13 @@ const NODE_LABELS: Record<string, string> = {
   BrollPlanning: "规划 B-roll 插入",
   StylePlanning: "规划字幕与包装",
   EditingAgentPlanning: "剪辑 Agent 规划",
+  MediaSelectionAgentPlanning: "媒体选择 Agent 规划",
   TimelinePlanning: "规划时间线",
   PortraitTrackBuild: "生成数字人轨道",
   LipSync: "口型同步",
   RenderFinalTimeline: "渲染主时间线",
+  CaptionWindowPlanning: "规划字幕窗口",
+  PostProcessAgentPlanning: "后处理 Agent 规划",
   SubtitleAndBgmMix: "混合字幕与配乐",
   ExportFinishedVideo: "导出成片",
   FinalizeRunReport: "生成运行报告",
@@ -78,6 +81,28 @@ const TEMPLATE_NODE_SEQUENCES: Record<string, string[]> = {
     "ExportFinishedVideo",
     "FinalizeRunReport",
   ],
+  digital_human_editing_agent_v2: [
+    "ValidateRequest",
+    "LoadCaseContext",
+    "ResolveCreativeIntent",
+    "TTS",
+    "MaterialPackPlanning",
+    "NarrationAlignment",
+    "NarrationBoundaryPlanning",
+    "TimelineWindowPlanning",
+    "WindowQueryPlanning",
+    "WindowMaterialRetrieval",
+    "MediaSelectionAgentPlanning",
+    "TimelinePlanning",
+    "PortraitTrackBuild",
+    "LipSync",
+    "RenderFinalTimeline",
+    "CaptionWindowPlanning",
+    "PostProcessAgentPlanning",
+    "SubtitleAndBgmMix",
+    "ExportFinishedVideo",
+    "FinalizeRunReport",
+  ],
   seedance_t2v_v1: [
     "ValidateRequest",
     "LoadCaseContext",
@@ -119,9 +144,9 @@ type StageDef = { key: string; label: string; detail: string; nodes: string[] };
 const STAGE_DEFS: StageDef[] = [
   { key: "script", label: "脚本与意图", detail: "校验请求、加载案例、解析创作意图", nodes: ["ValidateRequest", "LoadCaseContext", "ResolveCreativeIntent"] },
   { key: "voice", label: "配音合成", detail: "生成数字人配音并对齐时间轴", nodes: ["TTS", "NarrationAlignment"] },
-  { key: "material", label: "素材匹配与编排", detail: "匹配 B-roll、数字人镜头、字幕样式与时间线", nodes: ["MaterialPackPlanning", "NarrationBoundaryPlanning", "TimelineWindowPlanning", "WindowQueryPlanning", "WindowMaterialRetrieval", "DeterministicEditingPlanning", "PortraitPlanning", "BrollPlanning", "StylePlanning", "EditingAgentPlanning", "TimelinePlanning"] },
+  { key: "material", label: "素材匹配与编排", detail: "匹配 B-roll、数字人镜头与时间线", nodes: ["MaterialPackPlanning", "NarrationBoundaryPlanning", "TimelineWindowPlanning", "WindowQueryPlanning", "WindowMaterialRetrieval", "DeterministicEditingPlanning", "PortraitPlanning", "BrollPlanning", "StylePlanning", "EditingAgentPlanning", "MediaSelectionAgentPlanning", "TimelinePlanning"] },
   { key: "lipsync", label: "口型同步", detail: "生成数字人轨道并做唇形同步", nodes: ["PortraitTrackBuild", "LipSync"] },
-  { key: "compose", label: "合成出片", detail: "渲染时间线、混合字幕配乐、导出成片", nodes: ["RenderFinalTimeline", "SubtitleAndBgmMix", "ExportFinishedVideo", "FinalizeRunReport"] },
+  { key: "compose", label: "合成出片", detail: "渲染时间线、规划并混合字幕配乐、导出成片", nodes: ["RenderFinalTimeline", "CaptionWindowPlanning", "PostProcessAgentPlanning", "SubtitleAndBgmMix", "ExportFinishedVideo", "FinalizeRunReport"] },
 ];
 
 export type StageView = { key: string; label: string; detail: string; status: string };
@@ -207,10 +232,18 @@ export function warningLabel(value: string) {
   if (value === "editing_agent.deterministic_fallback") return "剪辑 Agent 已使用确定性兜底";
   if (value === "editing_agent.llm_repair") return "剪辑 Agent 已通过模型修复重试";
   if (value === "editing_agent.local_constraint_repair") return "剪辑 Agent 已执行本地约束修正";
+  if (value === "media_selection_agent.deterministic_fallback") return "媒体选择 Agent 已使用确定性兜底";
+  if (value === "media_selection_agent.llm_repair") return "媒体选择 Agent 已通过模型修复重试";
+  if (value === "media_selection_agent.local_constraint_repair") return "媒体选择 Agent 已执行本地约束修正";
   if (value === "broll.insertions_dropped_geometry") return "部分 B-roll 插入因时间线几何约束被丢弃";
   if (value === "window_query.template_fallback") {
     return "检索 query 已回退模板拼接（LLM 不可用）";
   }
+  if (value === "huazi.animation_fallback") return "花字动画降级";
+  if (value === "huazi.planning_failed") return "花字规划失败（本次无花字）";
+  if (value === "font.metrics_fallback") return "字体度量回退估算";
+  if (value === "caption.visual_analysis_failed") return "花字视觉安全分析失败（本次无花字）";
+  if (value === "postprocess.planning_failed") return "后处理 Agent 规划失败（本次无花字或 BGM）";
   return "未知警告";
 }
 

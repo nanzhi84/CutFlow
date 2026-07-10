@@ -68,10 +68,14 @@ class LipSyncOptions(ContractModel):
 
 class SubtitleOptions(ContractModel):
     enabled: bool = True
+    normal_enabled: bool = True
+    emphasis_enabled: bool = True
     style_preset: str = "douyin"
     font_id: str | None = None
-    caption_style_pair_id: str | None = None
+    emphasis_font_id: str | None = None
     font_size: int | None = None
+    emphasis_font_size: int | None = None
+    emphasis_primary_color: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
     position: dict[str, float] | None = None
 
 
@@ -109,8 +113,8 @@ class StrictnessOptions(ContractModel):
 class EditPlanningOptions(ContractModel):
     """Per-video extra editing steering for the LLM editing-agent template.
 
-    Consumed only by ``digital_human_editing_agent_v1``'s ``EditingAgentPlanning``
-    node; ignored by every other template. ``instruction`` is a free-text hint the
+    Consumed by ``digital_human_editing_agent_v2``'s ``MediaSelectionAgentPlanning``
+    node (and the frozen v1 compatibility node); ignored by every other template. ``instruction`` is a free-text hint the
     editing agent honours for this one video (e.g. "尽量用穿搭相近的人像素材，B-roll
     只在讲施工细节时出现")。``max_repair_attempts`` bounds how many times an invalid
     LLM selection is re-prompted before the node fail-fasts (0 = no repair).

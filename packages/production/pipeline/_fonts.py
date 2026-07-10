@@ -35,6 +35,7 @@ from pathlib import Path
 logger = logging.getLogger("packages.production.pipeline._fonts")
 
 _FONT_EXTENSIONS = {".ttf", ".otf", ".ttc"}
+DEFAULT_FONT_SENTINEL = "case_default_font"
 
 # OpenType ``name`` table identifiers we care about (family-name records).
 _NAME_ID_FAMILY = 1
@@ -52,6 +53,40 @@ class ResolvedFont:
     family_name: str
     fonts_dir: Path
     source_path: Path
+
+
+def resolve_font_asset(
+    *,
+    font_asset_id: str | None,
+    runtime_dir: Path,
+    source_artifact_for_asset,
+    artifact_path,
+    media_assets,
+) -> tuple[ResolvedFont | None, str | None]:
+    """Resolve and stage a selected font asset for planning or rendering.
+
+    Returns ``(font, unresolved_id)`` so callers can report an explicit
+    degradation instead of silently treating an unavailable selected font as the
+    default.  The dependency callbacks keep this helper free of ``NodeContext``.
+    """
+
+    if not font_asset_id or font_asset_id == DEFAULT_FONT_SENTINEL:
+        return None, None
+    try:
+        font_artifact = source_artifact_for_asset(font_asset_id)
+        font_path = artifact_path(font_artifact)
+    except Exception:
+        return None, font_asset_id
+    asset = media_assets.get(font_asset_id)
+    fallback_name = getattr(asset, "title", None) if asset is not None else None
+    return (
+        resolve_subtitle_font(
+            font_path=font_path,
+            runtime_dir=runtime_dir,
+            fallback_name=fallback_name,
+        ),
+        None,
+    )
 
 
 def resolve_subtitle_font(

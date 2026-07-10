@@ -204,17 +204,38 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
         "enabled": (
             ("packages/production/pipeline/nodes/subtitle_and_bgm_mix.py", "request.subtitle.enabled"),
         ),
+        "normal_enabled": (
+            ("packages/production/pipeline/_materialize.py", "request.subtitle.normal_enabled"),
+            (
+                "packages/production/pipeline/nodes/subtitle_and_bgm_mix.py",
+                "request.subtitle.normal_enabled",
+            ),
+        ),
+        "emphasis_enabled": (
+            ("packages/production/pipeline/_materialize.py", "request.subtitle.emphasis_enabled"),
+            (
+                "packages/production/pipeline/nodes/subtitle_and_bgm_mix.py",
+                "request.subtitle.emphasis_enabled",
+            ),
+        ),
         "style_preset": (
             ("packages/production/pipeline/_materialize.py", "request.subtitle.style_preset"),
         ),
         "font_id": (
             ("packages/production/pipeline/_materialize.py", "request.subtitle.font_id"),
         ),
-        "caption_style_pair_id": (
-            ("packages/production/pipeline/_materialize.py", "request.subtitle.caption_style_pair_id"),
+        "emphasis_font_id": (
+            ("packages/production/pipeline/_materialize.py", "request.subtitle.emphasis_font_id"),
         ),
         "font_size": (
             ("packages/production/pipeline/_materialize.py", "request.subtitle.font_size"),
+        ),
+        "emphasis_font_size": (
+            ("packages/production/pipeline/_materialize.py", "emphasis_font_size"),
+            ("packages/production/pipeline/_subtitles.py", "emphasis_font_size"),
+        ),
+        "emphasis_primary_color": (
+            ("packages/production/pipeline/_materialize.py", "request.subtitle.emphasis_primary_color"),
         ),
         "position": (
             ("packages/production/pipeline/_materialize.py", "request.subtitle.position"),
@@ -224,7 +245,10 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
         "enabled": (
             ("packages/production/pipeline/_materialize.py", "request.bgm.enabled"),
             ("packages/production/pipeline/nodes/material_pack_planning.py", "request.bgm.enabled"),
-            ("packages/production/pipeline/nodes/editing_agent_planning.py", "request.bgm.enabled"),
+            (
+                "packages/production/pipeline/nodes/postprocess_agent_planning.py",
+                "state.request.bgm.enabled",
+            ),
         ),
         "bgm_id": (
             ("packages/production/pipeline/_materialize.py", "request.bgm.bgm_id"),
@@ -275,12 +299,15 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
     },
     EditPlanningOptions: {
         "instruction": (
-            ("packages/production/pipeline/_editing_agent.py", "request.edit.instruction"),
+            (
+                "packages/production/pipeline/_media_selection_agent.py",
+                "request.edit.instruction",
+            ),
         ),
         "max_repair_attempts": (
             (
-                "packages/production/pipeline/nodes/editing_agent_planning.py",
-                "request.edit.max_repair_attempts",
+                "packages/production/pipeline/_media_selection_planning.py",
+                "state.request.edit.max_repair_attempts",
             ),
         ),
     },
@@ -344,12 +371,14 @@ _REMOVED_ARTIFACT_FIELDS = {
 _RETAINED_ARTIFACT_FIELDS = {
     MaterialCandidate: ("asset_id", "score", "metadata"),
     SubtitleStylePlan: (
-        "caption_style_pair_id",
+        "normal_enabled",
+        "emphasis_enabled",
         "font_id",
+        "emphasis_font_id",
         "font_size",
+        "emphasis_font_size",
         "position",
         "font_weight",
-        "emphasis_size_scale",
         "emphasis_font_weight",
         "emphasis_outline",
         "default_emphasis_position_id",

@@ -74,6 +74,32 @@ EDITING_AGENT_SEQUENCE = [
     "FinalizeRunReport",
 ]
 
+# Editing-agent v2 separates media assignment from the final caption/BGM
+# post-processing domain. The v1 sequence above is frozen for historical run
+# resume; new editing-agent jobs use this sequence.
+EDITING_AGENT_V2_SEQUENCE = [
+    "ValidateRequest",
+    "LoadCaseContext",
+    "ResolveCreativeIntent",
+    "TTS",
+    "MaterialPackPlanning",
+    "NarrationAlignment",
+    "NarrationBoundaryPlanning",
+    "TimelineWindowPlanning",
+    "WindowQueryPlanning",
+    "WindowMaterialRetrieval",
+    "MediaSelectionAgentPlanning",
+    "TimelinePlanning",
+    "PortraitTrackBuild",
+    "LipSync",
+    "RenderFinalTimeline",
+    "CaptionWindowPlanning",
+    "PostProcessAgentPlanning",
+    "SubtitleAndBgmMix",
+    "ExportFinishedVideo",
+    "FinalizeRunReport",
+]
+
 # Expected total node count per workflow template id. Used to render run progress
 # as completed / total across the *whole* pipeline (node runs are created lazily,
 # so the count of existing node runs is not the denominator).
@@ -81,6 +107,7 @@ WORKFLOW_TEMPLATE_NODE_COUNTS = {
     "digital_human_v2": len(NODE_SEQUENCE),
     "seedance_t2v_v1": len(SEEDANCE_T2V_SEQUENCE),
     "digital_human_editing_agent_v1": len(EDITING_AGENT_SEQUENCE),
+    "digital_human_editing_agent_v2": len(EDITING_AGENT_V2_SEQUENCE),
 }
 
 
@@ -103,6 +130,10 @@ WORKFLOW_GRAPHS: dict[str, dict[str, list]] = {
         "nodes": list(EDITING_AGENT_SEQUENCE),
         "edges": _linear_edges(EDITING_AGENT_SEQUENCE),
     },
+    "digital_human_editing_agent_v2": {
+        "nodes": list(EDITING_AGENT_V2_SEQUENCE),
+        "edges": _linear_edges(EDITING_AGENT_V2_SEQUENCE),
+    },
 }
 
 
@@ -116,9 +147,7 @@ def expected_node_count(workflow_template_id: str | None) -> int:
     return WORKFLOW_TEMPLATE_NODE_COUNTS.get(workflow_template_id or "", 0)
 
 
-def validate_graph_structure(
-    nodes: Sequence[str], edges: Iterable[tuple[str, str]]
-) -> None:
+def validate_graph_structure(nodes: Sequence[str], edges: Iterable[tuple[str, str]]) -> None:
     """Reject a malformed workflow graph: duplicate node, dangling edge, or a cycle.
 
     Raises ``ValueError`` with a specific message. A DAG that passes here has a valid
@@ -140,9 +169,7 @@ def validate_graph_structure(
         raise ValueError(f"workflow graph has a dependency cycle among: {stuck}")
 
 
-def _kahn_order(
-    nodes: Sequence[str], edges: Iterable[tuple[str, str]]
-) -> list[str]:
+def _kahn_order(nodes: Sequence[str], edges: Iterable[tuple[str, str]]) -> list[str]:
     """Kahn topological sort with a STABLE tiebreak by original node position.
 
     Ready nodes are always visited in ``nodes`` declaration order, so the result is
@@ -173,9 +200,7 @@ def _kahn_order(
     return order
 
 
-def topological_node_order(
-    nodes: Sequence[str], edges: Iterable[tuple[str, str]]
-) -> list[str]:
+def topological_node_order(nodes: Sequence[str], edges: Iterable[tuple[str, str]]) -> list[str]:
     """Deterministic dependency order for the graph (raises on a cycle).
 
     For a linear template this returns the original sequence, so routing the runtime
@@ -201,8 +226,4 @@ def ready_nodes(
     for from_node, to_node in edges:
         if to_node in dependencies:
             dependencies[to_node].add(from_node)
-    return [
-        node
-        for node in nodes
-        if node not in done and dependencies[node] <= done
-    ]
+    return [node for node in nodes if node not in done and dependencies[node] <= done]
