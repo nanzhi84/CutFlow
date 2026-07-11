@@ -36,6 +36,7 @@ from packages.media.video.ffmpeg import (
     compress_video_to_budget,
     trim_to_valid_segments,
 )
+from packages.planning.editing.frame_grid import frame_index
 from packages.planning.material import (
     CLIP_EMBEDDING_DIMENSION,
     CLIP_EMBEDDING_INSTRUCT,
@@ -435,6 +436,11 @@ def _broll_candidates(
             min_len=_MIN_BROLL_CLEAN_SPAN_SECONDS,
         )
         for index, (start, end) in enumerate(clean_spans):
+            # ``subtract_bad_spans`` intentionally preserves untouched short
+            # spans. Keep provider-accepted sub-second clips, but never submit a
+            # span that quantizes to zero frames on the production 30 fps grid.
+            if frame_index(end) <= frame_index(start):
+                continue
             metadata = {
                 "clip_id": _clip_id_for_clean_span(clip.segment_id, index),
                 "source_start": round(float(start), 3),

@@ -408,6 +408,59 @@ def test_clip_embedding_status_builds_candidates_and_rejects_ambiguous_scope(db_
         )
 
 
+def test_broll_embedding_candidates_skip_provider_invalid_zero_frame_clip():
+    now = datetime.now(timezone.utc)
+    asset_row = MediaAssetRow(
+        id="asset_short_broll",
+        case_id="case_test",
+        title="过短空镜",
+        kind="video",
+        source_artifact_id="art_short_broll",
+        annotation_status="annotated",
+        usable=True,
+        duration_sec=2.0,
+        schema_version="v1",
+        created_at=now,
+        updated_at=now,
+    )
+    annotation = c.AnnotationV4(
+        meta=c.AnnotationMetaV4(
+            asset_id=asset_row.id,
+            case_id="case_test",
+            material_type="video",
+            duration=2.0,
+        ),
+        clips=[
+            c.ClipV4(
+                segment_id="short_broll",
+                start=1.688,
+                end=1.704,
+                duration=0.016,
+                semantics=c.ClipSemanticsV4(contains_face=False, face_count_max=0),
+                usage=c.ClipUsageV4(
+                    role=c.UsageRole.cover,
+                    recommended_for_voiceover=True,
+                    voiceover_only=True,
+                ),
+                retrieval=c.ClipRetrievalV4(
+                    summary="短暂静默过渡段",
+                    keywords=["过渡", "静默"],
+                    retrieval_sentence="画面保持不变",
+                ),
+            )
+        ],
+    )
+
+    assert (
+        clip_embeddings._broll_candidates(
+            asset_row,
+            annotation,
+            source_uri="s3://bucket/source.mp4",
+        )
+        == []
+    )
+
+
 class _FakeEmbeddingGateway:
     def __init__(self, output: dict | None = None, error: c.ProviderError | None = None) -> None:
         self.output = output
