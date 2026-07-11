@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 from packages.core.contracts import (
+    ArtifactKind,
     NodeSpec,
     RunStatus,
     WorkflowEdge,
@@ -201,6 +202,42 @@ def test_all_template_nodes_have_handlers_and_declared_outputs(template_id):
         assert spec.node_id in dh._NODE_OUTPUT_KINDS
         assert spec.output_artifact_kinds == dh._NODE_OUTPUT_KINDS[spec.node_id]
         assert spec.output_artifact_kinds
+
+
+@pytest.mark.parametrize(
+    ("template_id", "expected_portrait_producer"),
+    [
+        ("digital_human_v2", "DeterministicEditingPlanning"),
+        ("digital_human_editing_agent_v1", "EditingAgentPlanning"),
+        ("digital_human_editing_agent_v2", "MediaSelectionAgentPlanning"),
+    ],
+)
+def test_final_portrait_artifact_has_exactly_one_producer(
+    template_id, expected_portrait_producer
+):
+    template = dh.template_for(template_id)
+    producers = [
+        spec.node_id
+        for spec in template.nodes
+        if ArtifactKind.plan_portrait in spec.output_artifact_kinds
+    ]
+
+    assert producers == [expected_portrait_producer]
+    window_node = next(
+        spec for spec in template.nodes if spec.node_id == "TimelineWindowPlanning"
+    )
+    assert window_node.output_artifact_kinds == [ArtifactKind.plan_timeline_windows]
+
+
+def test_active_templates_use_timeline_assembly_validation_name():
+    assert "TimelineAssemblyValidation" in NODE_SEQUENCE
+    assert "TimelinePlanning" not in NODE_SEQUENCE
+    assert "TimelineAssemblyValidation" in EDITING_AGENT_V2_SEQUENCE
+    assert "TimelinePlanning" not in EDITING_AGENT_V2_SEQUENCE
+    assert "TimelinePlanning" in EDITING_AGENT_SEQUENCE
+    assert dh.NODE_HANDLERS["TimelinePlanning"] is dh.NODE_HANDLERS[
+        "TimelineAssemblyValidation"
+    ]
 
 
 @pytest.mark.parametrize("template_id", REGISTERED_TEMPLATE_IDS)

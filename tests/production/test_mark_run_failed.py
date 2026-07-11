@@ -129,6 +129,7 @@ def test_mark_run_failed_synthesizes_next_node_when_none_running():
         "MaterialPackPlanning", "NarrationAlignment", "NarrationBoundaryPlanning",
         "TimelineWindowPlanning", "WindowQueryPlanning", "WindowMaterialRetrieval",
         "DeterministicEditingPlanning",
+        # Historical persisted node id must satisfy the renamed active node.
         "TimelinePlanning",
     ]
     for nid in prefix:

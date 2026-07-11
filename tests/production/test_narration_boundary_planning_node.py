@@ -294,9 +294,12 @@ def test_boundaries_match_timeline_window_planning_consumed_pauses(monkeypatch, 
         pause_windows=boundary_payload["pause_windows"],
     )
     portrait_output = timeline_window_test._run_node(adapter, portrait_state)
-    portrait_payload = next(
-        a.payload for a in portrait_output.artifacts if a.kind == ArtifactKind.plan_portrait
+    windows_payload = next(
+        a.payload
+        for a in portrait_output.artifacts
+        if a.kind == ArtifactKind.plan_timeline_windows
     )
+    portrait_payload = windows_payload["default_assignment"]["portrait_plan_payload"]
     sources = {seg["boundary_source"] for seg in portrait_payload["segments"]}
     assert "semantic_audio_pause" in sources
     assert portrait_payload["diagnostics"]["used_audio_pauses"] is True

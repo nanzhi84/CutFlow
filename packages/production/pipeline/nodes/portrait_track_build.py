@@ -36,12 +36,11 @@ def run(ctx: NodeContext) -> NodeOutput:
             temp_dir = Path(directory)
             segment_paths: list[Path] = []
             for index, segment in enumerate(segments):
-                # TimelineWindowPlanning unconditionally emits frame-aligned segments on the
-                # 30fps grid; a missing source frame is an upstream contract defect, not
-                # something to silently re-derive from seconds (#105). Fail fast naming
-                # the gap BEFORE any source resolution / ffmpeg work. (reuse_policy="never"
-                # means resume always re-runs the planner, so there is no frame-less
-                # legacy segment to support here.)
+                # TimelineWindowPlanning compiles frame-aligned defaults on the 30fps
+                # grid, and the final media-selection node preserves those authoritative
+                # frame fields in plan.portrait. A missing source frame is therefore an
+                # upstream contract defect, not something to silently re-derive from
+                # seconds (#105). Fail fast before source resolution / ffmpeg work.
                 missing = [
                     name
                     for name in ("source_start_frame", "source_end_frame")

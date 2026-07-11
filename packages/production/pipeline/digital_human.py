@@ -59,6 +59,7 @@ from packages.production.pipeline.node_sequence import (
     EDITING_AGENT_V2_SEQUENCE,
     NODE_SEQUENCE,
     SEEDANCE_T2V_SEQUENCE,
+    canonical_node_id,
     _linear_edges,
     topological_node_order,
     validate_graph_structure,
@@ -128,7 +129,9 @@ NODE_HANDLERS = {
     "StylePlanning": nodes.style_planning.run,
     "EditingAgentPlanning": nodes.editing_agent_planning.run,
     "MediaSelectionAgentPlanning": nodes.media_selection_agent_planning.run,
-    "TimelinePlanning": nodes.timeline_planning.run,
+    "TimelineAssemblyValidation": nodes.timeline_assembly_validation.run,
+    # In-flight / historical v1 Temporal payloads still carry the old node id.
+    "TimelinePlanning": nodes.timeline_assembly_validation.run,
     "PortraitTrackBuild": nodes.portrait_track_build.run,
     "LipSync": nodes.lipsync.run,
     "RenderFinalTimeline": nodes.render_final_timeline.run,
@@ -162,6 +165,7 @@ _TIMELINE_REUSE_BREAK_NODES = {
     "WindowMaterialRetrieval",
     "DeterministicEditingPlanning",
     "BrollPlanning",
+    "TimelineAssemblyValidation",
     "TimelinePlanning",
     "EditingAgentPlanning",
     "MediaSelectionAgentPlanning",
@@ -180,7 +184,7 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
     "MaterialPackPlanning": [ArtifactKind.plan_material_pack],
     "NarrationAlignment": [ArtifactKind.audio_alignment, ArtifactKind.narration_units],
     "NarrationBoundaryPlanning": [ArtifactKind.plan_narration_boundary],
-    "TimelineWindowPlanning": [ArtifactKind.plan_timeline_windows, ArtifactKind.plan_portrait],
+    "TimelineWindowPlanning": [ArtifactKind.plan_timeline_windows],
     "WindowQueryPlanning": [ArtifactKind.plan_window_queries],
     "WindowMaterialRetrieval": [ArtifactKind.plan_window_material_retrieval],
     "DeterministicEditingPlanning": [
@@ -204,6 +208,7 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
         ArtifactKind.plan_broll,
         ArtifactKind.plan_media_selection_diagnostics,
     ],
+    "TimelineAssemblyValidation": [ArtifactKind.plan_timeline, ArtifactKind.plan_render],
     "TimelinePlanning": [ArtifactKind.plan_timeline, ArtifactKind.plan_render],
     "PortraitTrackBuild": [ArtifactKind.video_portrait_track],
     "LipSync": [ArtifactKind.video_lipsync, ArtifactKind.lipsync_report],
@@ -613,12 +618,17 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
     def _next_unfinished_node_id(self, run: WorkflowRun, node_runs: list[NodeRun]) -> str | None:
         """First template node not yet completed — the node that was due to run."""
         done = {
-            node_run.node_id
+            canonical_node_id(node_run.node_id)
             for node_run in node_runs
             if node_run.status in {NodeStatus.succeeded, NodeStatus.skipped, NodeStatus.degraded}
         }
         return next(
-            (node_id for node_id in self._sequence_for_run(run) if node_id not in done), None
+            (
+                node_id
+                for node_id in self._sequence_for_run(run)
+                if canonical_node_id(node_id) not in done
+            ),
+            None,
         )
 
     def mark_run_failed(
@@ -1150,10 +1160,19 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                 template_for(run.workflow_template_id),
                 self.repository.artifacts,
             )
-        previous_by_node = {node.node_id: node for node in previous}
+        previous_by_node = {canonical_node_id(node.node_id): node for node in previous}
+        decisions_by_node = {
+            canonical_node_id(decision.node_id): decision for decision in reuse_plan.decisions
+        }
         for node_id in reuse_plan.reused_node_ids:
-            previous_node_run = previous_by_node[node_id]
-            for artifact_id in previous_node_run.output_artifact_ids:
+            previous_node_run = previous_by_node[canonical_node_id(node_id)]
+            decision = decisions_by_node.get(canonical_node_id(node_id))
+            reusable_artifact_ids = (
+                list(decision.artifact_ids)
+                if decision is not None
+                else list(previous_node_run.output_artifact_ids)
+            )
+            for artifact_id in reusable_artifact_ids:
                 artifact = self.repository.artifacts.get(artifact_id)
                 if artifact is None:
                     raise NodeExecutionError(
@@ -1173,6 +1192,8 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                 update={
                     "id": new_id("nr"),
                     "run_id": run.id,
+                    "node_id": node_id,
+                    "output_artifact_ids": reusable_artifact_ids,
                     "status": NodeStatus.skipped,
                     "skipped_reason": "resume.reused_artifact_prefix",
                     "updated_at": utcnow(),

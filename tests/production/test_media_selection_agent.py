@@ -325,6 +325,7 @@ def test_provider_repair_loop_stops_after_valid_exact_selection() -> None:
         invoke=lambda previous: (feedback.append(list(previous)), next(outputs))[1],
         boundary=_boundary(),
         candidates=_candidates(),
+        max_inserts=3,
         max_repair_attempts=1,
     )
 
@@ -333,6 +334,41 @@ def test_provider_repair_loop_stops_after_valid_exact_selection() -> None:
     assert len(trace) == 2
     assert feedback[0] == []
     assert any("portrait slots not covered" in error for error in feedback[1])
+
+
+def test_provider_repair_loop_repairs_diversity_locally_before_reprompt() -> None:
+    candidates = _candidates()
+    candidates.broll_by_id["bc1"]["metadata"]["diversity_key"] = "scene_a"
+    output = {
+        "portrait_plan": [
+            {"slot_id": "p0", "candidate_id": "pc0", "reason": "fit"},
+            {"slot_id": "p1", "candidate_id": "pc1", "reason": "fit"},
+        ],
+        "broll_plan": [
+            {"slot_id": "b0", "candidate_id": "bc0", "reason": "fit"},
+            {"slot_id": "b1", "candidate_id": "bc1", "reason": "fit"},
+        ],
+        "analysis": "duplicate diversity",
+    }
+    feedback: list[list[str]] = []
+
+    selection, trace, errors = select_media_with_repair(
+        invoke=lambda previous: (feedback.append(list(previous)), output)[1],
+        boundary=_boundary(),
+        candidates=candidates,
+        max_inserts=3,
+        max_repair_attempts=1,
+    )
+
+    assert errors == []
+    assert feedback == [[]]
+    assert [choice.candidate_id for choice in selection.broll] == ["bc0", "bc2"]
+    assert trace[0]["errors"] == [
+        "broll diversity_key 'scene_a' is assigned more than once"
+    ]
+    assert trace[1]["attempt"] == "local_media_constraint_repair"
+    assert trace[1]["provider_attempt"] == 0
+    assert trace[1]["error_count"] == 0
 
 
 def test_media_planning_utilities_keep_retrieval_and_defaults_media_only() -> None:

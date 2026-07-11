@@ -1,4 +1,4 @@
-"""TimelinePlanning node: build + validate the timeline and render plan."""
+"""TimelineAssemblyValidation: assemble and validate the final timeline artifacts."""
 
 from __future__ import annotations
 
@@ -71,8 +71,9 @@ def run(ctx: NodeContext) -> NodeOutput:
         overlay = BrollOverlay.model_validate(item)
         # B-roll boundaries are authoritative frame fields produced from
         # TimelineWindowPlanning's B-roll windows by the shared materializer. This node
-        # is verify-only: it never re-snaps to portrait cuts or re-derives frames from
-        # seconds. A missing frame is an upstream contract defect -> fail fast.
+        # only assembles and validates: it never re-snaps to portrait cuts, re-derives
+        # frames from seconds, or makes a new planning decision. A missing frame is an
+        # upstream contract defect -> fail fast.
         missing = [
             name
             for name, value in (

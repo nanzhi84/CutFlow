@@ -192,7 +192,8 @@ NODE_LABELS = {
     "StylePlanning": "规划字幕与包装",
     "EditingAgentPlanning": "剪辑 Agent 规划",
     "MediaSelectionAgentPlanning": "媒体选择 Agent 规划",
-    "TimelinePlanning": "规划时间线",
+    "TimelineAssemblyValidation": "组装并校验时间线",
+    "TimelinePlanning": "组装并校验时间线（历史节点）",
     "PortraitTrackBuild": "生成数字人轨道",
     "LipSync": "口型同步",
     "RenderFinalTimeline": "渲染主时间线",
@@ -1180,7 +1181,23 @@ class SqlAlchemyProductionRepository(BaseRepository):
                 repository.node_runs[run.resume_from_run_id] = [
                     node for node in node_runs if node.run_id == run.resume_from_run_id
                 ]
-            for artifact in session.scalars(select(ArtifactRow).where(ArtifactRow.run_id.in_(run_ids))):
+            # A resumed node run keeps the original artifact ids instead of copying
+            # their rows to the new run. On a chained resume, the immediate source's
+            # skipped node runs can therefore reference artifacts owned by an older
+            # ancestor run. Hydrate by actual node references as well as run ownership
+            # so apply_reuse_plan sees the same artifact set that admission validated.
+            referenced_artifact_ids = {
+                artifact_id
+                for node_run in node_runs
+                for artifact_id in node_run.output_artifact_ids
+            }
+            artifact_filter = ArtifactRow.run_id.in_(run_ids)
+            if referenced_artifact_ids:
+                artifact_filter = or_(
+                    artifact_filter,
+                    ArtifactRow.id.in_(referenced_artifact_ids),
+                )
+            for artifact in session.scalars(select(ArtifactRow).where(artifact_filter)):
                 contract = artifact_row_to_contract(artifact)
                 repository.artifacts[contract.id] = contract
 

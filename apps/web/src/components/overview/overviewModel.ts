@@ -1,4 +1,4 @@
-import type { OpsDashboardVm, RunCard, YieldFunnelEvent } from "../../api/client";
+import type { RunCard, RunOverviewResponse } from "../../api/client";
 
 export type OverviewStats = {
   total: number;
@@ -18,33 +18,22 @@ function bucketRunStatus(status: string): RunStatusBucket {
   return "other";
 }
 
-function normalizeWorkflowStatus(eventType: string) {
-  return eventType.startsWith("workflow_") ? eventType.slice("workflow_".length) : eventType;
-}
+function statsFromRunOverview(overview: RunOverviewResponse | undefined): OverviewStats | null {
+  if (!overview) return null;
+  const statusCounts = Object.entries(overview.statusCounts ?? {});
+  if (overview.total_hint == null && statusCounts.length === 0) return null;
 
-function eventIdentity(event: YieldFunnelEvent) {
-  return event.run_id || event.job_id || event.dedupe_key || event.id;
-}
-
-function statsFromYieldEvents(events: YieldFunnelEvent[]): OverviewStats | null {
-  if (events.length === 0) return null;
-  const latestByRun = new Map<string, YieldFunnelEvent>();
-  events.forEach((event) => {
-    const key = eventIdentity(event);
-    const current = latestByRun.get(key);
-    if (!current || Date.parse(event.event_time) >= Date.parse(current.event_time)) {
-      latestByRun.set(key, event);
-    }
+  const stats: OverviewStats = {
+    total: overview.total_hint ?? statusCounts.reduce((sum, [, count]) => sum + count, 0),
+    processing: 0,
+    completed: 0,
+    failed: 0,
+  };
+  statusCounts.forEach(([status, count]) => {
+    const bucket = bucketRunStatus(status);
+    if (bucket !== "other") stats[bucket] += count;
   });
-
-  const stats: OverviewStats = { total: 0, processing: 0, completed: 0, failed: 0 };
-  latestByRun.forEach((event) => {
-    const bucket = bucketRunStatus(normalizeWorkflowStatus(event.event_type));
-    if (bucket === "other") return;
-    stats.total += 1;
-    stats[bucket] += 1;
-  });
-  return stats.total > 0 ? stats : null;
+  return stats;
 }
 
 function statsFromRunCards(runs: RunCard[]): OverviewStats {
@@ -56,8 +45,8 @@ function statsFromRunCards(runs: RunCard[]): OverviewStats {
   return stats;
 }
 
-export function buildOverviewStats(dashboard: OpsDashboardVm | undefined, runs: RunCard[]): OverviewStats {
-  return statsFromYieldEvents(dashboard?.yield_funnel.events ?? []) ?? statsFromRunCards(runs);
+export function buildOverviewStats(overview: RunOverviewResponse | undefined): OverviewStats {
+  return statsFromRunOverview(overview) ?? statsFromRunCards(overview?.items ?? []);
 }
 
 export function sortRecentRuns(runs: RunCard[]) {

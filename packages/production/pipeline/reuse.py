@@ -15,6 +15,7 @@ from packages.core.contracts import (
     WorkflowRun,
     WorkflowTemplate,
 )
+from packages.production.pipeline.node_sequence import canonical_node_id
 
 
 REUSABLE_NODE_STATUSES = {NodeStatus.succeeded, NodeStatus.degraded, NodeStatus.skipped}
@@ -66,21 +67,29 @@ def compute_reuse_plan(
     artifacts: Mapping[str, Artifact],
 ) -> ReusePlan:
     plan = ReusePlan(source_run_id=source_run.run.id)
-    previous_by_node = {node.node_id: node for node in source_run.node_runs}
-    template_by_node = {node.node_id: node for node in template.nodes}
+    previous_by_node = {
+        canonical_node_id(node.node_id): node for node in source_run.node_runs
+    }
+    template_by_node = {
+        canonical_node_id(node.node_id): node for node in template.nodes
+    }
     failed_resume_anchor = _failed_resume_anchor(source_run, template, previous_by_node)
 
     for template_node in template.nodes:
         if template_node.reuse_policy == "never" and failed_resume_anchor is None:
             return _stop(plan, template_node.node_id, "reuse_policy_forces_rerun")
-        previous_node = previous_by_node.get(template_node.node_id)
+        canonical_id = canonical_node_id(template_node.node_id)
+        previous_node = previous_by_node.get(canonical_id)
         if previous_node is None:
             return _stop(plan, template_node.node_id, "node_run_missing")
         if previous_node.status not in REUSABLE_NODE_STATUSES:
             return _stop(plan, template_node.node_id, "node_status_not_reusable")
         if previous_node.node_version != template_node.node_version:
             return _stop(plan, template_node.node_id, "node_version_mismatch")
-        expected_input_hash = source_run.expected_input_manifest_hashes.get(template_node.node_id)
+        expected_input_hash = source_run.expected_input_manifest_hashes.get(
+            template_node.node_id,
+            source_run.expected_input_manifest_hashes.get(previous_node.node_id),
+        )
         if expected_input_hash is not None and expected_input_hash != previous_node.input_manifest_hash:
             return _stop(plan, template_node.node_id, "input_manifest_hash_mismatch")
         if template_node.side_effects and template_node.idempotency_key is None:
@@ -92,6 +101,15 @@ def compute_reuse_plan(
             if artifact is None:
                 return _stop(plan, template_node.node_id, "artifact_missing", previous_node.output_artifact_ids)
             if artifact.kind not in template_node.output_artifact_kinds:
+                if (
+                    template_node.node_id == "TimelineWindowPlanning"
+                    and artifact.kind == ArtifactKind.plan_portrait
+                ):
+                    # Before the single-writer cleanup, TimelineWindowPlanning also
+                    # published its nested default as a competing final portrait
+                    # artifact. Historical failed runs may still reuse the window
+                    # compiler, but the obsolete extra must not cross into the new run.
+                    continue
                 return _stop(plan, template_node.node_id, "artifact_kind_mismatch", previous_node.output_artifact_ids)
             if artifact.schema_version != _expected_schema_version(template_node, artifact.kind):
                 return _stop(
@@ -115,12 +133,15 @@ def compute_reuse_plan(
                 node_id=template_node.node_id,
                 reusable=True,
                 reason="reused",
-                artifact_ids=list(previous_node.output_artifact_ids),
+                artifact_ids=[artifact.id for artifact in output_artifacts],
             )
         )
 
     for previous_node in source_run.node_runs:
-        if previous_node.node_id not in template_by_node and plan.rerun_from_node_id is None:
+        if (
+            canonical_node_id(previous_node.node_id) not in template_by_node
+            and plan.rerun_from_node_id is None
+        ):
             return _stop(plan, previous_node.node_id, "node_not_in_template")
     return plan
 
@@ -141,7 +162,7 @@ def _failed_resume_anchor(
     if source_run.run.status != RunStatus.failed:
         return None
     for template_node in template.nodes:
-        previous_node = previous_by_node.get(template_node.node_id)
+        previous_node = previous_by_node.get(canonical_node_id(template_node.node_id))
         if previous_node is not None and previous_node.status == NodeStatus.failed:
             return template_node.node_id
     return None

@@ -3,7 +3,7 @@
 The window-authority refactor deliberately does NOT version every artifact schema or bump
 all node versions. That is only safe because TimelineWindowPlanning /
 WindowQueryPlanning / WindowMaterialRetrieval / DeterministicEditingPlanning /
-TimelinePlanning all carry ``reuse_policy="never"``: when deriving from a completed
+TimelineAssemblyValidation all carry ``reuse_policy="never"``: when deriving from a completed
 run, their old artifacts are discarded and the nodes re-run, so a run cannot resume
 onto a pre-window-contract B-roll plan. Failed-run continuation bypasses this policy
 until the actual failed node so LipSync/provider failures resume at the failed node.
@@ -23,7 +23,7 @@ def test_frame_grid_planning_nodes_never_reuse_on_resume():
         "WindowQueryPlanning",
         "WindowMaterialRetrieval",
         "DeterministicEditingPlanning",
-        "TimelinePlanning",
+        "TimelineAssemblyValidation",
     ):
         assert node_id in by_id, f"{node_id} missing from digital_human_v2 template"
         assert by_id[node_id].reuse_policy == "never", (

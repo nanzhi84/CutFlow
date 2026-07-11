@@ -1,6 +1,6 @@
 """Pure b-roll frame-grid alignment helpers (#105 legacy coverage).
 
-The portrait-cut snap that used to run downstream in ``TimelinePlanning`` (the old
+The portrait-cut snap that used to run downstream before ``TimelineAssemblyValidation`` (the old
 ``_timeline_grid.align_broll_to_portrait_cuts``) moved into pure planning helpers in
 #105. digital_human_v2 now gets B-roll frame authority from
 ``TimelineWindowPlanning`` placement slots, but these helpers remain covered for

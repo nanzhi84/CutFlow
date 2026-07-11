@@ -179,6 +179,9 @@ def test_media_selection_agent_prompt_is_media_only():
     assert "broll_plan" in output_example
     assert "analysis" in output_example
     assert "legal_candidate_ids" in content
+    assert "candidate_id | asset_id | diversity_key | scene_name" in content
+    assert "broll_uniqueness_rule" in hints
+    assert "diversity_key" in content
     assert '"candidate_id": "pc_000"' in output_example
     assert "legal_window_ids" not in content
     assert '"window_id"' not in output_example

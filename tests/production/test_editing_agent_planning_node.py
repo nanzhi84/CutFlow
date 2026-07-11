@@ -1030,6 +1030,96 @@ def test_v2_media_selection_uses_its_own_media_only_prompt(tmp_path):
     }
 
 
+def test_v2_media_selection_repairs_duplicate_diversity_without_second_call(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    provider = _FakeEditingLlmProvider(
+        [
+            {
+                "content": "media selection",
+                "intent": {
+                    "portrait_plan": [
+                        {"slot_id": "pslot_000", "candidate_id": "pc_000", "reason": "fit"},
+                        {"slot_id": "pslot_001", "candidate_id": "pc_001", "reason": "fit"},
+                    ],
+                    "broll_plan": [
+                        {"slot_id": "bslot_000", "candidate_id": "bc_000", "reason": "fit"},
+                        {"slot_id": "bslot_001", "candidate_id": "bc_001", "reason": "fit"},
+                    ],
+                    "analysis": "duplicate diversity",
+                },
+            }
+        ]
+    )
+    adapter.provider_gateway.register(provider)
+    state = _state()
+    material = state.artifacts[ArtifactKind.plan_material_pack].payload
+    material["broll_candidates"] = [
+        {
+            "asset_id": "broll_a",
+            "score": 100.0,
+            "metadata": {
+                "clip_id": "broll_a_clip",
+                "source_start": 0.0,
+                "source_end": 6.0,
+                "scene_name": "产品展示 A",
+                "diversity_key": "product_demo",
+            },
+        },
+        {
+            "asset_id": "broll_b",
+            "score": 90.0,
+            "metadata": {
+                "clip_id": "broll_b_clip",
+                "source_start": 0.0,
+                "source_end": 6.0,
+                "scene_name": "产品展示 B",
+                "diversity_key": "product_demo",
+            },
+        },
+        {
+            "asset_id": "broll_c",
+            "score": 80.0,
+            "metadata": {
+                "clip_id": "broll_c_clip",
+                "source_start": 0.0,
+                "source_end": 6.0,
+                "scene_name": "施工细节",
+                "diversity_key": "construction_detail",
+            },
+        },
+    ]
+    boundary = state.artifacts[ArtifactKind.plan_narration_boundary].payload
+    boundary["broll_slots"].append(
+        {
+            "slot_id": "bslot_001",
+            "start_frame": 120,
+            "end_frame": 180,
+            "unit_ids": ["unit_1"],
+            "text": "施工细节",
+        }
+    )
+    state.artifacts[ArtifactKind.plan_timeline_windows].payload = _timeline_windows(boundary)
+
+    output = _run_media_selection_node(adapter, state)
+
+    assert output.status == NodeStatus.succeeded
+    assert len(provider.calls) == 1
+    assert len(output.provider_invocation_ids) == 1
+    assert WarningCode.media_selection_agent_local_constraint_repair in output.warnings
+    assert "diversity_key" in provider.calls[0].input["prompt"]
+    assert "product_demo" in provider.calls[0].input["prompt"]
+    assignment = _payload(output, ArtifactKind.plan_media_assignment)
+    assert [choice["candidate_id"] for choice in assignment["broll"]] == [
+        "bc_000",
+        "bc_002",
+    ]
+    assert assignment["diagnostics"]["repair_trace"][-1]["attempt"] == (
+        "local_media_constraint_repair"
+    )
+    assert assignment["diagnostics"]["repair_trace"][-1]["error_count"] == 0
+
+
 def test_v2_media_selection_hard_rejects_postprocess_and_geometry_overreach(monkeypatch, tmp_path):
     monkeypatch.setenv("CUTAGENT_ALLOW_SANDBOX_FALLBACK", "0")
     adapter = _adapter(tmp_path)
@@ -1077,7 +1167,7 @@ def test_v2_media_selection_hard_rejects_postprocess_and_geometry_overreach(monk
     assert len(provider.calls) == 1
 
 
-def test_editing_agent_artifacts_feed_timeline_planning(tmp_path):
+def test_editing_agent_artifacts_feed_timeline_assembly_validation(tmp_path):
     adapter = _adapter(tmp_path)
     state = _state()
 
@@ -1088,10 +1178,10 @@ def test_editing_agent_artifacts_feed_timeline_planning(tmp_path):
     timeline_ctx = NodeContext(
         adapter=adapter,
         run=_run(),
-        node_run=_node_run("TimelinePlanning"),
+        node_run=_node_run("TimelineAssemblyValidation"),
         state=state,
     )
-    timeline_output = nodes.timeline_planning.run(timeline_ctx)
+    timeline_output = nodes.timeline_assembly_validation.run(timeline_ctx)
 
     assert timeline_output.status == NodeStatus.succeeded
     assert {artifact.kind for artifact in timeline_output.artifacts} == {

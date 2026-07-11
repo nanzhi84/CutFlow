@@ -1,8 +1,8 @@
 """PortraitTrackBuild fail-fasts on a frame-less portrait segment (#105).
 
-TimelineWindowPlanning unconditionally emits frame-aligned segments on the 30fps grid and
-uses ``reuse_policy="never"`` (resume always re-runs the compiler), so there
-is no live path that feeds PortraitTrackBuild a segment without ``source_*_frame``.
+TimelineWindowPlanning compiles frame-aligned defaults on the 30fps grid and the final
+media-selection node preserves them in ``plan.portrait``, so there is no live path
+that feeds PortraitTrackBuild a segment without ``source_*_frame``.
 The seconds -> frame fallback was therefore removed: a missing source frame is an
 upstream contract defect that must surface, not be silently re-derived.
 """

@@ -1,4 +1,8 @@
-"""TimelineWindowPlanning node: compile authoritative editing windows."""
+"""Compile authoritative windows and keep the compiler portrait only as a nested default.
+
+The node never publishes the final ``plan.portrait`` artifact. The downstream
+deterministic or Agent media-selection node is its single writer for each workflow.
+"""
 
 from __future__ import annotations
 
@@ -181,12 +185,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                 ArtifactKind.plan_timeline_windows,
                 payload,
                 "TimelineWindowsPlan.v1",
-            ),
-            ctx.artifact(
-                ArtifactKind.plan_portrait,
-                portrait_plan_payload,
-                "PortraitPlanArtifact.v1",
-            ),
+            )
         ]
     )
 
@@ -311,12 +310,7 @@ def _full_coverage_output(
                 ArtifactKind.plan_timeline_windows,
                 payload,
                 "TimelineWindowsPlan.v1",
-            ),
-            ctx.artifact(
-                ArtifactKind.plan_portrait,
-                portrait_plan_payload,
-                "PortraitPlanArtifact.v1",
-            ),
+            )
         ]
     )
 

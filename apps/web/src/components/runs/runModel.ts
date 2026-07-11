@@ -21,7 +21,8 @@ const NODE_LABELS: Record<string, string> = {
   StylePlanning: "规划字幕与包装",
   EditingAgentPlanning: "剪辑 Agent 规划",
   MediaSelectionAgentPlanning: "媒体选择 Agent 规划",
-  TimelinePlanning: "规划时间线",
+  TimelineAssemblyValidation: "组装并校验时间线",
+  TimelinePlanning: "组装并校验时间线（历史节点）",
   PortraitTrackBuild: "生成数字人轨道",
   LipSync: "口型同步",
   RenderFinalTimeline: "渲染主时间线",
@@ -36,6 +37,14 @@ const NODE_LABELS: Record<string, string> = {
 
 export function nodeLabel(id: string): string {
   return NODE_LABELS[id] ?? id;
+}
+
+const LEGACY_NODE_ALIASES: Record<string, string> = {
+  TimelinePlanning: "TimelineAssemblyValidation",
+};
+
+function canonicalNodeId(id: string): string {
+  return LEGACY_NODE_ALIASES[id] ?? id;
 }
 
 // 各工作流模板的节点顺序，镜像 packages/production/pipeline/node_sequence.py。
@@ -53,7 +62,7 @@ const TEMPLATE_NODE_SEQUENCES: Record<string, string[]> = {
     "WindowQueryPlanning",
     "WindowMaterialRetrieval",
     "DeterministicEditingPlanning",
-    "TimelinePlanning",
+    "TimelineAssemblyValidation",
     "PortraitTrackBuild",
     "LipSync",
     "RenderFinalTimeline",
@@ -93,7 +102,7 @@ const TEMPLATE_NODE_SEQUENCES: Record<string, string[]> = {
     "WindowQueryPlanning",
     "WindowMaterialRetrieval",
     "MediaSelectionAgentPlanning",
-    "TimelinePlanning",
+    "TimelineAssemblyValidation",
     "PortraitTrackBuild",
     "LipSync",
     "RenderFinalTimeline",
@@ -125,16 +134,18 @@ export function buildNodeTimeline(
   nodes: NodeRun[],
   runStatus?: string,
 ): NodeTimelineItem[] {
-  const byId = new Map(nodes.map((node) => [node.node_id, node]));
+  const byId = new Map(nodes.map((node) => [canonicalNodeId(node.node_id), node]));
   const sequence = TEMPLATE_NODE_SEQUENCES[templateId ?? ""] ?? [];
   const items: NodeTimelineItem[] = sequence.flatMap((nodeId) => {
-    const node = byId.get(nodeId);
+    const node = byId.get(canonicalNodeId(nodeId));
     if (!node && runStatus === "succeeded") return [];
     return [{ nodeId, status: node?.status ?? "pending", node }];
   });
-  const known = new Set(sequence);
+  const known = new Set(sequence.map(canonicalNodeId));
   for (const node of nodes) {
-    if (!known.has(node.node_id)) items.push({ nodeId: node.node_id, status: node.status, node });
+    if (!known.has(canonicalNodeId(node.node_id))) {
+      items.push({ nodeId: node.node_id, status: node.status, node });
+    }
   }
   return items;
 }
@@ -144,7 +155,7 @@ type StageDef = { key: string; label: string; detail: string; nodes: string[] };
 const STAGE_DEFS: StageDef[] = [
   { key: "script", label: "脚本与意图", detail: "校验请求、加载案例、解析创作意图", nodes: ["ValidateRequest", "LoadCaseContext", "ResolveCreativeIntent"] },
   { key: "voice", label: "配音合成", detail: "生成数字人配音并对齐时间轴", nodes: ["TTS", "NarrationAlignment"] },
-  { key: "material", label: "素材匹配与编排", detail: "匹配 B-roll、数字人镜头与时间线", nodes: ["MaterialPackPlanning", "NarrationBoundaryPlanning", "TimelineWindowPlanning", "WindowQueryPlanning", "WindowMaterialRetrieval", "DeterministicEditingPlanning", "PortraitPlanning", "BrollPlanning", "StylePlanning", "EditingAgentPlanning", "MediaSelectionAgentPlanning", "TimelinePlanning"] },
+  { key: "material", label: "素材匹配与编排", detail: "匹配素材，并组装校验时间线", nodes: ["MaterialPackPlanning", "NarrationBoundaryPlanning", "TimelineWindowPlanning", "WindowQueryPlanning", "WindowMaterialRetrieval", "DeterministicEditingPlanning", "PortraitPlanning", "BrollPlanning", "StylePlanning", "EditingAgentPlanning", "MediaSelectionAgentPlanning", "TimelineAssemblyValidation", "TimelinePlanning"] },
   { key: "lipsync", label: "口型同步", detail: "生成数字人轨道并做唇形同步", nodes: ["PortraitTrackBuild", "LipSync"] },
   { key: "compose", label: "合成出片", detail: "渲染时间线、规划并混合字幕配乐、导出成片", nodes: ["RenderFinalTimeline", "CaptionWindowPlanning", "PostProcessAgentPlanning", "SubtitleAndBgmMix", "ExportFinishedVideo", "FinalizeRunReport"] },
 ];

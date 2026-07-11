@@ -18,6 +18,14 @@ PORTRAIT_UNIQUENESS_RULE = (
     "同一个 asset_id 最多只能用于一个 portrait_slot；"
     "人像切镜窗口由 TimelineWindowPlanning 按 strict uniqueness 编译，Agent 禁止放宽复用。"
 )
+BROLL_INSERT_UNIQUENESS_RULE = (
+    "当前是 insert 模式：除 candidate_id 不得重复外，非空 asset_id 与 diversity_key "
+    "也都必须全局唯一；选择前请根据候选表中的 diversity_key 主动避开同类素材。"
+)
+BROLL_FULL_COVERAGE_UNIQUENESS_RULE = (
+    "当前是 full_coverage 模式：candidate_id 仍不得重复；为保证逐窗覆盖，"
+    "允许复用 asset_id 或 diversity_key。"
+)
 
 
 @dataclass(frozen=True)
@@ -276,6 +284,11 @@ def build_media_agent_input(
         if request.broll.enabled
         else 0,
         "portrait_uniqueness_rule": PORTRAIT_UNIQUENESS_RULE,
+        "broll_uniqueness_rule": (
+            BROLL_FULL_COVERAGE_UNIQUENESS_RULE
+            if full_coverage
+            else BROLL_INSERT_UNIQUENESS_RULE
+        ),
         "narration_units": [
             {
                 "unit_id": _as_str(unit.get("unit_id")),
@@ -315,6 +328,7 @@ def build_media_agent_input(
                     to_seconds(_broll_source_frames_available(candidate)), 3
                 ),
                 "scene_name": _as_str(_meta(candidate).get("scene_name")),
+                "diversity_key": _as_str(_meta(candidate).get("diversity_key")),
                 "matched_keywords": list(_meta(candidate).get("matched_keywords") or []),
                 "description": _as_str(_meta(candidate).get("description")),
             }
@@ -854,11 +868,20 @@ def select_media_with_repair(
     invoke: Callable[[list[str]], Any],
     boundary: dict,
     candidates: MediaCandidates,
+    max_inserts: int,
     max_repair_attempts: int,
     retrieval_topk_by_window: dict[str, list[str]] | None = None,
     allow_broll_asset_diversity_reuse: bool = False,
     require_broll_coverage: bool = False,
 ) -> tuple[MediaSelection, list[dict], list[str]]:
+    """Select media, repairing deterministic constraints before another provider call.
+
+    A provider re-prompt is reserved for schema errors or constraints that the local
+    candidate pool cannot repair. This keeps a valid first response usable when the
+    only defect is an ID/duration/diversity conflict, and avoids exposing that result
+    to a needless second remote call.
+    """
+
     errors: list[str] = []
     trace: list[dict] = []
     selection = MediaSelection()
@@ -873,6 +896,29 @@ def select_media_with_repair(
             require_broll_coverage=require_broll_coverage,
         )
         trace.append({"attempt": attempt, "error_count": len(errors), "errors": errors})
+        if not errors:
+            break
+        repaired, actions, repaired_errors = repair_media_selection_to_constraints(
+            selection=selection,
+            boundary=boundary,
+            candidates=candidates,
+            max_inserts=max_inserts,
+            retrieval_topk_by_window=retrieval_topk_by_window,
+            allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
+            require_broll_coverage=require_broll_coverage,
+        )
+        if actions:
+            trace.append(
+                {
+                    "attempt": "local_media_constraint_repair",
+                    "provider_attempt": attempt,
+                    "error_count": len(repaired_errors),
+                    "errors": repaired_errors,
+                    "actions": actions,
+                }
+            )
+        selection = repaired
+        errors = repaired_errors
         if not errors:
             break
     return selection, trace, errors

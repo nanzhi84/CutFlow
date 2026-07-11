@@ -70,12 +70,13 @@ def test_upgrade_syncs_bgm_mood_and_scene_hint_prompts(db_session_factory):
                 """
                 insert into prompt_bindings (
                     id, prompt_template_id, prompt_version_id, case_id, node_id,
-                    provider_profile_id, priority, enabled, created_at, updated_at
+                    provider_profile_id, priority, enabled, schema_version,
+                    created_at, updated_at
                 )
                 values (
                     'prompt_binding_custom_intent', 'prompt_creative_intent',
                     'prompt_window_query_v1', 'case_demo', 'ResolveCreativeIntent',
-                    'sandbox.llm.default', 0, true, now(), now()
+                    'sandbox.llm.default', 0, true, 'v1', now(), now()
                 )
                 """
             )
@@ -85,12 +86,13 @@ def test_upgrade_syncs_bgm_mood_and_scene_hint_prompts(db_session_factory):
                 """
                 insert into prompt_bindings (
                     id, prompt_template_id, prompt_version_id, case_id, node_id,
-                    provider_profile_id, priority, enabled, created_at, updated_at
+                    provider_profile_id, priority, enabled, schema_version,
+                    created_at, updated_at
                 )
                 values (
                     'prompt_binding_custom_window_query', 'prompt_window_query',
                     'prompt_editing_agent_v1', 'case_demo', 'WindowQueryPlanning',
-                    'sandbox.llm.default', 0, true, now(), now()
+                    'sandbox.llm.default', 0, true, 'v1', now(), now()
                 )
                 """
             )

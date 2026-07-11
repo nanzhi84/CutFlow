@@ -170,6 +170,7 @@ class DigitalHumanVideoWorkflow:
                         "reuse_plan": reuse_plan,
                     },
                     start_to_close_timeout=timedelta(minutes=5),
+                    retry_policy=TemporalRetryPolicy(maximum_attempts=3),
                 )
                 start_index = len(reuse_summary.get("reused_node_ids", []))
 

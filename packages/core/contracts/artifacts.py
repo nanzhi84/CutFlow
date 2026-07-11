@@ -381,8 +381,8 @@ class BrollOverlay(ContractModel):
     # (a) the legacy reader ``broll_overlays_from_plan`` has no fps to derive them and
     # (b) historical seconds-only overlays may have no portrait-cut grid. In
     # digital_human_v2 these fields must match the authoritative
-    # ``TimelineWindowsPlan.broll_windows`` slot; TimelinePlanning fail-fasts when
-    # they are missing or drift. ``pad_start``/``pad_end`` remain for legacy snapped
+    # ``TimelineWindowsPlan.broll_windows`` slot; TimelineAssemblyValidation fail-fasts
+    # when they are missing or drift. ``pad_start``/``pad_end`` remain for legacy snapped
     # plans, but the v2 materializer no longer uses them to resize B-roll windows.
     timeline_start_frame: int | None = None
     timeline_end_frame: int | None = None

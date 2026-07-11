@@ -1939,10 +1939,10 @@ def test_deterministic_editing_planning_selects_one_candidate_per_full_coverage_
     timeline_ctx = NodeContext(
         adapter=adapter,
         run=_run(),
-        node_run=_node_run("TimelinePlanning"),
+        node_run=_node_run("TimelineAssemblyValidation"),
         state=timeline_state,
     )
-    timeline_output = nodes.timeline_planning.run(timeline_ctx)
+    timeline_output = nodes.timeline_assembly_validation.run(timeline_ctx)
     timeline = next(
         artifact.payload
         for artifact in timeline_output.artifacts
@@ -1957,7 +1957,7 @@ def test_deterministic_editing_planning_selects_one_candidate_per_full_coverage_
     assert timeline["validation"]["valid"] is True
 
 
-def test_timeline_planning_rejects_full_coverage_stitching_gaps(tmp_path):
+def test_timeline_assembly_validation_rejects_full_coverage_stitching_gaps(tmp_path):
     adapter = _adapter(tmp_path)
     windows = _stitched_full_coverage_windows()
     portrait = _artifact(
@@ -1990,7 +1990,7 @@ def test_timeline_planning_rejects_full_coverage_stitching_gaps(tmp_path):
     )
     ctx = _ctx(
         adapter,
-        "TimelinePlanning",
+        "TimelineAssemblyValidation",
         {
             ArtifactKind.plan_portrait: portrait,
             ArtifactKind.plan_broll: broll,
@@ -2005,7 +2005,7 @@ def test_timeline_planning_rejects_full_coverage_stitching_gaps(tmp_path):
         adapter.repository.artifacts[artifact.id] = artifact
 
     with pytest.raises(NodeExecutionError) as exc:
-        nodes.timeline_planning.run(ctx)
+        nodes.timeline_assembly_validation.run(ctx)
 
     assert exc.value.error.code == ErrorCode.render_invalid_timeline
     assert exc.value.error.details["coverage_gaps"] == [

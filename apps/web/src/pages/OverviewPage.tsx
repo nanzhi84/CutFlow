@@ -14,11 +14,12 @@ import { useTaskNotifications } from "../hooks/useTaskNotifications";
 import { shortId } from "../lib/format";
 import { routes } from "../routes";
 
-async function loadRecentRuns() {
-  const cases = await api.cases.list({ limit: 20 });
-  if (cases.items.length === 0) return [];
-  const pages = await Promise.all(cases.items.map((item) => api.cases.runs(item.id, { limit: 8 })));
-  return sortRecentRuns(pages.flatMap((page) => page.items)).slice(0, 8);
+async function loadOverviewRuns() {
+  const overview = await api.runs.overview({ limit: 8 });
+  return {
+    ...overview,
+    items: sortRecentRuns(overview.items).slice(0, 8),
+  };
 }
 
 export default function OverviewPage() {
@@ -31,13 +32,13 @@ export default function OverviewPage() {
     queryFn: () => api.ops.dashboard({}),
     refetchInterval: pageVisible ? 15000 : false,
   });
-  const recentRuns = useQuery<RunCard[]>({
-    queryKey: ["overview", "recent-runs"],
-    queryFn: loadRecentRuns,
+  const runOverview = useQuery({
+    queryKey: ["overview", "runs"],
+    queryFn: loadOverviewRuns,
     refetchInterval: pageVisible ? 15000 : false,
   });
-  const runs = recentRuns.data ?? [];
-  const stats = buildOverviewStats(dashboard.data, runs);
+  const runs = runOverview.data?.items ?? [];
+  const stats = buildOverviewStats(runOverview.data);
 
   // System notifications (fire regardless of focus, batch transitions merged
   // into one). Permission is requested only via the toggle's click handler.
@@ -48,9 +49,9 @@ export default function OverviewPage() {
   const notifications = useTaskNotifications({ runs: notificationRuns });
 
   useEffect(() => {
-    if (!recentRuns.data) return;
+    if (!runOverview.data) return;
     const previous = previousStatuses.current;
-    recentRuns.data.forEach((run) => {
+    runOverview.data.items.forEach((run) => {
       const lastStatus = previous.get(run.runId);
       if (lastStatus && lastStatus !== run.status && isTerminalStatus(run.status)) {
         const message = `${run.title} · ${shortId(run.runId)}`;
@@ -59,7 +60,7 @@ export default function OverviewPage() {
       }
       previous.set(run.runId, run.status);
     });
-  }, [recentRuns.data, toast]);
+  }, [runOverview.data, toast]);
 
   async function toggleNotifications() {
     const next = !notifications.enabled;
@@ -75,7 +76,7 @@ export default function OverviewPage() {
 
   function refreshAll() {
     void queryClient.invalidateQueries({ queryKey: ["ops", "dashboard"] });
-    void queryClient.invalidateQueries({ queryKey: ["overview", "recent-runs"] });
+    void queryClient.invalidateQueries({ queryKey: ["overview", "runs"] });
   }
 
   return (
@@ -98,7 +99,7 @@ export default function OverviewPage() {
             </button>
           ) : null}
           <button className="btn-secondary text-sm" type="button" onClick={refreshAll}>
-            <RefreshCw className={`h-4 w-4 ${dashboard.isFetching || recentRuns.isFetching ? "animate-spin" : ""}`} />
+            <RefreshCw className={`h-4 w-4 ${dashboard.isFetching || runOverview.isFetching ? "animate-spin" : ""}`} />
             刷新
           </button>
           <Link to={routes.analytics()} className="btn-secondary text-sm">
@@ -113,16 +114,16 @@ export default function OverviewPage() {
       </div>
 
       {dashboard.error ? <ErrorState error={dashboard.error} /> : null}
-      {recentRuns.error ? <ErrorState error={recentRuns.error} /> : null}
+      {runOverview.error ? <ErrorState error={runOverview.error} /> : null}
 
-      <OverviewStatCards stats={stats} isLoading={dashboard.isLoading && recentRuns.isLoading} />
+      <OverviewStatCards stats={stats} isLoading={runOverview.isLoading} />
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.65fr)_360px]">
-        <RecentRunsList runs={runs} isLoading={recentRuns.isLoading} />
+        <RecentRunsList runs={runs} isLoading={runOverview.isLoading} />
         <OverviewSidePanel stats={stats} dashboard={dashboard.data} />
       </div>
 
-      {stats.total === 0 && !dashboard.isLoading && !recentRuns.isLoading ? (
+      {stats.total === 0 && !dashboard.isLoading && !runOverview.isLoading ? (
         <section className="rounded-[24px] border border-dashed border-border bg-white/45 px-6 py-8">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-start gap-3">

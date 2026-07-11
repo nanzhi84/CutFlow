@@ -810,7 +810,10 @@ def test_portrait_plan_cuts_only_the_talking_head_clip_window(tmp_path, monkeypa
     )
 
     output = nodes.timeline_window_planning.run(ctx)
-    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_portrait)
+    windows = next(
+        a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_timeline_windows
+    )
+    payload = windows["default_assignment"]["portrait_plan_payload"]
     assert payload["segments"]
     # Every planned source slice is drawn from INSIDE the pinned clip window.
     for seg in payload["segments"]:

@@ -36,7 +36,6 @@ from packages.production.pipeline._media_selection_agent import (
     build_media_agent_input,
     deterministic_media_selection,
     index_media_candidates,
-    repair_media_selection_to_constraints,
     select_media_with_repair,
     validate_media_selection,
 )
@@ -47,7 +46,7 @@ from packages.production.pipeline.nodes._broll_policy import broll_full_coverage
 _JSON_VARS = frozenset({"narration_units", "safe_cut_boundaries", "portrait_slots", "broll_slots"})
 _PORTRAIT_CANDIDATE_HEADER = "candidate_id | asset_id | available_seconds | description | reason"
 _BROLL_CANDIDATE_HEADER = (
-    "candidate_id | asset_id | scene_name | allowed_slot_ids | matched_keywords | "
+    "candidate_id | asset_id | diversity_key | scene_name | allowed_slot_ids | matched_keywords | "
     "available_seconds | description"
 )
 
@@ -267,38 +266,24 @@ def select_media_assignment(
             invoke=_invoke,
             boundary=agent_context.media_boundary,
             candidates=agent_context.candidates,
+            max_inserts=broll_limit,
             max_repair_attempts=state.request.edit.max_repair_attempts,
             retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
             allow_broll_asset_diversity_reuse=full_coverage,
             require_broll_coverage=full_coverage,
         )
         llm_repair_used = any(
-            isinstance(item.get("attempt"), int) and int(item.get("error_count") or 0) > 0
+            isinstance(item.get("attempt"), int) and int(item["attempt"]) > 0
             for item in repair_trace
             if isinstance(item, dict)
         )
-        if errors:
-            repaired, actions, errors = repair_media_selection_to_constraints(
-                selection=selection,
-                boundary=agent_context.media_boundary,
-                candidates=agent_context.candidates,
-                max_inserts=broll_limit,
-                retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
-                allow_broll_asset_diversity_reuse=full_coverage,
-                require_broll_coverage=full_coverage,
-            )
-            if actions:
-                repair_trace.append(
-                    {
-                        "attempt": "local_media_constraint_repair",
-                        "error_count": len(errors),
-                        "errors": errors,
-                        "actions": actions,
-                    }
-                )
-            if not errors:
-                selection = repaired
-                warnings.append(WarningCode.media_selection_agent_local_constraint_repair)
+        local_repair_used = bool(
+            repair_trace
+            and repair_trace[-1].get("attempt") == "local_media_constraint_repair"
+            and int(repair_trace[-1].get("error_count") or 0) == 0
+        )
+        if local_repair_used:
+            warnings.append(WarningCode.media_selection_agent_local_constraint_repair)
         if errors:
             if not sandbox_fallback_allowed():
                 raise NodeExecutionError(
@@ -628,6 +613,7 @@ def _compact_prompt_input(agent_input: dict) -> dict:
         [
             item.get("candidate_id"),
             item.get("asset_id"),
+            item.get("diversity_key"),
             item.get("scene_name"),
             allowed_slots.get(str(item.get("candidate_id") or ""), []),
             list(item.get("matched_keywords") or [])[:6],

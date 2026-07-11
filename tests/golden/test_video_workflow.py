@@ -387,7 +387,7 @@ def test_spec_20_2_6_lipsync_timeout_can_resume_reusing_valid_prefix():
             "TimelineWindowPlanning",
             "WindowQueryPlanning",
             "WindowMaterialRetrieval",
-            "TimelinePlanning",
+            "TimelineAssemblyValidation",
             "PortraitTrackBuild",
         }
         if "DeterministicEditingPlanning" in node_ids:
@@ -699,7 +699,7 @@ def test_resume_from_successful_run_reuses_prefix_and_keeps_report_readable():
             "NarrationAlignment",
         } <= skipped
         assert "PortraitPlanning" not in skipped
-        assert "TimelinePlanning" not in skipped
+        assert "TimelineAssemblyValidation" not in skipped
         report = active_client.get(f"/api/runs/{new_run['id']}/report")
         assert report.status_code == 200, report.text
 

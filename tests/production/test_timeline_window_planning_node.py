@@ -1,9 +1,9 @@
-"""TimelineWindowPlanning publishes the authoritative portrait plan.
+"""TimelineWindowPlanning publishes authoritative windows and a nested default plan.
 
 These tests prove the node consumes narration units + material portrait candidates +
-detected audio pauses and emits both compiled windows and the real frame-contiguous
-portrait plan — no seeded / placeholder timeline — and hard-fails honestly when
-material is insufficient.
+detected audio pauses and emits compiled windows containing a real frame-contiguous
+default portrait plan — no seeded / placeholder timeline and no competing final
+``plan.portrait`` artifact — and hard-fails honestly when material is insufficient.
 """
 
 from __future__ import annotations
@@ -227,7 +227,8 @@ def _run_node(adapter: LocalRuntimeAdapter, state: RunState):
 
 
 def _portrait_payload(output) -> dict:
-    return next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_portrait)
+    windows = _payload(output, ArtifactKind.plan_timeline_windows)
+    return windows["default_assignment"]["portrait_plan_payload"]
 
 
 def _payload(output, kind: ArtifactKind) -> dict:
@@ -356,8 +357,11 @@ def test_full_coverage_broll_windows_cover_entire_audio_and_skip_portrait(monkey
 
     output = _run_node(adapter, state)
     payload = _payload(output, ArtifactKind.plan_timeline_windows)
-    portrait_payload = _payload(output, ArtifactKind.plan_portrait)
+    portrait_payload = _portrait_payload(output)
 
+    assert [artifact.kind for artifact in output.artifacts] == [
+        ArtifactKind.plan_timeline_windows
+    ]
     assert payload["portrait_windows"] == []
     assert portrait_payload["segments"] == []
     assert portrait_payload["diagnostics"]["track_mode"] == "broll_full_coverage"
@@ -640,7 +644,7 @@ def test_broll_windows_snap_short_tail_gap_to_boundary(monkeypatch, tmp_path):
     assert round(window["pad_end"], 3) == 0.133
 
 
-def test_v2_portrait_plan_is_published_from_windows_split(monkeypatch, tmp_path):
+def test_default_portrait_plan_is_nested_without_publishing_final_artifact(monkeypatch, tmp_path):
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
     adapter = _adapter(object_store)
@@ -651,9 +655,12 @@ def test_v2_portrait_plan_is_published_from_windows_split(monkeypatch, tmp_path)
 
     output = _run_node(adapter, state)
     windows_payload = _payload(output, ArtifactKind.plan_timeline_windows)
-    portrait_payload = _payload(output, ArtifactKind.plan_portrait)
+    portrait_payload = _portrait_payload(output)
 
     assert portrait_payload == windows_payload["default_assignment"]["portrait_plan_payload"]
+    assert [artifact.kind for artifact in output.artifacts] == [
+        ArtifactKind.plan_timeline_windows
+    ]
 
 
 def test_agent_windows_always_feasible(monkeypatch, tmp_path):

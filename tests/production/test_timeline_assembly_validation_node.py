@@ -1,7 +1,7 @@
-"""TimelinePlanning is verify-only for B-roll frames (#105).
+"""TimelineAssemblyValidation only assembles and verifies B-roll frames (#105).
 
 After B-roll frame authority moved upstream into TimelineWindowPlanning plus the
-shared materializer, TimelinePlanning no longer snaps B-roll to portrait cuts or
+shared materializer, TimelineAssemblyValidation no longer snaps B-roll to portrait cuts or
 re-derives frames from seconds: it reads the authoritative ``*_frame`` boundaries off
 each overlay verbatim, validates, and assembles the timeline + render plan. A missing
 frame is an upstream contract defect -> fail fast.
@@ -28,11 +28,11 @@ from packages.core.workflow import NodeExecutionError
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
-import packages.production.pipeline.nodes.timeline_planning as timeline_planning
+import packages.production.pipeline.nodes.timeline_assembly_validation as timeline_assembly_validation
 
 
-def test_timeline_planning_stays_verify_only():
-    source = inspect.getsource(timeline_planning)
+def test_timeline_assembly_validation_stays_assembly_and_verify_only():
+    source = inspect.getsource(timeline_assembly_validation)
     assert "place_insertion_safely" not in source
     assert "plan_insertions" not in source
     assert "align_insertions_to_portrait_cuts" not in source
@@ -66,7 +66,7 @@ def _node_run() -> NodeRun:
     return NodeRun(
         id="nr_timeline",
         run_id="run_tl",
-        node_id="TimelinePlanning",
+        node_id="TimelineAssemblyValidation",
         node_version="v1",
         status=NodeStatus.running,
         input_manifest_hash="sha256:test",
@@ -228,13 +228,13 @@ def _full_coverage_state() -> tuple[LocalRuntimeAdapter, RunState]:
     return adapter, state
 
 
-def test_timeline_planning_passes_broll_frames_through_verbatim_without_snapping():
+def test_timeline_assembly_validation_passes_broll_frames_through_verbatim_without_snapping():
     # The overlay's tail (frame 147) sits 3 frames short of the portrait cut at 150.
     # The OLD timeline node would have snapped it to 150; the verify-only node must
     # leave every B-roll frame exactly as upstream materialization authored it.
     adapter, state = _state(with_frames=True)
     ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
-    output = timeline_planning.run(ctx)
+    output = timeline_assembly_validation.run(ctx)
 
     timeline = next(
         a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_timeline
@@ -247,10 +247,10 @@ def test_timeline_planning_passes_broll_frames_through_verbatim_without_snapping
     assert timeline["validation"]["valid"] is True
 
 
-def test_timeline_planning_accepts_broll_full_coverage_without_portrait_track():
+def test_timeline_assembly_validation_accepts_full_coverage_without_portrait_track():
     adapter, state = _full_coverage_state()
     ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
-    output = timeline_planning.run(ctx)
+    output = timeline_assembly_validation.run(ctx)
 
     timeline = next(
         a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_timeline
@@ -260,21 +260,21 @@ def test_timeline_planning_accepts_broll_full_coverage_without_portrait_track():
     assert timeline["validation"]["valid"] is True
 
 
-def test_timeline_planning_fail_fasts_on_overlay_missing_authoritative_frames():
+def test_timeline_assembly_validation_fail_fasts_on_missing_authoritative_frames():
     # A legacy / seconds-only overlay (no frame fields) is an upstream contract defect
     # now that window materialization is authoritative -> fail fast naming missing frames.
     adapter, state = _state(with_frames=False)
     ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
     with pytest.raises(NodeExecutionError) as exc:
-        timeline_planning.run(ctx)
+        timeline_assembly_validation.run(ctx)
     assert exc.value.error.code == ErrorCode.render_invalid_timeline
     assert "timeline_start_frame" in exc.value.error.message
 
 
-def test_timeline_planning_rejects_broll_frame_drift_from_authoritative_window():
+def test_timeline_assembly_validation_rejects_broll_frame_drift():
     adapter, state = _state(with_frames=True, window_start_frame=90, window_end_frame=150)
     ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
     with pytest.raises(NodeExecutionError) as exc:
-        timeline_planning.run(ctx)
+        timeline_assembly_validation.run(ctx)
     assert exc.value.error.code == ErrorCode.render_invalid_timeline
     assert "drifts from authoritative window" in exc.value.error.message

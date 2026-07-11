@@ -20,6 +20,18 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 
+TIMELINE_ASSEMBLY_VALIDATION_NODE_ID = "TimelineAssemblyValidation"
+LEGACY_NODE_ID_ALIASES = {
+    "TimelinePlanning": TIMELINE_ASSEMBLY_VALIDATION_NODE_ID,
+}
+
+
+def canonical_node_id(node_id: str) -> str:
+    """Map historical node ids to their active semantic name."""
+
+    return LEGACY_NODE_ID_ALIASES.get(node_id, node_id)
+
+
 NODE_SEQUENCE = [
     "ValidateRequest",
     "LoadCaseContext",
@@ -32,7 +44,7 @@ NODE_SEQUENCE = [
     "WindowQueryPlanning",
     "WindowMaterialRetrieval",
     "DeterministicEditingPlanning",
-    "TimelinePlanning",
+    TIMELINE_ASSEMBLY_VALIDATION_NODE_ID,
     "PortraitTrackBuild",
     "LipSync",
     "RenderFinalTimeline",
@@ -89,7 +101,7 @@ EDITING_AGENT_V2_SEQUENCE = [
     "WindowQueryPlanning",
     "WindowMaterialRetrieval",
     "MediaSelectionAgentPlanning",
-    "TimelinePlanning",
+    TIMELINE_ASSEMBLY_VALIDATION_NODE_ID,
     "PortraitTrackBuild",
     "LipSync",
     "RenderFinalTimeline",

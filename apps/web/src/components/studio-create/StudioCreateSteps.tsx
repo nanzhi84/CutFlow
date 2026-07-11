@@ -357,10 +357,12 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
       {subtitleEnabled ? (
         <div className="grid gap-4 border-y border-border/60 py-3 lg:grid-cols-[minmax(0,1fr)_320px]">
           <div className="grid content-start gap-3">
-            <div className="grid gap-3 2xl:grid-cols-2">
+            <div className="grid gap-3" data-testid="caption-style-groups">
               {form.normalSubtitleEnabled ? (
-                <section className="grid gap-2">
-                  <p className="text-xs font-semibold text-text-tertiary">普通字幕</p>
+                <section className="grid gap-2" aria-labelledby="normal-caption-style-heading">
+                  <h3 id="normal-caption-style-heading" className="text-xs font-semibold text-text-tertiary">
+                    普通字幕
+                  </h3>
                   <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_92px]">
                     <label>
                       <span>字体</span>
@@ -404,8 +406,10 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
                 </section>
               ) : null}
               {huaziVisible ? (
-                <section className="grid gap-2">
-                  <p className="text-xs font-semibold text-text-tertiary">花字</p>
+                <section className="grid gap-2" aria-labelledby="emphasis-caption-style-heading">
+                  <h3 id="emphasis-caption-style-heading" className="text-xs font-semibold text-text-tertiary">
+                    花字
+                  </h3>
                   <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_92px]">
                     <label>
                       <span>字体</span>
