@@ -190,6 +190,28 @@ python scripts/bootstrap_database.py
 python scripts/migrate.py
 ```
 
+macOS 本地数据库定时备份：
+
+```bash
+# 安装两个 LaunchAgent，并立即触发首份备份
+.venv/bin/python scripts/install_database_backup_launchd.py
+
+# 手动备份；默认会先在隔离临时库完整恢复，再发布备份文件
+scripts/backup_database.sh
+
+# 只预览清理结果
+.venv/bin/python scripts/prune_database_backups.py --dry-run
+```
+
+默认每 6 小时备份、每天 04:30 清理，自动备份同时受 14 天、32 份、2 GiB
+三重上限约束，并至少保留最新 4 份。文件位于 `.data/db-backups/`，每份包含
+`.dump`、`.sha256` 和 `.dump.json` 恢复校验清单；脚本只清理
+`cutagent-auto-*`，不会删除人工恢复点。日志也会在 10 MiB 时保留尾部并轮转。
+可用安装器参数调整策略，用 `--uninstall` 卸载定时任务。
+
+这是数据库备份，不包含 MinIO/OSS 对象和 `.data/secrets/`；这些持久化数据需要各自的
+备份策略。
+
 启动 API：
 
 ```bash

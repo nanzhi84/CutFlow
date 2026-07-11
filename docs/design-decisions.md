@@ -83,6 +83,19 @@ Artifacts 通过 URI 引用，可能跨进程或跨主机流转。
 - Temporal 多 worker 运行需要共享 ephemeral storage。
 - Cloud ASR 等 provider 需要可访问或 presigned URL。
 
+## 数据库备份必须经过恢复验证且有界
+
+本地 Postgres 自动备份使用 custom-format `pg_dump`，只有在隔离临时库完成完整
+`pg_restore` 后才原子发布。每份备份同时保存 SHA-256 和包含 schema/embedding 统计的
+恢复清单。
+
+影响：
+
+- 自动备份按天数、份数、总字节三重策略清理，同时保留最低安全份数。
+- 清理器只管理自己的 `cutagent-auto-*` 命名空间，不碰人工恢复点。
+- 失败或未通过恢复校验的归档不发布；临时归档、临时验证库和日志也必须有清理或轮转。
+- 数据库备份不等于对象存储或 secret 文件备份，三者需要独立保护。
+
 ## 发布是 adapter 边界
 
 发布状态机属于内部系统，平台自动化放在 adapter 后面。
