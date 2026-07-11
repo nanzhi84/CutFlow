@@ -567,6 +567,34 @@ def probe_stream_types(path: str | Path) -> set[str]:
     return {str(stream.get("codec_type")) for stream in payload.get("streams") or [] if stream.get("codec_type")}
 
 
+def probe_audio_channels(path: str | Path) -> int | None:
+    """Return the first audio stream's channel count, or ``None`` when absent."""
+
+    media_path = Path(path)
+    result = FfmpegRunner().run(
+        [
+            ffprobe_bin(),
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=channels",
+            "-of",
+            "json",
+            str(media_path),
+        ]
+    )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise FfmpegCommandError(
+            "ffprobe returned invalid JSON.", command=[ffprobe_bin(), str(media_path)]
+        ) from exc
+    streams = payload.get("streams") or []
+    return _int_or_none(streams[0].get("channels")) if streams else None
+
+
 @dataclass(frozen=True)
 class NormalizationResult:
     output_path: Path

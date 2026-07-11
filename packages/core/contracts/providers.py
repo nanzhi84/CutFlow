@@ -5,9 +5,60 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 
 from .base import ContractModel, EntityMeta, ErrorCode, Money, ProviderStatus, RetryPolicy, utcnow
+
+
+class SpeechTokenTiming(ContractModel):
+    """Provider-neutral word/character timing in seconds."""
+
+    text: str
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "SpeechTokenTiming":
+        if self.end <= self.start:
+            raise ValueError("speech token end must be greater than start")
+        return self
+
+
+class SpeechSegmentTiming(ContractModel):
+    """Provider-neutral sentence/segment timing in seconds."""
+
+    text: str
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "SpeechSegmentTiming":
+        if self.end <= self.start:
+            raise ValueError("speech segment end must be greater than start")
+        return self
+
+
+class SpeechTiming(ContractModel):
+    """Canonical speech timing emitted by TTS and ASR adapters.
+
+    Provider-private response fields are normalized at the adapter boundary.  The
+    workflow only consumes this shape and therefore never branches on provider id.
+    """
+
+    segments: list[SpeechSegmentTiming] = Field(default_factory=list)
+    tokens: list[SpeechTokenTiming] = Field(default_factory=list)
+    granularity: Literal["segment", "token", "character"] = "segment"
+    text_basis: Literal["original", "normalized"] = "original"
+
+
+class TtsSpeechOutput(ContractModel):
+    """Canonical output contract for the ``tts.speech`` capability."""
+
+    audio_artifact_id: str
+    audio_uri: str | None = None
+    duration_sec: float
+    timing: SpeechTiming | None = None
+    voice_id: str | None = None
 
 
 class ProviderError(ContractModel):

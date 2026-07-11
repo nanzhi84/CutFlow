@@ -21,6 +21,7 @@ training run before production (it consumes a paid clone slot).
 from __future__ import annotations
 
 import base64
+import json
 import uuid
 from decimal import Decimal
 from pathlib import Path
@@ -35,7 +36,14 @@ from packages.ai.gateway.provider_gateway import (
 )
 from packages.ai.providers.common import money_cny, option, request, require_secret, response_json
 from packages.ai.providers.volc_openapi import VolcSpeechOpenAPI
-from packages.core.contracts import ArtifactKind, ErrorCode
+from packages.core.contracts import (
+    ArtifactKind,
+    ErrorCode,
+    SpeechSegmentTiming,
+    SpeechTiming,
+    SpeechTokenTiming,
+    TtsSpeechOutput,
+)
 
 _DEFAULT_DATA_BASE_URL = "https://openspeech.bytedance.com"
 _CLONE_RESOURCE_ID = "volc.megatts.voiceclone"
@@ -129,6 +137,12 @@ class VolcengineTTSProvider:
                 "reqid": call.idempotency_key or f"cutagent-{uuid.uuid4().hex}",
                 "text": text,
                 "operation": "query",
+                # ``with_timestamp`` is the provider-supported original-text timing
+                # mode.  ``with_frontend``/``frontend_type`` keep compatibility with
+                # older clusters that return ``addition.frontend.words``.
+                "with_timestamp": 1,
+                "with_frontend": 1,
+                "frontend_type": "unitTson",
             },
         }
         response = request(
@@ -164,18 +178,20 @@ class VolcengineTTSProvider:
             kind=ArtifactKind.audio_tts,
             call=call,
         )
-        addition = result.get("addition") if isinstance(result.get("addition"), dict) else {}
+        addition = _json_object(result.get("addition"))
         duration = float(addition.get("duration") or 0) / 1000.0
         if artifact.media_info and artifact.media_info.duration_sec:
             duration = artifact.media_info.duration_sec
         estimated = (Decimal(len(text)) / Decimal(1000)) * self.cost_per_1k_chars
+        output = TtsSpeechOutput(
+            audio_artifact_id=artifact.id,
+            audio_uri=artifact.uri,
+            duration_sec=duration,
+            voice_id=voice_id,
+            timing=_timing_from_volcengine_addition(addition, duration=duration, text=text),
+        ).model_dump(mode="json")
         return ProviderResult(
-            output={
-                "audio_artifact_id": artifact.id,
-                "audio_uri": artifact.uri,
-                "duration_sec": duration,
-                "voice_id": voice_id,
-            },
+            output=output,
             input_tokens=len(text),
             audio_seconds=duration,
             raw_usage={"characters": len(text)},
@@ -187,7 +203,9 @@ class VolcengineTTSProvider:
         voices = self._openapi(context).list_voices(appid)
         return ProviderResult(output={"voices": voices})
 
-    def _train_status(self, call: ProviderCall, context: ProviderInvocationContext) -> ProviderResult:
+    def _train_status(
+        self, call: ProviderCall, context: ProviderInvocationContext
+    ) -> ProviderResult:
         """Poll one platform-initiated clone's status (ready/training/failed)."""
         appid = self._appid(context)
         speaker_id = str(call.input.get("voice_id") or "")
@@ -252,9 +270,7 @@ class VolcengineTTSProvider:
             output={"voice_id": speaker_id, "display_name": display_name, "status": "training"}
         )
 
-    def _reference_audio_path(
-        self, call: ProviderCall, context: ProviderInvocationContext
-    ) -> Path:
+    def _reference_audio_path(self, call: ProviderCall, context: ProviderInvocationContext) -> Path:
         reference_uri = call.input.get("reference_audio_uri")
         if isinstance(reference_uri, str) and reference_uri:
             return context.local_path_for_uri(reference_uri)
@@ -272,3 +288,87 @@ class VolcengineTTSProvider:
         raise ProviderRuntimeError(
             ErrorCode.provider_unsupported_option, "Reference audio is required."
         )
+
+
+def _json_object(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _json_value(value: object) -> object:
+    if not isinstance(value, str) or not value.strip():
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return value
+
+
+def _timing_from_volcengine_addition(
+    addition: dict, *, duration: float, text: str
+) -> SpeechTiming | None:
+    """Normalize both legacy ``addition.frontend`` and newer subtitle payloads."""
+
+    frontend = _json_object(addition.get("frontend")) or addition
+    raw_words = frontend.get("words")
+    if not isinstance(raw_words, list):
+        subtitles = _json_value(frontend.get("subtitles"))
+        if isinstance(subtitles, dict):
+            raw_words = subtitles.get("words") or subtitles.get("subtitles")
+        elif isinstance(subtitles, list):
+            raw_words = [
+                word
+                for subtitle in subtitles
+                if isinstance(subtitle, dict)
+                for word in (
+                    subtitle.get("words") if isinstance(subtitle.get("words"), list) else [subtitle]
+                )
+            ]
+    tokens: list[SpeechTokenTiming] = []
+    for item in raw_words or []:
+        if not isinstance(item, dict):
+            continue
+        token = str(item.get("word") or item.get("text") or "").strip()
+        if not token:
+            continue
+        try:
+            if "start" in item or "end" in item:
+                start = _timestamp_seconds(item.get("start"))
+                end = _timestamp_seconds(item.get("end"))
+            else:
+                start = max(0.0, float(item.get("start_time") or 0.0) / 1000.0)
+                end = max(0.0, float(item.get("end_time") or 0.0) / 1000.0)
+        except (TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        tokens.append(SpeechTokenTiming(text=token, start=start, end=end))
+    if not tokens:
+        return None
+    return SpeechTiming(
+        segments=[
+            SpeechSegmentTiming(
+                text=text,
+                start=tokens[0].start,
+                end=tokens[-1].end,
+            )
+        ],
+        tokens=tokens,
+        granularity="character" if all(len(item.text) == 1 for item in tokens) else "token",
+        text_basis="original",
+    )
+
+
+def _timestamp_seconds(value: object) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, number)

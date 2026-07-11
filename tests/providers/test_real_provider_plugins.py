@@ -199,10 +199,15 @@ def test_minimax_tts_subtitle_enabled_returns_asr_shaped_segments(tmp_path, medi
 
     assert invocation.status == ProviderStatus.succeeded
     assert result is not None
-    assert result.output["subtitle_segments"] == [
-        {"start": 0.0, "end": 0.5, "text": "第一句。"},
-        {"start": 0.5, "end": 1.0, "text": "第二句。"},
-    ]
+    assert result.output["timing"] == {
+        "segments": [
+            {"start": 0.0, "end": 0.5, "text": "第一句。"},
+            {"start": 0.5, "end": 1.0, "text": "第二句。"},
+        ],
+        "tokens": [],
+        "granularity": "segment",
+        "text_basis": "original",
+    }
     assert requests == ["POST /v1/t2a_v2", "GET /subtitle.json"]
 
 
@@ -858,6 +863,15 @@ def test_dashscope_asr_uses_async_transcription_task_and_downloads_alignment(tmp
             {"start": 0.0, "end": 0.9, "text": "你好"},
             {"start": 0.9, "end": 2.1, "text": "世界。"},
         ],
+        "timing": {
+            "segments": [
+                {"start": 0.0, "end": 0.9, "text": "你好"},
+                {"start": 0.9, "end": 2.1, "text": "世界。"},
+            ],
+            "tokens": [],
+            "granularity": "segment",
+            "text_basis": "normalized",
+        },
         "source": "asr",
     }
     assert result.audio_seconds == 2.1

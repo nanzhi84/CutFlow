@@ -13,6 +13,8 @@ from packages.core.contracts import (
     DegradationNotice,
     NodeError,
     ScriptVersion,
+    SpeechTiming,
+    SpeechTokenTiming,
     utcnow,
 )
 
@@ -119,7 +121,19 @@ class AlignmentSegment(ContractModel):
 class AlignmentArtifact(ContractModel):
     audio_artifact_id: str
     segments: list[AlignmentSegment]
+    tokens: list[SpeechTokenTiming] = Field(default_factory=list)
+    source: Literal["tts", "asr", "estimated", "tts_subtitle", "forced_alignment"] = "estimated"
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
     language: str | None = None
+
+
+class RawSpeechAlignmentArtifact(ContractModel):
+    """Durable TTS-native timing passed between Temporal activities."""
+
+    audio_artifact_id: str
+    source: Literal["tts"] = "tts"
+    timing: SpeechTiming
+    provider_invocation_id: str | None = None
 
 
 class NarrationUnit(ContractModel):
@@ -141,7 +155,7 @@ class NarrationUnit(ContractModel):
 
 
 class NarrationUnitsArtifact(ContractModel):
-    source: Literal["tts_subtitle", "forced_alignment", "asr", "estimated"]
+    source: Literal["tts", "tts_subtitle", "forced_alignment", "asr", "estimated"]
     units: list[NarrationUnit]
     strict: bool
     warnings: list[str] = Field(default_factory=list)
@@ -436,6 +450,7 @@ class OverlayEvent(ContractModel):
     rect: OverlayRect | None = None
     text_align: str = "center"
     priority: int = 0
+    visual_preset_id: Literal["normal", "emphasis", "hero"] | None = None
 
 
 class StylePlanArtifact(ContractModel):
@@ -461,7 +476,10 @@ class NormalCaptionWindow(ContractModel):
     start_frame: int = Field(ge=0)
     end_frame: int = Field(gt=0)
     lines: list[str] = Field(min_length=1, max_length=2)
+    line_start_frames: list[int] = Field(default_factory=list, max_length=2)
     source_unit_ids: list[str] = Field(min_length=1)
+    visual_preset_id: Literal["normal"] = "normal"
+    effect_id: Literal["soft_in", "none"] = "none"
 
     @model_validator(mode="after")
     def validate_window(self) -> "NormalCaptionWindow":
@@ -469,6 +487,8 @@ class NormalCaptionWindow(ContractModel):
             raise ValueError("normal caption end_frame must be greater than start_frame")
         if any(not line.strip() for line in self.lines):
             raise ValueError("normal caption lines must be non-empty")
+        if self.line_start_frames and len(self.line_start_frames) != len(self.lines):
+            raise ValueError("normal caption line_start_frames must match lines")
         return self
 
 
@@ -493,6 +513,7 @@ class CaptionOption(ContractModel):
     anchor_id: str = Field(min_length=1)
     typography_variant_id: str = Field(min_length=1)
     animation_id: str = Field(min_length=1)
+    visual_preset_id: Literal["emphasis", "hero"] | None = None
 
 
 class EmphasisCaptionWindow(ContractModel):
@@ -563,6 +584,8 @@ class CaptionWindowDiagnostics(ContractModel):
     safe_anchor_candidates: int = Field(0, ge=0)
     anchors_pruned_by_cap: int = Field(0, ge=0)
     options_pruned_by_cap: int = Field(0, ge=0)
+    token_matched: int = Field(0, ge=0)
+    char_fallback: int = Field(0, ge=0)
 
 
 class CaptionWindowsPlanArtifact(ContractModel):

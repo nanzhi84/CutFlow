@@ -57,8 +57,11 @@ def test_normal_windows_are_frame_authoritative_and_keep_unit_ids():
             "start_frame": 3,
             "end_frame": 33,
             "lines": ["正常字幕内容"],
+            "line_start_frames": [3],
             "source_unit_ids": ["unit-real-id"],
             "normalized_text": "正常字幕内容",
+            "visual_preset_id": "normal",
+            "effect_id": "soft_in",
         }
     ]
     assert diagnostics["font_metrics_source"] == "hmtx"
@@ -73,7 +76,7 @@ def test_phrase_window_clamps_to_cut_segment_instead_of_dropping_whole_unit():
             "end": 4.0,
         }
     ]
-    windows, candidate_count, dropped = build_emphasis_windows(
+    windows, candidate_count, dropped, token_matched, char_fallback = build_emphasis_windows(
         emphasis=[EmphasisHint(phrase="限时五折")],
         units=units,
         fps=30,
@@ -84,6 +87,8 @@ def test_phrase_window_clamps_to_cut_segment_instead_of_dropping_whole_unit():
     )
     assert candidate_count == 1
     assert dropped == 0
+    assert token_matched == 0
+    assert char_fallback == 1
     assert len(windows) == 1
     assert 60 <= windows[0]["start_frame"] < windows[0]["end_frame"] <= 120
     assert windows[0]["source_unit_ids"] == ["u1"]
@@ -184,15 +189,15 @@ def test_hmtx_font_and_final_ass_size_drive_option_envelope():
     )
 
     assert source == "hmtx"
-    small_none = next(item for item in small if item["animation_id"] == "none")
-    large_none = next(item for item in large if item["animation_id"] == "none")
-    assert large_none["safety_envelope"]["w"] > small_none["safety_envelope"]["w"]
-    assert large_none["safety_envelope"]["h"] > small_none["safety_envelope"]["h"]
+    small_pop = next(item for item in small if item["animation_id"] == "pop")
+    large_pop = next(item for item in large if item["animation_id"] == "pop")
+    assert large_pop["safety_envelope"]["w"] > small_pop["safety_envelope"]["w"]
+    assert large_pop["safety_envelope"]["h"] > small_pop["safety_envelope"]["h"]
 
 
 @pytest.mark.parametrize(
     ("normal_metrics_available", "expected_width"),
-    [(True, 160.0), (False, 120.0)],
+    [(True, 80.0), (False, 60.0)],
 )
 def test_failed_emphasis_font_reuses_resolved_normal_font_metrics(
     monkeypatch,
@@ -302,15 +307,15 @@ def test_failed_emphasis_font_reuses_resolved_normal_font_metrics(
 
     output = caption_window_planning.run(_Context(state))
 
-    assert resolved_ids == ["normal_font", "missing_emphasis_font"]
-    assert captured == {"measured_width": expected_width, "font_size": 80.0}
-    assert WarningCode.font_resolution_failed in output.warnings
+    assert resolved_ids == ["normal_font"]
+    assert captured == {"measured_width": expected_width, "font_size": 40.0}
+    assert WarningCode.font_resolution_failed not in output.warnings
     assert (WarningCode.font_metrics_fallback in output.warnings) is (
         not normal_metrics_available
     )
 
 
-def test_slide_and_punch_envelopes_reject_canvas_and_normal_caption_collisions():
+def test_three_level_envelopes_reject_canvas_and_normal_caption_collisions():
     edge_anchor = {
         "anchor_id": "edge",
         "rect": {"x": 0.88, "y": 0.2, "w": 0.08, "h": 0.12},
@@ -329,10 +334,29 @@ def test_slide_and_punch_envelopes_reject_canvas_and_normal_caption_collisions()
         shadow=1.0,
         normal_safe_rect=None,
     )
-    animations = {item["animation_id"] for item in edge_options}
-    assert "none" in animations
-    assert "punch" not in animations
-    assert "slide_left" not in animations
+    assert edge_options == []
+
+    centered_options = build_caption_option_candidates(
+        event_id="e1",
+        text="促销",
+        anchors=[
+            {
+                **edge_anchor,
+                "anchor_id": "center",
+                "rect": {"x": 0.2, "y": 0.2, "w": 0.6, "h": 0.2},
+                "text_align": "center",
+            }
+        ],
+        width=1000,
+        height=1000,
+        measure=lambda _text: 100.0,
+        font_size=100.0,
+        outline=5.0,
+        shadow=1.0,
+        normal_safe_rect=None,
+        hero_eligible=True,
+    )
+    assert {item["animation_id"] for item in centered_options} == {"pop", "slam_scale"}
 
     normal_collision = build_caption_option_candidates(
         event_id="e2",
@@ -355,14 +379,14 @@ def test_slide_and_punch_envelopes_reject_canvas_and_normal_caption_collisions()
     assert normal_collision == []
 
 
-def test_visual_safety_filters_slide_envelope_without_rejecting_static(monkeypatch):
+def test_visual_safety_filters_hero_envelope_without_rejecting_emphasis(monkeypatch):
     monkeypatch.setattr(visual, "face_detector_available", lambda: True)
     monkeypatch.setattr(
         visual,
         "detect_faces_strict",
         lambda _image: [
             FaceDetection(
-                bbox=(590.0, 470.0, 40.0, 40.0),
+                bbox=(600.0, 400.0, 200.0, 200.0),
                 score=0.9,
                 landmarks=(),
             )
@@ -375,8 +399,8 @@ def test_visual_safety_filters_slide_envelope_without_rejecting_static(monkeypat
         anchors=[
             {
                 "anchor_id": "a1",
-                "rect": {"x": 0.45, "y": 0.45, "w": 0.2, "h": 0.1},
-                "text_align": "left",
+                "rect": {"x": 0.3, "y": 0.45, "w": 0.4, "h": 0.1},
+                "text_align": "center",
                 "allowed_enter_directions": ["left"],
             }
         ],
@@ -387,6 +411,7 @@ def test_visual_safety_filters_slide_envelope_without_rejecting_static(monkeypat
         outline=5.0,
         shadow=1.0,
         normal_safe_rect=None,
+        hero_eligible=True,
     )
     result = visual.evaluate_option_safety(
         images=[np.zeros((1000, 1000, 3), dtype=np.uint8) for _ in range(3)],
@@ -395,8 +420,8 @@ def test_visual_safety_filters_slide_envelope_without_rejecting_static(monkeypat
     )
 
     safe_animations = {item["animation_id"] for item in result.options}
-    assert "none" in safe_animations
-    assert "slide_left" not in safe_animations
+    assert "pop" in safe_animations
+    assert "slam_scale" not in safe_animations
     assert result.rejected_face >= 1
 
 

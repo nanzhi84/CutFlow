@@ -106,7 +106,11 @@ class ArtifactTTSProvider:
         self.artifact_id = artifact.id
         self.uri = artifact.uri
         return ProviderResult(
-            output={"audio_artifact_id": artifact.id, "audio_uri": artifact.uri},
+            output={
+                "audio_artifact_id": artifact.id,
+                "audio_uri": artifact.uri,
+                "duration_sec": float(media_info.duration_sec or 0),
+            },
             audio_seconds=float(media_info.duration_sec or 0),
         )
 

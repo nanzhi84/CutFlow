@@ -26,7 +26,6 @@ from packages.production.pipeline._fonts import resolve_font_asset
 from packages.production.pipeline._huazi_candidates import normal_caption_top_y
 from packages.production.pipeline._materialize import (
     _subtitle_colors,
-    _subtitle_emphasis_font_size,
     _subtitle_font_size,
     _subtitle_position,
 )
@@ -45,9 +44,12 @@ def run(ctx: NodeContext) -> NodeOutput:
     rendered = state.require(ArtifactKind.video_rendered)
     timeline_artifact = state.require(ArtifactKind.plan_timeline)
     narration_artifact = state.require(ArtifactKind.narration_units)
+    alignment_artifact = state.artifacts.get(ArtifactKind.audio_alignment)
     timeline = timeline_artifact.payload or {}
     narration = narration_artifact.payload or {}
     units = [item for item in (narration.get("units") or []) if isinstance(item, dict)]
+    alignment = alignment_artifact.payload or {} if alignment_artifact is not None else {}
+    tokens = [item for item in (alignment.get("tokens") or []) if isinstance(item, dict)]
     creative_intent = load_creative_intent(state)
 
     width = int(state.request.output.width)
@@ -79,16 +81,18 @@ def run(ctx: NodeContext) -> NodeOutput:
         "safe_anchor_candidates": 0,
         "anchors_pruned_by_cap": 0,
         "options_pruned_by_cap": 0,
+        "token_matched": 0,
+        "char_fallback": 0,
     }
 
     with tempfile.TemporaryDirectory(prefix="cutagent-caption-window-") as directory:
         temp_dir = Path(directory)
         normal_font_id = state.request.subtitle.font_id
-        emphasis_font_id = state.request.subtitle.emphasis_font_id or normal_font_id
+        # v3 deliberately uses one resolved coarse-serif font for all three levels.
         resolved_font = None
         normal_metrics = None
         normal_unresolved_font_id = None
-        if normal_enabled and normal_font_id:
+        if (normal_enabled or emphasis_enabled) and normal_font_id:
             resolved_font, normal_unresolved_font_id = resolve_font_asset(
                 font_asset_id=normal_font_id,
                 runtime_dir=temp_dir / "fonts",
@@ -115,74 +119,6 @@ def run(ctx: NodeContext) -> NodeOutput:
                     WarningCode.font_metrics_fallback,
                     "无法读取所选字体度量，字幕窗口已按估算宽度规划。",
                 )
-        resolved_emphasis_font = None
-        emphasis_metrics = None
-        if emphasis_enabled and emphasis_font_id:
-            if emphasis_font_id == normal_font_id and normal_enabled:
-                resolved_emphasis_font = resolved_font
-                emphasis_metrics = normal_metrics
-            else:
-                resolved_emphasis_font, unresolved_emphasis_font_id = resolve_font_asset(
-                    font_asset_id=emphasis_font_id,
-                    runtime_dir=temp_dir / "emphasis-fonts",
-                    source_artifact_for_asset=ctx.source_artifact_for_asset,
-                    artifact_path=ctx.artifact_path,
-                    media_assets=ctx.repository.media_assets,
-                )
-                if unresolved_emphasis_font_id:
-                    if resolved_font is None and normal_font_id:
-                        resolved_font, _fallback_unresolved_id = resolve_font_asset(
-                            font_asset_id=normal_font_id,
-                            runtime_dir=temp_dir / "fonts",
-                            source_artifact_for_asset=ctx.source_artifact_for_asset,
-                            artifact_path=ctx.artifact_path,
-                            media_assets=ctx.repository.media_assets,
-                        )
-                        normal_metrics = (
-                            load_font_metrics(resolved_font.source_path)
-                            if resolved_font
-                            else None
-                        )
-                        if resolved_font is not None and normal_metrics is None:
-                            _append_degradation(
-                                ctx,
-                                warnings,
-                                degradations,
-                                WarningCode.font_metrics_fallback,
-                                "普通字幕字体度量也无法读取，花字候选已按估算宽度规划。",
-                            )
-                    resolved_emphasis_font = resolved_font
-                    emphasis_metrics = normal_metrics
-                    fallback_message = (
-                        "已使用普通字幕字体规划。"
-                        if resolved_emphasis_font is not None
-                        else "普通字幕字体也不可用，已按估算字宽规划。"
-                    )
-                    _append_degradation(
-                        ctx,
-                        warnings,
-                        degradations,
-                        WarningCode.font_resolution_failed,
-                        f"指定花字字体（{unresolved_emphasis_font_id}）文件无法加载，{fallback_message}",
-                    )
-                else:
-                    emphasis_metrics = (
-                        load_font_metrics(resolved_emphasis_font.source_path)
-                        if resolved_emphasis_font
-                        else None
-                    )
-                if (
-                    unresolved_emphasis_font_id is None
-                    and resolved_emphasis_font is not None
-                    and emphasis_metrics is None
-                ):
-                    _append_degradation(
-                        ctx,
-                        warnings,
-                        degradations,
-                        WarningCode.font_metrics_fallback,
-                        "无法读取所选花字字体度量，花字候选已按估算宽度规划。",
-                    )
         requested_font_size = _subtitle_font_size(
             state.request.subtitle.style_preset,
             state.request.subtitle.font_size,
@@ -191,6 +127,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         measure, metrics_source = make_text_measurer(
             normal_metrics, float(final_ass_font_size)
         )
+        cut_frames = timeline_cut_frames(timeline, total_frames)
         normal_windows, normal_diagnostics = compile_normal_windows(
             units=units,
             resolution=(width, height),
@@ -201,6 +138,8 @@ def run(ctx: NodeContext) -> NodeOutput:
             measure=measure,
             metrics_source=metrics_source,
             enabled=normal_enabled,
+            tokens=tokens,
+            cut_frames=cut_frames,
         )
         diagnostics.update(normal_diagnostics)
 
@@ -230,29 +169,31 @@ def run(ctx: NodeContext) -> NodeOutput:
             else None
         )
 
-        emphasis_windows, emphasis_count, cut_drops = build_emphasis_windows(
+        (
+            emphasis_windows,
+            emphasis_count,
+            cut_drops,
+            emphasis_token_matched,
+            emphasis_char_fallback,
+        ) = build_emphasis_windows(
             emphasis=creative_intent.emphasis if emphasis_enabled else [],
             units=units,
             fps=fps,
             total_frames=total_frames,
-            cut_frames=timeline_cut_frames(timeline, total_frames),
+            cut_frames=cut_frames,
             resolution=(width, height),
             normal_caption_top_y=caption_top_y,
+            tokens=tokens,
         )
         diagnostics["emphasis_candidates"] = emphasis_count
         diagnostics["events_crossing_cuts_dropped"] = cut_drops
+        diagnostics["token_matched"] += emphasis_token_matched
+        diagnostics["char_fallback"] += emphasis_char_fallback
 
         if emphasis_enabled:
-            requested_emphasis_font_size = _subtitle_emphasis_font_size(
-                state.request.subtitle.emphasis_font_size,
-                requested_font_size,
-            )
-            final_ass_emphasis_font_size = ass_font_size(
-                requested_emphasis_font_size,
-                height=height,
-            )
+            final_ass_emphasis_font_size = final_ass_font_size
             emphasis_measure, _emphasis_metrics_source = make_text_measurer(
-                emphasis_metrics,
+                normal_metrics,
                 float(final_ass_emphasis_font_size),
             )
             colors = _subtitle_colors(state.request.subtitle.style_preset)
@@ -349,7 +290,9 @@ def _analyze_emphasis_windows(
             outline=outline,
             shadow=shadow,
             normal_safe_rect=normal_safe_rect,
+            hero_eligible=bool(window.get("hero_eligible")),
         )
+        window.pop("hero_eligible", None)
         if not option_candidates:
             diagnostics["rejected_anchor_candidates"] += len(base_anchors)
             diagnostics["events_without_options"] += 1

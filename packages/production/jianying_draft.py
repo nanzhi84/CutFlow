@@ -64,6 +64,9 @@ class JianyingTextSegment:
     placement_id: str | None = None
     animation_id: str | None = None
     sfx_id: str | None = None
+    visual_preset_id: str | None = None
+    effect_id: str | None = None
+    rect: dict[str, float] | None = None
 
 
 def build_video_segments_from_plans(
@@ -200,6 +203,9 @@ def build_text_segments_from_narration(
                     placement_id=_str_or_none(event.get("placement_id")),
                     animation_id=_str_or_none(event.get("animation_id")),
                     sfx_id=_str_or_none(event.get("sfx_id")) or "none",
+                    visual_preset_id=_str_or_none(event.get("visual_preset_id")),
+                    effect_id=_str_or_none(event.get("animation_id")),
+                    rect=(dict(event.get("rect")) if isinstance(event.get("rect"), dict) else None),
                 )
             )
     return segments
@@ -813,10 +819,18 @@ def _text_segment_effects(segment: JianyingTextSegment) -> dict[str, Any] | None
     if not _is_huazi_track(segment.track_name):
         return None
     effects: dict[str, Any] = {}
-    for key in ("placement_id", "animation_id", "sfx_id"):
+    for key in (
+        "placement_id",
+        "animation_id",
+        "visual_preset_id",
+        "effect_id",
+        "sfx_id",
+    ):
         value = getattr(segment, key)
         if value:
             effects[key] = value
+    if segment.rect:
+        effects["rect"] = dict(segment.rect)
     effects["manual_acceptance_required"] = True
     return effects
 

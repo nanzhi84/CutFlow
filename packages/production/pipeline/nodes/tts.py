@@ -6,7 +6,8 @@ import tempfile
 from pathlib import Path
 
 from packages.ai.gateway import ProviderCall
-from packages.core.contracts import ArtifactKind, ErrorCode
+from packages.core.contracts import ArtifactKind, ErrorCode, TtsSpeechOutput
+from packages.core.contracts.artifacts import RawSpeechAlignmentArtifact
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.media.assets import store_file
 from packages.media.audio import synthesize_sandbox_tts
@@ -54,12 +55,23 @@ def run(ctx: NodeContext) -> NodeOutput:
         )
     provider_artifact_id = result.output.get("audio_artifact_id")
     if isinstance(provider_artifact_id, str) and provider_artifact_id in ctx.repository.artifacts:
-        subtitle_segments = result.output.get("subtitle_segments")
-        if isinstance(subtitle_segments, list) and subtitle_segments:
-            state.scratch["tts_subtitle_segments"] = subtitle_segments
-            state.scratch["tts_subtitle_invocation_id"] = invocation.id
+        speech_output = TtsSpeechOutput.model_validate(result.output)
+        artifacts = [ctx.repository.artifacts[provider_artifact_id]]
+        if speech_output.timing is not None:
+            raw_alignment = RawSpeechAlignmentArtifact(
+                audio_artifact_id=provider_artifact_id,
+                timing=speech_output.timing,
+                provider_invocation_id=invocation.id,
+            )
+            artifacts.append(
+                ctx.artifact(
+                    ArtifactKind.audio_alignment_raw,
+                    raw_alignment.model_dump(mode="json"),
+                    "RawSpeechAlignmentArtifact.v1",
+                )
+            )
         return NodeOutput(
-            artifacts=[ctx.repository.artifacts[provider_artifact_id]],
+            artifacts=artifacts,
             provider_invocation_ids=[invocation.id],
         )
     object_store = ctx.object_store()
