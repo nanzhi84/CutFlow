@@ -13709,7 +13709,9 @@
           "huazi.planning_failed",
           "font.metrics_fallback",
           "caption.visual_analysis_failed",
-          "postprocess.planning_failed"
+          "postprocess.planning_failed",
+          "sfx.asset_missing",
+          "sfx.mix_failed"
         ],
         "title": "DegradationCode"
       },
@@ -15566,6 +15568,7 @@
             "type": "string",
             "enum": [
               "bgm",
+              "sfx",
               "font",
               "cover_template",
               "voice_reference",
@@ -25028,7 +25031,9 @@
           "huazi.planning_failed",
           "font.metrics_fallback",
           "caption.visual_analysis_failed",
-          "postprocess.planning_failed"
+          "postprocess.planning_failed",
+          "sfx.asset_missing",
+          "sfx.mix_failed"
         ],
         "title": "WarningCode"
       },

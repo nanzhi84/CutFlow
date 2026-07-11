@@ -19,6 +19,7 @@ from packages.ai.gateway.provider_gateway import (
 from packages.ai.gateway.provider_context import ProviderInvocationContext
 from packages.ai.providers.common import money_cny, option, request, require_secret, response_json
 from packages.core.contracts import ArtifactKind, ErrorCode
+from packages.core.contracts import SpeechSegmentTiming, SpeechTiming, TtsSpeechOutput
 from packages.media.audio import split_text_into_lines, subtitle_segments_to_asr_shape
 
 
@@ -156,16 +157,34 @@ class MiniMaxTTSProvider:
         if artifact.media_info and artifact.media_info.duration_sec:
             duration = artifact.media_info.duration_sec
         estimated = (Decimal(len(text)) / Decimal(1000)) * self.cost_per_1k_chars
-        output: dict[str, Any] = {
-            "audio_artifact_id": artifact.id,
-            "audio_uri": artifact.uri,
-            "duration_sec": duration,
-            "voice_id": voice_id,
-        }
+        timing = None
         if subtitle_requested:
             subtitle_segments = self._fetch_subtitle_segments(data, context)
             if subtitle_segments:
-                output["subtitle_segments"] = subtitle_segments
+                timing = SpeechTiming(
+                    segments=[
+                        SpeechSegmentTiming(
+                            text=str(item.get("text") or ""),
+                            start=float(item.get("start") or 0.0),
+                            end=float(item.get("end") or 0.0),
+                        )
+                        for item in subtitle_segments
+                        if isinstance(item, dict)
+                        and str(item.get("text") or "").strip()
+                        and float(item.get("end") or 0.0) > float(item.get("start") or 0.0)
+                    ],
+                    granularity="segment",
+                    text_basis="original",
+                )
+                if not timing.segments:
+                    timing = None
+        output = TtsSpeechOutput(
+            audio_artifact_id=artifact.id,
+            audio_uri=artifact.uri,
+            duration_sec=duration,
+            voice_id=voice_id,
+            timing=timing,
+        ).model_dump(mode="json")
         return ProviderResult(
             output=output,
             input_tokens=len(text),

@@ -26,7 +26,13 @@ from packages.production.pipeline._postprocess_agent import (
 from packages.production.pipeline.nodes import postprocess_agent_planning
 
 
-def _window(event_id: str, start: int, end: int, animation: str = "pop_in") -> dict:
+def _window(
+    event_id: str,
+    start: int,
+    end: int,
+    animation: str = "pop_in",
+    visual_preset_id: str | None = None,
+) -> dict:
     anchor_id = f"{event_id}__upper_left"
     option_id = f"{event_id}__option"
     return {
@@ -50,6 +56,7 @@ def _window(event_id: str, start: int, end: int, animation: str = "pop_in") -> d
                 "anchor_id": anchor_id,
                 "typography_variant_id": "emphasis_default_v1",
                 "animation_id": animation,
+                **({"visual_preset_id": visual_preset_id} if visual_preset_id is not None else {}),
             }
         ],
     }
@@ -120,9 +127,7 @@ def test_dashscope_envelope_is_exact_and_intent_is_strictly_parsed():
     assert errors == [] and payload == direct
 
     intent = {"bgm_id": None, "caption_choices": [], "analysis": "wrapped"}
-    payload, errors = unwrap_postprocess_provider_output(
-        {"content": "模型输出", "intent": intent}
-    )
+    payload, errors = unwrap_postprocess_provider_output({"content": "模型输出", "intent": intent})
     assert errors == [] and payload == intent
     selection, parse_errors = parse_postprocess_selection(payload)
     assert parse_errors == [] and selection.analysis == "wrapped"
@@ -138,9 +143,12 @@ def test_dashscope_envelope_is_exact_and_intent_is_strictly_parsed():
     assert any("intent" in error for error in errors)
 
 
-def test_validator_rejects_dense_or_excess_punch_choices():
-    windows = [_window("e1", 0, 30, "punch"), _window("e2", 40, 70, "punch")]
-    windows.append(_window("e3", 120, 150, "punch"))
+def test_validator_rejects_dense_or_excess_hero_choices():
+    windows = [
+        _window("e1", 0, 30, "slam_scale", "hero"),
+        _window("e2", 40, 70, "slam_scale", "hero"),
+        _window("e3", 120, 150, "slam_scale", "hero"),
+    ]
     errors = validate_postprocess_selection(
         PostProcessSelection(
             bgm_id=None,
@@ -152,7 +160,7 @@ def test_validator_rejects_dense_or_excess_punch_choices():
         bgm_enabled=False,
         emphasis_enabled=True,
     )
-    assert any("punch" in error for error in errors)
+    assert any("hero" in error for error in errors)
     assert any("0.8s" in error for error in errors)
 
 
@@ -170,6 +178,8 @@ def test_materializer_uses_only_authoritative_option_geometry_and_frames():
     assert events[0].start == 1.0
     assert events[0].end == 2.0
     assert events[0].rect is not None and events[0].rect.x == 0.05
+    assert events[0].visual_preset_id is None
+    assert events[0].sfx_id == "none"
     assert diagnostics[0]["caption_option_id"] == "e1__option"
 
 
@@ -592,9 +602,7 @@ def test_provider_invoke_records_raw_request_response_and_exact_output():
     class _Context:
         run = SimpleNamespace(id="run_1", case_id="case_demo")
         node_run = SimpleNamespace(id="node_1", node_id="PostProcessAgentPlanning")
-        repository = SimpleNamespace(
-            provider_invocations={"inv_1": _StoredInvocation()}
-        )
+        repository = SimpleNamespace(provider_invocations={"inv_1": _StoredInvocation()})
         prompt_registry = _PromptRegistry()
         provider_gateway = _Gateway()
 

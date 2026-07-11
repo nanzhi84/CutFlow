@@ -184,7 +184,7 @@ class _FailingLipSyncProvider:
 
 
 class _SubtitleTTSProvider:
-    """Mock real TTS provider that returns a stored audio artifact + subtitle segments."""
+    """Mock real TTS provider that returns canonical provider-neutral timing."""
 
     provider_id = "minimax.tts"
 
@@ -205,7 +205,13 @@ class _SubtitleTTSProvider:
             output={
                 "audio_artifact_id": artifact.id,
                 "audio_uri": artifact.uri,
-                "subtitle_segments": self.segments,
+                "duration_sec": 2.0,
+                "timing": {
+                    "segments": self.segments,
+                    "tokens": [],
+                    "granularity": "segment",
+                    "text_basis": "original",
+                },
             },
             audio_seconds=2.0,
         )
@@ -258,9 +264,15 @@ def test_real_tts_subtitle_becomes_primary_narration_source(tmp_path, media_fixt
     audio_artifact = tts_output.artifacts[0]
     assert audio_artifact.uri and audio_artifact.uri.startswith("local://")
     assert audio_artifact.media_info and audio_artifact.media_info.media_type == "audio"
-    # subtitle segments stashed for narration alignment
-    assert state.scratch["tts_subtitle_segments"] == segments
+    raw_alignment = next(
+        artifact
+        for artifact in tts_output.artifacts
+        if artifact.kind == ArtifactKind.audio_alignment_raw
+    )
+    assert raw_alignment.payload["timing"]["segments"] == segments
+    assert "tts_subtitle_segments" not in state.scratch
     state.artifacts[ArtifactKind.audio_tts] = audio_artifact
+    state.artifacts[ArtifactKind.audio_alignment_raw] = raw_alignment
 
     align_run = NodeRun(
         id="nr_align", run_id="run_1", node_id="NarrationAlignment", node_version="v1",
@@ -269,7 +281,7 @@ def test_real_tts_subtitle_becomes_primary_narration_source(tmp_path, media_fixt
     align_ctx = NodeContext(adapter=adapter, run=_run(), node_run=align_run, state=state)
     align_output = nodes.narration_alignment.run(align_ctx)
     narration = next(a for a in align_output.artifacts if a.kind == ArtifactKind.narration_units).payload
-    assert narration["source"] == "tts_subtitle"
+    assert narration["source"] == "tts"
     assert narration["strict"] is True
     assert [u["text"] for u in narration["units"]] == ["第一句。", "第二句。"]
     assert narration["units"][0]["start"] == 0.0

@@ -15,17 +15,22 @@ from packages.core.contracts import (
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.media.assets import store_file
 from packages.media.rendering import validate_rendered_output
-from packages.media.video.ffmpeg import FfmpegCommandError, probe_media
+from packages.media.video.ffmpeg import FfmpegCommandError, probe_audio_channels, probe_media
 from packages.production.pipeline._caption_display import (
     CaptionDisplayResult,
     compile_caption_display,
     compile_planned_caption_display,
 )
-from packages.production.pipeline._ffmpeg import ffmpeg_filter_available, render_final_media
+from packages.production.pipeline._ffmpeg import (
+    SfxMixEvent,
+    ffmpeg_filter_available,
+    render_final_media,
+)
 from packages.production.pipeline._font_metrics import load_font_metrics, make_text_measurer
 from packages.production.pipeline._fonts import ResolvedFont, resolve_font_asset
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
+from packages.production.pipeline._sfx_events import plan_caption_sfx_events
 from packages.production.pipeline._subtitles import (
     _ASS_MARGIN_L,
     _ASS_MARGIN_R,
@@ -83,6 +88,9 @@ def run(ctx: NodeContext) -> NodeOutput:
             if subtitle_path is not None:
                 normal_font_asset_id = _font_asset_id(style)
                 emphasis_font_asset_id = _font_asset_id(style, emphasis=True)
+                if caption_windows is not None:
+                    # Caption v3 uses one resolved font across normal/emphasis/hero.
+                    emphasis_font_asset_id = normal_font_asset_id
                 resolved_font, unresolved_font_id = resolve_font_asset(
                     font_asset_id=normal_font_asset_id,
                     runtime_dir=fonts_dir,
@@ -165,10 +173,36 @@ def run(ctx: NodeContext) -> NodeOutput:
                         emphasis_enabled=emphasis_enabled,
                         overlay_events=list(style.get("overlay_events") or []),
                     )
-                caption_cues = [
-                    {"start": cue.start, "end": cue.end, "lines": cue.lines}
-                    for cue in display.normal_cues
-                ]
+                if caption_windows is not None:
+                    planned_by_range = {
+                        (
+                            int(item.get("start_frame") or 0),
+                            int(item.get("end_frame") or 0),
+                        ): item
+                        for item in (caption_windows.get("normal_windows") or [])
+                        if isinstance(item, dict)
+                    }
+                    caption_cues = []
+                    for cue in display.normal_cues:
+                        key = (round(cue.start * fps), round(cue.end * fps))
+                        planned = planned_by_range.get(key, {})
+                        caption_cues.append(
+                            {
+                                "start": cue.start,
+                                "end": cue.end,
+                                "lines": cue.lines,
+                                "line_starts": [
+                                    int(frame) / fps
+                                    for frame in (planned.get("line_start_frames") or [])
+                                ],
+                                "effect_id": planned.get("effect_id") or "none",
+                            }
+                        )
+                else:
+                    caption_cues = [
+                        {"start": cue.start, "end": cue.end, "lines": cue.lines}
+                        for cue in display.normal_cues
+                    ]
                 animation_fallbacks = write_ass_subtitles(
                     subtitle_path,
                     style=style,
@@ -198,6 +232,52 @@ def run(ctx: NodeContext) -> NodeOutput:
             if bgm_plan and bgm_plan.get("enabled") and bgm_asset_id:
                 bgm_path = ctx.artifact_path(ctx.source_artifact_for_asset(bgm_asset_id))
             output_path = temp_dir / "final.mp4"
+            sfx_mix_events: list[SfxMixEvent] = []
+            missing_sfx_assets: list[str] = []
+            if caption_windows is not None and caption_display_payload is not None:
+                sfx_requests = plan_caption_sfx_events(
+                    normal_cues=caption_cues,
+                    overlay_events=list(display.emphasis_events),
+                    duration=duration,
+                )
+                for request in sfx_requests:
+                    asset_id = str(request.get("asset_id") or "")
+                    asset = ctx.repository.media_assets.get(asset_id)
+                    if asset is None or asset.kind != "sfx" or not asset.usable:
+                        missing_sfx_assets.append(asset_id)
+                        continue
+                    try:
+                        source = ctx.source_artifact_for_asset(asset_id)
+                        source_path = ctx.artifact_path(source)
+                    except Exception:
+                        missing_sfx_assets.append(asset_id)
+                        continue
+                    sfx_mix_events.append(
+                        SfxMixEvent(
+                            path=Path(source_path),
+                            start_ms=int(request.get("start_ms") or 0),
+                            volume=float(request.get("volume") or 0.5),
+                            asset_id=asset_id,
+                        )
+                    )
+            if missing_sfx_assets:
+                missing_unique = sorted(set(missing_sfx_assets))
+                warnings.append(WarningCode.sfx_asset_missing)
+                degradations.append(
+                    degradation_notice(
+                        WarningCode.sfx_asset_missing,
+                        "部分字幕音效资产缺失；对应字幕已无声继续。",
+                        node_id=ctx.node_run.node_id,
+                        affects_true_yield=False,
+                    ).model_copy(
+                        update={
+                            "details": {
+                                "asset_ids": missing_unique,
+                                "event_count": len(missing_sfx_assets),
+                            }
+                        }
+                    )
+                )
             # auto_mix consumed here: LUFS-targeted volume + sidechain ducking +
             # fades when enabled (no longer a dead end-to-end flag).
             auto_mix = bool((bgm_plan or {}).get("auto_mix", state.request.bgm.auto_mix))
@@ -229,8 +309,26 @@ def run(ctx: NodeContext) -> NodeOutput:
                 "auto_mix": auto_mix,
                 "bgm_source_start": bgm_source_start,
                 "bgm_source_end": bgm_source_end,
+                "sfx_events": sfx_mix_events,
             }
-            mix_result = render_final_media(**render_kwargs)
+            try:
+                mix_result = render_final_media(**render_kwargs)
+            except FfmpegCommandError:
+                if not sfx_mix_events:
+                    raise
+                warnings.append(WarningCode.sfx_mix_failed)
+                degradations.append(
+                    degradation_notice(
+                        WarningCode.sfx_mix_failed,
+                        "字幕音效混音失败；已显式降级为无音效成片。",
+                        node_id=ctx.node_run.node_id,
+                        affects_true_yield=False,
+                    ).model_copy(
+                        update={"details": {"event_count": len(sfx_mix_events)}}
+                    )
+                )
+                render_kwargs["sfx_events"] = []
+                mix_result = render_final_media(**render_kwargs)
             # No silent fallback: when auto-mix wanted LUFS targeting but the
             # loudness probe failed, the mixer quietly used the requested volume.
             # Surface that so the user knows the auto-balance was not applied.
@@ -251,6 +349,8 @@ def run(ctx: NodeContext) -> NodeOutput:
                 expected_frames=total_frames,
                 frame_count_message="Final video frame count does not match the timeline.",
             )
+            if probe_audio_channels(output_path) != 2:
+                raise FfmpegCommandError("Final mixed audio must be stereo.")
             final_stored = store_file(ctx.object_store(), output_path, purpose="generated-video")
             if subtitle_path is not None:
                 subtitle_stored = store_file(ctx.object_store(), subtitle_path, purpose="subtitles")

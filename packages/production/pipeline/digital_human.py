@@ -176,7 +176,7 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
     "ValidateRequest": [ArtifactKind.validated_production_spec],
     "LoadCaseContext": [ArtifactKind.case_context],
     "ResolveCreativeIntent": [ArtifactKind.creative_intent],
-    "TTS": [ArtifactKind.audio_tts],
+    "TTS": [ArtifactKind.audio_tts, ArtifactKind.audio_alignment_raw],
     "MaterialPackPlanning": [ArtifactKind.plan_material_pack],
     "NarrationAlignment": [ArtifactKind.audio_alignment, ArtifactKind.narration_units],
     "NarrationBoundaryPlanning": [ArtifactKind.plan_narration_boundary],

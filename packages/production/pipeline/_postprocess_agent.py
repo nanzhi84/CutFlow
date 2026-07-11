@@ -58,9 +58,7 @@ _FORBIDDEN_CHOICE_FIELDS = frozenset(
     }
 )
 _ALLOWED_TOP_LEVEL = frozenset({"bgm_id", "caption_choices", "analysis"})
-_ALLOWED_CHOICE_FIELDS = frozenset(
-    {"event_id", "caption_option_id", "priority", "reason"}
-)
+_ALLOWED_CHOICE_FIELDS = frozenset({"event_id", "caption_option_id", "priority", "reason"})
 
 
 def parse_postprocess_selection(output: Any) -> tuple[PostProcessSelection, list[str]]:
@@ -92,15 +90,12 @@ def parse_postprocess_selection(output: Any) -> tuple[PostProcessSelection, list
             errors.append(f"caption_choices[{index}] must be an object")
             continue
         overreach.extend(
-            f"caption_choices.{key}"
-            for key in sorted(item)
-            if key in _FORBIDDEN_CHOICE_FIELDS
+            f"caption_choices.{key}" for key in sorted(item) if key in _FORBIDDEN_CHOICE_FIELDS
         )
         unknown_choice = sorted(set(item) - _ALLOWED_CHOICE_FIELDS)
         if unknown_choice:
             errors.append(
-                f"caption_choices[{index}] includes unknown fields: "
-                + ", ".join(unknown_choice)
+                f"caption_choices[{index}] includes unknown fields: " + ", ".join(unknown_choice)
             )
         for required in ("event_id", "caption_option_id", "priority", "reason"):
             if required not in item:
@@ -208,7 +203,7 @@ def validate_postprocess_selection(
     if len(selection.caption_choices) > 6:
         errors.append("caption_choices must not exceed 6 events")
     selected_windows: list[tuple[int, int, str, str]] = []
-    punch_count = 0
+    hero_count = 0
     for choice in selection.caption_choices:
         if not emphasis_enabled:
             errors.append("caption_choices must be empty when emphasis captions are disabled")
@@ -237,8 +232,8 @@ def validate_postprocess_selection(
             for item in (window.get("caption_options") or [])
             if _as_str(item.get("caption_option_id")) == choice.caption_option_id
         )
-        if _as_str(option.get("animation_id")) == "punch":
-            punch_count += 1
+        if _as_str(option.get("visual_preset_id")) == "hero":
+            hero_count += 1
         selected_windows.append(
             (
                 int(window.get("start_frame") or 0),
@@ -247,8 +242,8 @@ def validate_postprocess_selection(
                 choice.caption_option_id,
             )
         )
-    if punch_count > 2:
-        errors.append("caption choices may use punch at most 2 times")
+    if hero_count > 2:
+        errors.append("caption choices may use hero at most 2 times")
     min_gap_frames = int(math.ceil(0.8 * max(1, int(caption_windows.get("fps") or 30))))
     selected_windows.sort(key=lambda item: (item[0], item[1], item[2]))
     for previous, current in zip(selected_windows, selected_windows[1:]):
@@ -286,12 +281,13 @@ def materialize_overlay_events(
             if _as_str(item.get("anchor_id")) == anchor_id
         )
         rect = anchor.get("rect") or {}
+        visual_preset_id = _as_str(option.get("visual_preset_id")) or None
         event = OverlayEvent(
             event_id=choice.event_id,
             start=int(window.get("start_frame") or 0) / fps,
             end=int(window.get("end_frame") or 0) / fps,
             text=str(window.get("text") or ""),
-            style="emphasis",
+            style=visual_preset_id or "emphasis",
             animation_id=_as_str(option.get("animation_id")) or "none",
             layout_box_id=anchor_id,
             rect=OverlayRect(
@@ -303,7 +299,12 @@ def materialize_overlay_events(
             text_align=_as_str(anchor.get("text_align")) or "center",
             priority=choice.priority,
             reason=choice.reason,
-            sfx_id="none",
+            sfx_id=(
+                _sfx_id_for_option(option, choice.event_id)
+                if visual_preset_id is not None
+                else "none"
+            ),
+            visual_preset_id=visual_preset_id,
         )
         events.append(event)
         diagnostics.append(
@@ -317,6 +318,16 @@ def materialize_overlay_events(
     events.sort(key=lambda event: (event.start, event.end, event.event_id or ""))
     diagnostics.sort(key=lambda item: item["event_id"])
     return events, diagnostics
+
+
+def _sfx_id_for_option(option: dict, event_id: str) -> str:
+    preset_id = _as_str(option.get("visual_preset_id"))
+    if preset_id == "hero":
+        checksum = sum(ord(char) for char in event_id)
+        return "asset_sfx_whoosh" if checksum % 2 else "asset_sfx_impact"
+    if preset_id == "emphasis":
+        return "asset_sfx_ding"
+    return "none"
 
 
 def _as_str(value: Any) -> str:

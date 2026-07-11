@@ -165,6 +165,7 @@ class MediaAssetRecord(EntityMeta):
     title: str
     kind: Literal[
         "bgm",
+        "sfx",
         "font",
         "cover_template",
         "voice_reference",

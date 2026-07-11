@@ -8,24 +8,13 @@ from collections.abc import Callable
 
 from packages.core.contracts.artifacts import EmphasisHint
 from packages.production.pipeline._caption_display import compile_caption_display
-from packages.production.pipeline._caption_styles import (
-    HUAZI_ANIMATION_DIRECTIONS,
-    HUAZI_ANIMATIONS,
-)
+from packages.production.pipeline._caption_effects import effect_envelope
+from packages.production.pipeline._caption_visual_presets import caption_visual_preset
 from packages.production.pipeline._huazi_candidates import derive_huazi_candidates
 from packages.production.pipeline._huazi_layout import generate_layout_boxes
 
-_TYPOGRAPHY_VARIANT_ID = "emphasis_default_v1"
 _MAX_OPTIONS_PER_EVENT = 24
 _MAX_SAFE_ANCHORS_PER_EVENT = 6
-_EMPHASIS_MIN_DURATION_SEC = 0.8
-_EMPHASIS_CONTEXT_PAD_SEC = 0.4
-_ANIMATION_SCALE = {"pop_in": 1.08, "punch": 1.16}
-_ANIMATION_OFFSET_PX = {
-    "slide_up": (0.0, 80.0),
-    "slide_left": (90.0, 0.0),
-    "slide_right": (-90.0, 0.0),
-}
 
 
 def normalize_caption_text(value: str) -> str:
@@ -48,6 +37,8 @@ def compile_normal_windows(
     measure: Callable[[str], float],
     metrics_source: str,
     enabled: bool,
+    tokens: list[dict] | None = None,
+    cut_frames: set[int] | None = None,
 ) -> tuple[list[dict], dict]:
     """Compile and quantize normal captions once, before final rendering."""
 
@@ -63,6 +54,10 @@ def compile_normal_windows(
         overlay_events=[],
     )
     windows: list[dict] = []
+    token_matched = 0
+    char_fallback = 0
+    tokens = [item for item in (tokens or []) if isinstance(item, dict)]
+    cut_frames = cut_frames or set()
     for index, cue in enumerate(result.normal_cues):
         start_frame = min(total_frames, frame_index_at_fps(cue.start, fps))
         end_frame = min(total_frames, frame_index_at_fps(cue.end, fps))
@@ -73,6 +68,25 @@ def compile_normal_windows(
             for item in cue.source_unit_ids
             if isinstance(item, int) and 0 <= item < len(units)
         ]
+        cue_tokens = _tokens_in_window(tokens, cue.start, cue.end)
+        if cue_tokens:
+            start_frame = min(
+                total_frames,
+                frame_index_at_fps(float(cue_tokens[0].get("start") or 0.0), fps),
+            )
+            end_frame = min(
+                total_frames,
+                frame_index_at_fps(float(cue_tokens[-1].get("end") or 0.0), fps),
+            )
+            token_matched += len(cue_tokens)
+        else:
+            char_fallback += 1
+        line_start_frames = _line_start_frames(
+            lines=list(cue.lines),
+            cue_tokens=cue_tokens,
+            cue_start_frame=start_frame,
+            fps=fps,
+        )
         text = "".join(cue.lines)
         windows.append(
             {
@@ -80,14 +94,23 @@ def compile_normal_windows(
                 "start_frame": start_frame,
                 "end_frame": end_frame,
                 "lines": list(cue.lines),
+                "line_start_frames": line_start_frames,
                 "source_unit_ids": source_ids,
                 "normalized_text": normalize_caption_text(text),
+                "visual_preset_id": "normal",
+                "effect_id": (
+                    "none"
+                    if any(abs(start_frame - cut) <= 1 for cut in cut_frames)
+                    else "soft_in"
+                ),
             }
         )
     return windows, {
         "merged_units": result.diagnostics.merged_units,
         "split_cues": result.diagnostics.split_cues,
         "font_metrics_source": result.diagnostics.font_metrics_source,
+        "token_matched": token_matched,
+        "char_fallback": char_fallback,
     }
 
 
@@ -111,7 +134,7 @@ def normal_safe_rect(
 
 
 def timeline_cut_frames(timeline: dict, total_frames: int) -> set[int]:
-    cuts: set[int] = set()
+    cuts: set[int] = {0}
     for track in timeline.get("tracks") or []:
         if not isinstance(track, dict):
             continue
@@ -134,7 +157,8 @@ def build_emphasis_windows(
     cut_frames: set[int],
     resolution: tuple[int, int],
     normal_caption_top_y: float,
-) -> tuple[list[dict], int, int]:
+    tokens: list[dict] | None = None,
+) -> tuple[list[dict], int, int, int, int]:
     """Derive fixed emphasis windows and static geometry candidates.
 
     Phrase position is estimated deterministically from its character offset in the
@@ -145,6 +169,8 @@ def build_emphasis_windows(
     candidate_events = derive_huazi_candidates(emphasis, units)
     windows: list[dict] = []
     crossing_cuts = 0
+    token_matched = 0
+    char_fallback = 0
     for event in candidate_events:
         unit_match = _source_unit_for_event(
             event_start=event.start,
@@ -161,11 +187,16 @@ def build_emphasis_windows(
             fps=fps,
             total_frames=total_frames,
             cut_frames=cut_frames,
+            tokens=tokens or [],
         )
         if fixed_window is None:
             crossing_cuts += 1
             continue
-        start_frame, end_frame = fixed_window
+        start_frame, end_frame, timing_source = fixed_window
+        if timing_source == "token_matched":
+            token_matched += 1
+        else:
+            char_fallback += 1
         source_ids = [str(unit.get("unit_id") or f"unit_{unit_index + 1:03d}")]
         raw_boxes = generate_layout_boxes(
             event_text=event.text,
@@ -187,9 +218,10 @@ def build_emphasis_windows(
                 "source_unit_ids": source_ids,
                 "anchor_candidates": anchors,
                 "caption_options": [],
+                "hero_eligible": any(abs(start_frame - cut) <= 1 for cut in cut_frames),
             }
         )
-    return windows, len(candidate_events), crossing_cuts
+    return windows, len(candidate_events), crossing_cuts, token_matched, char_fallback
 
 
 def build_caption_option_candidates(
@@ -204,6 +236,7 @@ def build_caption_option_candidates(
     outline: float,
     shadow: float,
     normal_safe_rect: dict | None,
+    hero_eligible: bool = False,
 ) -> list[dict]:
     """Build animation-specific options with their actual render envelopes.
 
@@ -221,21 +254,24 @@ def build_caption_option_candidates(
     options: list[dict] = []
     for anchor in anchors:
         anchor_id = str(anchor.get("anchor_id") or "")
-        allowed_directions = set(anchor.get("allowed_enter_directions") or [])
-        for animation_id in HUAZI_ANIMATIONS:
-            direction = HUAZI_ANIMATION_DIRECTIONS.get(animation_id)
-            if direction is not None and direction not in allowed_directions:
-                continue
-            scale = _ANIMATION_SCALE.get(animation_id, 1.0)
+        preset_ids = ["emphasis"]
+        if hero_eligible:
+            preset_ids.append("hero")
+        for preset_id in preset_ids:
+            preset = caption_visual_preset(preset_id)
+            animation_id = preset.effect_id
+            scale, vertical_shift = effect_envelope(animation_id)
             endpoint = _anchored_bbox_px(
                 anchor=anchor,
-                text_width=text_width * scale,
-                text_height=text_height * scale,
+                text_width=text_width * preset.size_ratio * scale,
+                text_height=text_height * preset.size_ratio * scale,
                 canvas_width=canvas_width,
                 canvas_height=canvas_height,
             )
-            offset_x, offset_y = _ANIMATION_OFFSET_PX.get(animation_id, (0.0, 0.0))
-            envelope = _bbox_union(endpoint, _translate_bbox(endpoint, offset_x, offset_y))
+            envelope = _bbox_union(
+                endpoint,
+                _translate_bbox(endpoint, 0.0, vertical_shift),
+            )
             if not _bbox_inside_canvas(envelope, canvas_width, canvas_height):
                 continue
             normalized_envelope = _normalize_bbox(envelope, canvas_width, canvas_height)
@@ -243,15 +279,14 @@ def build_caption_option_candidates(
                 normalized_envelope, normal_safe_rect
             ):
                 continue
-            option_id = (
-                f"{event_id}__{anchor_id}__{_TYPOGRAPHY_VARIANT_ID}__{animation_id}"
-            )
+            option_id = f"{event_id}__{anchor_id}__{preset_id}"
             options.append(
                 {
                     "caption_option_id": option_id,
                     "anchor_id": anchor_id,
-                    "typography_variant_id": _TYPOGRAPHY_VARIANT_ID,
+                    "typography_variant_id": f"{preset_id}_v1",
                     "animation_id": animation_id,
+                    "visual_preset_id": preset_id,
                     "safety_envelope": normalized_envelope,
                 }
             )
@@ -287,6 +322,7 @@ def finalize_safe_caption_options(
             "anchor_id": option["anchor_id"],
             "typography_variant_id": option["typography_variant_id"],
             "animation_id": option["animation_id"],
+            "visual_preset_id": option.get("visual_preset_id", "emphasis"),
         }
         for option in final_options_internal
     ]
@@ -307,7 +343,7 @@ def finalize_safe_caption_options(
                 "text_align": anchor["text_align"],
                 "allowed_animation_ids": [
                     animation_id
-                    for animation_id in HUAZI_ANIMATIONS
+                    for animation_id in ("pop", "slam_scale")
                     if any(
                         option.get("animation_id") == animation_id
                         for option in anchor_options
@@ -448,11 +484,26 @@ def _phrase_window(
     fps: int,
     total_frames: int,
     cut_frames: set[int],
-) -> tuple[int, int] | None:
+    tokens: list[dict],
+) -> tuple[int, int, str] | None:
     unit_start = min(total_frames, frame_index_at_fps(float(unit.get("start") or 0.0), fps))
     unit_end = min(total_frames, frame_index_at_fps(float(unit.get("end") or 0.0), fps))
     if unit_end <= unit_start:
         return None
+    unit_tokens = _tokens_in_window(
+        tokens,
+        float(unit.get("start") or 0.0),
+        float(unit.get("end") or 0.0),
+    )
+    token_span = _match_token_span(phrase, unit_tokens)
+    if token_span is not None:
+        start = min(total_frames, frame_index_at_fps(token_span[0], fps))
+        end = min(total_frames, frame_index_at_fps(token_span[1], fps))
+        if end <= start:
+            end = min(total_frames, start + 1)
+        if end <= start or any(start < cut < end for cut in cut_frames):
+            return None
+        return start, end, "token_matched"
     haystack = normalize_caption_text(str(unit.get("text") or ""))
     needle = normalize_caption_text(phrase)
     offset = haystack.find(needle)
@@ -469,14 +520,14 @@ def _phrase_window(
             break
     available_start = max(unit_start, segment_start)
     available_end = min(unit_end, segment_end)
-    min_frames = max(3, int(math.ceil(_EMPHASIS_MIN_DURATION_SEC * fps)))
+    min_frames = max(3, int(math.ceil(0.3 * fps)))
     if available_end - available_start < min_frames:
         return None
 
     phrase_share_frames = int(
         math.ceil((len(needle) / max(1, len(haystack))) * (unit_end - unit_start))
     )
-    desired = max(min_frames, phrase_share_frames + int(round(_EMPHASIS_CONTEXT_PAD_SEC * fps)))
+    desired = max(min_frames, phrase_share_frames)
     desired = min(desired, available_end - available_start)
     center = max(available_start, min(available_end - 1, center))
     start = center - desired // 2
@@ -484,4 +535,54 @@ def _phrase_window(
     end = start + desired
     if any(start < cut < end for cut in cut_frames):
         return None
-    return start, end
+    return start, end, "char_fallback"
+
+
+def _tokens_in_window(tokens: list[dict], start: float, end: float) -> list[dict]:
+    return sorted(
+        [
+            item
+            for item in tokens
+            if float(item.get("end") or 0.0) > start
+            and float(item.get("start") or 0.0) < end
+            and str(item.get("text") or "").strip()
+        ],
+        key=lambda item: (float(item.get("start") or 0.0), float(item.get("end") or 0.0)),
+    )
+
+
+def _match_token_span(phrase: str, tokens: list[dict]) -> tuple[float, float] | None:
+    needle = normalize_caption_text(phrase)
+    if not needle:
+        return None
+    pieces = [normalize_caption_text(str(item.get("text") or "")) for item in tokens]
+    for start_index in range(len(tokens)):
+        value = ""
+        for end_index in range(start_index, len(tokens)):
+            value += pieces[end_index]
+            if value == needle:
+                return (
+                    float(tokens[start_index].get("start") or 0.0),
+                    float(tokens[end_index].get("end") or 0.0),
+                )
+            if len(value) >= len(needle) or not needle.startswith(value):
+                break
+    return None
+
+
+def _line_start_frames(
+    *,
+    lines: list[str],
+    cue_tokens: list[dict],
+    cue_start_frame: int,
+    fps: int,
+) -> list[int]:
+    if len(lines) <= 1 or not cue_tokens:
+        return [cue_start_frame for _line in lines]
+    second_span = _match_token_span(lines[1], cue_tokens)
+    if second_span is None:
+        return [cue_start_frame, cue_start_frame]
+    second_start = frame_index_at_fps(second_span[0], fps)
+    if (second_start - cue_start_frame) / max(1, fps) < 0.3:
+        second_start = cue_start_frame
+    return [cue_start_frame, second_start]

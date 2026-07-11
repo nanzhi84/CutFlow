@@ -35,8 +35,10 @@ from packages.core.contracts import (
 from packages.core.contracts.artifacts import CaptionDisplayPlanArtifact
 from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
+from packages.core.workflow import NodeExecutionError
 from packages.production.pipeline import _ffmpeg
 from packages.production.pipeline._ffmpeg import (
+    AdaptiveMixResult,
     AUTO_MIX_MAX_BGM_VOLUME,
     resolve_adaptive_bgm_volume,
 )
@@ -46,7 +48,13 @@ from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline._subtitles import write_ass_subtitles
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
 from packages.media.assets import store_file
-from packages.media.video.ffmpeg import FfmpegRunner, ffmpeg_bin, probe_media, probe_stream_types
+from packages.media.video.ffmpeg import (
+    FfmpegCommandError,
+    FfmpegRunner,
+    ffmpeg_bin,
+    probe_media,
+    probe_stream_types,
+)
 from tests.fixtures.media import require_ffmpeg_filters
 
 
@@ -275,12 +283,30 @@ def test_write_ass_rect_overlay_alignment_and_anchor(tmp_path):
         height=1920,
         caption_cues=[],
         overlay_events=[
-            {"start": 0.0, "end": 1.0, "text": "居中", "rect": rect, "text_align": "center",
-             "animation_id": "pop_in"},
-            {"start": 0.0, "end": 1.0, "text": "靠左", "rect": rect, "text_align": "left",
-             "animation_id": "none"},
-            {"start": 0.0, "end": 1.0, "text": "靠右", "rect": rect, "text_align": "right",
-             "animation_id": "none"},
+            {
+                "start": 0.0,
+                "end": 1.0,
+                "text": "居中",
+                "rect": rect,
+                "text_align": "center",
+                "animation_id": "pop_in",
+            },
+            {
+                "start": 0.0,
+                "end": 1.0,
+                "text": "靠左",
+                "rect": rect,
+                "text_align": "left",
+                "animation_id": "none",
+            },
+            {
+                "start": 0.0,
+                "end": 1.0,
+                "text": "靠右",
+                "rect": rect,
+                "text_align": "right",
+                "animation_id": "none",
+            },
         ],
     )
     text = out.read_text(encoding="utf-8")
@@ -298,8 +324,14 @@ def test_write_ass_rect_overlay_slide_right(tmp_path):
         height=1920,
         caption_cues=[],
         overlay_events=[
-            {"start": 0.0, "end": 1.0, "text": "滑入", "text_align": "center",
-             "rect": {"x": 0.25, "y": 0.1, "w": 0.5, "h": 0.12}, "animation_id": "slide_right"},
+            {
+                "start": 0.0,
+                "end": 1.0,
+                "text": "滑入",
+                "text_align": "center",
+                "rect": {"x": 0.25, "y": 0.1, "w": 0.5, "h": 0.12},
+                "animation_id": "slide_right",
+            },
         ],
     )
     text = out.read_text(encoding="utf-8")
@@ -317,8 +349,14 @@ def test_write_ass_short_event_shrinks_animation_timing(tmp_path):
         height=1920,
         caption_cues=[],
         overlay_events=[
-            {"start": 0.0, "end": 0.25, "text": "快闪", "text_align": "center",
-             "rect": {"x": 0.25, "y": 0.1, "w": 0.5, "h": 0.12}, "animation_id": "punch"},
+            {
+                "start": 0.0,
+                "end": 0.25,
+                "text": "快闪",
+                "text_align": "center",
+                "rect": {"x": 0.25, "y": 0.1, "w": 0.5, "h": 0.12},
+                "animation_id": "punch",
+            },
         ],
     )
     text = out.read_text(encoding="utf-8")
@@ -334,8 +372,15 @@ def test_write_ass_unknown_animation_falls_back_to_none(tmp_path):
         height=1920,
         caption_cues=[],
         overlay_events=[
-            {"event_id": "e_fb", "start": 0.0, "end": 1.0, "text": "促销", "text_align": "center",
-             "rect": {"x": 0.25, "y": 0.1, "w": 0.5, "h": 0.12}, "animation_id": "wobble"},
+            {
+                "event_id": "e_fb",
+                "start": 0.0,
+                "end": 1.0,
+                "text": "促销",
+                "text_align": "center",
+                "rect": {"x": 0.25, "y": 0.1, "w": 0.5, "h": 0.12},
+                "animation_id": "wobble",
+            },
         ],
     )
     text = out.read_text(encoding="utf-8")
@@ -393,6 +438,12 @@ def _run_mix_node(
     narration_payload,
     subtitle_request,
     subtitle_filter_available=True,
+    caption_windows_payload=None,
+    sfx_asset_ids=(),
+    broken_sfx_asset_ids=(),
+    render_fail_sfx_once=False,
+    render_mix_result=None,
+    audio_channels=2,
 ):
     repository = Repository()
     object_store = LocalObjectStore(tmp_path / "objects")
@@ -439,6 +490,37 @@ def _run_mix_node(
         payload=narration_payload,
         case_id="case_demo",
     )
+    caption_windows = None
+    if caption_windows_payload is not None:
+        caption_windows = repository.create_artifact(
+            kind=ArtifactKind.plan_caption_windows,
+            payload_schema="CaptionWindowsPlan.v1",
+            payload=caption_windows_payload,
+            case_id="case_demo",
+        )
+    for asset_id in sfx_asset_ids:
+        source = stored_artifact(
+            ArtifactKind.uploaded_file,
+            f"{asset_id}.wav",
+            media_type="audio",
+        )
+        repository.media_assets[asset_id] = MediaAssetRecord(
+            id=asset_id,
+            case_id="case_demo",
+            title=asset_id,
+            kind="sfx",
+            source_artifact_id=source.id,
+            usable=True,
+        )
+    for asset_id in broken_sfx_asset_ids:
+        repository.media_assets[asset_id] = MediaAssetRecord(
+            id=asset_id,
+            case_id="case_demo",
+            title=asset_id,
+            kind="sfx",
+            source_artifact_id="art_missing_sfx",
+            usable=True,
+        )
 
     adapter = object.__new__(LocalRuntimeAdapter)
     adapter.repository = repository
@@ -456,6 +538,11 @@ def _run_mix_node(
             ArtifactKind.plan_timeline: timeline,
             ArtifactKind.plan_style: style,
             ArtifactKind.narration_units: narration,
+            **(
+                {ArtifactKind.plan_caption_windows: caption_windows}
+                if caption_windows is not None
+                else {}
+            ),
         },
     )
     ctx = NodeContext(
@@ -483,11 +570,19 @@ def _run_mix_node(
 
     def fake_render_final_media(**kwargs):
         captured["render_calls"] = captured.get("render_calls", 0) + 1
+        captured.setdefault("render_sfx_counts", []).append(len(kwargs.get("sfx_events") or []))
+        if (
+            render_fail_sfx_once
+            and kwargs.get("sfx_events")
+            and not captured.get("render_sfx_failed")
+        ):
+            captured["render_sfx_failed"] = True
+            raise FfmpegCommandError("synthetic SFX mix failure")
         captured.update(kwargs)
         sub = kwargs.get("subtitle_path")
         captured["subtitle_text"] = sub.read_text(encoding="utf-8") if sub else None
         kwargs["output_path"].write_bytes(b"fake video")
-        return None
+        return render_mix_result
 
     monkeypatch.setattr(
         "packages.production.pipeline.nodes.subtitle_and_bgm_mix.render_final_media",
@@ -503,11 +598,33 @@ def _run_mix_node(
             media_type="video", codec="h264", format="mp4", duration_sec=6.0
         ),
     )
+    monkeypatch.setattr(
+        "packages.production.pipeline.nodes.subtitle_and_bgm_mix.probe_audio_channels",
+        lambda _path: audio_channels,
+    )
 
     from packages.production.pipeline import nodes
 
     output = nodes.subtitle_and_bgm_mix.run(ctx)
     return output, captured, repository
+
+
+def _planned_normal_caption(*, effect_id="soft_in"):
+    return {
+        "fps": 30,
+        "normal_windows": [
+            {
+                "window_id": "caption_001",
+                "start_frame": 0,
+                "end_frame": 60,
+                "lines": ["字幕音效"],
+                "line_start_frames": [0],
+                "source_unit_ids": ["u1"],
+                "effect_id": effect_id,
+            }
+        ],
+        "diagnostics": {},
+    }
 
 
 def _rect_event(event_id, animation_id):
@@ -542,7 +659,11 @@ def test_node_emits_caption_display_plan_artifact(tmp_path, monkeypatch):
             "source": "estimated",
             "strict": False,
             "units": [
-                {"text": "全海南门店联保修完在哪都能享受售后服务真的很方便", "start": 0.0, "end": 3.0},
+                {
+                    "text": "全海南门店联保修完在哪都能享受售后服务真的很方便",
+                    "start": 0.0,
+                    "end": 3.0,
+                },
                 {"text": "赶紧来试试吧朋友们", "start": 3.0, "end": 5.0},
             ],
         },
@@ -604,6 +725,143 @@ def test_node_probes_missing_subtitle_filter_before_single_render(tmp_path, monk
     assert any(artifact.kind == ArtifactKind.subtitle_ass for artifact in output.artifacts)
 
 
+def test_planned_caption_missing_sfx_asset_degrades_explicitly(tmp_path, monkeypatch):
+    output, captured, _repository = _run_mix_node(
+        tmp_path,
+        monkeypatch,
+        style_payload={
+            "subtitle": {"normal_enabled": True, "emphasis_enabled": False},
+            "overlay_events": [],
+        },
+        narration_payload={
+            "source": "tts",
+            "strict": True,
+            "units": [{"unit_id": "u1", "text": "字幕音效", "start": 0.0, "end": 2.0}],
+        },
+        subtitle_request={"enabled": True, "normal_enabled": True, "emphasis_enabled": False},
+        caption_windows_payload=_planned_normal_caption(),
+    )
+
+    assert captured["render_sfx_counts"] == [0]
+    assert WarningCode.sfx_asset_missing in output.warnings
+    notice = next(
+        item for item in output.degradations if item.code == WarningCode.sfx_asset_missing
+    )
+    assert notice.details == {"asset_ids": ["asset_sfx_click"], "event_count": 1}
+
+
+def test_planned_caption_sfx_mix_failure_retries_without_sfx_and_degrades(
+    tmp_path,
+    monkeypatch,
+):
+    output, captured, _repository = _run_mix_node(
+        tmp_path,
+        monkeypatch,
+        style_payload={
+            "subtitle": {"normal_enabled": True, "emphasis_enabled": False},
+            "overlay_events": [],
+        },
+        narration_payload={
+            "source": "tts",
+            "strict": True,
+            "units": [{"unit_id": "u1", "text": "字幕音效", "start": 0.0, "end": 2.0}],
+        },
+        subtitle_request={"enabled": True, "normal_enabled": True, "emphasis_enabled": False},
+        caption_windows_payload=_planned_normal_caption(),
+        sfx_asset_ids=("asset_sfx_click",),
+        render_fail_sfx_once=True,
+    )
+
+    assert captured["render_calls"] == 2
+    assert captured["render_sfx_counts"] == [1, 0]
+    assert WarningCode.sfx_mix_failed in output.warnings
+    notice = next(item for item in output.degradations if item.code == WarningCode.sfx_mix_failed)
+    assert notice.details == {"event_count": 1}
+
+
+def test_planned_caption_broken_sfx_source_is_reported_missing(tmp_path, monkeypatch):
+    output, _captured, _repository = _run_mix_node(
+        tmp_path,
+        monkeypatch,
+        style_payload={
+            "subtitle": {"normal_enabled": True, "emphasis_enabled": False},
+            "overlay_events": [],
+        },
+        narration_payload={
+            "source": "tts",
+            "strict": True,
+            "units": [{"unit_id": "u1", "text": "字幕音效", "start": 0.0, "end": 2.0}],
+        },
+        subtitle_request={"enabled": True, "normal_enabled": True, "emphasis_enabled": False},
+        caption_windows_payload=_planned_normal_caption(),
+        broken_sfx_asset_ids=("asset_sfx_click",),
+    )
+
+    assert WarningCode.sfx_asset_missing in output.warnings
+
+
+def test_planned_caption_invalid_font_and_loudness_fallback_are_visible(
+    tmp_path,
+    monkeypatch,
+):
+    output, _captured, _repository = _run_mix_node(
+        tmp_path,
+        monkeypatch,
+        style_payload={
+            "font_asset_id": "asset_missing_font",
+            "subtitle": {"normal_enabled": True, "emphasis_enabled": False},
+            "overlay_events": [],
+        },
+        narration_payload={
+            "source": "tts",
+            "strict": True,
+            "units": [{"unit_id": "u1", "text": "字幕音效", "start": 0.0, "end": 2.0}],
+        },
+        subtitle_request={"enabled": True, "normal_enabled": True, "emphasis_enabled": False},
+        caption_windows_payload=_planned_normal_caption(effect_id="none"),
+        render_mix_result=AdaptiveMixResult(
+            bgm_volume=0.2,
+            metadata={"fallback_reason": "loudness_probe_failed"},
+        ),
+    )
+
+    assert WarningCode.font_resolution_failed in output.warnings
+    assert WarningCode.bgm_loudness_probe_failed in output.warnings
+
+
+def test_legacy_missing_emphasis_font_is_reported_separately(tmp_path, monkeypatch):
+    output, _captured, _repository = _run_mix_node(
+        tmp_path,
+        monkeypatch,
+        style_payload={
+            "emphasis_font_asset_id": "asset_missing_emphasis_font",
+            "subtitle": {"normal_enabled": False, "emphasis_enabled": True},
+            "overlay_events": [],
+        },
+        narration_payload={"source": "estimated", "strict": False, "units": []},
+        subtitle_request={"enabled": True, "normal_enabled": False, "emphasis_enabled": True},
+    )
+
+    assert WarningCode.font_resolution_failed in output.warnings
+    assert any("花字字体" in notice.message for notice in output.degradations)
+
+
+def test_final_non_stereo_audio_is_rejected(tmp_path, monkeypatch):
+    with pytest.raises(NodeExecutionError):
+        _run_mix_node(
+            tmp_path,
+            monkeypatch,
+            style_payload={"subtitle": {"normal_enabled": False, "emphasis_enabled": False}},
+            narration_payload={"source": "estimated", "strict": False, "units": []},
+            subtitle_request={
+                "enabled": False,
+                "normal_enabled": False,
+                "emphasis_enabled": False,
+            },
+            audio_channels=1,
+        )
+
+
 def test_node_reports_font_metrics_fallback_for_unreadable_selected_font(tmp_path, monkeypatch):
     # Pre-stage the font asset into the repository the node reads from.
     repository = Repository()
@@ -655,8 +913,11 @@ def test_node_reports_font_metrics_fallback_for_unreadable_selected_font(tmp_pat
     narration = repository.create_artifact(
         kind=ArtifactKind.narration_units,
         payload_schema="NarrationUnitsArtifact.v1",
-        payload={"source": "estimated", "strict": False,
-                 "units": [{"text": "测试字幕内容", "start": 0.0, "end": 2.0}]},
+        payload={
+            "source": "estimated",
+            "strict": False,
+            "units": [{"text": "测试字幕内容", "start": 0.0, "end": 2.0}],
+        },
         case_id="case_demo",
     )
 
@@ -712,6 +973,10 @@ def test_node_reports_font_metrics_fallback_for_unreadable_selected_font(tmp_pat
         lambda *_a, **_k: MediaInfo(
             media_type="video", codec="h264", format="mp4", duration_sec=6.0
         ),
+    )
+    monkeypatch.setattr(
+        "packages.production.pipeline.nodes.subtitle_and_bgm_mix.probe_audio_channels",
+        lambda _path: 2,
     )
 
     from packages.production.pipeline import nodes
@@ -921,6 +1186,10 @@ def test_subtitle_bgm_mix_passes_selected_bgm_segment_window(monkeypatch, tmp_pa
         lambda *_args, **_kwargs: MediaInfo(
             media_type="video", codec="h264", format="mp4", duration_sec=2.0
         ),
+    )
+    monkeypatch.setattr(
+        "packages.production.pipeline.nodes.subtitle_and_bgm_mix.probe_audio_channels",
+        lambda _path: 2,
     )
 
     from packages.production.pipeline import nodes
@@ -1273,16 +1542,11 @@ def _zero_crossing_frequency(path, *, skip_seconds: float = 0.0) -> float:
         raw = wav.readframes(wav.getnframes())
     assert channels == 1
     assert width == 2
-    samples = [
-        int.from_bytes(raw[i : i + 2], "little", signed=True)
-        for i in range(0, len(raw), 2)
-    ]
+    samples = [int.from_bytes(raw[i : i + 2], "little", signed=True) for i in range(0, len(raw), 2)]
     start = min(len(samples), int(sample_rate * skip_seconds))
     samples = [value for value in samples[start:] if abs(value) > 16]
     crossings = sum(
-        1
-        for prev, cur in zip(samples, samples[1:])
-        if (prev < 0 <= cur) or (prev > 0 >= cur)
+        1 for prev, cur in zip(samples, samples[1:]) if (prev < 0 <= cur) or (prev > 0 >= cur)
     )
     if len(samples) < 2:
         return 0.0

@@ -10,11 +10,17 @@ from packages.production.pipeline._caption_styles import (
     HUAZI_ANIMATIONS,
     huazi_placement,
 )
+from packages.production.pipeline._caption_effects import (
+    CAPTION_V3_EFFECTS,
+    normal_soft_in_tags,
+    overlay_effect_tags,
+)
+from packages.production.pipeline._keyword_highlight import highlighted_spans
 
 _ASS_MARGIN_L = 80
 _ASS_MARGIN_R = 80
 _ASS_WRAP_BREAK_CHARS = set("，,、：:；;。！？!? ")
-_OVERLAY_STYLE_ALIASES = {"emphasis": "Emphasis"}
+_OVERLAY_STYLE_ALIASES = {"emphasis": "Emphasis", "hero": "Hero"}
 
 # Emphasis animation timing. Events shorter than the threshold shrink the
 # animation span to 40% of the event so it plays fully inside the event window;
@@ -28,6 +34,9 @@ _ANIM_NATURAL_MS = {
     "slide_up": 220,
     "slide_left": 220,
     "slide_right": 220,
+    "soft_in": 140,
+    "pop": 300,
+    "slam_scale": 240,
 }
 _DEFAULT_EMPHASIS_ANIMATION = "pop_in"
 
@@ -139,7 +148,8 @@ def _ass_bold(value, fallback: bool = True) -> str:
         return "1" if fallback else "0"
 
 
-def _overlay_style_name(value: object) -> str:
+def _overlay_style_name(event: dict[str, Any]) -> str:
+    value = event.get("visual_preset_id") or event.get("style")
     return _OVERLAY_STYLE_ALIASES.get(str(value or "").strip().lower(), "Emphasis")
 
 
@@ -149,21 +159,37 @@ def _overlay_style_rows(
     font_size: int,
     margin_v: int,
     subtitle: dict,
+    preset_ids: set[str],
+    fixed_ratios: bool,
 ) -> list[str]:
-    emphasis_primary = _ass_color(subtitle.get("emphasis_primary_color"), "#FFFF00")
+    emphasis_primary = _ass_color(
+        subtitle.get("primary_color") if fixed_ratios else subtitle.get("emphasis_primary_color"),
+        "#FFFFFF" if fixed_ratios else "#FFFF00",
+    )
     emphasis_outline = _ass_color(subtitle.get("emphasis_outline_color"), "#000000")
     outline = subtitle.get("emphasis_outline")
     if outline is None:
         outline = subtitle.get("outline")
-    return [
-        (
-            f"Style: Emphasis,{emphasis_font_name},{font_size},{emphasis_primary},&H000000FF,"
-            f"{emphasis_outline},&H64000000,"
+    rows = []
+    if "emphasis" in preset_ids:
+        rows.append(
+            f"Style: Emphasis,{emphasis_font_name},"
+            f"{round(font_size * 1.25) if fixed_ratios else font_size},"
+            f"{emphasis_primary},&H000000FF,{emphasis_outline},&H64000000,"
             f"{_ass_bold(subtitle.get('emphasis_font_weight'))},0,0,0,100,100,0,0,1,"
             f"{_ass_outline(outline, 5.0)},1,8,"
             f"{_ASS_MARGIN_L},{_ASS_MARGIN_R},{margin_v},1"
-        ),
-    ]
+        )
+    if "hero" in preset_ids:
+        rows.append(
+            f"Style: Hero,{emphasis_font_name},"
+            f"{round(font_size * 2.2) if fixed_ratios else font_size},"
+            f"{emphasis_primary},&H000000FF,{emphasis_outline},&H64000000,"
+            f"{_ass_bold(subtitle.get('emphasis_font_weight'))},0,0,0,100,100,0,0,1,"
+            f"{_ass_outline(outline, 5.0)},1,5,"
+            f"{_ASS_MARGIN_L},{_ASS_MARGIN_R},{margin_v},1"
+        )
+    return rows
 
 
 def _normal_bold(subtitle: dict) -> str:
@@ -181,7 +207,7 @@ def _resolve_animation(value: object, default: object = None) -> tuple[str, bool
     raw = str(value or default or "").strip()
     if not raw:
         return _DEFAULT_EMPHASIS_ANIMATION, False
-    if raw in HUAZI_ANIMATIONS:
+    if raw in HUAZI_ANIMATIONS or raw in CAPTION_V3_EFFECTS:
         return raw, False
     return "none", True
 
@@ -212,6 +238,8 @@ def _animation_body(animation: str, x: int, y: int, scale: float) -> list[str]:
     Only time parameters are scaled; coordinates are never touched. slide_*
     animations enter from an off-box offset toward (x, y).
     """
+    if animation in CAPTION_V3_EFFECTS:
+        return overlay_effect_tags(animation, x=x, y=y)
     if animation in ("slide_up", "slide_left", "slide_right"):
         if animation == "slide_up":
             start_x, start_y = x, y + 80
@@ -331,7 +359,9 @@ def write_ass_subtitles(
     # values are comma-separated, so a family name containing commas would corrupt
     # the style row -- strip them and fall back to Arial when nothing usable.
     resolved_font = (font_name or "").replace(",", " ").strip() or "Arial"
-    resolved_emphasis_font = (emphasis_font_name or font_name or "").replace(",", " ").strip() or resolved_font
+    resolved_emphasis_font = (emphasis_font_name or font_name or "").replace(
+        ",", " "
+    ).strip() or resolved_font
     margin_v = int(height * 0.12)
     position = subtitle.get("position")
     if isinstance(position, dict) and "y" in position:
@@ -369,12 +399,16 @@ def write_ass_subtitles(
     # The Emphasis style row is emitted ONLY when there are overlay events. Without
     # overlays, the subtitle style table stays unchanged. Yellow, larger, top-centered.
     if emphasis_enabled and overlay_events:
+        fixed_ratios = any(event.get("visual_preset_id") for event in overlay_events)
+        preset_ids = {str(event.get("visual_preset_id") or "emphasis") for event in overlay_events}
         lines.extend(
             _overlay_style_rows(
                 emphasis_font_name=resolved_emphasis_font,
-                font_size=emphasis_size,
+                font_size=font_size if fixed_ratios else emphasis_size,
                 margin_v=emphasis_margin_v,
                 subtitle=subtitle,
+                preset_ids=preset_ids,
+                fixed_ratios=fixed_ratios,
             )
         )
     lines += [
@@ -383,15 +417,17 @@ def write_ass_subtitles(
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     if normal_enabled:
-        for start, end, text in _normal_dialogues(caption_cues, narration, width, font_size):
+        for start, end, text in _normal_dialogues(
+            caption_cues,
+            narration,
+            width,
+            height,
+            font_size,
+            margin_v,
+        ):
             if not text:
                 continue
-            lines.append(
-                "Dialogue: 0,"
-                f"{ass_time(start)},"
-                f"{ass_time(end)},"
-                f"Default,,0,0,0,,{text}"
-            )
+            lines.append(f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,0,0,0,,{text}")
     animation_fallbacks: list[str] = []
     # Emphasis overlays on Layer 1 (above the Layer 0 narration). Each carries the
     # key phrase itself, timed to the narration sentence it was matched to.
@@ -400,20 +436,19 @@ def write_ass_subtitles(
             rect = event.get("rect")
             if isinstance(rect, dict) and rect:
                 tags, is_fallback = _overlay_rect_tags(event, width=width, height=height)
-                text = ass_escape(str(event.get("text", "")))
+                text = _overlay_text(event, subtitle)
             else:
                 tags, is_fallback = _overlay_placement_tags(
                     event, width=width, height=height, subtitle=subtitle
                 )
-                text = ass_escape(
-                    ass_wrap_text(
-                        str(event.get("text", "")),
-                        width=width,
-                        font_size=emphasis_size,
-                        margin_l=_ASS_MARGIN_L,
-                        margin_r=_ASS_MARGIN_R,
-                    )
+                wrapped = ass_wrap_text(
+                    str(event.get("text", "")),
+                    width=width,
+                    font_size=emphasis_size,
+                    margin_l=_ASS_MARGIN_L,
+                    margin_r=_ASS_MARGIN_R,
                 )
+                text = _overlay_text({**event, "text": wrapped}, subtitle)
             if is_fallback:
                 animation_fallbacks.append(str(event.get("event_id") or ""))
             if not text:
@@ -422,7 +457,7 @@ def write_ass_subtitles(
                 "Dialogue: 1,"
                 f"{ass_time(float(event.get('start', 0) or 0))},"
                 f"{ass_time(float(event.get('end', 0) or 0))},"
-                f"{_overlay_style_name(event.get('style'))},,0,0,0,,"
+                f"{_overlay_style_name(event)},,0,0,0,,"
                 f"{tags}"
                 f"{text}"
             )
@@ -434,7 +469,9 @@ def _normal_dialogues(
     caption_cues: list[dict] | None,
     narration: dict | None,
     width: int,
+    height: int,
     font_size: int,
+    margin_v: int,
 ) -> list[tuple[float, float, str]]:
     """Yield ``(start, end, ass_text)`` for the normal caption layer.
 
@@ -444,10 +481,21 @@ def _normal_dialogues(
     rows: list[tuple[float, float, str]] = []
     if caption_cues is not None:
         for cue in caption_cues:
-            text = "\\N".join(ass_escape(line) for line in (cue.get("lines") or []))
-            rows.append(
-                (float(cue.get("start") or 0.0), float(cue.get("end") or 0.0), text)
+            lines = [ass_escape(line) for line in (cue.get("lines") or [])]
+            start = float(cue.get("start") or 0.0)
+            end = float(cue.get("end") or 0.0)
+            effect = str(cue.get("effect_id") or "none")
+            prefix = (
+                normal_soft_in_tags(x=width // 2, y=max(0, height - margin_v))
+                if effect == "soft_in"
+                else ""
             )
+            line_starts = [float(value) for value in (cue.get("line_starts") or [])]
+            if len(lines) == 2 and len(line_starts) == 2 and start < line_starts[1] < end:
+                rows.append((start, line_starts[1], prefix + lines[0]))
+                rows.append((line_starts[1], end, "\\N".join(lines)))
+            else:
+                rows.append((start, end, prefix + "\\N".join(lines)))
         return rows
     for unit in (narration or {}).get("units", []):
         text = ass_escape(
@@ -459,10 +507,27 @@ def _normal_dialogues(
                 margin_r=_ASS_MARGIN_R,
             )
         )
-        rows.append(
-            (float(unit.get("start", 0) or 0), float(unit.get("end", 0) or 0), text)
-        )
+        rows.append((float(unit.get("start", 0) or 0), float(unit.get("end", 0) or 0), text))
     return rows
+
+
+def _overlay_text(event: dict[str, Any], subtitle: dict) -> str:
+    """Escape text first, then add only inline color override tags."""
+
+    if not event.get("visual_preset_id"):
+        return ass_escape(str(event.get("text") or ""))
+    primary = _ass_color(subtitle.get("primary_color"), "#FFFFFF")
+    highlight = _ass_color(subtitle.get("emphasis_primary_color"), "#FFFF00")
+    parts = []
+    for value, is_highlighted in highlighted_spans(str(event.get("text") or "")):
+        escaped = ass_escape(value)
+        if not escaped:
+            continue
+        if is_highlighted:
+            parts.append(f"{{\\1c{highlight}}}{escaped}{{\\1c{primary}}}")
+        else:
+            parts.append(escaped)
+    return "".join(parts)
 
 
 def _subtitle_layer_enabled(subtitle: dict, key: str) -> bool:

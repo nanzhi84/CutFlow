@@ -97,6 +97,8 @@ class WarningCode(str, Enum):
     font_metrics_fallback = "font.metrics_fallback"
     caption_visual_analysis_failed = "caption.visual_analysis_failed"
     postprocess_planning_failed = "postprocess.planning_failed"
+    sfx_asset_missing = "sfx.asset_missing"
+    sfx_mix_failed = "sfx.mix_failed"
 
 
 class DegradationCode(str, Enum):
@@ -118,6 +120,8 @@ class DegradationCode(str, Enum):
     font_metrics_fallback = "font.metrics_fallback"
     caption_visual_analysis_failed = "caption.visual_analysis_failed"
     postprocess_planning_failed = "postprocess.planning_failed"
+    sfx_asset_missing = "sfx.asset_missing"
+    sfx_mix_failed = "sfx.mix_failed"
 
 
 class JobStatus(str, Enum):

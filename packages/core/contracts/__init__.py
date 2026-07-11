@@ -38,6 +38,10 @@ from .base import (
     RetryPolicy,
 )
 from .providers import (
+    SpeechTokenTiming,
+    SpeechSegmentTiming,
+    SpeechTiming,
+    TtsSpeechOutput,
     ProviderError,
     UsageMeterRecord,
     ProviderInvocation,
@@ -574,6 +578,10 @@ __all__ = [
     "PromptExperiment",
     "CreatePromptExperimentRequest",
     "PatchPromptExperimentRequest",
+    "SpeechTokenTiming",
+    "SpeechSegmentTiming",
+    "SpeechTiming",
+    "TtsSpeechOutput",
     "ProviderOptionsSchemaRef",
     "ProviderCapability",
     "ProviderProfile",

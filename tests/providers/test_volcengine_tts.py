@@ -36,8 +36,23 @@ def tiny_mp3() -> bytes:
     if ffmpeg is None:
         pytest.skip("ffmpeg required to build the audio fixture")
     proc = subprocess.run(
-        [ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-         "-i", "anullsrc=r=24000:cl=mono", "-t", "0.05", "-b:a", "32k", "-f", "mp3", "-"],
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=24000:cl=mono",
+            "-t",
+            "0.05",
+            "-b:a",
+            "32k",
+            "-f",
+            "mp3",
+            "-",
+        ],
         capture_output=True,
     )
     assert proc.returncode == 0 and proc.stdout, proc.stderr
@@ -86,7 +101,10 @@ def _call(tmp_path, ctx, **input_kwargs) -> ProviderCall:
 
 def _list_api_keys_response() -> httpx.Response:
     return httpx.Response(
-        200, json={"Result": {"APIKeys": [{"Name": "cutagent-tts", "APIKey": "xk-123", "Disable": False}]}}
+        200,
+        json={
+            "Result": {"APIKeys": [{"Name": "cutagent-tts", "APIKey": "xk-123", "Disable": False}]}
+        },
     )
 
 
@@ -102,13 +120,25 @@ def test_speech_synthesizes_and_stores(tmp_path, tiny_mp3) -> None:
             assert payload["app"]["cluster"] == "volcano_icl"
             assert payload["audio"]["voice_type"] == "S_UDXV2pG62"
             assert payload["request"]["operation"] == "query"
+            assert payload["request"]["with_timestamp"] == 1
+            assert payload["request"]["frontend_type"] == "unitTson"
             return httpx.Response(
                 200,
                 json={
                     "code": 3000,
                     "message": "Success",
                     "data": base64.b64encode(tiny_mp3).decode("ascii"),
-                    "addition": {"duration": "1966"},
+                    "addition": {
+                        "duration": "1966",
+                        "frontend": json.dumps(
+                            {
+                                "words": [
+                                    {"word": "你好", "start_time": 0, "end_time": 900},
+                                    {"word": "世界", "start_time": 900, "end_time": 1966},
+                                ]
+                            }
+                        ),
+                    },
                 },
             )
         raise AssertionError(f"unexpected url {url}")
@@ -120,8 +150,43 @@ def test_speech_synthesizes_and_stores(tmp_path, tiny_mp3) -> None:
     )
     assert result.output["voice_id"] == "S_UDXV2pG62"
     assert result.output["audio_artifact_id"]
+    assert result.output["timing"]["tokens"] == [
+        {"text": "你好", "start": 0.0, "end": 0.9},
+        {"text": "世界", "start": 0.9, "end": 1.966},
+    ]
     assert result.input_tokens == 4  # len("你好世界")
     assert result.estimated_cost is not None
+
+
+def test_speech_normalizes_list_shaped_subtitle_timestamps(tmp_path, tiny_mp3) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "open.volcengineapi.com" in str(request.url):
+            return _list_api_keys_response()
+        return httpx.Response(
+            200,
+            json={
+                "code": 3000,
+                "message": "Success",
+                "data": base64.b64encode(tiny_mp3).decode("ascii"),
+                "addition": json.dumps(
+                    {
+                        "duration": 1000,
+                        "subtitles": [
+                            {"text": "两千", "start_time": 100, "end_time": 800},
+                        ],
+                    }
+                ),
+            },
+        )
+
+    provider = VolcengineTTSProvider(_client(handler))
+    ctx = _context(tmp_path)
+    result = provider.invoke_with_context(
+        _call(tmp_path, ctx, operation="speech", text="2000", voice_id="S_X"),
+        ctx,
+    )
+
+    assert result.output["timing"]["tokens"] == [{"text": "两千", "start": 0.1, "end": 0.8}]
 
 
 def test_speech_non_success_code_raises(tmp_path) -> None:
@@ -144,10 +209,19 @@ def test_voice_list_syncs_cloned_voices(tmp_path) -> None:
         assert request.url.params["Action"] == "ListMegaTTSTrainStatus"
         return httpx.Response(
             200,
-            json={"Result": {"Statuses": [
-                {"SpeakerID": "S_UDXV2pG62", "Alias": "无忧快喷", "State": "Success", "DemoAudio": "https://x/d.wav"},
-                {"SpeakerID": "S_SLOT", "Alias": "", "State": "Unknown"},
-            ]}},
+            json={
+                "Result": {
+                    "Statuses": [
+                        {
+                            "SpeakerID": "S_UDXV2pG62",
+                            "Alias": "无忧快喷",
+                            "State": "Success",
+                            "DemoAudio": "https://x/d.wav",
+                        },
+                        {"SpeakerID": "S_SLOT", "Alias": "", "State": "Unknown"},
+                    ]
+                }
+            },
         )
 
     provider = VolcengineTTSProvider(_client(handler))
@@ -171,10 +245,14 @@ def test_clone_claims_free_slot_and_returns_training(tmp_path) -> None:
             if action == "ListMegaTTSTrainStatus":
                 return httpx.Response(
                     200,
-                    json={"Result": {"Statuses": [
-                        {"SpeakerID": "S_DONE", "Alias": "已用", "State": "Success"},
-                        {"SpeakerID": "S_FREE", "Alias": "", "State": "Unknown"},
-                    ]}},
+                    json={
+                        "Result": {
+                            "Statuses": [
+                                {"SpeakerID": "S_DONE", "Alias": "已用", "State": "Success"},
+                                {"SpeakerID": "S_FREE", "Alias": "", "State": "Unknown"},
+                            ]
+                        }
+                    },
                 )
             if action == "ListAPIKeys":
                 return _list_api_keys_response()
@@ -195,8 +273,14 @@ def test_clone_claims_free_slot_and_returns_training(tmp_path) -> None:
     provider = VolcengineTTSProvider(_client(handler))
     ctx = _context(tmp_path)
     result = provider.invoke_with_context(
-        _call(tmp_path, ctx, operation="clone", display_name="我的声音",
-              reference_audio_uri=str(audio)), ctx
+        _call(
+            tmp_path,
+            ctx,
+            operation="clone",
+            display_name="我的声音",
+            reference_audio_uri=str(audio),
+        ),
+        ctx,
     )
     assert result.output["voice_id"] == "S_FREE"
     assert result.output["status"] == "training"
@@ -233,8 +317,11 @@ def test_wrong_capability_rejected(tmp_path) -> None:
     provider = VolcengineTTSProvider(_client(lambda r: httpx.Response(200, json={})))
     ctx = _context(tmp_path)
     call = ProviderCall(
-        case_id="c", provider_profile_id=ctx.profile.id, capability_id="llm.chat",
-        input={"operation": "speech"}, idempotency_key="k",
+        case_id="c",
+        provider_profile_id=ctx.profile.id,
+        capability_id="llm.chat",
+        input={"operation": "speech"},
+        idempotency_key="k",
     )
     with pytest.raises(ProviderRuntimeError):
         provider.invoke_with_context(call, ctx)

@@ -129,7 +129,9 @@ def _workflow_with_successful_asr() -> tuple[LocalRuntimeAdapter, SuccessfulAsrG
     return workflow, gateway
 
 
-def _run_state(*, strict_timestamps: bool, tts_uri: str = "https://media.example/tts.mp3") -> RunState:
+def _run_state(
+    *, strict_timestamps: bool, tts_uri: str = "https://media.example/tts.mp3"
+) -> RunState:
     request = DigitalHumanVideoRequest(
         case_id="case_demo",
         script="第一句介绍痛点。第二句说明方案。第三句引导行动。",
@@ -182,7 +184,9 @@ def _run_narration_alignment(
     node_run: NodeRun,
     state: RunState,
 ):
-    return narration_alignment.run(NodeContext(adapter=workflow, run=run, node_run=node_run, state=state))
+    return narration_alignment.run(
+        NodeContext(adapter=workflow, run=run, node_run=node_run, state=state)
+    )
 
 
 def test_narration_alignment_sends_signed_https_url_to_asr(monkeypatch: pytest.MonkeyPatch):
@@ -255,16 +259,16 @@ def test_narration_alignment_uses_script_text_not_asr_typos(monkeypatch: pytest.
         _run_state(strict_timestamps=True, tts_uri="s3://cutagent-demo/generated-audio/tts.mp3"),
     )
 
-    narration = {artifact.kind: artifact for artifact in output.artifacts}[ArtifactKind.narration_units].payload
+    narration = {artifact.kind: artifact for artifact in output.artifacts}[
+        ArtifactKind.narration_units
+    ].payload
     assert [unit["text"] for unit in narration["units"]] == [
         "第一句介绍痛点。",
         "第二句说明方案。",
         "第三句引导行动。",
     ]
     assert all(
-        "统点" not in unit["text"]
-        and "方按" not in unit["text"]
-        and "引到" not in unit["text"]
+        "统点" not in unit["text"] and "方按" not in unit["text"] and "引到" not in unit["text"]
         for unit in narration["units"]
     )
 
@@ -272,20 +276,40 @@ def test_narration_alignment_uses_script_text_not_asr_typos(monkeypatch: pytest.
 def test_narration_alignment_splits_glued_tts_subtitle_by_script_punctuation():
     workflow, _gateway = _workflow_with_successful_asr()
     state = _run_state(strict_timestamps=True)
-    state.scratch["tts_subtitle_segments"] = [
-        {
-            "start": 0.0,
-            "end": 6.0,
-            "text": "第一句介绍痛点第二句说明方案第三句引导行动",
-        }
-    ]
-    state.scratch["tts_subtitle_invocation_id"] = "pinv_tts"
+    state.artifacts[ArtifactKind.audio_alignment_raw] = Artifact(
+        id="art_raw_alignment",
+        case_id="case_demo",
+        run_id="run_1",
+        node_run_id="nr_tts",
+        kind=ArtifactKind.audio_alignment_raw,
+        payload={
+            "audio_artifact_id": "art_tts",
+            "source": "tts",
+            "provider_invocation_id": "pinv_tts",
+            "timing": {
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 6.0,
+                        "text": "第一句介绍痛点第二句说明方案第三句引导行动",
+                    }
+                ],
+                "tokens": [],
+                "granularity": "segment",
+                "text_basis": "normalized",
+            },
+        },
+        payload_schema="RawSpeechAlignmentArtifact.v1",
+    )
 
     output = _run_narration_alignment(workflow, _run(), _node_run(), state)
 
-    narration = {artifact.kind: artifact for artifact in output.artifacts}[ArtifactKind.narration_units].payload
-    assert narration["source"] == "tts_subtitle"
+    narration = {artifact.kind: artifact for artifact in output.artifacts}[
+        ArtifactKind.narration_units
+    ].payload
+    assert narration["source"] == "tts"
     assert output.provider_invocation_ids == ["pinv_tts"]
+    assert _gateway.calls == []
     assert [unit["text"] for unit in narration["units"]] == [
         "第一句介绍痛点。",
         "第二句说明方案。",

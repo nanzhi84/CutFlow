@@ -7,6 +7,9 @@ from packages.core.contracts import (
     ArtifactKind,
     DegradationNotice,
     ErrorCode,
+    SpeechSegmentTiming,
+    SpeechTiming,
+    SpeechTokenTiming,
     WarningCode,
 )
 from packages.core.contracts.artifacts import (
@@ -14,10 +17,15 @@ from packages.core.contracts.artifacts import (
     AlignmentSegment,
     NarrationUnit,
     NarrationUnitsArtifact,
+    RawSpeechAlignmentArtifact,
 )
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.planning.editing import build_narration_units
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline._speech_timing import (
+    estimated_timing_for_script,
+    normalize_timing_for_script,
+)
 from packages.production.pipeline.degradation_policies import ASR_ESTIMATED_FALLBACK_POLICY
 
 
@@ -60,6 +68,12 @@ def run(ctx: NodeContext) -> NodeOutput:
                 )
                 for unit in units
             ],
+            tokens=estimated_timing_for_script(
+                state.request.script,
+                duration=duration,
+            ).tokens,
+            source="estimated",
+            diagnostics={"token_matched": 0, "char_fallback": len(state.request.script)},
         )
         narration = NarrationUnitsArtifact(
             source="estimated",
@@ -90,6 +104,8 @@ def run(ctx: NodeContext) -> NodeOutput:
         *,
         source: str,
         strict: bool,
+        tokens: list[SpeechTokenTiming] | None = None,
+        diagnostics: dict | None = None,
         provider_invocation_ids: list[str] | None = None,
     ) -> NodeOutput:
         alignment = AlignmentArtifact(
@@ -103,6 +119,9 @@ def run(ctx: NodeContext) -> NodeOutput:
                 )
                 for unit in units
             ],
+            tokens=tokens or [],
+            source=source,
+            diagnostics=diagnostics or {},
         )
         narration = NarrationUnitsArtifact(source=source, units=units, strict=strict, warnings=[])
         return NodeOutput(
@@ -121,22 +140,46 @@ def run(ctx: NodeContext) -> NodeOutput:
             provider_invocation_ids=provider_invocation_ids or [],
         )
 
-    # PRIMARY source: MiniMax TTS-native subtitle segments (precise per-sentence
-    # timing produced alongside the real TTS audio). Only present when the real
-    # TTS path ran; with no secret the scratch is empty and we fall through.
-    subtitle_segments = state.scratch.get("tts_subtitle_segments")
-    if isinstance(subtitle_segments, list) and subtitle_segments:
+    # PRIMARY source: durable, provider-neutral TTS timing. Temporal activities
+    # rehydrate artifacts, not RunState.scratch, so this is the only cross-node
+    # native-timing fact source.
+    raw_alignment_artifact = state.artifacts.get(ArtifactKind.audio_alignment_raw)
+    raw_alignment = None
+    if raw_alignment_artifact is not None:
+        try:
+            raw_alignment = RawSpeechAlignmentArtifact.model_validate(
+                raw_alignment_artifact.payload
+            )
+        except Exception:
+            raw_alignment = None
+    if raw_alignment is not None and raw_alignment.audio_artifact_id == tts.id:
+        segments, tokens, diagnostics = normalize_timing_for_script(
+            raw_alignment.timing,
+            script=state.request.script,
+            duration=duration,
+        )
+    else:
+        segments, tokens, diagnostics = [], [], {}
+    if segments:
         units = ctx.narration_units_from_segments(
-            subtitle_segments,
+            [
+                {"text": item.text, "start": item.start, "end": item.end}
+                for item in segments
+            ],
             duration,
             script=state.request.script,
         )
-        invocation_id = state.scratch.get("tts_subtitle_invocation_id")
         return alignment_output(
             units,
-            source="tts_subtitle",
+            source="tts",
             strict=True,
-            provider_invocation_ids=[invocation_id] if isinstance(invocation_id, str) else None,
+            tokens=tokens,
+            diagnostics=diagnostics,
+            provider_invocation_ids=(
+                [raw_alignment.provider_invocation_id]
+                if raw_alignment.provider_invocation_id
+                else None
+            ),
         )
 
     asr_profile = ctx.first_available_provider_profile("asr.transcribe")
@@ -180,8 +223,28 @@ def run(ctx: NodeContext) -> NodeOutput:
                 invocation.error.message if invocation.error else "ASR provider failed.",
                 retryable=True,
             )
+        timing = _timing_from_provider_output(result.output)
+        segments, tokens, diagnostics = normalize_timing_for_script(
+            timing,
+            script=state.request.script,
+            duration=duration,
+        )
+        if not segments:
+            if state.request.strictness.strict_timestamps:
+                raise NodeExecutionError(
+                    ErrorCode.render_invalid_timeline,
+                    "ASR returned no valid timestamp segments.",
+                )
+            return estimated_output(
+                provider_invocation_ids=[invocation.id],
+                warnings=[WarningCode.timestamp_estimated],
+                degradations=[_estimated_degradation(ctx, "asr_timing_invalid", invocation.id)],
+            )
         units = ctx.narration_units_from_segments(
-            result.output.get("segments", []),
+            [
+                {"text": item.text, "start": item.start, "end": item.end}
+                for item in segments
+            ],
             duration,
             script=state.request.script,
         )
@@ -189,6 +252,8 @@ def run(ctx: NodeContext) -> NodeOutput:
             units,
             source="asr",
             strict=True,
+            tokens=tokens,
+            diagnostics=diagnostics,
             provider_invocation_ids=[invocation.id],
         )
     if state.request.strictness.strict_timestamps:
@@ -196,4 +261,48 @@ def run(ctx: NodeContext) -> NodeOutput:
             ErrorCode.render_invalid_timeline,
             "Estimated narration timestamps are not allowed in strict alignment mode.",
         )
-    return estimated_output()
+    return estimated_output(
+        warnings=[WarningCode.timestamp_estimated],
+        degradations=[_estimated_degradation(ctx, "asr_unavailable", None)],
+    )
+
+
+def _timing_from_provider_output(output: dict) -> SpeechTiming:
+    raw_timing = output.get("timing")
+    if isinstance(raw_timing, dict):
+        try:
+            return SpeechTiming.model_validate(raw_timing)
+        except Exception:
+            pass
+    segments: list[SpeechSegmentTiming] = []
+    for item in output.get("segments") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            segments.append(
+                SpeechSegmentTiming(
+                    text=str(item.get("text") or ""),
+                    start=float(item.get("start") or 0.0),
+                    end=float(item.get("end") or 0.0),
+                )
+            )
+        except Exception:
+            continue
+    return SpeechTiming(segments=segments, granularity="segment", text_basis="normalized")
+
+
+def _estimated_degradation(
+    ctx: NodeContext,
+    reason: str,
+    provider_invocation_id: str | None,
+) -> DegradationNotice:
+    details = {"reason": reason}
+    if provider_invocation_id:
+        details["provider_invocation_id"] = provider_invocation_id
+    return DegradationNotice(
+        code=WarningCode.timestamp_estimated,
+        message="Precise speech timing unavailable; estimated timestamps used.",
+        node_id=ctx.node_run.node_id,
+        policy_id=ASR_ESTIMATED_FALLBACK_POLICY.id,
+        details=details,
+    )

@@ -39,9 +39,7 @@ def ffmpeg_filter_available(filter_name: str) -> bool:
     if not expected:
         return False
     try:
-        result = FfmpegRunner(timeout_sec=10).run(
-            [ffmpeg_bin(), "-hide_banner", "-filters"]
-        )
+        result = FfmpegRunner(timeout_sec=10).run([ffmpeg_bin(), "-hide_banner", "-filters"])
     except FfmpegCommandError:
         return False
     for line in result.stdout.splitlines():
@@ -61,6 +59,14 @@ class AdaptiveMixResult:
 
     bgm_volume: float
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SfxMixEvent:
+    path: Path
+    start_ms: int
+    volume: float = 0.5
+    asset_id: str = ""
 
 
 def resolve_adaptive_bgm_volume(
@@ -148,7 +154,8 @@ def _build_bgm_audio_filters(
     parts: list[str] = []
     voice_targets = "[voice][voicesc]" if auto_mix else "[voice]"
     parts.append(
-        f"[1:a]aresample=48000,volume=1.0,apad=pad_dur=1,atrim=0:{duration:.3f},"
+        f"[1:a]aresample=48000,aformat=channel_layouts=stereo,volume=1.0,"
+        f"apad=pad_dur=1,atrim=0:{duration:.3f},"
         f"asetpts=PTS-STARTPTS{',asplit=2' if auto_mix else ''}{voice_targets}"
     )
 
@@ -162,6 +169,7 @@ def _build_bgm_audio_filters(
     loop_samples = max(1, int(round(source_duration * BGM_FILTER_SAMPLE_RATE)))
     bgm_chain = [
         f"[2:a]aresample={BGM_FILTER_SAMPLE_RATE}",
+        "aformat=channel_layouts=stereo",
         f"atrim={source_start:.3f}:{source_end:.3f}",
         "asetpts=PTS-STARTPTS",
         f"aloop=loop=-1:size={loop_samples}",
@@ -186,7 +194,76 @@ def _build_bgm_audio_filters(
     else:
         parts.append("[bgmraw]anull[bgm]")
 
-    parts.append("[voice][bgm]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]")
+    parts.append(
+        "[voice][bgm]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+        "aformat=channel_layouts=stereo[a]"
+    )
+    return ";".join(parts)
+
+
+def _build_audio_filters(
+    *,
+    duration: float,
+    bgm_volume: float | None,
+    auto_mix: bool,
+    fade_in: float,
+    fade_out: float,
+    bgm_source_start: float,
+    bgm_source_end: float | None,
+    sfx_events: list[SfxMixEvent],
+) -> str:
+    if not sfx_events:
+        if bgm_volume is not None:
+            return _build_bgm_audio_filters(
+                bgm_volume=bgm_volume,
+                duration=duration,
+                auto_mix=auto_mix,
+                fade_in=fade_in,
+                fade_out=fade_out,
+                bgm_source_start=bgm_source_start,
+                bgm_source_end=bgm_source_end,
+            )
+        return (
+            f"[1:a]aresample=48000,aformat=channel_layouts=stereo,volume=1.0,"
+            f"apad=pad_dur=1,atrim=0:{duration:.3f},asetpts=PTS-STARTPTS[a]"
+        )
+    if bgm_volume is not None:
+        base = _build_bgm_audio_filters(
+            bgm_volume=bgm_volume,
+            duration=duration,
+            auto_mix=auto_mix,
+            fade_in=fade_in,
+            fade_out=fade_out,
+            bgm_source_start=bgm_source_start,
+            bgm_source_end=bgm_source_end,
+        )
+        # Replace the final two-input mix with a single shared N-input mix.
+        base, _separator, _old_mix = base.rpartition(";")
+        parts = [base]
+        next_input = 3
+        mix_labels = ["[voice]", "[bgm]"]
+    else:
+        parts = [
+            f"[1:a]aresample=48000,aformat=channel_layouts=stereo,volume=1.0,"
+            f"apad=pad_dur=1,atrim=0:{duration:.3f},asetpts=PTS-STARTPTS[voice]"
+        ]
+        next_input = 2
+        mix_labels = ["[voice]"]
+
+    for index, event in enumerate(sfx_events):
+        label = f"sfx{index}"
+        delay = max(0, int(event.start_ms))
+        parts.append(
+            f"[{next_input + index}:a]aresample=48000,aformat=channel_layouts=stereo,"
+            f"volume={max(0.0, float(event.volume)):.3f},adelay={delay}|{delay},"
+            f"apad=pad_dur=1,atrim=0:{duration:.3f},asetpts=PTS-STARTPTS[{label}]"
+        )
+        mix_labels.append(f"[{label}]")
+    parts.append(
+        "".join(mix_labels)
+        + f"amix=inputs={len(mix_labels)}:duration=first:dropout_transition=0:normalize=0,"
+        "alimiter=limit=0.97,aformat=channel_layouts=stereo[a]"
+    )
     return ";".join(parts)
 
 
@@ -223,6 +300,7 @@ def render_final_media(
     bgm_source_end: float | None = None,
     fade_in: float = 1.0,
     fade_out: float = 1.5,
+    sfx_events: list[SfxMixEvent] | None = None,
 ) -> AdaptiveMixResult | None:
     """Mux voice (+ optional BGM) and burn subtitles into the final video.
 
@@ -244,6 +322,7 @@ def render_final_media(
         str(audio_path),
     ]
     mix_result: AdaptiveMixResult | None = None
+    sfx_events = list(sfx_events or [])
     if bgm_path is not None:
         mix_result = resolve_adaptive_bgm_volume(
             voice_path=Path(audio_path),
@@ -256,6 +335,8 @@ def render_final_media(
         if bgm_source_end is not None:
             mix_result.metadata["bgm_source_end"] = round(max(0.0, float(bgm_source_end)), 3)
         args.extend(["-stream_loop", "-1", "-i", str(bgm_path)])
+    for event in sfx_events:
+        args.extend(["-i", str(event.path)])
 
     video_filters = "[0:v]"
     if subtitle_path is not None:
@@ -267,20 +348,16 @@ def render_final_media(
         video_filters += f"{subtitles_filter},"
     video_filters += f"fps={fps},format=yuv420p[v]"
 
-    if bgm_path is None or mix_result is None:
-        audio_filters = (
-            f"[1:a]aresample=48000,apad=pad_dur=1,atrim=0:{duration:.3f},asetpts=PTS-STARTPTS[a]"
-        )
-    else:
-        audio_filters = _build_bgm_audio_filters(
-            bgm_volume=mix_result.bgm_volume,
-            duration=duration,
-            auto_mix=auto_mix,
-            bgm_source_start=bgm_source_start,
-            bgm_source_end=bgm_source_end,
-            fade_in=max(0.0, float(fade_in)),
-            fade_out=max(0.0, float(fade_out)),
-        )
+    audio_filters = _build_audio_filters(
+        duration=duration,
+        bgm_volume=(mix_result.bgm_volume if bgm_path is not None and mix_result else None),
+        auto_mix=auto_mix,
+        bgm_source_start=bgm_source_start,
+        bgm_source_end=bgm_source_end,
+        fade_in=max(0.0, float(fade_in)),
+        fade_out=max(0.0, float(fade_out)),
+        sfx_events=sfx_events,
+    )
     args.extend(
         [
             "-filter_complex",

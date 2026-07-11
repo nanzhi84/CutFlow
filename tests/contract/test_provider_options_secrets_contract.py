@@ -130,6 +130,8 @@ def test_warning_code_is_single_spec_enum_and_degradation_notice_shape():
         # isolated postprocess Agent expose their own explicit degradations.
         "caption.visual_analysis_failed",
         "postprocess.planning_failed",
+        "sfx.asset_missing",
+        "sfx.mix_failed",
     }
     assert DegradationCode.font_default_used.value == "font.default_used"
 

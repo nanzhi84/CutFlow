@@ -448,13 +448,29 @@ def _compact_bgm(candidate: dict) -> dict:
 
 
 def _compact_caption_window(window: dict) -> dict:
+    anchors = {
+        str(anchor.get("anchor_id") or ""): anchor
+        for anchor in (window.get("anchor_candidates") or [])
+        if isinstance(anchor, dict)
+    }
+    options = []
+    for option in window.get("caption_options") or []:
+        if not isinstance(option, dict):
+            continue
+        preset_id = str(option.get("visual_preset_id") or "emphasis")
+        anchor = anchors.get(str(option.get("anchor_id") or ""), {})
+        region = "/".join(str(item) for item in (anchor.get("region_tags") or [])[:2])
+        label = "切镜巨字" if preset_id == "hero" else "重点黄白字"
+        options.append(
+            {
+                "caption_option_id": option.get("caption_option_id"),
+                "label": f"{label} · {region or '安全区域'}",
+            }
+        )
     return {
         "event_id": window.get("event_id"),
         "text": window.get("text"),
-        "start_frame": window.get("start_frame"),
-        "end_frame": window.get("end_frame"),
-        "anchor_candidates": list(window.get("anchor_candidates") or []),
-        "caption_options": list(window.get("caption_options") or []),
+        "caption_options": options,
     }
 
 

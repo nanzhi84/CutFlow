@@ -22,7 +22,12 @@ from packages.ai.providers.common import (
     response_json,
     response_json_value,
 )
-from packages.core.contracts import ErrorCode
+from packages.core.contracts import (
+    ErrorCode,
+    SpeechSegmentTiming,
+    SpeechTiming,
+    SpeechTokenTiming,
+)
 
 
 class DashScopeASRProvider:
@@ -88,9 +93,15 @@ class DashScopeASRProvider:
         )
         transcription_payload = response_json_value(transcription_response)
         text, segments = _parse_transcription_payload(transcription_payload)
+        timing = _speech_timing_from_transcription_payload(transcription_payload, segments)
         duration = float(segments[-1]["end"] if segments else _duration_from_task_payload(task_payload))
         return ProviderResult(
-            output={"text": text, "segments": segments, "source": "asr"},
+            output={
+                "text": text,
+                "segments": segments,
+                "timing": timing.model_dump(mode="json"),
+                "source": "asr",
+            },
             audio_seconds=duration,
             raw_usage={
                 "poll_attempts": attempts,
@@ -655,6 +666,43 @@ def _parse_transcription_payload(payload: Any) -> tuple[str, list[dict[str, Any]
     if text and not segments:
         segments = [{"start": 0.0, "end": 0.0, "text": text}]
     return text, segments
+
+
+def _speech_timing_from_transcription_payload(
+    payload: Any, segments: list[dict[str, Any]]
+) -> SpeechTiming:
+    tokens: list[SpeechTokenTiming] = []
+    for transcript in _transcripts_from_payload(payload):
+        sentences = transcript.get("sentences", transcript.get("sentence", []))
+        if isinstance(sentences, dict):
+            sentences = [sentences]
+        for sentence in sentences if isinstance(sentences, list) else []:
+            if not isinstance(sentence, dict):
+                continue
+            for word in sentence.get("words") or []:
+                if not isinstance(word, dict):
+                    continue
+                text = f"{word.get('text') or ''}{word.get('punctuation') or ''}".strip()
+                start = float(word.get("begin_time", word.get("start_time", 0)) or 0) / 1000.0
+                end = float(word.get("end_time", word.get("end", 0)) or 0) / 1000.0
+                if text and end > start:
+                    tokens.append(SpeechTokenTiming(text=text, start=start, end=end))
+    return SpeechTiming(
+        segments=[
+            SpeechSegmentTiming(
+                text=str(item.get("text") or ""),
+                start=float(item.get("start") or 0.0),
+                end=float(item.get("end") or 0.0),
+            )
+            for item in segments
+            if isinstance(item, dict)
+            and str(item.get("text") or "").strip()
+            and float(item.get("end") or 0.0) > float(item.get("start") or 0.0)
+        ],
+        tokens=tokens,
+        granularity="token" if tokens else "segment",
+        text_basis="normalized",
+    )
 
 
 def _transcripts_from_payload(value: Any) -> list[dict[str, Any]]:
