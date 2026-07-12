@@ -91,6 +91,9 @@ def run(ctx: NodeContext) -> NodeOutput:
             "capability=video.generate 的供应商及密钥。",
         )
 
+    idempotency = ctx.provider_call_idempotency(
+        logical_call_slot="seedance", provider_profile_id=profile.id
+    )
     invocation, result = ctx.provider_gateway.invoke(
         ProviderCall(
             case_id=run.case_id,
@@ -106,10 +109,8 @@ def run(ctx: NodeContext) -> NodeOutput:
                 "generate_audio": True,
                 "references": references,
             },
-            idempotency_key=ctx.provider_call_idempotency_key(
-                logical_call_slot="seedance",
-                provider_profile_id=profile.id,
-            ),
+            idempotency_key=idempotency.key,
+            fallback_idempotency_keys=idempotency.fallback_keys,
         )
     )
     if result is None or invocation.error:

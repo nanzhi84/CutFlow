@@ -36,6 +36,9 @@ def run(ctx: NodeContext) -> NodeOutput:
                 "subtitle": True,
             }
         )
+    idempotency = ctx.provider_call_idempotency(
+        logical_call_slot="tts", provider_profile_id=provider_profile_id
+    )
     invocation, result = ctx.provider_gateway.invoke(
         ProviderCall(
             case_id=run.case_id,
@@ -44,10 +47,8 @@ def run(ctx: NodeContext) -> NodeOutput:
             provider_profile_id=provider_profile_id,
             capability_id="tts.speech",
             input=call_input,
-            idempotency_key=ctx.provider_call_idempotency_key(
-                logical_call_slot="tts",
-                provider_profile_id=provider_profile_id,
-            ),
+            idempotency_key=idempotency.key,
+            fallback_idempotency_keys=idempotency.fallback_keys,
         )
     )
     if result is None or invocation.error:

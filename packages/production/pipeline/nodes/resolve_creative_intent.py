@@ -76,6 +76,9 @@ def run(ctx: NodeContext) -> NodeOutput:
         node_run_id=node_run.id,
         provider_profile_id=profile.id,
     )
+    idempotency = ctx.provider_call_idempotency(
+        logical_call_slot="resolve_creative_intent", provider_profile_id=profile.id
+    )
     invocation, result = ctx.provider_gateway.invoke(
         ProviderCall(
             case_id=run.case_id,
@@ -85,10 +88,8 @@ def run(ctx: NodeContext) -> NodeOutput:
             capability_id="llm.chat",
             prompt_version_id=prompt_invocation.prompt_version_id,
             input={"prompt": rendered, "script": state.request.script},
-            idempotency_key=ctx.provider_call_idempotency_key(
-                logical_call_slot="resolve_creative_intent",
-                provider_profile_id=profile.id,
-            ),
+            idempotency_key=idempotency.key,
+            fallback_idempotency_keys=idempotency.fallback_keys,
         )
     )
     if result is None or invocation.error:

@@ -98,7 +98,7 @@ def _call(key: str) -> ProviderCall:
 
 def _key() -> str:
     return build_provider_call_idempotency_key(
-        run_id=new_id("run"),
+        job_id=new_id("job"),
         canonical_node_id="Tts",
         logical_call_slot="tts",
         provider_profile_id="profile_1",

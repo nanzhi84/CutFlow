@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from packages.ai.gateway import ProviderGateway
+from packages.ai.gateway.provider_gateway import SandboxProvider
 from packages.ai.prompts import PromptRegistry
 from packages.core.contracts import (
     AnnotationEditorVm,
@@ -12,6 +13,7 @@ from packages.core.contracts import (
     ClipUsageV4,
     ClipV4,
     DigitalHumanVideoRequest,
+    ErrorCode,
     Job,
     JobStatus,
     JobType,
@@ -23,13 +25,16 @@ from packages.core.contracts import (
 )
 from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
+from packages.core.workflow import NodeExecutionError
 from packages.media.assets import store_file
 from packages.media.video.ffmpeg import probe_media
 from packages.production.pipeline.digital_human import (
+    NODE_HANDLERS,
     build_digital_human_workflow,
     template_for,
 )
 from packages.production.pipeline.node_sequence import NODE_SEQUENCE
+from packages.production.pipeline.reuse import ReuseSourceRun, compute_reuse_plan
 
 
 def _seed_long_broll(repository: Repository, object_store, media_fixture_factory) -> None:
@@ -206,3 +211,143 @@ def test_full_coverage_broll_run_finishes_on_main_chain(
         node.status in {NodeStatus.succeeded, NodeStatus.degraded, NodeStatus.skipped}
         for node in repository.node_runs[run.id]
     )
+
+
+class _CountingSandbox(SandboxProvider):
+    """Counts what the vendor was actually asked to do. Paid work is a call, not a status."""
+
+    def __init__(self) -> None:
+        self.capabilities: list[str] = []
+
+    def invoke(self, call):
+        self.capabilities.append(call.capability_id)
+        return super().invoke(call)
+
+
+def test_full_coverage_resume_reuses_the_paid_prefix_instead_of_re_running_tts(
+    tmp_path,
+    media_fixture_factory,
+    monkeypatch,
+):
+    """issue #202 / A4: the zero-output skips of full coverage must not stop reuse.
+
+    On this chain PortraitTrackBuild and LipSync legitimately publish nothing. Reuse read
+    that as artifact corruption and stopped there, so a resume re-ran — and re-paid for —
+    every node behind them, TTS included. The whole point of a resume is to keep the money
+    already spent.
+    """
+    object_store = LocalObjectStore(tmp_path / "objects")
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store",
+        lambda: object_store,
+    )
+    repository = Repository()
+    _seed_long_broll(repository, object_store, media_fixture_factory)
+    for profile_id, profile in list(repository.provider_profiles.items()):
+        if profile.capability == "multimodal.embedding":
+            del repository.provider_profiles[profile_id]
+    gateway = ProviderGateway(repository, object_store=object_store)
+    sandbox = _CountingSandbox()
+    gateway.plugins["sandbox"] = sandbox
+    runtime = build_digital_human_workflow(
+        repository,
+        provider_gateway=gateway,
+        prompt_registry=PromptRegistry(repository),
+        seed_media=False,
+    )
+    request = DigitalHumanVideoRequest(
+        case_id="case_demo",
+        title="仅 B-roll 画外音",
+        script="施工过程展示补漆修复。效果展示完工后的变化。",
+        voice={"voice_id": "voice_sandbox"},
+        workflow_template_id="digital_human_v2",
+        broll={"enabled": True, "mode": "full_coverage", "min_segment_duration": 1.0},
+        lipsync={"enabled": False},
+        bgm={"enabled": False},
+        output={"width": 160, "height": 90, "fps": 30},
+        strictness={"strict_timestamps": False},
+    )
+    job = Job(
+        id="job_full_coverage_resume",
+        type=JobType.digital_human_video,
+        status=JobStatus.queued,
+        case_id="case_demo",
+        created_by="usr_admin",
+        request_schema=request.schema_version,
+        request=request,
+    )
+    template = template_for(request.workflow_template_id)
+    repository.jobs[job.id] = job
+
+    def _admit(run_id: str, *, resume_from: str | None = None) -> WorkflowRun:
+        # Mirrors apps.api.services.jobs_runs._admit_run: a resume of a failed job re-queues
+        # it before the new run starts.
+        repository.jobs[job.id] = repository.jobs[job.id].model_copy(
+            update={"status": JobStatus.queued}
+        )
+        run = WorkflowRun(
+            id=run_id,
+            job_id=job.id,
+            case_id="case_demo",
+            workflow_template_id=template.workflow_template_id,
+            workflow_version=template.version,
+            status=RunStatus.admitted,
+            requested_by="usr_admin",
+            resume_from_run_id=resume_from,
+        )
+        repository.runs[run.id] = run
+        repository.node_runs[run.id] = []
+        return run
+
+    # Run A dies at the render step, well after TTS has been bought and paid for.
+    render = NODE_HANDLERS["RenderFinalTimeline"]
+    calls = {"render": 0}
+
+    def _fail_render_once(ctx):
+        calls["render"] += 1
+        if calls["render"] == 1:
+            raise NodeExecutionError(ErrorCode.render_failed, "simulated render crash")
+        return render(ctx)
+
+    monkeypatch.setitem(NODE_HANDLERS, "RenderFinalTimeline", _fail_render_once)
+
+    failed_run = _admit("run_full_coverage_a")
+    runtime.start_run(job=job, run=failed_run, template=template)
+    assert repository.runs[failed_run.id].status == RunStatus.failed
+    tts_calls_after_first_run = sandbox.capabilities.count("tts.speech")
+    assert tts_calls_after_first_run == 1
+    skipped_empty = {
+        node.node_id
+        for node in repository.node_runs[failed_run.id]
+        if node.status == NodeStatus.skipped and not node.output_artifact_ids
+    }
+    assert {"PortraitTrackBuild", "LipSync"} <= skipped_empty, (
+        "the premise of this test: full coverage really does leave zero-output skips"
+    )
+
+    plan = compute_reuse_plan(
+        ReuseSourceRun(
+            run=repository.runs[failed_run.id],
+            node_runs=repository.node_runs[failed_run.id],
+        ),
+        template,
+        repository.artifacts,
+    )
+    assert plan.rerun_from_node_id == "RenderFinalTimeline", (
+        f"reuse stopped early at {plan.rerun_from_node_id} instead of the node that failed"
+    )
+    assert {"TTS", "PortraitTrackBuild", "LipSync"} <= set(plan.reused_node_ids)
+
+    resumed = _admit("run_full_coverage_b", resume_from=failed_run.id)
+    runtime.resume_run(source_run_id=failed_run.id, new_run=resumed, reuse_plan=plan.model_dump())
+
+    assert repository.runs[resumed.id].status == RunStatus.succeeded
+    assert sandbox.capabilities.count("tts.speech") == tts_calls_after_first_run, (
+        "the resume re-ran TTS and paid the vendor for audio it already owned"
+    )
+    reused = {
+        node.node_id
+        for node in repository.node_runs[resumed.id]
+        if node.skipped_reason == "resume.reused_artifact_prefix"
+    }
+    assert "TTS" in reused

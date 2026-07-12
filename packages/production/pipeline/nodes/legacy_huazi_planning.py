@@ -261,6 +261,10 @@ def plan_huazi_overlays(
             attempt=attempt,
             previous_errors=previous_errors,
         )
+        idempotency = ctx.provider_call_idempotency(
+            logical_call_slot=f"huazi_agent:attempt-{attempt}",
+            provider_profile_id=profile.id,
+        )
         invocation, result = ctx.provider_gateway.invoke(
             ProviderCall(
                 case_id=run.case_id,
@@ -270,10 +274,8 @@ def plan_huazi_overlays(
                 capability_id="llm.chat",
                 prompt_version_id=prompt_invocation.prompt_version_id,
                 input={"prompt": rendered, "response_format": {"type": "json_object"}},
-                idempotency_key=ctx.provider_call_idempotency_key(
-                    logical_call_slot=f"huazi_agent:attempt-{attempt}",
-                    provider_profile_id=profile.id,
-                ),
+                idempotency_key=idempotency.key,
+                fallback_idempotency_keys=idempotency.fallback_keys,
             )
         )
         response_artifact = _record_llm_response_artifact(

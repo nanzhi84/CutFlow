@@ -52,6 +52,9 @@ def run(ctx: NodeContext) -> NodeOutput:
     profile, is_real = ctx.resolve_lipsync_profile(state.request)
 
     def invoke(profile_id: str):
+        idempotency = ctx.provider_call_idempotency(
+            logical_call_slot="lipsync", provider_profile_id=profile_id
+        )
         return ctx.provider_gateway.invoke(
             ProviderCall(
                 case_id=run.case_id,
@@ -65,10 +68,8 @@ def run(ctx: NodeContext) -> NodeOutput:
                     "duration_sec": duration,
                     "timeout_minutes": state.request.lipsync.timeout_minutes,
                 },
-                idempotency_key=ctx.provider_call_idempotency_key(
-                    logical_call_slot="lipsync",
-                    provider_profile_id=profile_id,
-                ),
+                idempotency_key=idempotency.key,
+                fallback_idempotency_keys=idempotency.fallback_keys,
             )
         )
 

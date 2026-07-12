@@ -223,6 +223,80 @@ def test_default_strict_reuses_completed_nodes(tmp_path):
     assert plan.rerun_from_node_id is None
 
 
+def _skipped_without_output(node_id: str) -> c.NodeRun:
+    """What ``_may_skip_without_running`` leaves behind: skipped, and empty-handed.
+
+    Full-coverage B-roll turns PortraitTrackBuild / LipSync into no-ops, so the node runs
+    but publishes nothing — the template still DECLARES output kinds for it.
+    """
+    return c.NodeRun(
+        id=f"nr_{node_id}",
+        run_id="run_source",
+        node_id=node_id,
+        node_version="v1",
+        status=c.NodeStatus.skipped,
+        input_manifest_hash="same",
+        output_artifact_ids=[],
+    )
+
+
+def test_legitimately_empty_skipped_node_does_not_stop_reuse(tmp_path):
+    # A4. Reuse used to read "no artifacts + declared output kinds" as corruption and stop
+    # dead at PortraitTrackBuild — which on the full-coverage path is simply a node that
+    # produces nothing. Everything paid for BEFORE it (TTS, the planners) then re-ran and
+    # re-billed on every resume.
+    tts_path = tmp_path / "tts.json"
+    tts_path.write_text("tts", encoding="utf-8")
+    template = _template(
+        _node("TTS"),
+        _node("PortraitTrackBuild", outputs=[c.ArtifactKind.video_portrait_track]),
+        _node("LipSync", outputs=[c.ArtifactKind.video_lipsync]),
+        _node("RenderFinalTimeline"),
+    )
+    source = _run(
+        [
+            _node_run("TTS", "art_tts"),
+            _skipped_without_output("PortraitTrackBuild"),
+            _skipped_without_output("LipSync"),
+            _node_run("RenderFinalTimeline", "art_render", status=c.NodeStatus.failed),
+        ],
+        status=c.RunStatus.failed,
+    )
+    artifacts = {"art_tts": _artifact("art_tts", tts_path)}
+
+    plan = compute_reuse_plan(source, template, artifacts)
+
+    assert plan.reused_node_ids == ["TTS", "PortraitTrackBuild", "LipSync"]
+    assert plan.rerun_from_node_id == "RenderFinalTimeline"
+    # The skipped nodes are reused as what they were: empty.
+    empty = {d.node_id: d.artifact_ids for d in plan.decisions if d.reusable}
+    assert empty["PortraitTrackBuild"] == [] and empty["LipSync"] == []
+
+
+def test_a_node_whose_recorded_artifacts_vanished_still_stops_reuse(tmp_path):
+    # The other side of A4: an empty output list is only benign when the node never
+    # recorded any ids. A node that DID record them and whose rows are gone is genuinely
+    # broken, and reusing it would hand the new run a chain built on nothing.
+    tts_path = tmp_path / "tts.json"
+    tts_path.write_text("tts", encoding="utf-8")
+    template = _template(_node("TTS"), _node("PortraitTrackBuild"), _node("LipSync"))
+    source = _run(
+        [
+            _node_run("TTS", "art_tts"),
+            _node_run("PortraitTrackBuild", "art_gone", status=c.NodeStatus.skipped),
+            _node_run("LipSync", "art_lipsync", status=c.NodeStatus.failed),
+        ],
+        status=c.RunStatus.failed,
+    )
+
+    plan = compute_reuse_plan(source, template, {"art_tts": _artifact("art_tts", tts_path)})
+
+    assert plan.reused_node_ids == ["TTS"]
+    assert plan.rerun_from_node_id == "PortraitTrackBuild"
+    assert plan.decisions[-1].reason == "artifact_missing"
+    assert plan.decisions[-1].artifact_ids == ["art_gone"]
+
+
 def test_node_spec_exposes_only_the_consumed_reuse_shape():
     """Guard: the live reuse contract is reuse_policy/side_effects/idempotency_key.
 

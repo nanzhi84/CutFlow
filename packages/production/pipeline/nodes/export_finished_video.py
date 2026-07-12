@@ -354,7 +354,7 @@ def _resolve_publish_copy(
         case_id=ctx.run.case_id,
         run_id=ctx.run.id,
         node_run_id=ctx.node_run.id,
-        idempotency_key_for_profile=lambda profile_id: ctx.provider_call_idempotency_key(
+        idempotency_for_profile=lambda profile_id: ctx.provider_call_idempotency(
             logical_call_slot="publish_copy",
             provider_profile_id=profile_id,
         ),
@@ -482,6 +482,9 @@ def _generate_ai_cover(
         reference=reference,
         call_input=call_input,
     )
+    idempotency = ctx.provider_call_idempotency(
+        logical_call_slot="cover", provider_profile_id=profile_id
+    )
     invocation, result = ctx.provider_gateway.invoke(
         ProviderCall(
             case_id=run.case_id,
@@ -491,10 +494,8 @@ def _generate_ai_cover(
             capability_id="image.generate",
             prompt_version_id=version.id if version is not None else None,
             input=call_input,
-            idempotency_key=ctx.provider_call_idempotency_key(
-                logical_call_slot="cover",
-                provider_profile_id=profile_id,
-            ),
+            idempotency_key=idempotency.key,
+            fallback_idempotency_keys=idempotency.fallback_keys,
         )
     )
     invocation_ids.append(invocation.id)

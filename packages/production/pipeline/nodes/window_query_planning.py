@@ -83,6 +83,9 @@ def run(ctx: NodeContext) -> NodeOutput:
         provider_profile_id=profile.id,
     )
     provider_invocation_ids: list[str] = []
+    idempotency = ctx.provider_call_idempotency(
+        logical_call_slot="window_query_llm", provider_profile_id=profile.id
+    )
     try:
         invocation, result = ctx.provider_gateway.invoke(
             ProviderCall(
@@ -96,10 +99,8 @@ def run(ctx: NodeContext) -> NodeOutput:
                     "prompt": rendered,
                     "response_format": {"type": "json_object"},
                 },
-                idempotency_key=ctx.provider_call_idempotency_key(
-                    logical_call_slot="window_query_llm",
-                    provider_profile_id=profile.id,
-                ),
+                idempotency_key=idempotency.key,
+                fallback_idempotency_keys=idempotency.fallback_keys,
             )
         )
     except Exception as exc:

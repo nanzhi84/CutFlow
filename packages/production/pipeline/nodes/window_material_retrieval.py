@@ -113,6 +113,11 @@ def run(ctx: NodeContext) -> NodeOutput:
             candidates_by_window[window_id] = []
             continue
         query_keywords = extract_keywords(retrieval_intent)
+        # One slot per window: the windows are distinct paid calls, so folding them into
+        # a single slot would make the second window replay the first window's embedding.
+        idempotency = ctx.provider_call_idempotency(
+            logical_call_slot=f"embedding:{window_id}", provider_profile_id=profile.id
+        )
         invocation, result = ctx.provider_gateway.invoke(
             ProviderCall(
                 case_id=ctx.run.case_id,
@@ -128,10 +133,8 @@ def run(ctx: NodeContext) -> NodeOutput:
                     "normalization": CLIP_EMBEDDING_NORMALIZATION,
                     "index_version": CLIP_INDEX_VERSION,
                 },
-                idempotency_key=ctx.provider_call_idempotency_key(
-                    logical_call_slot=f"embedding:{window_id}",
-                    provider_profile_id=profile.id,
-                ),
+                idempotency_key=idempotency.key,
+                fallback_idempotency_keys=idempotency.fallback_keys,
             )
         )
         provider_invocation_ids.append(invocation.id)

@@ -10,7 +10,10 @@ from packages.core.contracts import (
     DigitalHumanVideoRequest,
     WarningCode,
 )
-from packages.core.provider_idempotency import build_provider_call_idempotency_key
+from packages.core.provider_idempotency import (
+    build_provider_call_idempotency,
+    build_provider_call_idempotency_key,
+)
 from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline._materialize import (
     eligible_bgm_candidates,
@@ -655,7 +658,7 @@ def test_provider_invoke_records_raw_request_response_and_exact_output():
             return SimpleNamespace(**update)
 
     class _Context:
-        run = SimpleNamespace(id="run_1", case_id="case_demo")
+        run = SimpleNamespace(id="run_1", job_id="job_1", case_id="case_demo")
         node_run = SimpleNamespace(
             id="node_1",
             node_id="PostProcessAgentPlanning",
@@ -673,8 +676,9 @@ def test_provider_invoke_records_raw_request_response_and_exact_output():
             self.recorded_artifacts.append(artifact)
             return artifact
 
-        def provider_call_idempotency_key(self, *, logical_call_slot, provider_profile_id):
-            return build_provider_call_idempotency_key(
+        def provider_call_idempotency(self, *, logical_call_slot, provider_profile_id):
+            return build_provider_call_idempotency(
+                job_id=self.run.job_id,
                 run_id=self.run.id,
                 canonical_node_id=self.node_run.node_id,
                 logical_call_slot=logical_call_slot,
@@ -704,7 +708,7 @@ def test_provider_invoke_records_raw_request_response_and_exact_output():
     # The repair attempt (attempt=1) flows into the logical call slot, so its key is
     # distinct from attempt 0 and stable across node_run.id changes.
     assert context.provider_gateway.calls[0].idempotency_key == build_provider_call_idempotency_key(
-        run_id="run_1",
+        job_id="job_1",
         canonical_node_id="PostProcessAgentPlanning",
         logical_call_slot="postprocess_agent:attempt-1",
         provider_profile_id="profile_1",
