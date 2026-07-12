@@ -410,7 +410,8 @@ class ProviderGateway:
             if circuit_error is not None:
                 return self._fail_before_submit(invocation, circuit_error, started, store)
         if store is not None and not store.claim_submit(invocation.id):
-            return self._recover_lost_claim(call, profile, invocation, store, started)
+            # Lost the prepared -> submitted race: a concurrent executor owns the call now.
+            return self._recover_submitted(call, profile, invocation, store, started)
         assert_transition("provider", invocation.status, ProviderStatus.submitted)
         invocation = invocation.model_copy(
             update={"status": ProviderStatus.submitted, "updated_at": utcnow()}
@@ -432,7 +433,15 @@ class ProviderGateway:
         self.repository.provider_invocations[invocation.id] = invocation
         record_provider_invocation(invocation)
         if store is not None:
-            store.mark_terminal(invocation.id, ProviderStatus.failed, error)
+            # This failure happened before we crossed the vendor boundary, so only claim
+            # the durable row if it is still 'prepared'. A concurrent executor may already
+            # hold it at submitted/polling with a real vendor task in flight.
+            store.mark_terminal(
+                invocation.id,
+                ProviderStatus.failed,
+                error,
+                expected_status=ProviderStatus.prepared,
+            )
         return invocation, None
 
     def _submit(self, call, profile, invocation, started, *, store):
@@ -563,32 +572,38 @@ class ProviderGateway:
         return invocation, None
 
     def _recover_submitted(self, call, profile, invocation, store, started):
-        # A fresh attempt found a 'submitted' row: the prior holder is gone and the
-        # request may have crossed the vendor boundary. Only re-submit when the adapter
-        # guarantees vendor-side de-dup by idempotency key; otherwise stop and surface
-        # an unknown outcome rather than risk a double charge.
-        plugin = self.plugins.get(profile.provider_id)
-        if bool(getattr(plugin, "supports_idempotent_submit", False)):
-            self.repository.provider_invocations[invocation.id] = invocation
-            return self._submit(call, profile, invocation, started, store=store)
-        return self._submit_outcome_unknown(invocation, store=store)
+        """Recover a 'submitted' row — the request may have crossed the vendor boundary.
 
-    def _recover_lost_claim(self, call, profile, invocation, store, started):
-        # Lost the prepared -> submitted race to a concurrent (likely live) executor.
-        # Wait briefly for it to publish progress; only take over a still-'submitted'
-        # row once it is stale beyond 2x the provider timeout.
-        row = self._await_claim_progress(store, invocation.idempotency_key, profile) or invocation
-        row = self._bind_node_run(row, call.node_run_id)
+        Both ways of landing here share this path: a fresh attempt that loaded a
+        'submitted' row (prior holder crashed, or is a zombie still in flight), and a CAS
+        loser that lost the prepared -> submitted race to a live executor. We cannot tell
+        the two apart from the row alone, so first wait briefly for the holder to publish
+        progress, then act on what it became.
+
+        A still-'submitted' row is only DESTROYED (claimed as an unknown outcome) once it
+        is stale beyond 2x the provider timeout — clobbering a live holder's row would
+        make its later mark_polling a silent no-op and orphan a billing vendor task. An
+        idempotent-submit adapter is exempt from that wait: the vendor de-dups by key, so
+        a same-key resubmit cannot double charge whether the holder is dead or alive.
+        """
+        row = self._bind_node_run(
+            self._await_claim_progress(store, invocation.idempotency_key, profile) or invocation,
+            call.node_run_id,
+        )
         if row.status is ProviderStatus.polling:
             return self._resume_polling(call, profile, row, store, started)
         if row.status in _TERMINAL_PROVIDER_STATUSES:
             if row.status is ProviderStatus.succeeded:
                 return self._reject_completed(row)
             return row, None
+        plugin = self.plugins.get(profile.provider_id)
+        if bool(getattr(plugin, "supports_idempotent_submit", False)):
+            self.repository.provider_invocations[row.id] = row
+            return self._submit(call, profile, row, started, store=store)
         if self._is_stale(row, profile):
-            return self._recover_submitted(call, profile, row, store, started)
-        # Holder presumed alive: do not resubmit or mutate the durable row; surface an
-        # unknown outcome to this caller only.
+            return self._submit_outcome_unknown(row, store=store)
+        # Holder presumed alive: report the unknown outcome to THIS caller only, leaving
+        # the durable row intact so the holder's task id can still land on it.
         return self._submit_outcome_unknown(row, store=None)
 
     def _await_claim_progress(self, store, idempotency_key, profile):
@@ -620,9 +635,9 @@ class ProviderGateway:
         return invocation, None
 
     def _reject_completed(self, invocation):
-        # Defensive: the stage-B activity-level no-op should intercept a completed node
-        # before it re-enters the gateway. If a succeeded invocation for this key still
-        # arrives, do not call the provider again and do not fabricate a result.
+        # The activity-level no-op normally intercepts a completed node before it can
+        # re-enter the gateway. If a succeeded invocation for this key still arrives, do
+        # not call the provider again and do not fabricate a result we no longer hold.
         error = ProviderError(
             code=ErrorCode.idempotency_conflict,
             message="A succeeded provider invocation already exists for this idempotency key.",

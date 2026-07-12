@@ -274,13 +274,27 @@ class SqlAlchemyProviderInvocationStore(BaseRepository):
         invocation_id: str,
         status: ProviderStatus,
         error: ProviderError | None,
+        *,
+        expected_status: ProviderStatus | None = None,
     ) -> bool:
-        """Forward-only write of a terminal status; a row already terminal is untouched."""
+        """Forward-only write of a terminal status; a row already terminal is untouched.
+
+        ``expected_status`` narrows the conditional update to one source status. A
+        failure raised BEFORE this executor crossed the vendor boundary (profile
+        validation, budget, circuit breaker) must pass ``prepared``: without it, a
+        concurrent executor's in-flight ``submitted``/``polling`` row — a real vendor
+        task — would be overwritten as failed and orphaned.
+        """
+        allowed = (
+            (expected_status.value,)
+            if expected_status is not None
+            else _NON_TERMINAL_PROVIDER_STATUSES
+        )
         with self.session_factory() as session:
             result = session.execute(
                 update(ProviderInvocationRow)
                 .where(ProviderInvocationRow.id == invocation_id)
-                .where(ProviderInvocationRow.status.in_(_NON_TERMINAL_PROVIDER_STATUSES))
+                .where(ProviderInvocationRow.status.in_(allowed))
                 .values(
                     status=status.value,
                     error=error.model_dump(mode="json") if error is not None else None,

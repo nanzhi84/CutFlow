@@ -577,9 +577,11 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         # (last node's completion lost) would trip that transition first.
         if self._node_already_terminal(run_id, node_id):
             if node_id == self._sequence_for_run(run)[-1] and run.status == RunStatus.running:
-                # Defensive for a future per-node sync wiring: today a node's terminal
-                # status and the run's terminal status commit together, so a terminal
-                # last node with a still-running run is unreachable.
+                # A real recovery window, not dead defense: the node's own snapshot is
+                # committed inside _execute_node (last node terminal, run still running),
+                # while _complete_run's run=succeeded only reaches Postgres in the
+                # activity-level sync that follows. A crash between those two commits
+                # leaves exactly this state, and the replay must finish the run.
                 self._complete_run(run_id)
             return self._node_activity_summary(run_id, node_id)
         request = self._request(job)
