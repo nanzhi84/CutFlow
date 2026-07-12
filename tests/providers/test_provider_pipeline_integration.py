@@ -305,6 +305,16 @@ def test_strict_alignment_uses_available_asr_provider(media_fixture_factory):
         assert narration.payload["source"] == "asr"
         assert narration.payload["strict"] is True
         assert narration.payload["warnings"] == []
+        # NarrationAlignment's paid ASR call is Run-scoped: it must carry the stable key
+        # (it had none before issue #193), so a retried activity recovers the in-flight
+        # transcription task instead of paying for a second one.
+        asr_invocation = next(
+            invocation
+            for invocation in repository.provider_invocations.values()
+            if invocation.run_id == run["id"] and invocation.capability_id == "asr.transcribe"
+        )
+        assert is_provider_call_idempotency_key(asr_invocation.idempotency_key)
+        assert alignment_node.id not in asr_invocation.idempotency_key
 
 
 def test_annotation_rerun_degrades_without_source_video():

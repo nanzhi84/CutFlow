@@ -19,6 +19,7 @@ from packages.core.contracts import (
     UsageRole,
     UsageWindowV4,
 )
+from packages.core.provider_idempotency import is_provider_call_idempotency_key
 from packages.core.storage.object_store import get_object_store, parse_object_uri
 from packages.media.assets import local_object_path
 from packages.media.video.ffmpeg import probe_media, probe_stream_types, probe_video_frame_count
@@ -124,6 +125,45 @@ def test_minimal_success_video_creates_finished_video_and_report():
         assert report["public_report"]["status"] == "succeeded"
         videos = active_client.get("/api/cases/case_demo/finished-videos").json()["items"]
         assert videos
+
+
+def test_every_run_scoped_provider_call_carries_a_stable_idempotency_key():
+    """CI guard for issue #193: no paid call inside a Workflow Run may go out unkeyed.
+
+    A node that adds a ProviderCall and forgets the Run-scoped helper key would silently
+    lose crash recovery (and re-submit, re-billing, on an activity retry). Rather than
+    trust one assertion per node, sweep every provider invocation a real full-chain run
+    produced and require the scheme key on all of them.
+    """
+    with fresh_client() as active_client:
+        login_admin_for(active_client)
+        response = active_client.post(
+            "/api/jobs/digital-human-video",
+            json=video_payload(cover={"mode": "ai"}),
+            headers={"Idempotency-Key": "golden-video-key-guard"},
+        )
+        assert response.status_code == 201, response.text
+        run_id = response.json()["initial_run"]["id"]
+
+        repository = active_client.app.state.repository
+        run_invocations = [
+            invocation
+            for invocation in repository.provider_invocations.values()
+            if invocation.run_id == run_id
+        ]
+        assert run_invocations, "the run made no provider calls; the guard would be vacuous"
+
+        unkeyed = [
+            (invocation.capability_id, invocation.idempotency_key)
+            for invocation in run_invocations
+            if not is_provider_call_idempotency_key(invocation.idempotency_key)
+        ]
+        assert unkeyed == [], f"Run-scoped provider calls without a stable key: {unkeyed}"
+
+        # The key must be Run-stable, so no node_run.id may appear inside it.
+        node_run_ids = {node.id for node in repository.node_runs.get(run_id, [])}
+        for invocation in run_invocations:
+            assert not any(nr_id in invocation.idempotency_key for nr_id in node_run_ids)
 
 
 def test_case_run_cards_list_recent_runs_for_case():

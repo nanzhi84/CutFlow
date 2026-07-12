@@ -37,6 +37,7 @@ from packages.core.contracts import (
     WarningCode,
     WorkflowRun,
 )
+from packages.core.provider_idempotency import is_provider_call_idempotency_key
 from packages.core.storage.object_store import LocalObjectStore, parse_object_uri
 from packages.core.storage.repository import Repository
 from packages.core.storage.secret_store import LocalSecretStore
@@ -175,9 +176,11 @@ class _MockImageProvider:
 
     def __init__(self) -> None:
         self.prompts: list[str] = []
+        self.keys: list[str | None] = []
 
     def invoke_with_context(self, call: ProviderCall, context) -> ProviderResult:
         self.prompts.append(str(call.input.get("prompt") or ""))
+        self.keys.append(call.idempotency_key)
         artifact = context.store_media_bytes(
             content=_PNG_1x1,
             filename=f"{call.idempotency_key or 'ai-cover'}.png",
@@ -224,6 +227,12 @@ def test_ai_cover_generates_artifact_when_profile_and_secret_active(
     assert output.status == NodeStatus.succeeded
     assert not output.degradations
     assert output.provider_invocation_ids
+    # The paid cover call is Run-scoped: stable key, free of node_run.id, so an activity
+    # retry recovers the durable invocation instead of generating (and billing) again.
+    # Asserted on the ProviderCall: this gateway is transient (no DB-backed reader), and
+    # only the durable path copies the key onto the invocation row.
+    assert is_provider_call_idempotency_key(provider.keys[0])
+    assert ctx.node_run.id not in provider.keys[0]
     # The AI prompt carries the generated cover title (cover prompt build is wired in).
     # No LLM is armed here, so the copy -- and thus the cover headline -- is derived
     # deterministically from the script ("第一句。第二句。" -> cover_title "第一句").

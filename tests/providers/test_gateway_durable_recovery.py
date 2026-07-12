@@ -8,6 +8,8 @@ row instead of re-submitting.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 from packages.ai.gateway.provider_gateway import (
@@ -22,9 +24,11 @@ from packages.ai.gateway.sqlalchemy_repository import (
 )
 from packages.core.contracts import (
     ErrorCode,
+    ProviderError,
     ProviderOptionsSchemaRef,
     ProviderProfile,
     ProviderStatus,
+    utcnow,
 )
 from packages.core.provider_idempotency import build_provider_call_idempotency_key
 from packages.core.storage.repository import Repository, new_id
@@ -189,15 +193,56 @@ def test_recover_submitted_stops_when_adapter_not_idempotent(db_session_factory)
 
     invocation, result = gateway.invoke(_call(key))
 
-    # Outcome unknown: do not resubmit; fail with the explicit code instead.
+    # Outcome unknown: do not resubmit; fail this caller with the explicit code.
     assert plugin.submit_count == 1
     assert result is None
     assert invocation.status is ProviderStatus.timed_out
     assert invocation.error is not None
     assert invocation.error.code is ErrorCode.provider_submit_outcome_unknown
+    # The durable row is still FRESH, so the prior holder may be a zombie that is still
+    # in flight (worker partitioned from Temporal, vendor call fine). Leave the row on
+    # 'submitted' so its late mark_polling can still land and record the vendor task id —
+    # clobbering it to timed_out here would silently orphan a billing task.
+    assert SqlAlchemyProviderInvocationStore(db_session_factory).load_by_key(key).status is (
+        ProviderStatus.submitted
+    )
+
+
+def test_stale_submitted_row_is_claimed_as_unknown_outcome(db_session_factory):
+    # Once the row is stale beyond 2x the provider timeout the holder is presumed dead,
+    # so the takeover writes the unknown outcome durably instead of leaving it hanging.
+    plugin = ScriptedProvider("crash_after_submit", supports_idempotent_submit=False)
+    gateway = _gateway(db_session_factory, plugin)
+    key = _key()
+
+    with pytest.raises(_SimulatedCrash):
+        gateway.invoke(_call(key))
+    _backdate_invocation(db_session_factory, key, seconds=10 * 60)
+
+    invocation, result = gateway.invoke(_call(key))
+
+    assert plugin.submit_count == 1
+    assert result is None
+    assert invocation.error is not None
+    assert invocation.error.code is ErrorCode.provider_submit_outcome_unknown
     assert SqlAlchemyProviderInvocationStore(db_session_factory).load_by_key(key).status is (
         ProviderStatus.timed_out
     )
+
+
+def _backdate_invocation(db_session_factory, key: str, *, seconds: int) -> None:
+    """Age the durable row's updated_at so the Gateway's staleness check fires."""
+    from sqlalchemy import update
+
+    from packages.core.storage.database import ProviderInvocationRow
+
+    with db_session_factory() as session:
+        session.execute(
+            update(ProviderInvocationRow)
+            .where(ProviderInvocationRow.idempotency_key == key)
+            .values(updated_at=utcnow() - timedelta(seconds=seconds))
+        )
+        session.commit()
 
 
 def test_recover_succeeded_row_rejects_without_calling_provider(db_session_factory):
@@ -214,6 +259,51 @@ def test_recover_succeeded_row_rejects_without_calling_provider(db_session_facto
     assert result is None
     assert invocation.error is not None
     assert invocation.error.code is ErrorCode.idempotency_conflict
+
+
+class _RacingBudgetGuard:
+    """Fails the budget check in the exact window the race lives in.
+
+    The Gateway evaluates guards AFTER get_or_create and BEFORE claim_submit, so this
+    stands in for: a concurrent executor claims the row and gets a real vendor task id,
+    and only then does our pre-submit check fail.
+    """
+
+    def __init__(self, store, error):
+        self.store = store
+        self.error = error
+
+    def evaluate(self, *, call, invocation):
+        self.store.claim_submit(invocation.id)
+        self.store.mark_polling(invocation.id, "vendor-job-live")
+        return self.error
+
+
+def test_pre_submit_failure_does_not_clobber_a_concurrent_in_flight_row(db_session_factory):
+    # A failure raised before we crossed the vendor boundary must not mark the durable
+    # row failed when a concurrent executor already advanced it to polling — that row is
+    # a live vendor task, and overwriting it would orphan (and keep billing) the task.
+    plugin = ScriptedProvider("succeed")
+    gateway = _gateway(db_session_factory, plugin)
+    store = SqlAlchemyProviderInvocationStore(db_session_factory)
+    key = _key()
+    gateway.budget_guard = _RacingBudgetGuard(
+        store,
+        ProviderError(
+            code=ErrorCode.provider_quota_exceeded, message="over budget", retryable=False
+        ),
+    )
+
+    invocation, result = gateway.invoke(_call(key))
+
+    # This caller still fails, and never submitted.
+    assert result is None
+    assert plugin.submit_count == 0
+    assert invocation.status is ProviderStatus.failed
+    # ...but the concurrent executor's in-flight row is untouched.
+    durable = store.load_by_key(key)
+    assert durable.status is ProviderStatus.polling
+    assert durable.external_job_id == "vendor-job-live"
 
 
 def test_recover_failed_row_does_not_open_new_task(db_session_factory):
