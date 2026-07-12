@@ -8,6 +8,7 @@ from typing import Any
 
 from packages.core.contracts.artifacts import OverlayEvent, OverlayRect
 from packages.production.pipeline._caption_visual_safety import EMPHASIS_MIN_EVENTS
+from packages.production.pipeline._caption_window_planner import EMPHASIS_EVENT_GAP_SEC
 
 # Once at least the floor of selectable events is offered, PostProcess must commit to
 # a 5-8 event band (below the floor it must take them all); this is the selection-side
@@ -255,14 +256,16 @@ def validate_postprocess_selection(
         )
     if hero_count > 2:
         errors.append("caption choices may use hero at most 2 times")
-    min_gap_frames = int(math.ceil(0.8 * max(1, int(caption_windows.get("fps") or 30))))
+    min_gap_frames = int(
+        math.ceil(EMPHASIS_EVENT_GAP_SEC * max(1, int(caption_windows.get("fps") or 30)))
+    )
     selected_windows.sort(key=lambda item: (item[0], item[1], item[2]))
     for previous, current in zip(selected_windows, selected_windows[1:]):
         gap = current[0] - previous[1]
         if gap < min_gap_frames:
             errors.append(
                 f"caption events '{previous[2]}' and '{current[2]}' must be non-overlapping "
-                "with at least 0.8s gap"
+                f"with at least {EMPHASIS_EVENT_GAP_SEC}s gap"
             )
     if emphasis_enabled and selectable_count > 0:
         chosen = len(seen)

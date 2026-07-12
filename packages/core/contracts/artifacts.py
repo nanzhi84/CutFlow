@@ -589,6 +589,8 @@ class CaptionWindowDiagnostics(ContractModel):
     events_with_options: int = Field(0, ge=0)
     relaxed_tier2_events: int = Field(0, ge=0)
     relaxed_tier3_events: int = Field(0, ge=0)
+    emphasis_hold_extended: int = Field(0, ge=0)
+    emphasis_hold_below_min: int = Field(0, ge=0)
 
 
 class CaptionWindowsPlanArtifact(ContractModel):

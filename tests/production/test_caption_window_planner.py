@@ -76,7 +76,15 @@ def test_phrase_window_clamps_to_cut_segment_instead_of_dropping_whole_unit():
             "end": 4.0,
         }
     ]
-    windows, candidate_count, dropped, token_matched, char_fallback = build_emphasis_windows(
+    (
+        windows,
+        candidate_count,
+        dropped,
+        token_matched,
+        char_fallback,
+        hold_extended,
+        hold_below_min,
+    ) = build_emphasis_windows(
         emphasis=[EmphasisHint(phrase="限时五折")],
         units=units,
         fps=30,
@@ -89,9 +97,105 @@ def test_phrase_window_clamps_to_cut_segment_instead_of_dropping_whole_unit():
     assert dropped == 0
     assert token_matched == 0
     assert char_fallback == 1
+    assert (hold_extended, hold_below_min) == (0, 0)
     assert len(windows) == 1
     assert 60 <= windows[0]["start_frame"] < windows[0]["end_frame"] <= 120
     assert windows[0]["source_unit_ids"] == ["u1"]
+
+
+def _emphasis_windows(*, units, tokens, emphasis, total_frames, cut_frames=None):
+    """Build token-driven emphasis windows through the full planner path."""
+    return build_emphasis_windows(
+        emphasis=[EmphasisHint(phrase=phrase) for phrase in emphasis],
+        units=units,
+        fps=30,
+        total_frames=total_frames,
+        cut_frames=cut_frames or set(),
+        resolution=(1080, 1920),
+        normal_caption_top_y=0.75,
+        tokens=tokens,
+    )
+
+
+def test_emphasis_hold_extends_short_window_to_minimum_without_moving_start():
+    units = [{"unit_id": "u1", "text": "限时五折", "start": 0.0, "end": 3.0}]
+    tokens = [
+        {"text": "限时", "start": 0.0, "end": 2.0},
+        {"text": "五折", "start": 2.0, "end": 2.3},  # 0.3s phrase span -> frames 60..69
+    ]
+    windows, _count, _dropped, matched, _fallback, hold_extended, hold_below_min = (
+        _emphasis_windows(units=units, tokens=tokens, emphasis=["五折"], total_frames=120)
+    )
+    assert matched == 1
+    # start (the cut-in beat) stays exact; the tail extends to exactly 1.2s = 36 frames.
+    assert (windows[0]["start_frame"], windows[0]["end_frame"]) == (60, 96)
+    assert (hold_extended, hold_below_min) == (1, 0)
+
+
+def test_emphasis_hold_is_clamped_to_the_segment_cut():
+    units = [{"unit_id": "u1", "text": "限时五折", "start": 0.0, "end": 4.0}]
+    tokens = [
+        {"text": "限时", "start": 0.0, "end": 2.0},
+        {"text": "五折", "start": 2.0, "end": 2.3},  # frames 60..69
+    ]
+    # Cut at frame 78 = start + 0.6s: the hold can only reach the segment end.
+    windows, *_rest, hold_extended, hold_below_min = _emphasis_windows(
+        units=units, tokens=tokens, emphasis=["五折"], total_frames=180, cut_frames={78}
+    )
+    assert (windows[0]["start_frame"], windows[0]["end_frame"]) == (60, 78)
+    # 0.6s < 1.2s, so the window is extended yet still below the minimum hold.
+    assert (hold_extended, hold_below_min) == (1, 1)
+
+
+def test_emphasis_hold_is_clamped_to_next_event_lead_in_gap():
+    units = [
+        {"unit_id": "u1", "text": "限时五折", "start": 0.0, "end": 3.0},
+        {"unit_id": "u2", "text": "包邮", "start": 3.0, "end": 6.0},
+    ]
+    tokens = [
+        {"text": "限时", "start": 0.0, "end": 2.0},
+        {"text": "五折", "start": 2.0, "end": 2.3},  # window A -> frames 60..69
+        {"text": "包邮", "start": 3.5, "end": 4.0},  # window B start = frame 105
+    ]
+    windows, *_rest, hold_extended, hold_below_min = _emphasis_windows(
+        units=units, tokens=tokens, emphasis=["五折", "包邮"], total_frames=180
+    )
+    # A's next neighbour starts at frame 105 (1.5s later); the hold stops at
+    # next_start - ceil(0.8s) = 105 - 24 = 81, still short of the 36-frame minimum.
+    assert (windows[0]["start_frame"], windows[0]["end_frame"]) == (60, 81)
+    assert (windows[1]["start_frame"], windows[1]["end_frame"]) == (105, 141)
+    assert (hold_extended, hold_below_min) == (2, 1)
+
+
+def test_emphasis_hold_leaves_already_long_window_untouched():
+    units = [{"unit_id": "u1", "text": "限时五折", "start": 0.0, "end": 4.0}]
+    tokens = [
+        {"text": "限时", "start": 0.0, "end": 2.0},
+        {"text": "五折", "start": 2.0, "end": 3.5},  # 1.5s span -> frames 60..105
+    ]
+    windows, *_rest, hold_extended, hold_below_min = _emphasis_windows(
+        units=units, tokens=tokens, emphasis=["五折"], total_frames=180
+    )
+    assert (windows[0]["start_frame"], windows[0]["end_frame"]) == (60, 105)
+    assert (hold_extended, hold_below_min) == (0, 0)
+
+
+def test_emphasis_hold_never_shortens_windows_closer_than_the_gap():
+    units = [
+        {"unit_id": "u1", "text": "限时五折", "start": 0.0, "end": 3.0},
+        {"unit_id": "u2", "text": "包邮", "start": 3.0, "end": 6.0},
+    ]
+    tokens = [
+        {"text": "限时", "start": 0.0, "end": 2.0},
+        {"text": "五折", "start": 2.0, "end": 2.9},  # window A -> frames 60..87
+        {"text": "包邮", "start": 3.0, "end": 4.0},  # window B start = frame 90
+    ]
+    windows, *_rest = _emphasis_windows(
+        units=units, tokens=tokens, emphasis=["五折", "包邮"], total_frames=180
+    )
+    # A already ends only 3 frames before B's start (< the 24-frame gap); the clamp
+    # would pull it back to 66, but a hold pass must never shorten an existing window.
+    assert windows[0]["end_frame"] == 87
 
 
 def test_visual_safety_fails_closed_when_face_detector_is_unavailable(monkeypatch):
@@ -685,6 +789,89 @@ def test_caption_window_emits_visual_degradation_on_face_runtime_failure(monkeyp
     assert plan["diagnostics"]["visual_analysis_failed"] is True
     assert plan["diagnostics"]["unavailable_detectors"] == ["face"]
     assert plan["emphasis_windows"][0]["caption_options"] == []
+
+
+def test_caption_window_reports_emphasis_hold_extension_in_diagnostics(monkeypatch):
+    cv2 = pytest.importorskip("cv2")
+    request = DigitalHumanVideoRequest(
+        case_id="case_demo",
+        script="限时五折",
+        voice={"voice_id": "voice_demo"},
+        subtitle={"normal_enabled": False, "emphasis_enabled": True},
+        bgm={"enabled": False},
+    )
+    state = RunState(
+        request=request,
+        artifacts={
+            ArtifactKind.video_rendered: _artifact(
+                ArtifactKind.video_rendered, {}, "RenderedVideoArtifact.v1"
+            ),
+            ArtifactKind.plan_timeline: _artifact(
+                ArtifactKind.plan_timeline,
+                {"fps": 30, "total_frames": 120, "tracks": []},
+                "TimelineArtifact.v1",
+            ),
+            ArtifactKind.narration_units: _artifact(
+                ArtifactKind.narration_units,
+                {"units": [{"unit_id": "u1", "text": "限时五折", "start": 0.0, "end": 3.0}]},
+                "NarrationUnitsArtifact.v1",
+            ),
+            ArtifactKind.audio_alignment: _artifact(
+                ArtifactKind.audio_alignment,
+                {
+                    "tokens": [
+                        {"text": "限时", "start": 0.0, "end": 2.0},
+                        {"text": "五折", "start": 2.0, "end": 2.3},
+                    ]
+                },
+                "AudioAlignmentArtifact.v1",
+            ),
+            ArtifactKind.creative_intent: _artifact(
+                ArtifactKind.creative_intent,
+                {"emphasis": [{"phrase": "五折"}]},
+                "CreativeIntentArtifact.v1",
+            ),
+        },
+    )
+
+    class _Context:
+        node_run = SimpleNamespace(node_id="CaptionWindowPlanning")
+
+        def __init__(self, run_state: RunState):
+            self.state = run_state
+
+        def artifact_path(self, _artifact_value):
+            return Path("/tmp/final-video.mp4")
+
+        def artifact(self, kind, payload, payload_schema):
+            return _artifact(kind, payload, payload_schema)
+
+    monkeypatch.setattr(
+        caption_window_planning,
+        "extract_frames_for_times",
+        lambda _video, times, **_kwargs: [
+            (time, f"frame-{index}.jpg") for index, time in enumerate(times)
+        ],
+    )
+    monkeypatch.setattr(
+        cv2, "imread", lambda _path: np.zeros((100, 100, 3), dtype=np.uint8)
+    )
+    monkeypatch.setattr(visual, "face_detector_available", lambda: True)
+    monkeypatch.setattr(visual, "detect_faces_strict", lambda _image: [])
+    monkeypatch.setattr(visual, "scene_text_detector_available", lambda: True)
+    monkeypatch.setattr(visual, "detect_scene_text_strict", lambda _image: [])
+
+    output = caption_window_planning.run(_Context(state))
+    plan = next(
+        artifact.payload
+        for artifact in output.artifacts
+        if artifact.kind == ArtifactKind.plan_caption_windows
+    )
+    # 0.3s spoken phrase (frames 60..69) held out to the 1.2s (36-frame) minimum.
+    window = plan["emphasis_windows"][0]
+    assert (window["start_frame"], window["end_frame"]) == (60, 96)
+    assert plan["diagnostics"]["emphasis_hold_extended"] == 1
+    assert plan["diagnostics"]["emphasis_hold_below_min"] == 0
 
 
 def _artifact(kind: ArtifactKind, payload: dict, payload_schema: str) -> Artifact:

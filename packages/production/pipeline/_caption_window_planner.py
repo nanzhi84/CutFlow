@@ -16,6 +16,12 @@ from packages.production.pipeline._huazi_layout import generate_layout_boxes
 _MAX_OPTIONS_PER_EVENT = 24
 _MAX_SAFE_ANCHORS_PER_EVENT = 6
 
+# Emphasis captions cut in on the exact spoken beat but must linger long enough to
+# read; the tail is held to this minimum unless a cut or the next event forces it
+# shorter. Consecutive events keep at least this lead-in gap between them.
+EMPHASIS_MIN_HOLD_SEC = 1.2
+EMPHASIS_EVENT_GAP_SEC = 0.8
+
 
 def normalize_caption_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", str(value or ""))
@@ -158,12 +164,14 @@ def build_emphasis_windows(
     resolution: tuple[int, int],
     normal_caption_top_y: float,
     tokens: list[dict] | None = None,
-) -> tuple[list[dict], int, int, int, int]:
+) -> tuple[list[dict], int, int, int, int, int, int]:
     """Derive fixed emphasis windows and static geometry candidates.
 
     Phrase position is estimated deterministically from its character offset in the
     narration unit.  The resulting short window is clamped into the final visual
     segment containing that center, so it never crosses a portrait or B-roll cut.
+    A second pass holds each window's tail to ``EMPHASIS_MIN_HOLD_SEC`` where the
+    segment and neighbouring events allow it (the cut-in beat never moves).
     """
 
     candidate_events = derive_huazi_candidates(emphasis, units)
@@ -221,7 +229,18 @@ def build_emphasis_windows(
                 "hero_eligible": any(abs(start_frame - cut) <= 1 for cut in cut_frames),
             }
         )
-    return windows, len(candidate_events), crossing_cuts, token_matched, char_fallback
+    hold_extended, hold_below_min = _extend_emphasis_hold(
+        windows, fps=fps, total_frames=total_frames, cut_frames=cut_frames
+    )
+    return (
+        windows,
+        len(candidate_events),
+        crossing_cuts,
+        token_matched,
+        char_fallback,
+        hold_extended,
+        hold_below_min,
+    )
 
 
 def build_caption_option_candidates(
@@ -512,12 +531,7 @@ def _phrase_window(
     center_ratio = (offset + len(needle) / 2.0) / len(haystack)
     center = unit_start + int(round((unit_end - unit_start - 1) * center_ratio))
 
-    boundaries = [0, *sorted(cut for cut in cut_frames if 0 < cut < total_frames), total_frames]
-    segment_start, segment_end = 0, total_frames
-    for left, right in zip(boundaries, boundaries[1:], strict=True):
-        if left <= center < right:
-            segment_start, segment_end = left, right
-            break
+    segment_start, segment_end = _segment_bounds(center, cut_frames, total_frames)
     available_start = max(unit_start, segment_start)
     available_end = min(unit_end, segment_end)
     min_frames = max(3, int(math.ceil(0.3 * fps)))
@@ -536,6 +550,57 @@ def _phrase_window(
     if any(start < cut < end for cut in cut_frames):
         return None
     return start, end, "char_fallback"
+
+
+def _segment_bounds(frame: int, cut_frames: set[int], total_frames: int) -> tuple[int, int]:
+    """Return the ``[start, end)`` visual segment containing ``frame``.
+
+    Segment boundaries are the timeline cuts, so a window kept inside one segment
+    never crosses a portrait or B-roll cut.
+    """
+    boundaries = [0, *sorted(cut for cut in cut_frames if 0 < cut < total_frames), total_frames]
+    for left, right in zip(boundaries, boundaries[1:], strict=True):
+        if left <= frame < right:
+            return left, right
+    return 0, total_frames
+
+
+def _extend_emphasis_hold(
+    windows: list[dict],
+    *,
+    fps: int,
+    total_frames: int,
+    cut_frames: set[int],
+) -> tuple[int, int]:
+    """Hold each emphasis window's tail to a minimum on-screen duration.
+
+    ``start_frame`` (the cut-in beat) never moves; only the tail extends, clamped to
+    the containing segment end, the next event's lead-in gap, and the timeline end.
+    Windows are never shortened, so pairs already closer than the gap keep their
+    existing spacing.
+    """
+    if not windows:
+        return 0, 0
+    min_hold_frames = int(math.ceil(EMPHASIS_MIN_HOLD_SEC * fps))
+    gap_frames = int(math.ceil(EMPHASIS_EVENT_GAP_SEC * fps))
+    ordered = sorted(windows, key=lambda window: (window["start_frame"], window["end_frame"]))
+    hold_extended = 0
+    hold_below_min = 0
+    for position, window in enumerate(ordered):
+        start_frame = window["start_frame"]
+        original_end = window["end_frame"]
+        _segment_start, segment_end = _segment_bounds(start_frame, cut_frames, total_frames)
+        ceiling = min(segment_end, total_frames)
+        if position + 1 < len(ordered):
+            ceiling = min(ceiling, ordered[position + 1]["start_frame"] - gap_frames)
+        target_end = min(start_frame + min_hold_frames, ceiling)
+        end_final = max(original_end, target_end)
+        window["end_frame"] = end_final
+        if end_final > original_end:
+            hold_extended += 1
+        if end_final - start_frame < min_hold_frames:
+            hold_below_min += 1
+    return hold_extended, hold_below_min
 
 
 def _tokens_in_window(tokens: list[dict], start: float, end: float) -> list[dict]:

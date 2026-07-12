@@ -90,6 +90,8 @@ def run(ctx: NodeContext) -> NodeOutput:
         "options_pruned_by_cap": 0,
         "token_matched": 0,
         "char_fallback": 0,
+        "emphasis_hold_extended": 0,
+        "emphasis_hold_below_min": 0,
     }
 
     with tempfile.TemporaryDirectory(prefix="cutagent-caption-window-") as directory:
@@ -182,6 +184,8 @@ def run(ctx: NodeContext) -> NodeOutput:
             cut_drops,
             emphasis_token_matched,
             emphasis_char_fallback,
+            emphasis_hold_extended,
+            emphasis_hold_below_min,
         ) = build_emphasis_windows(
             emphasis=creative_intent.emphasis if emphasis_enabled else [],
             units=units,
@@ -196,6 +200,8 @@ def run(ctx: NodeContext) -> NodeOutput:
         diagnostics["events_crossing_cuts_dropped"] = cut_drops
         diagnostics["token_matched"] += emphasis_token_matched
         diagnostics["char_fallback"] += emphasis_char_fallback
+        diagnostics["emphasis_hold_extended"] = emphasis_hold_extended
+        diagnostics["emphasis_hold_below_min"] = emphasis_hold_below_min
 
         emphasis_summary: EmphasisAnalysisSummary | None = None
         if emphasis_enabled:

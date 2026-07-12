@@ -15,6 +15,7 @@ import unicodedata
 from packages.production.pipeline._caption_display import (
     CaptionDisplayResult,
     compile_caption_display,
+    compile_planned_caption_display,
 )
 
 RES = (1920, 1080)
@@ -303,6 +304,174 @@ def test_non_mixed_mode_never_dedups():
     assert len(result.normal_cues) == 3
     assert result.suppressed_cues == []
     assert result.diagnostics.suppressed_duplicates == 0
+
+
+# --- planned path: source-scoped dedup (issue #197, plan A) ----------------------
+
+
+def n_window(lines: list[str], start_frame: int, end_frame: int, source_unit_ids: list) -> dict:
+    return {
+        "start_frame": start_frame,
+        "end_frame": end_frame,
+        "lines": list(lines),
+        "source_unit_ids": list(source_unit_ids),
+    }
+
+
+def e_window(event_id: str, source_unit_ids: list) -> dict:
+    return {"event_id": event_id, "source_unit_ids": list(source_unit_ids)}
+
+
+def planned(normal_windows: list[dict], emphasis_windows: list[dict] | None = None, *, fps: int = 10) -> dict:
+    # fps=10 so an integer frame maps to a clean 0.1s grid.
+    return {
+        "fps": fps,
+        "normal_windows": list(normal_windows),
+        "emphasis_windows": list(emphasis_windows or []),
+        "diagnostics": {},
+    }
+
+
+def compile_planned(
+    caption_windows: dict,
+    overlay_events: list[dict],
+    *,
+    normal_enabled: bool = True,
+    emphasis_enabled: bool = True,
+) -> CaptionDisplayResult:
+    return compile_planned_caption_display(
+        caption_windows=caption_windows,
+        normal_enabled=normal_enabled,
+        emphasis_enabled=emphasis_enabled,
+        overlay_events=overlay_events,
+    )
+
+
+def test_planned_stretched_dwell_coexists_with_next_sentence():
+    # Event lifted from unit_001; its stretched dwell spills 0.4s into unit_002.
+    windows = planned(
+        [
+            n_window(["第一句话内容"], 0, 20, ["unit_001"]),
+            n_window(["第二句话内容"], 20, 40, ["unit_002"]),
+        ],
+        [e_window("e1", ["unit_001"])],
+    )
+    result = compile_planned(windows, [event(1.5, 2.4, "e1")])
+    by_src = {tuple(c.source_unit_ids): c for c in result.normal_cues}
+    # Source sentence yields its tail to the huazi...
+    cue1 = by_src[("unit_001",)]
+    assert (round(cue1.start, 2), round(cue1.end, 2)) == (0.0, 1.5)
+    # ...but the next sentence keeps its full window despite the time overlap.
+    cue2 = by_src[("unit_002",)]
+    assert (round(cue2.start, 2), round(cue2.end, 2)) == (2.0, 4.0)
+    assert result.suppressed_cues == []
+    assert result.diagnostics.suppressed_duplicates == 1
+
+
+def test_planned_source_sentence_still_suppressed_when_covered():
+    windows = planned(
+        [
+            n_window(["第一句话内容"], 10, 20, ["unit_001"]),
+            n_window(["第二句话内容"], 25, 40, ["unit_002"]),
+        ],
+        [e_window("e1", ["unit_001"])],
+    )
+    # Event fully covers unit_001's cue and grazes unit_002's front.
+    result = compile_planned(windows, [event(0.9, 2.6, "e1")])
+    assert len(result.suppressed_cues) == 1
+    assert result.suppressed_cues[0].suppressed_by == "e1"
+    assert result.suppressed_cues[0].source_unit_ids == ["unit_001"]
+    cue2 = next(c for c in result.normal_cues if c.source_unit_ids == ["unit_002"])
+    assert (round(cue2.start, 2), round(cue2.end, 2)) == (2.5, 4.0)
+    assert result.diagnostics.suppressed_duplicates == 1
+
+
+def test_planned_source_sentence_partial_trim_matches_unscoped_policy():
+    windows = planned(
+        [n_window(["第二句话内容"], 25, 50, ["unit_002"])],
+        [e_window("e1", ["unit_002"])],
+    )
+    # Mid coverage of the source sentence -> two surviving fragments, identical to
+    # what the whole-track policy would carve.
+    result = compile_planned(windows, [event(3.2, 3.8, "e1")])
+    spans = sorted((round(c.start, 2), round(c.end, 2)) for c in result.normal_cues)
+    assert spans == [(2.5, 3.2), (3.8, 5.0)]
+    assert result.suppressed_cues == []
+    assert result.diagnostics.suppressed_duplicates == 1
+
+
+def test_planned_multiple_cues_same_unit_all_suppressed():
+    # A long sentence split into two cues both carry unit_001; one event covers both.
+    windows = planned(
+        [
+            n_window(["长句上半段"], 0, 15, ["unit_001"]),
+            n_window(["长句下半段"], 15, 30, ["unit_001"]),
+        ],
+        [e_window("e1", ["unit_001"])],
+    )
+    result = compile_planned(windows, [event(0.0, 3.0, "e1")])
+    assert result.normal_cues == []
+    assert {c.suppressed_by for c in result.suppressed_cues} == {"e1"}
+    assert len(result.suppressed_cues) == 2
+    assert result.diagnostics.suppressed_duplicates == 2
+
+
+def test_planned_unmapped_event_falls_back_to_whole_track_punch():
+    # e1 is deliberately absent from emphasis_windows -> fail-safe global punch.
+    windows = planned(
+        [
+            n_window(["第一句话内容"], 0, 20, ["unit_001"]),
+            n_window(["第二句话内容"], 20, 40, ["unit_002"]),
+        ],
+        [e_window("other", ["unit_009"])],
+    )
+    result = compile_planned(windows, [event(1.5, 2.4, "e1")])
+    cue1 = next(c for c in result.normal_cues if c.source_unit_ids == ["unit_001"])
+    cue2 = next(c for c in result.normal_cues if c.source_unit_ids == ["unit_002"])
+    assert round(cue1.end, 2) == 1.5
+    assert round(cue2.start, 2) == 2.4  # next sentence trimmed too (fail-safe)
+    assert result.diagnostics.suppressed_duplicates == 2
+
+
+def test_planned_source_ids_match_across_int_and_str():
+    # normal cue keyed by int 1, emphasis window references it as str "1".
+    windows = planned(
+        [
+            n_window(["整数编号句"], 10, 20, [1]),
+            n_window(["其他编号句"], 20, 40, ["2"]),
+        ],
+        [e_window("e1", ["1"])],
+    )
+    result = compile_planned(windows, [event(0.9, 2.1, "e1")])
+    assert [c.suppressed_by for c in result.suppressed_cues] == ["e1"]
+    assert result.suppressed_cues[0].source_unit_ids == [1]
+    cue2 = next(c for c in result.normal_cues if c.source_unit_ids == ["2"])
+    assert (round(cue2.start, 2), round(cue2.end, 2)) == (2.0, 4.0)
+
+
+def test_planned_source_ids_match_when_emphasis_uses_int():
+    # Reverse mix: normal cue keyed by str "5", emphasis window by int 5.
+    windows = planned(
+        [n_window(["纯数字标识"], 10, 20, ["5"])],
+        [e_window("e1", [5])],
+    )
+    result = compile_planned(windows, [event(0.9, 2.1, "e1")])
+    assert [c.suppressed_by for c in result.suppressed_cues] == ["e1"]
+    assert result.suppressed_cues[0].source_unit_ids == ["5"]
+
+
+def test_legacy_dedup_still_global_punch():
+    # compile_caption_display passes no source mapping -> whole-track punch, so an
+    # event lifted from the first sentence still trims the *next* sentence.
+    units = [unit("第一句话内容", 0.0, 2.0), unit("第二句话内容", 2.0, 4.0)]
+    result = compile_normal(
+        units, overlay_events=[event(1.5, 2.4, "e1")], emphasis_enabled=True
+    )
+    cue1 = next(c for c in result.normal_cues if c.source_unit_ids == [0])
+    cue2 = next(c for c in result.normal_cues if c.source_unit_ids == [1])
+    assert round(cue1.end, 2) == 1.5
+    assert round(cue2.start, 2) == 2.4
+    assert result.diagnostics.suppressed_duplicates == 2
 
 
 # --- determinism + input immutability --------------------------------------------

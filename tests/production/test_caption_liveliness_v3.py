@@ -143,7 +143,7 @@ def test_tokens_drive_phrase_boundaries_and_hero_only_exists_at_a_cut():
         {"text": "限时", "start": 1.0, "end": 1.4},
         {"text": "五折", "start": 1.4, "end": 2.0},
     ]
-    windows, total, dropped, matched, fallback = build_emphasis_windows(
+    windows, total, dropped, matched, fallback, _extended, _below_min = build_emphasis_windows(
         emphasis=[EmphasisHint(phrase="限时五折")],
         units=units,
         fps=30,
@@ -154,7 +154,7 @@ def test_tokens_drive_phrase_boundaries_and_hero_only_exists_at_a_cut():
         tokens=tokens,
     )
     assert (total, dropped, matched, fallback) == (1, 0, 1, 0)
-    assert (windows[0]["start_frame"], windows[0]["end_frame"]) == (30, 60)
+    assert (windows[0]["start_frame"], windows[0]["end_frame"]) == (30, 66)
     assert windows[0]["hero_eligible"] is True
 
     anchor = {
