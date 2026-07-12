@@ -21,8 +21,10 @@ from packages.core.contracts import (
 )
 from packages.core.provider_idempotency import is_provider_call_idempotency_key
 from packages.core.storage.object_store import get_object_store, parse_object_uri
+from packages.core.workflow import NodeExecutionError
 from packages.media.assets import local_object_path
 from packages.media.video.ffmpeg import probe_media, probe_stream_types, probe_video_frame_count
+from packages.production.pipeline import digital_human
 
 
 def login_admin_for(active_client):
@@ -456,6 +458,143 @@ def test_spec_20_2_6_lipsync_timeout_can_resume_reusing_valid_prefix():
             }
         }
         assert payload_backed_reused_ids <= payload_artifact_ids
+
+
+class CountingFailingOnceLipSyncSandbox(FailingOnceLipSyncSandbox):
+    """Fails LipSync once, and counts every capability the vendor was actually asked for.
+
+    The acceptance rule of issue #202 is the SUBMIT count, not the run status: a resume
+    that "succeeds" while re-buying the TTS audio it already owns is the exact bug.
+    """
+
+    def __init__(self, code: ErrorCode) -> None:
+        super().__init__(code)
+        self.capabilities: list[str] = []
+
+    def invoke(self, call):
+        self.capabilities.append(call.capability_id)
+        return super().invoke(call)
+
+
+def _submit_a_failing_run(active_client, sandbox, *, title: str):
+    active_client.app.state.provider_gateway.plugins["sandbox"] = sandbox
+    login_admin_for(active_client)
+    response = active_client.post(
+        "/api/jobs/digital-human-video", json=video_payload(title=title)
+    )
+    assert response.status_code == 201, response.text
+    failed_run = response.json()["initial_run"]
+    assert failed_run["status"] == "failed"
+    assert sandbox.capabilities.count("tts.speech") == 1
+    return failed_run
+
+
+def _tts_keys(active_client, run_id: str) -> list[str]:
+    repository = active_client.app.state.repository
+    return [
+        invocation.idempotency_key
+        for invocation in repository.provider_invocations.values()
+        if invocation.run_id == run_id and invocation.capability_id == "tts.speech"
+    ]
+
+
+def test_resume_does_not_buy_the_tts_audio_the_failed_run_already_paid_for():
+    # The first line of defence, and the cheapest: a call the resumed run never re-drives
+    # can never be re-bought. Reuse hands run B the prefix artifacts verbatim, so TTS is
+    # not re-run at all. (The provider-call key is what protects the calls reuse CANNOT
+    # skip — the failed node itself; that is
+    # test_resume_answers_from_the_lipsync_the_failed_run_already_paid_for.)
+    with fresh_client() as active_client:
+        sandbox = CountingFailingOnceLipSyncSandbox(ErrorCode.provider_timeout)
+        failed_run = _submit_a_failing_run(active_client, sandbox, title="Resume billing")
+
+        resumed = active_client.post(
+            f"/api/runs/{failed_run['id']}/resume",
+            json={"reason": "vendor timed out", "reuse_valid_artifacts": True},
+        )
+        assert resumed.status_code == 201, resumed.text
+        resumed_run = resumed.json()["run"]
+        assert resumed_run["status"] == "succeeded"
+
+        assert sandbox.capabilities.count("tts.speech") == 1, (
+            "the resumed run re-synthesised (and re-paid for) the audio it inherited"
+        )
+        # The LipSync call is the one the operator resumed FOR: it genuinely failed at the
+        # vendor, so it must reach the vendor again.
+        assert sandbox.capabilities.count("lipsync.video") == 2
+
+
+def test_resume_answers_from_the_lipsync_the_failed_run_already_paid_for(monkeypatch):
+    """issue #202 A1, end to end: the resumed run must not re-buy a call that succeeded.
+
+    The vendor answers LipSync, and the node then dies before its snapshot — a worker
+    kill, or a crash in the post-processing after the call. Run A ends failed while its
+    durable row sits ``succeeded`` (and paid). Reuse stops at the failed node, so the
+    resumed run RE-RUNS LipSync with a byte-identical manifest. Only a key that ignores
+    ``run.id`` lands back on that row; a run-scoped key mints a fresh identity and buys
+    the video a second time.
+    """
+    with fresh_client() as active_client:
+        sandbox = CountingFailingOnceLipSyncSandbox(ErrorCode.provider_quota_exceeded)
+        sandbox.failed_once = True  # let the vendor call succeed; the NODE is what dies
+        real_lipsync = digital_human.NODE_HANDLERS["LipSync"]
+        crashed = {"once": False}
+
+        def crash_after_the_vendor_answers(ctx):
+            output = real_lipsync(ctx)
+            if not crashed["once"]:
+                crashed["once"] = True
+                raise NodeExecutionError(
+                    ErrorCode.render_failed, "worker died after the vendor answered", retryable=True
+                )
+            return output
+
+        monkeypatch.setitem(
+            digital_human.NODE_HANDLERS, "LipSync", crash_after_the_vendor_answers
+        )
+        failed_run = _submit_a_failing_run(active_client, sandbox, title="Resume replay")
+        assert sandbox.capabilities.count("lipsync.video") == 1
+
+        resumed = active_client.post(
+            f"/api/runs/{failed_run['id']}/resume",
+            json={"reason": "worker crashed", "reuse_valid_artifacts": True},
+        )
+        assert resumed.status_code == 201, resumed.text
+        resumed_run = resumed.json()["run"]
+        assert resumed_run["status"] == "succeeded"
+        detail = active_client.get(f"/api/runs/{resumed_run['id']}").json()
+        assert "LipSync" not in [
+            node["node_id"] for node in detail["node_runs"] if node["status"] == "skipped"
+        ], "the premise: the resumed run really does re-run LipSync"
+
+        assert sandbox.capabilities.count("lipsync.video") == 1, (
+            "the resumed run bought the lipsync video a second time"
+        )
+
+
+def test_retry_buys_the_work_again_because_it_is_a_different_piece_of_work():
+    # The other half of the pair, and the reason job_id alone is a safe key coordinate: a
+    # retry re-runs the chain from the top, so its prefix artifacts are new rows, every
+    # downstream manifest differs, and the keys differ. Re-billing here is CORRECT — the
+    # operator asked for the work to be redone.
+    with fresh_client() as active_client:
+        sandbox = CountingFailingOnceLipSyncSandbox(ErrorCode.provider_timeout)
+        failed_run = _submit_a_failing_run(active_client, sandbox, title="Retry billing")
+
+        retried = active_client.post(
+            f"/api/runs/{failed_run['id']}/retry", json={"reason": "start over"}
+        )
+        assert retried.status_code == 201, retried.text
+        retried_run = retried.json()["run"]
+        assert retried_run["status"] == "succeeded"
+
+        assert sandbox.capabilities.count("tts.speech") == 2, (
+            "the retry replayed the old run's TTS instead of re-computing it"
+        )
+        failed_keys = _tts_keys(active_client, failed_run["id"])
+        retried_keys = _tts_keys(active_client, retried_run["id"])
+        assert failed_keys and retried_keys
+        assert set(failed_keys).isdisjoint(retried_keys)
 
 
 def test_spec_20_2_7_provider_quota_exceeded_is_retryable_hard_fail():

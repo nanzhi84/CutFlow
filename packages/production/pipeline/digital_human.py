@@ -363,6 +363,31 @@ def template_for(workflow_template_id: str) -> WorkflowTemplate:
         ) from exc
 
 
+def input_manifest_hash(
+    node_id: str, request: DigitalHumanVideoRequest, state: _RunState
+) -> str:
+    """The identity of one node execution's inputs, and a coordinate of its provider key.
+
+    ``artifact_refs`` MUST stay artifact IDS, never a content digest or any other stable
+    fingerprint. It is the only thing that separates a RETRY from a RESUME: both re-drive
+    the same job under the same Job-scoped provider-call key, but a retry re-runs the
+    chain from the top, so its prefix artifacts are new rows with new ids and every
+    downstream manifest — and key — differs. Swap ids for content, and a retry of a
+    deterministic chain would hash identically, land on the old key, and hand back the
+    very result the operator asked to recompute (and, for ``reuse_valid_artifacts=False``,
+    silently refuse to re-buy the work they explicitly asked to re-buy).
+    """
+    return manifest_hash(
+        {
+            "node_id": node_id,
+            "request": request.model_dump(mode="json"),
+            "artifact_refs": {
+                kind.value: artifact.id for kind, artifact in state.artifacts.items()
+            },
+        }
+    )
+
+
 class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
     def __init__(
         self,
@@ -895,15 +920,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             node_id=node_id,
             node_version="v1",
             status=NodeStatus.pending,
-            input_manifest_hash=manifest_hash(
-                {
-                    "node_id": node_id,
-                    "request": request.model_dump(mode="json"),
-                    "artifact_refs": {
-                        kind.value: artifact.id for kind, artifact in state.artifacts.items()
-                    },
-                }
-            ),
+            input_manifest_hash=input_manifest_hash(node_id, request, state),
             started_at=utcnow(),
         )
         self.repository.node_runs[run.id].append(node_run)
