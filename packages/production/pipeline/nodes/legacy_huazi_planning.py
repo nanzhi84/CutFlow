@@ -11,6 +11,7 @@ import json
 
 from packages.ai.gateway import ProviderCall
 from packages.core.contracts import DegradationNotice, ErrorCode, WarningCode
+from packages.core.provider_idempotency import is_provider_recovery_error
 from packages.core.workflow import NodeExecutionError
 from packages.production.pipeline._caption_styles import (
     HUAZI_ANIMATION_DIRECTIONS,
@@ -315,6 +316,8 @@ def plan_huazi_overlays(
             if not errors:
                 break
     except NodeExecutionError as exc:
+        if is_provider_recovery_error(exc.error.code):
+            raise
         return _degraded_result(
             node_run.node_id,
             reason="provider_error",

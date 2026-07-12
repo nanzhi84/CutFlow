@@ -27,6 +27,7 @@ from packages.planning.material import (
 )
 from packages.production.pipeline._media_selection_agent import index_media_candidates
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline._provider_recovery import reject_unrecoverable_provider_error
 
 _TOP_K = 12
 _SQL_RECALL_MULTIPLIER = 10
@@ -135,6 +136,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         )
         provider_invocation_ids.append(invocation.id)
         if result is None or invocation.error:
+            reject_unrecoverable_provider_error(invocation)
             diagnostics["rejected_candidates"].append(
                 {
                     "window_id": window_id,

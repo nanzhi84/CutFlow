@@ -22,6 +22,7 @@ from packages.core.contracts.artifacts import (
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.planning.editing import build_narration_units
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline._provider_recovery import reject_unrecoverable_provider_error
 from packages.production.pipeline._run_state import degradation_notice
 from packages.production.pipeline._speech_timing import (
     estimated_timing_for_script,
@@ -224,6 +225,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             )
         )
         if result is None or invocation.error:
+            reject_unrecoverable_provider_error(invocation)
             if not state.request.strictness.strict_timestamps:
                 error_code = (
                     invocation.error.code.value

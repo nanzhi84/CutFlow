@@ -11,6 +11,7 @@ from packages.core.contracts import ArtifactKind, DegradationNotice, NodeStatus,
 from packages.core.contracts.artifacts import WindowQueryPlanArtifact, WindowRetrievalQuery
 from packages.core.workflow import NodeOutput
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline._provider_recovery import reject_unrecoverable_provider_error
 from packages.production.pipeline._run_state import degradation_notice
 
 
@@ -113,6 +114,7 @@ def run(ctx: NodeContext) -> NodeOutput:
 
     provider_invocation_ids.append(invocation.id)
     if result is None or invocation.error:
+        reject_unrecoverable_provider_error(invocation)
         diagnostics["source"] = "template_fallback"
         diagnostics["fallback_reason"] = "provider_error"
         diagnostics["error"] = (
