@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 import hashlib
 import math
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Protocol
 from uuid import uuid4
 
@@ -27,12 +27,30 @@ from packages.core.contracts import (
 from packages.core.config.settings import build_providers_settings
 from packages.core.contracts.state_machines import assert_transition
 from packages.core.observability import record_provider_invocation
+from packages.core.provider_idempotency import is_provider_call_idempotency_key
 from packages.core.storage import ObjectStore, get_object_store
 from packages.core.storage import Repository
 from packages.core.storage.repository import new_id
 from packages.core.storage.secret_store import SecretStore
 from packages.ai.gateway.provider_context import ProviderInvocationContext
 from packages.ai.gateway.provider_limiter import provider_slot
+
+
+# CAS loser that raced a concurrent executor for the prepared -> submitted claim
+# waits briefly for the winner to publish progress before deciding, and only takes
+# over a still-``submitted`` row once it is stale beyond this multiple of the
+# provider timeout (the holder is then presumed dead).
+_SUBMIT_RECOVERY_POLL_INTERVAL_SEC = 0.2
+_SUBMIT_RECOVERY_MAX_WAIT_SEC = 2.0
+_SUBMIT_STALE_TIMEOUT_MULTIPLIER = 2
+_TERMINAL_PROVIDER_STATUSES = frozenset(
+    {
+        ProviderStatus.succeeded,
+        ProviderStatus.failed,
+        ProviderStatus.timed_out,
+        ProviderStatus.cancelled,
+    }
+)
 
 
 class ProviderCall(BaseModel):
@@ -61,6 +79,13 @@ class ProviderResult(BaseModel):
 
 class ProviderPlugin(Protocol):
     provider_id: str
+    # Set True ONLY when the vendor guarantees de-duplication by idempotency key, so
+    # a same-key resubmit after an interrupted 'submitted' attempt cannot double
+    # charge. Read via getattr with a False default, so an adapter opts in by
+    # declaring the attribute; unknown submit outcomes otherwise stop instead of
+    # resubmitting. Stage B sets it on the async adapters that document idempotent
+    # submission.
+    supports_idempotent_submit: bool
 
     def invoke(self, call: ProviderCall) -> ProviderResult:
         ...
@@ -255,10 +280,23 @@ class ProviderGateway:
         # worker processes persist to the audit table; otherwise reveals fall back to
         # the in-memory repository audit log (handled inside the context).
         self._secret_read_audit_sink = self._build_secret_read_audit_sink()
+        self._invocation_store = self._build_invocation_store()
         if self.auto_register_real_plugins:
             from packages.ai.providers import register_real_provider_plugins
 
             register_real_provider_plugins(self)
+
+    def _build_invocation_store(self):
+        # Durable persistence for Run-scoped idempotent provider calls. Available only
+        # when the provider_reader is DB-backed (exposes a session_factory); the
+        # in-memory/test path leaves it None so the gateway keeps its transient
+        # behaviour verbatim.
+        session_factory = getattr(self.provider_reader, "session_factory", None)
+        if session_factory is None:
+            return None
+        from packages.ai.gateway.sqlalchemy_repository import SqlAlchemyProviderInvocationStore
+
+        return SqlAlchemyProviderInvocationStore(session_factory)
 
     def _build_secret_read_audit_sink(self):
         session_factory = getattr(self.provider_reader, "session_factory", None)
@@ -292,11 +330,35 @@ class ProviderGateway:
         profile = self._get_profile(call.provider_profile_id)
         started_at = utcnow()
         started = perf_counter()
-        invocation = ProviderInvocation(
+        store = self._durable_store_for(call)
+        if store is None:
+            invocation = self._new_prepared_invocation(
+                call, profile, started_at, idempotency_key=None
+            )
+            self.repository.provider_invocations[invocation.id] = invocation
+            return self._run_invocation(call, profile, invocation, started, store=None)
+        return self._invoke_durable(call, profile, store, started_at, started)
+
+    def _durable_store_for(self, call: ProviderCall):
+        # A durable invocation identity is used ONLY for keys minted by the unified
+        # Run-scoped helper. Ad-hoc/legacy keys and non-Run keys (asset annotation,
+        # BGM, clip embedding, publish copy) never match the scheme, so they keep the
+        # transient path and never touch the idempotency_key column / unique index.
+        if self._invocation_store is None:
+            return None
+        if not is_provider_call_idempotency_key(call.idempotency_key):
+            return None
+        return self._invocation_store
+
+    def _new_prepared_invocation(
+        self, call: ProviderCall, profile: ProviderProfile, started_at, *, idempotency_key: str | None
+    ) -> ProviderInvocation:
+        return ProviderInvocation(
             id=new_id("pinv"),
             case_id=call.case_id,
             run_id=call.run_id,
             node_run_id=call.node_run_id,
+            idempotency_key=idempotency_key,
             provider_id=profile.provider_id,
             model_id=profile.model_id,
             provider_profile_id=profile.id,
@@ -305,59 +367,63 @@ class ProviderGateway:
             status=ProviderStatus.prepared,
             started_at=started_at,
         )
+
+    def _invoke_durable(self, call, profile, store, started_at, started):
+        existing = store.load_by_key(call.idempotency_key)
+        if existing is not None and existing.status is not ProviderStatus.prepared:
+            return self._recover_existing(call, profile, existing, store, started)
+        if existing is None:
+            fresh = self._new_prepared_invocation(
+                call, profile, started_at, idempotency_key=call.idempotency_key
+            )
+            invocation = store.get_or_create(fresh)
+            if invocation.status is not ProviderStatus.prepared:
+                # A concurrent creator won the insert and already advanced the row.
+                return self._recover_existing(call, profile, invocation, store, started)
+        else:
+            invocation = existing  # 'prepared' row left by a crashed prior attempt
         self.repository.provider_invocations[invocation.id] = invocation
+        return self._run_invocation(call, profile, invocation, started, store=store)
+
+    def _run_invocation(self, call, profile, invocation, started, *, store):
         validation_error = self._validate_profile(profile, call)
         if validation_error is not None:
-            assert_transition("provider", invocation.status, ProviderStatus.failed)
-            invocation = invocation.model_copy(
-                update={
-                    "status": ProviderStatus.failed,
-                    "error": validation_error,
-                    "duration_ms": int((perf_counter() - started) * 1000),
-                    "finished_at": utcnow(),
-                    "updated_at": utcnow(),
-                }
-            )
-            self.repository.provider_invocations[invocation.id] = invocation
-            record_provider_invocation(invocation)
-            return invocation, None
+            return self._fail_before_submit(invocation, validation_error, started, store)
         if self.budget_guard is not None:
             budget_error = self.budget_guard.evaluate(call=call, invocation=invocation)
             if budget_error is not None:
-                assert_transition("provider", invocation.status, ProviderStatus.failed)
-                invocation = invocation.model_copy(
-                    update={
-                        "status": ProviderStatus.failed,
-                        "error": budget_error,
-                        "duration_ms": int((perf_counter() - started) * 1000),
-                        "finished_at": utcnow(),
-                        "updated_at": utcnow(),
-                    }
-                )
-                self.repository.provider_invocations[invocation.id] = invocation
-                record_provider_invocation(invocation)
-                return invocation, None
+                return self._fail_before_submit(invocation, budget_error, started, store)
         if self.circuit_breaker is not None:
             circuit_error = self.circuit_breaker.evaluate(call=call, invocation=invocation)
             if circuit_error is not None:
-                assert_transition("provider", invocation.status, ProviderStatus.failed)
-                invocation = invocation.model_copy(
-                    update={
-                        "status": ProviderStatus.failed,
-                        "error": circuit_error,
-                        "duration_ms": int((perf_counter() - started) * 1000),
-                        "finished_at": utcnow(),
-                        "updated_at": utcnow(),
-                    }
-                )
-                self.repository.provider_invocations[invocation.id] = invocation
-                record_provider_invocation(invocation)
-                return invocation, None
+                return self._fail_before_submit(invocation, circuit_error, started, store)
+        if store is not None and not store.claim_submit(invocation.id):
+            return self._recover_lost_claim(call, profile, invocation, store, started)
         assert_transition("provider", invocation.status, ProviderStatus.submitted)
         invocation = invocation.model_copy(
             update={"status": ProviderStatus.submitted, "updated_at": utcnow()}
         )
         self.repository.provider_invocations[invocation.id] = invocation
+        return self._submit(call, profile, invocation, started, store=store)
+
+    def _fail_before_submit(self, invocation, error, started, store):
+        assert_transition("provider", invocation.status, ProviderStatus.failed)
+        invocation = invocation.model_copy(
+            update={
+                "status": ProviderStatus.failed,
+                "error": error,
+                "duration_ms": int((perf_counter() - started) * 1000),
+                "finished_at": utcnow(),
+                "updated_at": utcnow(),
+            }
+        )
+        self.repository.provider_invocations[invocation.id] = invocation
+        record_provider_invocation(invocation)
+        if store is not None:
+            store.mark_terminal(invocation.id, ProviderStatus.failed, error)
+        return invocation, None
+
+    def _submit(self, call, profile, invocation, started, *, store):
         plugin = self.plugins[profile.provider_id]
         try:
             context = ProviderInvocationContext(
@@ -367,6 +433,7 @@ class ProviderGateway:
                 secret_store=self.secret_store,
                 object_store=self.object_store,
                 audit_sink=self._secret_read_audit_sink,
+                durable_invocation_store=store,
             )
             contextual_invoke = getattr(plugin, "invoke_with_context", None)
             # Bound concurrent in-flight provider calls per ProviderProfile
@@ -423,6 +490,8 @@ class ProviderGateway:
             self.repository.usage_records[usage.id] = usage
             self.repository.provider_invocations[invocation.id] = invocation
             record_provider_invocation(invocation)
+            if store is not None:
+                store.mark_terminal(invocation.id, ProviderStatus.succeeded, None)
             return invocation, result
         except ProviderRuntimeError as exc:
             status = ProviderStatus.failed
@@ -430,18 +499,129 @@ class ProviderGateway:
                 status = ProviderStatus.timed_out
             current_invocation = self.repository.provider_invocations[invocation.id]
             assert_transition("provider", current_invocation.status, status)
+            error = ProviderError(code=exc.code, message=exc.message, retryable=True)
             invocation = current_invocation.model_copy(
                 update={
                     "status": status,
                     "duration_ms": int((perf_counter() - started) * 1000),
-                    "error": ProviderError(code=exc.code, message=exc.message, retryable=True),
+                    "error": error,
                     "finished_at": utcnow(),
                     "updated_at": utcnow(),
                 }
             )
             self.repository.provider_invocations[invocation.id] = invocation
             record_provider_invocation(invocation)
+            if store is not None:
+                store.mark_terminal(invocation.id, status, error)
             return invocation, None
+
+    def _recover_existing(self, call, profile, invocation, store, started):
+        # Durable row already advanced past 'prepared': recover per the issue #193
+        # state table instead of re-submitting.
+        status = invocation.status
+        if status is ProviderStatus.submitted:
+            return self._recover_submitted(call, profile, invocation, store, started)
+        if status is ProviderStatus.polling:
+            return self._resume_polling_placeholder(invocation)
+        if status is ProviderStatus.succeeded:
+            return self._reject_completed(invocation)
+        # failed / timed_out / cancelled: do not open a new task under this key.
+        return invocation, None
+
+    def _recover_submitted(self, call, profile, invocation, store, started):
+        # A fresh attempt found a 'submitted' row: the prior holder is gone and the
+        # request may have crossed the vendor boundary. Only re-submit when the adapter
+        # guarantees vendor-side de-dup by idempotency key; otherwise stop and surface
+        # an unknown outcome rather than risk a double charge.
+        plugin = self.plugins.get(profile.provider_id)
+        if bool(getattr(plugin, "supports_idempotent_submit", False)):
+            self.repository.provider_invocations[invocation.id] = invocation
+            return self._submit(call, profile, invocation, started, store=store)
+        return self._submit_outcome_unknown(invocation, store=store)
+
+    def _recover_lost_claim(self, call, profile, invocation, store, started):
+        # Lost the prepared -> submitted race to a concurrent (likely live) executor.
+        # Wait briefly for it to publish progress; only take over a still-'submitted'
+        # row once it is stale beyond 2x the provider timeout.
+        row = self._await_claim_progress(store, invocation.idempotency_key, profile) or invocation
+        if row.status is ProviderStatus.polling:
+            return self._resume_polling_placeholder(row)
+        if row.status in _TERMINAL_PROVIDER_STATUSES:
+            if row.status is ProviderStatus.succeeded:
+                return self._reject_completed(row)
+            return row, None
+        if self._is_stale(row, profile):
+            return self._recover_submitted(call, profile, row, store, started)
+        # Holder presumed alive: do not resubmit or mutate the durable row; surface an
+        # unknown outcome to this caller only.
+        return self._submit_outcome_unknown(row, store=None)
+
+    def _await_claim_progress(self, store, idempotency_key, profile):
+        deadline = perf_counter() + min(
+            _SUBMIT_RECOVERY_MAX_WAIT_SEC, max(0.0, float(profile.timeout_sec))
+        )
+        row = store.load_by_key(idempotency_key)
+        while (
+            row is not None
+            and row.status is ProviderStatus.submitted
+            and not self._is_stale(row, profile)
+            and perf_counter() < deadline
+        ):
+            sleep(_SUBMIT_RECOVERY_POLL_INTERVAL_SEC)
+            row = store.load_by_key(idempotency_key)
+        return row
+
+    def _resume_polling_placeholder(self, invocation):
+        # Stage A: a durable 'polling' row carries external_job_id from a prior attempt.
+        # Recovery polling (adapter.resume_with_context) lands in stage B; here we
+        # surface the invocation without re-submitting, so no duplicate vendor task or
+        # media upload is issued.
+        self.repository.provider_invocations[invocation.id] = invocation
+        return invocation, None
+
+    def _reject_completed(self, invocation):
+        # Defensive: the stage-B activity-level no-op should intercept a completed node
+        # before it re-enters the gateway. If a succeeded invocation for this key still
+        # arrives, do not call the provider again and do not fabricate a result.
+        error = ProviderError(
+            code=ErrorCode.idempotency_conflict,
+            message="A succeeded provider invocation already exists for this idempotency key.",
+            retryable=False,
+        )
+        return invocation.model_copy(update={"error": error}), None
+
+    def _submit_outcome_unknown(self, invocation, *, store):
+        error = ProviderError(
+            code=ErrorCode.provider_submit_outcome_unknown,
+            message=(
+                "Provider submit outcome is unknown after an interrupted attempt; "
+                "not resubmitting."
+            ),
+            retryable=False,
+        )
+        if store is None:
+            # Live-holder case: report the unknown outcome to this caller without
+            # touching the durable row the holder may still complete.
+            return invocation.model_copy(
+                update={
+                    "status": ProviderStatus.timed_out,
+                    "error": error,
+                    "finished_at": utcnow(),
+                    "updated_at": utcnow(),
+                }
+            ), None
+        store.mark_terminal(invocation.id, ProviderStatus.timed_out, error)
+        refreshed = store.load_by_key(invocation.idempotency_key) or invocation.model_copy(
+            update={"status": ProviderStatus.timed_out, "error": error, "finished_at": utcnow()}
+        )
+        self.repository.provider_invocations[refreshed.id] = refreshed
+        record_provider_invocation(refreshed)
+        return refreshed, None
+
+    def _is_stale(self, invocation, profile) -> bool:
+        threshold = _SUBMIT_STALE_TIMEOUT_MULTIPLIER * max(0.0, float(profile.timeout_sec))
+        age = (utcnow() - invocation.updated_at).total_seconds()
+        return age > threshold
 
     def _get_profile(self, profile_id: str) -> ProviderProfile:
         if self.provider_reader is not None:

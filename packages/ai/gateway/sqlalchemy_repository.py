@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from packages.core.contracts import (
@@ -15,11 +16,14 @@ from packages.core.contracts import (
     ProviderBalanceReport,
     ProviderBalanceSnapshot,
     ProviderCapability,
+    ProviderError,
     ProviderHealthCheckResponse,
+    ProviderInvocation,
     ProviderOptionsSchemaRef,
     ProviderPriceCatalog,
     ProviderPriceItem,
     ProviderProfile,
+    ProviderStatus,
     TestProviderProfileRequest,
     UpsertPriceCatalogRequest,
     utcnow,
@@ -36,6 +40,7 @@ from packages.core.storage.database import (
 )
 from packages.core.storage.base_repository import BaseRepository
 from packages.core.storage.repository import new_id
+from packages.core.storage.row_mapper import map_row
 from packages.core.workflow import NodeExecutionError
 
 
@@ -146,6 +151,138 @@ def price_item_row_to_contract(row: ProviderPriceItemRow) -> ProviderPriceItem:
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+def provider_invocation_row_to_contract(row: ProviderInvocationRow) -> ProviderInvocation:
+    return map_row(
+        row,
+        ProviderInvocation,
+        status=ProviderStatus(row.status),
+        estimated_cost=Money.model_validate(row.estimated_cost) if row.estimated_cost else None,
+        actual_cost=Money.model_validate(row.actual_cost) if row.actual_cost else None,
+        error=ProviderError.model_validate(row.error) if row.error else None,
+    )
+
+
+_NON_TERMINAL_PROVIDER_STATUSES = (
+    ProviderStatus.prepared.value,
+    ProviderStatus.submitted.value,
+    ProviderStatus.polling.value,
+)
+
+
+class SqlAlchemyProviderInvocationStore(BaseRepository):
+    """Durable, idempotency-key-keyed persistence for provider invocations.
+
+    Only Run-scoped provider calls (keys minted by
+    ``build_provider_call_idempotency_key``) flow through here. Every method runs in
+    its own short transaction and never holds a row lock across the vendor call, so
+    an infrastructure retry within the same Workflow Run recovers the prior call
+    identity from durable state instead of re-submitting to the vendor.
+    """
+
+    def load_by_key(self, idempotency_key: str) -> ProviderInvocation | None:
+        with self.session_factory() as session:
+            row = session.scalar(
+                select(ProviderInvocationRow).where(
+                    ProviderInvocationRow.idempotency_key == idempotency_key
+                )
+            )
+            return provider_invocation_row_to_contract(row) if row is not None else None
+
+    def get_or_create(self, invocation: ProviderInvocation) -> ProviderInvocation:
+        """Insert the ``prepared`` invocation, or return the row a concurrent creator won.
+
+        ``ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING``
+        makes a duplicate insert a no-op (the plain conflict target cannot match a
+        partial index); the surviving row — ours or a concurrent creator's — is then
+        read back by key. The first write leaves ``node_run_id`` unset; the node's
+        completion snapshot back-fills it.
+        """
+        insert_stmt = (
+            pg_insert(ProviderInvocationRow)
+            .values(
+                id=invocation.id,
+                idempotency_key=invocation.idempotency_key,
+                case_id=invocation.case_id,
+                run_id=invocation.run_id,
+                node_run_id=invocation.node_run_id,
+                provider_id=invocation.provider_id,
+                model_id=invocation.model_id,
+                provider_profile_id=invocation.provider_profile_id,
+                capability_id=invocation.capability_id,
+                prompt_version_id=invocation.prompt_version_id,
+                status=invocation.status.value,
+                billing_status=invocation.billing_status,
+                started_at=invocation.started_at,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[ProviderInvocationRow.idempotency_key],
+                index_where=ProviderInvocationRow.idempotency_key.isnot(None),
+            )
+        )
+        with self.session_factory() as session:
+            session.execute(insert_stmt)
+            session.commit()
+            row = session.scalar(
+                select(ProviderInvocationRow).where(
+                    ProviderInvocationRow.idempotency_key == invocation.idempotency_key
+                )
+            )
+            return provider_invocation_row_to_contract(row)
+
+    def claim_submit(self, invocation_id: str) -> bool:
+        """Conditionally advance ``prepared -> submitted``; ``True`` when this caller won."""
+        with self.session_factory() as session:
+            result = session.execute(
+                update(ProviderInvocationRow)
+                .where(ProviderInvocationRow.id == invocation_id)
+                .where(ProviderInvocationRow.status == ProviderStatus.prepared.value)
+                .values(status=ProviderStatus.submitted.value, updated_at=utcnow())
+            )
+            session.commit()
+            return result.rowcount == 1
+
+    def mark_polling(self, invocation_id: str, external_job_id: str) -> None:
+        """Publish ``external_job_id`` and advance ``submitted -> polling`` immediately.
+
+        Conditional on the row still being ``submitted`` so a late writer from a
+        superseded attempt is a silent no-op rather than a regression.
+        """
+        with self.session_factory() as session:
+            session.execute(
+                update(ProviderInvocationRow)
+                .where(ProviderInvocationRow.id == invocation_id)
+                .where(ProviderInvocationRow.status == ProviderStatus.submitted.value)
+                .values(
+                    status=ProviderStatus.polling.value,
+                    external_job_id=external_job_id,
+                    updated_at=utcnow(),
+                )
+            )
+            session.commit()
+
+    def mark_terminal(
+        self,
+        invocation_id: str,
+        status: ProviderStatus,
+        error: ProviderError | None,
+    ) -> bool:
+        """Forward-only write of a terminal status; a row already terminal is untouched."""
+        with self.session_factory() as session:
+            result = session.execute(
+                update(ProviderInvocationRow)
+                .where(ProviderInvocationRow.id == invocation_id)
+                .where(ProviderInvocationRow.status.in_(_NON_TERMINAL_PROVIDER_STATUSES))
+                .values(
+                    status=status.value,
+                    error=error.model_dump(mode="json") if error is not None else None,
+                    finished_at=utcnow(),
+                    updated_at=utcnow(),
+                )
+            )
+            session.commit()
+            return result.rowcount == 1
 
 
 class SqlAlchemyProviderRuntimeRepository(BaseRepository):

@@ -174,6 +174,20 @@ _FINISHED_VIDEO_NUMBER_RETRY_LIMIT = 3
 _FINISHED_VIDEO_NUMBER_CONSTRAINT = "uq_finished_videos_case_video_number"
 _SELECTION_RESERVATION_ACTIVE_SLOT_CONSTRAINT = "uq_selection_reservations_active_slot"
 
+# Provider-invocation status order for the snapshot no-regression write. The Gateway
+# writes prepared/submitted/polling/terminal durably as they happen; a snapshot that
+# still holds a stale (earlier) in-memory copy must not roll the durable status or
+# external_job_id backwards. Terminal states all rank highest.
+_PROVIDER_STATUS_RANK = {
+    "prepared": 0,
+    "submitted": 1,
+    "polling": 2,
+    "succeeded": 3,
+    "failed": 3,
+    "timed_out": 3,
+    "cancelled": 3,
+}
+
 NODE_LABELS = {
     "ValidateRequest": "校验请求",
     "LoadCaseContext": "加载 Case 上下文",
@@ -497,10 +511,20 @@ class SqlAlchemyProductionRepository(BaseRepository):
             session.flush()
 
             provider_invocation_ids = set()
-            for invocation in repository.provider_invocations.values():
-                if invocation.run_id == run.id:
+            run_invocations = [
+                invocation
+                for invocation in repository.provider_invocations.values()
+                if invocation.run_id == run.id
+            ]
+            if run_invocations:
+                durable_invocation_progress = self._durable_invocation_progress(session, run.id)
+                for invocation in run_invocations:
                     provider_invocation_ids.add(invocation.id)
-                    session.merge(self._provider_invocation_row(invocation))
+                    row = self._provider_invocation_row(invocation)
+                    self._preserve_durable_invocation_progress(
+                        row, durable_invocation_progress.get(invocation.id)
+                    )
+                    session.merge(row)
             session.flush()
 
             for usage in repository.usage_records.values():
@@ -2345,12 +2369,51 @@ class SqlAlchemyProductionRepository(BaseRepository):
             released_at=reservation.released_at,
         )
 
+    def _durable_invocation_progress(
+        self, session: Session, run_id: str
+    ) -> dict[str, tuple[str, str | None]]:
+        """Current durable (status, external_job_id) for this run's invocations.
+
+        One query keeps the snapshot loop from paying a round trip per invocation to
+        compare against what the Gateway may have already advanced.
+        """
+        rows = session.execute(
+            select(
+                ProviderInvocationRow.id,
+                ProviderInvocationRow.status,
+                ProviderInvocationRow.external_job_id,
+            ).where(ProviderInvocationRow.run_id == run_id)
+        ).all()
+        return {row.id: (row.status, row.external_job_id) for row in rows}
+
+    def _preserve_durable_invocation_progress(
+        self,
+        row: ProviderInvocationRow,
+        durable: tuple[str, str | None] | None,
+    ) -> None:
+        """Keep the durable status/external_job_id when this snapshot copy is behind.
+
+        The Gateway persists submit/polling/terminal transitions the moment they
+        happen. A snapshot built from a stale in-memory copy would otherwise merge an
+        earlier status over the durable row and drop its external_job_id. Accounting
+        fields (usage/cost/duration/node_run_id) still merge normally.
+        """
+        if durable is None:
+            return
+        durable_status, durable_job = durable
+        memory_rank = _PROVIDER_STATUS_RANK.get(row.status, 0)
+        durable_rank = _PROVIDER_STATUS_RANK.get(durable_status, 0)
+        if memory_rank < durable_rank:
+            row.status = durable_status
+            row.external_job_id = durable_job
+
     def _provider_invocation_row(self, invocation: ProviderInvocation) -> ProviderInvocationRow:
         return ProviderInvocationRow(
             id=invocation.id,
             case_id=invocation.case_id,
             run_id=invocation.run_id,
             node_run_id=invocation.node_run_id,
+            idempotency_key=invocation.idempotency_key,
             provider_id=invocation.provider_id,
             model_id=invocation.model_id,
             provider_profile_id=invocation.provider_profile_id,

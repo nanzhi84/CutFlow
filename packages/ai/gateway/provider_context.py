@@ -28,6 +28,11 @@ class ProviderInvocationContext:
     # the read audit is recorded onto self.repository.audit_events instead, so a
     # secret.read is auditable in both deployments. Wired by the ProviderGateway.
     audit_sink: Callable[..., Any] | None = None
+    # Durable invocation store for Run-scoped idempotent calls. When set, mark_polling
+    # commits external_job_id to PostgreSQL the moment the async task is accepted, so a
+    # crash after acceptance recovers the task instead of re-submitting. None on the
+    # in-memory/transient path, where only the run-state repository is updated.
+    durable_invocation_store: Any | None = None
 
     def get_secret(self) -> str | None:
         if self.profile.secret_ref is None or self.secret_store is None:
@@ -90,6 +95,8 @@ class ProviderInvocationContext:
             status=ProviderStatus.polling,
             updates={"external_job_id": external_job_id},
         )
+        if self.durable_invocation_store is not None:
+            self.durable_invocation_store.mark_polling(self.invocation_id, external_job_id)
 
     def update_invocation(self, *, status: ProviderStatus | None = None, updates: dict | None = None) -> None:
         current = self.repository.provider_invocations[self.invocation_id]
