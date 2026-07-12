@@ -180,6 +180,8 @@ def test_media_selection_agent_prompt_is_media_only():
     assert "analysis" in output_example
     assert "legal_candidate_ids" in content
     assert "candidate_id | asset_id | diversity_key | scene_name" in content
+    assert "B-roll 插槽（candidate_id 必须来自对应 legal_candidate_ids" in content
+    assert "allowed_slot_ids" not in content
     assert "broll_uniqueness_rule" in hints
     assert "diversity_key" in content
     assert '"candidate_id": "pc_000"' in output_example

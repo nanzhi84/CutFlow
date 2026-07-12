@@ -46,8 +46,8 @@ from packages.production.pipeline.nodes._broll_policy import broll_full_coverage
 _JSON_VARS = frozenset({"narration_units", "safe_cut_boundaries", "portrait_slots", "broll_slots"})
 _PORTRAIT_CANDIDATE_HEADER = "candidate_id | asset_id | available_seconds | description | reason"
 _BROLL_CANDIDATE_HEADER = (
-    "candidate_id | asset_id | diversity_key | scene_name | allowed_slot_ids | matched_keywords | "
-    "available_seconds | description"
+    "candidate_id | asset_id | diversity_key | scene_name | matched_keywords | available_seconds | "
+    "description"
 )
 
 
@@ -581,24 +581,23 @@ def _compact_prompt_input(agent_input: dict) -> dict:
             }
         )
     broll_slots = []
-    allowed_slots: dict[str, list[str]] = {}
-    all_broll_ids = [
-        str(item.get("candidate_id") or "")
-        for item in agent_input.get("broll_candidates") or []
-        if isinstance(item, dict) and str(item.get("candidate_id") or "")
-    ]
+    prompt_broll_ids: set[str] = set()
     for slot in agent_input.get("broll_slots") or []:
         if not isinstance(slot, dict):
             continue
         slot_id = str(slot.get("slot_id") or "")
-        legal = list(slot.get("retrieval_topk_candidate_ids") or all_broll_ids)
-        for candidate_id in legal:
-            allowed_slots.setdefault(candidate_id, []).append(slot_id)
+        legal = list(slot.get("legal_candidate_ids") or [])
+        if "retrieval_topk_candidate_ids" in slot:
+            topk = list(slot.get("retrieval_topk_candidate_ids") or [])
+            legal = [candidate_id for candidate_id in topk if candidate_id in set(legal)]
+        legal = legal[:12]
+        prompt_broll_ids.update(str(candidate_id) for candidate_id in legal)
         broll_slots.append(
             {
                 "slot_id": slot_id,
                 "required_seconds": slot.get("required_seconds"),
                 "text": str(slot.get("text") or ""),
+                "legal_candidate_ids": legal,
             }
         )
     portrait_rows = [
@@ -618,13 +617,13 @@ def _compact_prompt_input(agent_input: dict) -> dict:
             item.get("asset_id"),
             item.get("diversity_key"),
             item.get("scene_name"),
-            allowed_slots.get(str(item.get("candidate_id") or ""), []),
             list(item.get("matched_keywords") or [])[:6],
             item.get("available_seconds"),
             item.get("description"),
         ]
         for item in agent_input.get("broll_candidates") or []
-        if isinstance(item, dict) and allowed_slots.get(str(item.get("candidate_id") or ""))
+        if isinstance(item, dict)
+        and str(item.get("candidate_id") or "") in prompt_broll_ids
     ]
     return {
         **agent_input,
