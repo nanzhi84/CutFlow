@@ -28,6 +28,7 @@ from packages.core.contracts import (
     UpsertPriceCatalogRequest,
     utcnow,
 )
+from packages.ai.gateway.result_envelope import ProviderResultEnvelope
 from packages.core.provider_balance_accounts import coalesce_balance_items
 from packages.core.storage.database import (
     ProviderCapabilityRow,
@@ -37,6 +38,7 @@ from packages.core.storage.database import (
     ProviderPriceItemRow,
     ProviderProfileRow,
     SecretRow,
+    UsageMeterRecordRow,
 )
 from packages.core.storage.base_repository import BaseRepository
 from packages.core.storage.repository import new_id
@@ -304,6 +306,130 @@ class SqlAlchemyProviderInvocationStore(BaseRepository):
             )
             session.commit()
             return result.rowcount == 1
+
+    def mark_succeeded(
+        self,
+        invocation_id: str,
+        *,
+        envelope: ProviderResultEnvelope,
+        expected_status: ProviderStatus | None = None,
+    ) -> bool:
+        """Commit the succeeded status, the replayable result and the bill as one unit.
+
+        Splitting these would reintroduce the hole this closes: a crash between them
+        leaves either a succeeded row nobody can replay, or money spent that no report
+        can see. The usage insert is a primary-key upsert on the id the envelope
+        carries, so re-running this method can never bill the call twice.
+
+        Returns False when the row is already terminal — a concurrent executor
+        finalized it — in which case nothing is written, including the usage row.
+        """
+        allowed = (
+            (expected_status.value,)
+            if expected_status is not None
+            else _NON_TERMINAL_PROVIDER_STATUSES
+        )
+        usage = envelope.usage
+        now = utcnow()
+        with self.session_factory() as session:
+            result = session.execute(
+                update(ProviderInvocationRow)
+                .where(ProviderInvocationRow.id == invocation_id)
+                .where(ProviderInvocationRow.status.in_(allowed))
+                .values(
+                    status=ProviderStatus.succeeded.value,
+                    result_payload=envelope.model_dump(mode="json"),
+                    price_item_id=envelope.price_item_id,
+                    billing_status=envelope.billing_status,
+                    duration_ms=envelope.duration_ms,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    estimated_cost=envelope.estimated_cost.model_dump(mode="json"),
+                    error=None,
+                    finished_at=now,
+                    updated_at=now,
+                )
+            )
+            if result.rowcount != 1:
+                session.rollback()
+                return False
+            session.execute(
+                pg_insert(UsageMeterRecordRow)
+                .values(
+                    id=usage.id,
+                    provider_invocation_id=invocation_id,
+                    provider_id=usage.provider_id,
+                    model_id=usage.model_id,
+                    capability_id=usage.capability_id,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    cached_input_tokens=usage.cached_input_tokens,
+                    audio_seconds=usage.audio_seconds,
+                    video_seconds=usage.video_seconds,
+                    image_count=usage.image_count,
+                    provider_credits=usage.provider_credits,
+                    raw_usage=usage.raw_usage,
+                    schema_version=usage.schema_version,
+                )
+                .on_conflict_do_nothing(index_elements=[UsageMeterRecordRow.id])
+            )
+            session.commit()
+            return True
+
+    def load_result_envelope(self, invocation_id: str) -> ProviderResultEnvelope | None:
+        """The replayable result of a succeeded row, or None on a row written before
+        ``result_payload`` existed."""
+        with self.session_factory() as session:
+            payload = session.scalar(
+                select(ProviderInvocationRow.result_payload).where(
+                    ProviderInvocationRow.id == invocation_id
+                )
+            )
+        if not payload:
+            return None
+        return ProviderResultEnvelope.model_validate(payload)
+
+    def reopen(self, idempotency_key: str, invocation: ProviderInvocation) -> ProviderInvocation:
+        """Retire the row holding ``idempotency_key`` and open a fresh ``prepared`` one.
+
+        The partial unique index admits one live row per key, so the retired row's key
+        is rotated to a superseded alias rather than deleted: it keeps its usage and
+        cost rows, and the money it spent stays visible in the bill.
+        """
+        with self.session_factory() as session:
+            superseded = session.scalar(
+                select(ProviderInvocationRow).where(
+                    ProviderInvocationRow.idempotency_key == idempotency_key
+                )
+            )
+            retry_count = 0
+            if superseded is not None:
+                retry_count = superseded.retry_count + 1
+                superseded.idempotency_key = f"{idempotency_key}#superseded-{superseded.id}"
+                superseded.updated_at = utcnow()
+                session.flush()
+            row = ProviderInvocationRow(
+                id=invocation.id,
+                idempotency_key=idempotency_key,
+                case_id=invocation.case_id,
+                run_id=invocation.run_id,
+                node_run_id=None,
+                provider_id=invocation.provider_id,
+                model_id=invocation.model_id,
+                provider_profile_id=invocation.provider_profile_id,
+                capability_id=invocation.capability_id,
+                prompt_version_id=invocation.prompt_version_id,
+                status=ProviderStatus.prepared.value,
+                billing_status=invocation.billing_status,
+                retry_count=retry_count,
+                started_at=invocation.started_at,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return provider_invocation_row_to_contract(row).model_copy(
+                update={"node_run_id": invocation.node_run_id}
+            )
 
 
 class SqlAlchemyProviderRuntimeRepository(BaseRepository):

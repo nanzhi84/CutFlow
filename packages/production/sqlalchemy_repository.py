@@ -2416,6 +2416,11 @@ class SqlAlchemyProductionRepository(BaseRepository):
         status over the durable row, drop its external_job_id, and erase the terminal
         error detail (e.g. provider_submit_outcome_unknown). Accounting fields
         (usage/cost/duration/node_run_id) still merge normally.
+
+        result_payload needs no guard here and must not get one: nothing in the run state
+        carries it, so ``_provider_invocation_row`` never sets it, and a merge leaves an
+        attribute the source never set alone. Reading it here would put None into the
+        source's dict and create the very regression it would then have to repair.
         """
         if durable is None:
             return

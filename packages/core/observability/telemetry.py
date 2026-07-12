@@ -67,6 +67,17 @@ PROVIDER_UNPRICED_INVOCATIONS = Counter(
     "Unpriced provider invocations.",
     registry=REGISTRY,
 )
+PROVIDER_CALL_REPLAYS = Counter(
+    "provider_call_replays_total",
+    "Provider calls answered from a durable result instead of the vendor.",
+    registry=REGISTRY,
+)
+PROVIDER_CALL_REOPENS = Counter(
+    "provider_call_reopens_total",
+    "Provider calls re-submitted (and re-billed) because the durable result was unusable.",
+    ["reason"],
+    registry=REGISTRY,
+)
 YIELD_FUNNEL_EVENTS = Counter(
     "yield_funnel_events_total",
     "Yield funnel events.",
@@ -169,6 +180,16 @@ def record_provider_invocation(invocation: ProviderInvocation) -> None:
         PROVIDER_COST_ESTIMATED.inc(float(invocation.estimated_cost.amount))
     if invocation.billing_status == "unpriced":
         PROVIDER_UNPRICED_INVOCATIONS.inc()
+
+
+def record_provider_call_replayed() -> None:
+    # Deliberately NOT record_provider_invocation: a replay costs nothing, so counting
+    # its duration/cost again would double the spend the reports show.
+    PROVIDER_CALL_REPLAYS.inc()
+
+
+def record_provider_call_reopened(reason: str) -> None:
+    PROVIDER_CALL_REOPENS.labels(reason=reason).inc()
 
 
 def record_yield_funnel_event() -> None:
