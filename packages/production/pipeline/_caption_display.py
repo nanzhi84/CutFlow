@@ -338,6 +338,7 @@ def _dedup(
     normal_cues: list[CaptionCueData],
     events: list[dict],
     diag: CaptionDisplayDiagnostics,
+    event_source_ids: dict[str, set[str]] | None = None,
 ) -> tuple[list[CaptionCueData], list[CaptionCueData]]:
     """Punch each huazi window out of the overlapping normal cues.
 
@@ -346,6 +347,18 @@ def _dedup(
     its uncovered fragment(s). Trimmed fragments shorter than 0.6s are dropped
     (counted, not suppressed). Events apply in (start, end, id) order so a cue
     already split by one event is further trimmed by the next. Deterministic.
+
+    Scope (issue #197, plan A). ``event_source_ids`` maps an event id to the
+    narration unit ids the huazi phrase was lifted from. When provided (planned
+    v2 path), an event only punches cues that share a source unit with it: the
+    on-screen text duplication is confined to that same sentence, so a stretched
+    dwell window now coexists with the *next* sentence's normal caption (huazi
+    mid-screen, normal caption at the bottom) instead of erasing it. Unit ids are
+    matched as strings, so int/str forms interoperate. An event id absent from the
+    mapping falls back to punching every overlapping cue (fail-safe). ``None``
+    (legacy v1 path) keeps the original whole-track punch-out byte-for-byte.
+    ``suppressed_duplicates`` therefore counts the cues a same-source (or
+    fail-safe) window actually affected.
     """
     working = [
         {
@@ -353,6 +366,7 @@ def _dedup(
             "end": cue.end,
             "lines": cue.lines,
             "sids": cue.source_unit_ids,
+            "nsids": frozenset(str(sid) for sid in cue.source_unit_ids),
             "origin": i,
         }
         for i, cue in enumerate(normal_cues)
@@ -374,11 +388,21 @@ def _dedup(
         event_id = ev.get("event_id")
         if e_end <= e_start:
             continue
+        # None target => punch every overlapping cue (legacy, or fail-safe when a
+        # planned event id is missing from the source mapping).
+        if event_source_ids is None or str(event_id) not in event_source_ids:
+            target_ids: frozenset[str] | None = None
+        else:
+            target_ids = frozenset(event_source_ids[str(event_id)])
         remaining: list[dict] = []
         for cue in working:
             c_start = cue["start"]
             c_end = cue["end"]
             if c_end <= e_start or c_start >= e_end:
+                remaining.append(cue)
+                continue
+            if target_ids is not None and cue["nsids"].isdisjoint(target_ids):
+                # Time-overlapping but a different sentence: coexist untouched.
                 remaining.append(cue)
                 continue
             affected.add(cue["origin"])
@@ -405,6 +429,7 @@ def _dedup(
                         "end": f_end,
                         "lines": cue["lines"],
                         "sids": cue["sids"],
+                        "nsids": cue["nsids"],
                         "origin": cue["origin"],
                     }
                 )
@@ -531,7 +556,23 @@ def compile_planned_caption_display(
     emphasis_events = list(overlay_events) if emphasis_enabled else []
     suppressed_cues: list[CaptionCueData] = []
     if normal_enabled and emphasis_enabled and emphasis_events:
-        normal_cues, suppressed_cues = _dedup(normal_cues, emphasis_events, diag)
+        # Plan A (issue #197): confine suppression to the huazi's own sentence so a
+        # stretched dwell window coexists with the next sentence's normal caption.
+        event_source_ids: dict[str, set[str]] = {}
+        for window in caption_windows.get("emphasis_windows") or []:
+            if not isinstance(window, dict):
+                continue
+            event_id = str(window.get("event_id") or "")
+            if not event_id:
+                continue
+            event_source_ids.setdefault(event_id, set()).update(
+                str(item)
+                for item in (window.get("source_unit_ids") or [])
+                if item is not None
+            )
+        normal_cues, suppressed_cues = _dedup(
+            normal_cues, emphasis_events, diag, event_source_ids=event_source_ids
+        )
 
     normal_cues.sort(key=lambda cue: (cue.start, cue.end, tuple(map(str, cue.source_unit_ids))))
     return CaptionDisplayResult(
