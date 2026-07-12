@@ -586,6 +586,9 @@ class CaptionWindowDiagnostics(ContractModel):
     options_pruned_by_cap: int = Field(0, ge=0)
     token_matched: int = Field(0, ge=0)
     char_fallback: int = Field(0, ge=0)
+    events_with_options: int = Field(0, ge=0)
+    relaxed_tier2_events: int = Field(0, ge=0)
+    relaxed_tier3_events: int = Field(0, ge=0)
 
 
 class CaptionWindowsPlanArtifact(ContractModel):

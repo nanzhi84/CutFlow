@@ -132,6 +132,12 @@ def test_warning_code_is_single_spec_enum_and_degradation_notice_shape():
         "postprocess.planning_failed",
         "sfx.asset_missing",
         "sfx.mix_failed",
+        # Emphasis floor (issue: run_c6168766640e postmortem): relaxed pixel-safety
+        # tiers and a below-floor huazi count degrade visibly, and the silent
+        # TTS-native-timing -> ASR fallback is now surfaced.
+        "caption.emphasis_relaxed_safety",
+        "caption.emphasis_below_floor",
+        "tts.timing_unavailable",
     }
     assert DegradationCode.font_default_used.value == "font.default_used"
 
