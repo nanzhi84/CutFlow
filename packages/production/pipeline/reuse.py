@@ -125,7 +125,11 @@ def compute_reuse_plan(
                 return _stop(plan, template_node.node_id, "sha256_mismatch", previous_node.output_artifact_ids)
             output_artifacts.append(artifact)
 
-        if not output_artifacts and template_node.output_artifact_kinds:
+        if (
+            not output_artifacts
+            and template_node.output_artifact_kinds
+            and not _skipped_without_output(previous_node)
+        ):
             return _stop(plan, template_node.node_id, "artifact_missing")
         plan.reused_node_ids.append(template_node.node_id)
         plan.decisions.append(
@@ -144,6 +148,23 @@ def compute_reuse_plan(
         ):
             return _stop(plan, previous_node.node_id, "node_not_in_template")
     return plan
+
+
+def _skipped_without_output(previous_node: NodeRun) -> bool:
+    """A node the previous run skipped without ever producing anything.
+
+    ``digital_human._may_skip_without_running`` turns PortraitTrackBuild / LipSync into
+    no-ops on the full-coverage B-roll path: the NodeRun lands ``skipped`` with an EMPTY
+    ``output_artifact_ids``. Nothing was produced, so nothing can be missing — treating
+    that as artifact corruption stopped reuse at the first such node and forced every
+    paid node behind it (TTS, the planners) to re-run and re-bill on resume.
+
+    The distinction is the recorded ids, not the status: a node whose ids ARE recorded
+    but whose artifact rows cannot be loaded is genuinely broken and still stops the plan
+    (with those ids attached) above. And the skip condition is derived from
+    ``job.request``, which a resume cannot change, so the resumed run skips it again.
+    """
+    return previous_node.status is NodeStatus.skipped and not previous_node.output_artifact_ids
 
 
 def _failed_resume_anchor(
