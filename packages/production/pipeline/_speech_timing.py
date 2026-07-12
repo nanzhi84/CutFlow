@@ -1,4 +1,4 @@
-"""Provider-neutral speech timing normalization and text-basis repair."""
+"""Provider-neutral speech timing normalization and script-anchored token repair."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from packages.core.contracts import (
     SpeechTokenTiming,
 )
 
-_SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？!?；;])")
 _DISPLAY_TOKEN = re.compile(r"[A-Za-z]+(?:['’-][A-Za-z]+)*|\d+(?:\.\d+)?|[^\s]")
+_ANCHOR_WINDOW = 10
 
 
 def normalize_timing_for_script(
@@ -21,11 +21,15 @@ def normalize_timing_for_script(
     script: str,
     duration: float,
 ) -> tuple[list[SpeechSegmentTiming], list[SpeechTokenTiming], dict[str, int]]:
-    """Return valid timing aligned to display text.
+    """Return provider-raw segments and script-display tokens aligned to real time.
 
-    Native tokens are retained when their normalized text agrees with the script.
-    Text-normalization mismatches (for example ``2000`` spoken as ``两千``) fall
-    back inside each sentence/segment to deterministic display-token proportions.
+    Segments keep the provider's own text and timing (validated + ordered); the
+    downstream narration builder proportionally maps script sentences onto them,
+    which stays robust even when ASR re-segments the utterance. Tokens instead
+    cover the script's *display* text (``_DISPLAY_TOKEN`` split): each display
+    token matched to a provider token in sequence takes its real time (an
+    anchor); unmatched tokens are interpolated between the surrounding anchors by
+    character weight so number/typo drift never mis-times the caption.
     """
 
     limit = max(0.001, float(duration or 0.001))
@@ -38,40 +42,26 @@ def normalize_timing_for_script(
 
     if not segments and tokens:
         segments = [
-            SpeechSegmentTiming(text=script, start=tokens[0].start, end=tokens[-1].end)
+            SpeechSegmentTiming(
+                text="".join(item.text for item in tokens),
+                start=tokens[0].start,
+                end=tokens[-1].end,
+            )
         ]
     if not segments:
         return [], [], diagnostics
 
-    script_normalized = normalize_speech_text(script)
-    token_normalized = normalize_speech_text("".join(item.text for item in tokens))
-    if tokens and token_normalized and token_normalized in script_normalized:
-        diagnostics["token_matched"] = len(tokens)
-        return segments, tokens, diagnostics
-
-    repaired_segments = _segments_with_display_text(segments, script)
-    repaired_tokens: list[SpeechTokenTiming] = []
-    for segment in repaired_segments:
-        repaired_tokens.extend(
-            proportional_tokens(segment.text, start=segment.start, end=segment.end)
-        )
-    diagnostics["char_fallback"] = len(repaired_tokens)
-    return repaired_segments, repaired_tokens, diagnostics
+    display_tokens, matched, fallback = _anchor_display_tokens(script, tokens, limit)
+    diagnostics["token_matched"] = matched
+    diagnostics["char_fallback"] = fallback
+    return segments, display_tokens, diagnostics
 
 
 def estimated_timing_for_script(script: str, *, duration: float) -> SpeechTiming:
-    segments = _segments_with_display_text(
-        [SpeechSegmentTiming(text=script, start=0.0, end=max(0.001, duration))],
-        script,
-    )
-    tokens = [
-        token
-        for segment in segments
-        for token in proportional_tokens(segment.text, start=segment.start, end=segment.end)
-    ]
+    limit = max(0.001, float(duration))
     return SpeechTiming(
-        segments=segments,
-        tokens=tokens,
+        segments=[SpeechSegmentTiming(text=str(script or "").strip(), start=0.0, end=limit)],
+        tokens=proportional_tokens(script, start=0.0, end=limit),
         granularity="character",
         text_basis="original",
     )
@@ -98,6 +88,158 @@ def normalize_speech_text(value: str) -> str:
     return "".join(char.lower() for char in normalized if char.isalnum())
 
 
+def _anchor_display_tokens(
+    script: str, tokens: list[SpeechTokenTiming], limit: float
+) -> tuple[list[SpeechTokenTiming], int, int]:
+    values = [match.group(0) for match in _DISPLAY_TOKEN.finditer(str(script or ""))]
+    if not values:
+        return [], 0, 0
+    weights = [max(1, len(normalize_speech_text(value))) for value in values]
+    anchors = _match_anchors(values, weights, tokens)
+    times = _interpolate_token_times(weights, anchors, limit)
+    result: list[SpeechTokenTiming] = []
+    cursor = 0.0
+    for value, (start, end) in zip(values, times, strict=True):
+        start = max(cursor, min(limit, start))
+        end = max(start, min(limit, end))
+        if end > start:
+            result.append(SpeechTokenTiming(text=value, start=start, end=end))
+            cursor = end
+    matched = sum(1 for span in anchors if span is not None)
+    return result, matched, len(values) - matched
+
+
+def _match_anchors(
+    values: list[str], weights: list[int], tokens: list[SpeechTokenTiming]
+) -> list[tuple[float, float] | None]:
+    """Greedily align display tokens to provider tokens in time order.
+
+    A two-pointer walk pairs equal (normalized) tokens as anchors. When one
+    side merges what the other splits — e.g. a v3 TTS token ``天气`` (or ``好，``
+    with the punctuation attached) spanning the two display tokens ``天``/``气`` —
+    the coarser token anchors the whole finer run, which shares its interval
+    subdivided by character weight. On an unresolved mismatch it skips forward on
+    whichever side reaches the next match first, within a bounded look-ahead
+    window; anything never paired stays unanchored for the caller to
+    interpolate. Deterministic and O(n · window)."""
+
+    anchors: list[tuple[float, float] | None] = [None] * len(values)
+    script_norm = [normalize_speech_text(value) for value in values]
+    provider_norm = [normalize_speech_text(token.text) for token in tokens]
+    i = 0
+    j = 0
+    while i < len(values) and j < len(tokens):
+        if not script_norm[i]:
+            i += 1
+            continue
+        if not provider_norm[j]:
+            j += 1
+            continue
+        if script_norm[i] == provider_norm[j]:
+            anchors[i] = (tokens[j].start, tokens[j].end)
+            i += 1
+            j += 1
+            continue
+        script_run_end = _run_match(script_norm, i, provider_norm[j])
+        if script_run_end is not None:
+            _distribute_run(anchors, weights, i, script_run_end, tokens[j].start, tokens[j].end)
+            i = script_run_end + 1
+            j += 1
+            continue
+        provider_run_end = _run_match(provider_norm, j, script_norm[i])
+        if provider_run_end is not None:
+            anchors[i] = (tokens[j].start, tokens[provider_run_end].end)
+            i += 1
+            j = provider_run_end + 1
+            continue
+        provider_ahead = _lookahead(provider_norm, j + 1, script_norm[i])
+        script_ahead = _lookahead(script_norm, i + 1, provider_norm[j])
+        if provider_ahead is not None and (
+            script_ahead is None or (provider_ahead - j) <= (script_ahead - i)
+        ):
+            j = provider_ahead
+        elif script_ahead is not None:
+            i = script_ahead
+        else:
+            i += 1
+    return anchors
+
+
+def _run_match(sequence: list[str], start: int, target: str) -> int | None:
+    """Smallest end index whose ``sequence[start:end + 1]`` normalized-joins to
+    ``target``, within the look-ahead window; ``None`` if no prefix leads there."""
+    if not target:
+        return None
+    accumulated = ""
+    for index in range(start, min(len(sequence), start + _ANCHOR_WINDOW)):
+        accumulated += sequence[index]
+        if accumulated == target:
+            return index
+        if len(accumulated) >= len(target) or not target.startswith(accumulated):
+            break
+    return None
+
+
+def _distribute_run(
+    anchors: list[tuple[float, float] | None],
+    weights: list[int],
+    start_index: int,
+    end_index: int,
+    start: float,
+    end: float,
+) -> None:
+    span_weights = weights[start_index : end_index + 1]
+    total = sum(span_weights)
+    cursor = float(start)
+    for offset, target_index in enumerate(range(start_index, end_index + 1)):
+        token_end = (
+            float(end)
+            if offset == len(span_weights) - 1
+            else cursor + (float(end) - float(start)) * span_weights[offset] / total
+        )
+        anchors[target_index] = (cursor, token_end)
+        cursor = token_end
+
+
+def _lookahead(sequence: list[str], start: int, target: str) -> int | None:
+    if not target:
+        return None
+    for index in range(start, min(len(sequence), start + _ANCHOR_WINDOW)):
+        if sequence[index] == target:
+            return index
+    return None
+
+
+def _interpolate_token_times(
+    weights: list[int], anchors: list[tuple[float, float] | None], limit: float
+) -> list[tuple[float, float]]:
+    times: list[tuple[float, float]] = [(0.0, 0.0)] * len(weights)
+    index = 0
+    previous_end = 0.0
+    while index < len(weights):
+        if anchors[index] is not None:
+            times[index] = anchors[index]
+            previous_end = anchors[index][1]
+            index += 1
+            continue
+        run_end = index
+        while run_end < len(weights) and anchors[run_end] is None:
+            run_end += 1
+        left = previous_end
+        right = anchors[run_end][0] if run_end < len(weights) else limit
+        right = max(left, right)
+        span_weights = weights[index:run_end]
+        total = sum(span_weights)
+        cursor = left
+        for offset, target in enumerate(range(index, run_end)):
+            token_end = right if offset == len(span_weights) - 1 else cursor + (right - left) * span_weights[offset] / total
+            times[target] = (cursor, token_end)
+            cursor = token_end
+        previous_end = right
+        index = run_end
+    return times
+
+
 def _valid_segments(
     values: list[SpeechSegmentTiming], duration: float
 ) -> list[SpeechSegmentTiming]:
@@ -118,40 +260,3 @@ def _valid_tokens(values: list[SpeechTokenTiming], duration: float) -> list[Spee
         if item.text.strip() and end > start:
             result.append(item.model_copy(update={"start": start, "end": end}))
     return sorted(result, key=lambda item: (item.start, item.end, item.text))
-
-
-def _segments_with_display_text(
-    segments: list[SpeechSegmentTiming], script: str
-) -> list[SpeechSegmentTiming]:
-    sentences = [part.strip() for part in _SENTENCE_BOUNDARY.split(script) if part.strip()]
-    if not sentences:
-        sentences = [str(script or "").strip()]
-    if len(sentences) == len(segments):
-        return [
-            segment.model_copy(update={"text": sentence})
-            for segment, sentence in zip(segments, sentences, strict=True)
-        ]
-    if len(segments) == 1:
-        return [segments[0].model_copy(update={"text": str(script or "").strip()})]
-
-    # Different segmentation: split the display script proportionally across the
-    # provider segments while preserving provider time boundaries.
-    display_tokens = [match.group(0) for match in _DISPLAY_TOKEN.finditer(script)]
-    if not display_tokens:
-        return segments
-    weights = [max(1, len(normalize_speech_text(item.text))) for item in segments]
-    total_weight = sum(weights)
-    cursor = 0
-    repaired: list[SpeechSegmentTiming] = []
-    accumulated = 0
-    for index, (segment, weight) in enumerate(zip(segments, weights, strict=True)):
-        accumulated += weight
-        target = (
-            len(display_tokens)
-            if index == len(segments) - 1
-            else max(cursor + 1, round(len(display_tokens) * accumulated / total_weight))
-        )
-        text = "".join(display_tokens[cursor:target])
-        repaired.append(segment.model_copy(update={"text": text or segment.text}))
-        cursor = target
-    return repaired
