@@ -34,8 +34,9 @@ from packages.production.pipeline._caption_styles import (
 # outside 2-10 visual chars make poor huazi banners (too terse or too wide).
 _MIN_VISUAL_CHARS = 2
 _MAX_VISUAL_CHARS = 10
-# Never expose more than this many candidates to the subagent, one per sentence.
-HUAZI_MAX_CANDIDATES = 6
+# Never expose more than this many candidates, one per sentence. Raised from 6 so
+# a >=5-event emphasis floor has enough headroom after pixel-safety attrition.
+HUAZI_MAX_CANDIDATES = 10
 
 # Deterministic caps applied by ``finalize_huazi_plan`` (not repair errors).
 PUNCH_MAX = 2

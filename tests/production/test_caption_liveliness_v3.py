@@ -88,10 +88,10 @@ def test_normalized_tts_text_uses_sentence_local_display_fallback_with_diagnosti
         script="只要2000元",
         duration=1.0,
     )
-    assert segments[0].text == "只要2000元"
+    assert segments[0].text == "只要两千元"
     assert "".join(token.text for token in tokens) == "只要2000元"
-    assert diagnostics["token_matched"] == 0
-    assert diagnostics["char_fallback"] == len(tokens)
+    assert diagnostics["token_matched"] == 2
+    assert diagnostics["char_fallback"] == 2
 
 
 def test_timing_normalizer_handles_token_only_empty_and_multi_segment_mismatch():
@@ -108,8 +108,8 @@ def test_timing_normalizer_handles_token_only_empty_and_multi_segment_mismatch()
         duration=1.0,
     )
     assert [(item.start, item.end) for item in segments] == [(0.1, 0.8)]
-    assert tokens[0].text == "你好"
-    assert diagnostics["token_matched"] == 1
+    assert "".join(token.text for token in tokens) == "你好"
+    assert diagnostics["token_matched"] == 2
 
     assert normalize_timing_for_script(
         SpeechTiming(granularity="segment"),

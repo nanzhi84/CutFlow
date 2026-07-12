@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from packages.core.contracts import ArtifactKind, DegradationNotice, NodeStatus, WarningCode
@@ -10,8 +11,14 @@ from packages.core.contracts.artifacts import CaptionWindowsPlanArtifact
 from packages.core.workflow import NodeOutput
 from packages.media.annotation.sensors.frames import extract_frames_for_times
 from packages.production.pipeline._caption_visual_safety import (
-    evaluate_option_safety,
+    EMPHASIS_MIN_EVENTS,
+    EMPHASIS_TIER2_BUSY_MAX,
+    EMPHASIS_TIER2_SCENE_TEXT_MAX,
+    count_face_blocked,
+    measure_option_candidates,
     sample_frame_indices,
+    select_best_face_clear_option,
+    select_options_at_thresholds,
 )
 from packages.production.pipeline._caption_window_planner import (
     build_caption_option_candidates,
@@ -190,6 +197,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         diagnostics["token_matched"] += emphasis_token_matched
         diagnostics["char_fallback"] += emphasis_char_fallback
 
+        emphasis_summary: EmphasisAnalysisSummary | None = None
         if emphasis_enabled:
             final_ass_emphasis_font_size = final_ass_font_size
             emphasis_measure, _emphasis_metrics_source = make_text_measurer(
@@ -197,7 +205,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                 float(final_ass_emphasis_font_size),
             )
             colors = _subtitle_colors(state.request.subtitle.style_preset)
-            _analyze_emphasis_windows(
+            emphasis_summary = _analyze_emphasis_windows(
                 video_path=str(ctx.artifact_path(rendered)),
                 temp_dir=temp_dir / "frames",
                 fps=fps,
@@ -211,6 +219,58 @@ def run(ctx: NodeContext) -> NodeOutput:
                 shadow=1.0,
                 normal_safe_rect=safe_rect,
             )
+
+    if emphasis_summary is not None and (
+        emphasis_summary.relaxed_tier2_events or emphasis_summary.relaxed_tier3_events
+    ):
+        notice = degradation_notice(
+            WarningCode.caption_emphasis_relaxed_safety,
+            "为达到花字下限，部分事件放宽了场景文字/繁忙区安全阈值（人脸红线不变）。",
+            node_id=ctx.node_run.node_id,
+            affects_true_yield=False,
+        ).model_copy(
+            update={
+                "details": {
+                    "events_with_options": emphasis_summary.events_with_options,
+                    "tier1_events": emphasis_summary.tier1_events,
+                    "relaxed_tier2_events": emphasis_summary.relaxed_tier2_events,
+                    "relaxed_tier3_events": emphasis_summary.relaxed_tier3_events,
+                    "floor": emphasis_summary.floor,
+                    "tier2_thresholds": {
+                        "scene_text_overlap_max": EMPHASIS_TIER2_SCENE_TEXT_MAX,
+                        "busy_score_max": EMPHASIS_TIER2_BUSY_MAX,
+                    },
+                }
+            }
+        )
+        warnings.append(WarningCode.caption_emphasis_relaxed_safety)
+        degradations.append(notice)
+
+    if (
+        emphasis_summary is not None
+        and emphasis_enabled
+        and len(emphasis_windows) > 0
+        and emphasis_summary.events_with_options < EMPHASIS_MIN_EVENTS
+    ):
+        notice = degradation_notice(
+            WarningCode.caption_emphasis_below_floor,
+            f"花字数量未达下限（{emphasis_summary.events_with_options}/"
+            f"{EMPHASIS_MIN_EVENTS}）；已尽可能放宽后仍无法安全放置更多花字。",
+            node_id=ctx.node_run.node_id,
+            affects_true_yield=False,
+        ).model_copy(
+            update={
+                "details": {
+                    "events_with_options": emphasis_summary.events_with_options,
+                    "floor": EMPHASIS_MIN_EVENTS,
+                    "analyzable_events": emphasis_summary.analyzable_events,
+                    "candidate_events": len(emphasis_windows),
+                    "death_causes": emphasis_summary.death_causes,
+                }
+            }
+        )
+        warnings.append(WarningCode.caption_emphasis_below_floor)
+        degradations.append(notice)
 
     if diagnostics["visual_analysis_failed"]:
         details = {
@@ -256,6 +316,33 @@ def run(ctx: NodeContext) -> NodeOutput:
     )
 
 
+@dataclass
+class _EmphasisWindowState:
+    """Per-window measurement + tiered-selection bookkeeping."""
+
+    window: dict
+    base_anchors: list[dict]
+    measurement: object | None = None  # OptionMeasurementResult when measured
+    unavailable: str | None = None  # detector/opencv/extraction/decode failure
+    short: bool = False  # window too short for 3 distinct frames
+    no_candidates: bool = False  # no option envelopes survived pre-pixel filters
+    safe_options: list[dict] = field(default_factory=list)
+    tier: int = 0
+    pushed_t3: bool = False
+    rejected: tuple[int, int, int] = (0, 0, 0)  # face, scene_text, busy at applied tier
+
+
+@dataclass(frozen=True)
+class EmphasisAnalysisSummary:
+    events_with_options: int
+    tier1_events: int
+    relaxed_tier2_events: int
+    relaxed_tier3_events: int
+    analyzable_events: int
+    floor: int
+    death_causes: list[dict]
+
+
 def _analyze_emphasis_windows(
     *,
     video_path: str,
@@ -270,19 +357,21 @@ def _analyze_emphasis_windows(
     outline: float,
     shadow: float,
     normal_safe_rect: dict | None,
-) -> None:
+) -> EmphasisAnalysisSummary:
     try:
         import cv2  # type: ignore
     except Exception:
         cv2 = None
 
-    for index, window in enumerate(windows):
-        base_anchors = list(window.get("anchor_candidates") or [])
-        diagnostics["generated_anchor_candidates"] += len(base_anchors)
-        option_candidates = build_caption_option_candidates(
-            event_id=str(window.get("event_id") or ""),
-            text=str(window.get("text") or ""),
-            anchors=base_anchors,
+    states = [
+        _measure_emphasis_window(
+            index=index,
+            window=window,
+            video_path=video_path,
+            temp_dir=temp_dir,
+            fps=fps,
+            cv2=cv2,
+            diagnostics=diagnostics,
             width=width,
             height=height,
             measure=measure,
@@ -290,90 +379,226 @@ def _analyze_emphasis_windows(
             outline=outline,
             shadow=shadow,
             normal_safe_rect=normal_safe_rect,
-            hero_eligible=bool(window.get("hero_eligible")),
         )
-        window.pop("hero_eligible", None)
-        if not option_candidates:
-            diagnostics["rejected_anchor_candidates"] += len(base_anchors)
-            diagnostics["events_without_options"] += 1
-            window["anchor_candidates"] = []
-            window["caption_options"] = []
-            continue
-        sample_frames = sample_frame_indices(
-            int(window.get("start_frame") or 0),
-            int(window.get("end_frame") or 0),
-        )
-        unavailable = None
-        images = []
-        if len(sample_frames) == 3 and cv2 is not None:
-            sample_times = [frame / fps for frame in sample_frames]
-            try:
-                extracted = extract_frames_for_times(
-                    video_path,
-                    sample_times,
-                    temp_dir=str(temp_dir / f"event_{index:03d}"),
-                    max_long_side=1024,
-                )
-            except Exception:
-                extracted = []
-            if len(extracted) == 3:
-                images = [cv2.imread(path) for _time, path in extracted]
-                if any(image is None for image in images):
-                    unavailable = "frame_decode"
-            else:
-                unavailable = "frame_extraction"
-        else:
-            unavailable = "opencv" if cv2 is None else "frame_extraction"
+        for index, window in enumerate(windows)
+    ]
 
-        if unavailable is None:
-            try:
-                result = evaluate_option_safety(
-                    images=images,
-                    sample_frames=sample_frames,
-                    option_candidates=option_candidates,
-                )
-                unavailable = result.unavailable_detector
-            except Exception:
-                result = None
-                unavailable = "visual_analysis"
-        else:
-            result = None
+    # Analyzable events can conceivably yield an option (measured, with candidates).
+    analyzable = [state for state in states if state.measurement is not None]
+    floor = min(EMPHASIS_MIN_EVENTS, len(analyzable))
 
-        if unavailable is not None or result is None:
-            diagnostics["visual_analysis_failed"] = True
-            diagnostics["events_without_options"] += 1
-            if unavailable not in diagnostics["unavailable_detectors"]:
-                diagnostics["unavailable_detectors"].append(unavailable)
-            diagnostics["rejected_anchor_candidates"] += len(base_anchors)
-            window["anchor_candidates"] = []
-            window["caption_options"] = []
-            continue
+    # Tier 1: default thresholds.
+    for state in analyzable:
+        options, rejected = _select_tier(state.measurement)
+        if options:
+            state.safe_options = options
+            state.tier = 1
+        state.rejected = rejected
+    events_with_options = sum(1 for state in analyzable if state.safe_options)
 
-        diagnostics["sampled_frames"] += 3
-        diagnostics["rejected_face"] += result.rejected_face
-        diagnostics["rejected_scene_text"] += result.rejected_scene_text
-        diagnostics["rejected_busy"] += result.rejected_busy
-        persisted_anchors, options, cap_diagnostics = finalize_safe_caption_options(
-            anchors=base_anchors,
-            safe_options=result.options,
+    # Tier 2: relax scene-text/busyness for still-optionless events, only if below floor.
+    relaxed_tier2 = 0
+    if events_with_options < floor:
+        for state in analyzable:
+            if state.safe_options:
+                continue
+            options, rejected = _select_tier(
+                state.measurement,
+                scene_text_max=EMPHASIS_TIER2_SCENE_TEXT_MAX,
+                busy_max=EMPHASIS_TIER2_BUSY_MAX,
+            )
+            if options:
+                state.safe_options = options
+                state.tier = 2
+                state.rejected = rejected
+                relaxed_tier2 += 1
+        events_with_options = sum(1 for state in analyzable if state.safe_options)
+
+    # Tier 3: single least-busy face-clear option; face stays the red line.
+    relaxed_tier3 = 0
+    if events_with_options < floor:
+        for state in analyzable:
+            if state.safe_options:
+                continue
+            state.pushed_t3 = True
+            best = select_best_face_clear_option(state.measurement)
+            if best is not None:
+                state.safe_options = [best]
+                state.tier = 3
+                state.rejected = (count_face_blocked(state.measurement), 0, 0)
+                relaxed_tier3 += 1
+        events_with_options = sum(1 for state in analyzable if state.safe_options)
+
+    death_causes: list[dict] = []
+    for state in states:
+        _finalize_emphasis_window(state, diagnostics, death_causes)
+
+    events_with_options = sum(1 for state in states if state.window.get("caption_options"))
+    tier1_events = sum(1 for state in states if state.tier == 1 and state.safe_options)
+    diagnostics["events_with_options"] = events_with_options
+    diagnostics["relaxed_tier2_events"] = relaxed_tier2
+    diagnostics["relaxed_tier3_events"] = relaxed_tier3
+    return EmphasisAnalysisSummary(
+        events_with_options=events_with_options,
+        tier1_events=tier1_events,
+        relaxed_tier2_events=relaxed_tier2,
+        relaxed_tier3_events=relaxed_tier3,
+        analyzable_events=len(analyzable),
+        floor=floor,
+        death_causes=death_causes,
+    )
+
+
+def _select_tier(measurement, **kwargs) -> tuple[list[dict], tuple[int, int, int]]:
+    options, rejected_face, rejected_text, rejected_busy = select_options_at_thresholds(
+        measurement, **kwargs
+    )
+    return options, (rejected_face, rejected_text, rejected_busy)
+
+
+def _measure_emphasis_window(
+    *,
+    index: int,
+    window: dict,
+    video_path: str,
+    temp_dir: Path,
+    fps: int,
+    cv2,
+    diagnostics: dict,
+    width: int,
+    height: int,
+    measure,
+    font_size: float,
+    outline: float,
+    shadow: float,
+    normal_safe_rect: dict | None,
+) -> _EmphasisWindowState:
+    base_anchors = list(window.get("anchor_candidates") or [])
+    diagnostics["generated_anchor_candidates"] += len(base_anchors)
+    option_candidates = build_caption_option_candidates(
+        event_id=str(window.get("event_id") or ""),
+        text=str(window.get("text") or ""),
+        anchors=base_anchors,
+        width=width,
+        height=height,
+        measure=measure,
+        font_size=font_size,
+        outline=outline,
+        shadow=shadow,
+        normal_safe_rect=normal_safe_rect,
+        hero_eligible=bool(window.get("hero_eligible")),
+    )
+    window.pop("hero_eligible", None)
+    state = _EmphasisWindowState(window=window, base_anchors=base_anchors)
+    if not option_candidates:
+        state.no_candidates = True
+        return state
+    sample_frames = sample_frame_indices(
+        int(window.get("start_frame") or 0),
+        int(window.get("end_frame") or 0),
+    )
+    if len(sample_frames) != 3:
+        # A too-short window is not a detector failure; it must not poison the
+        # visual-analysis-failed signal (which is reserved for real detector faults).
+        state.short = True
+        return state
+    if cv2 is None:
+        state.unavailable = "opencv"
+        return state
+    sample_times = [frame / fps for frame in sample_frames]
+    try:
+        extracted = extract_frames_for_times(
+            video_path,
+            sample_times,
+            temp_dir=str(temp_dir / f"event_{index:03d}"),
+            max_long_side=1024,
         )
-        diagnostics["safe_anchor_candidates"] += cap_diagnostics[
-            "safe_anchor_candidates"
-        ]
-        diagnostics["anchors_pruned_by_cap"] += cap_diagnostics[
-            "anchors_pruned_by_cap"
-        ]
-        diagnostics["options_pruned_by_cap"] += cap_diagnostics[
-            "options_pruned_by_cap"
-        ]
-        diagnostics["rejected_anchor_candidates"] += max(
-            0,
-            len(base_anchors) - cap_diagnostics["safe_anchor_candidates"],
+    except Exception:
+        extracted = []
+    if len(extracted) != 3:
+        state.unavailable = "frame_extraction"
+        return state
+    images = [cv2.imread(path) for _time, path in extracted]
+    if any(image is None for image in images):
+        state.unavailable = "frame_decode"
+        return state
+    try:
+        result = measure_option_candidates(
+            images=images,
+            sample_frames=sample_frames,
+            option_candidates=option_candidates,
         )
-        window["anchor_candidates"] = persisted_anchors
-        window["caption_options"] = options
-        if not options:
-            diagnostics["events_without_options"] += 1
+    except Exception:
+        state.unavailable = "visual_analysis"
+        return state
+    if result.unavailable_detector is not None:
+        state.unavailable = result.unavailable_detector
+        return state
+    state.measurement = result
+    return state
+
+
+def _record_unavailable(diagnostics: dict, detector: str | None) -> None:
+    if detector is not None and detector not in diagnostics["unavailable_detectors"]:
+        diagnostics["unavailable_detectors"].append(detector)
+
+
+def _finalize_emphasis_window(
+    state: _EmphasisWindowState, diagnostics: dict, death_causes: list[dict]
+) -> None:
+    window = state.window
+    base_anchors = state.base_anchors
+    event_id = str(window.get("event_id") or "")
+
+    if state.no_candidates:
+        diagnostics["rejected_anchor_candidates"] += len(base_anchors)
+        diagnostics["events_without_options"] += 1
+        window["anchor_candidates"] = []
+        window["caption_options"] = []
+        death_causes.append({"event_id": event_id, "cause": "no_option_candidates"})
+        return
+    if state.short:
+        diagnostics["rejected_anchor_candidates"] += len(base_anchors)
+        diagnostics["events_without_options"] += 1
+        _record_unavailable(diagnostics, "window_too_short")
+        window["anchor_candidates"] = []
+        window["caption_options"] = []
+        death_causes.append({"event_id": event_id, "cause": "window_too_short"})
+        return
+    if state.measurement is None:
+        diagnostics["visual_analysis_failed"] = True
+        diagnostics["events_without_options"] += 1
+        _record_unavailable(diagnostics, state.unavailable)
+        diagnostics["rejected_anchor_candidates"] += len(base_anchors)
+        window["anchor_candidates"] = []
+        window["caption_options"] = []
+        death_causes.append({"event_id": event_id, "cause": state.unavailable})
+        return
+
+    diagnostics["sampled_frames"] += 3
+    diagnostics["rejected_face"] += state.rejected[0]
+    diagnostics["rejected_scene_text"] += state.rejected[1]
+    diagnostics["rejected_busy"] += state.rejected[2]
+    persisted_anchors, options, cap_diagnostics = finalize_safe_caption_options(
+        anchors=base_anchors,
+        safe_options=state.safe_options,
+    )
+    diagnostics["safe_anchor_candidates"] += cap_diagnostics["safe_anchor_candidates"]
+    diagnostics["anchors_pruned_by_cap"] += cap_diagnostics["anchors_pruned_by_cap"]
+    diagnostics["options_pruned_by_cap"] += cap_diagnostics["options_pruned_by_cap"]
+    diagnostics["rejected_anchor_candidates"] += max(
+        0, len(base_anchors) - cap_diagnostics["safe_anchor_candidates"]
+    )
+    window["anchor_candidates"] = persisted_anchors
+    window["caption_options"] = options
+    if not options:
+        diagnostics["events_without_options"] += 1
+        death_causes.append(
+            {
+                "event_id": event_id,
+                "cause": "face_overlap" if state.pushed_t3 else "safety_rejected",
+            }
+        )
 
 
 def _append_degradation(

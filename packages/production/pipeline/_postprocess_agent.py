@@ -7,6 +7,12 @@ import math
 from typing import Any
 
 from packages.core.contracts.artifacts import OverlayEvent, OverlayRect
+from packages.production.pipeline._caption_visual_safety import EMPHASIS_MIN_EVENTS
+
+# Once at least the floor of selectable events is offered, PostProcess must commit to
+# a 5-8 event band (below the floor it must take them all); this is the selection-side
+# guard that pairs with the >=5 emphasis floor enforced upstream.
+_CAPTION_MAX_EVENTS = 8
 
 
 @dataclass(frozen=True)
@@ -199,9 +205,14 @@ def validate_postprocess_selection(
         for window in (caption_windows.get("emphasis_windows") or [])
         if isinstance(window, dict) and _as_str(window.get("event_id"))
     }
+    selectable_count = sum(
+        1
+        for window in (caption_windows.get("emphasis_windows") or [])
+        if isinstance(window, dict) and window.get("caption_options")
+    )
     seen: set[str] = set()
-    if len(selection.caption_choices) > 6:
-        errors.append("caption_choices must not exceed 6 events")
+    if len(selection.caption_choices) > _CAPTION_MAX_EVENTS:
+        errors.append(f"caption_choices must not exceed {_CAPTION_MAX_EVENTS} events")
     selected_windows: list[tuple[int, int, str, str]] = []
     hero_count = 0
     for choice in selection.caption_choices:
@@ -252,6 +263,19 @@ def validate_postprocess_selection(
             errors.append(
                 f"caption events '{previous[2]}' and '{current[2]}' must be non-overlapping "
                 "with at least 0.8s gap"
+            )
+    if emphasis_enabled and selectable_count > 0:
+        chosen = len(seen)
+        if selectable_count >= EMPHASIS_MIN_EVENTS:
+            if not (EMPHASIS_MIN_EVENTS <= chosen <= _CAPTION_MAX_EVENTS):
+                errors.append(
+                    f"当前有 {selectable_count} 个可选花字事件，必须选择 "
+                    f"{EMPHASIS_MIN_EVENTS} 到 {_CAPTION_MAX_EVENTS} 个（现选 {chosen} 个）"
+                )
+        elif chosen != selectable_count:
+            errors.append(
+                f"当前有 {selectable_count} 个可选花字事件（不足 {EMPHASIS_MIN_EVENTS} 个），"
+                f"必须全部选择（现选 {chosen} 个）"
             )
     return errors
 

@@ -13709,6 +13709,9 @@
           "huazi.planning_failed",
           "font.metrics_fallback",
           "caption.visual_analysis_failed",
+          "caption.emphasis_relaxed_safety",
+          "caption.emphasis_below_floor",
+          "tts.timing_unavailable",
           "postprocess.planning_failed",
           "sfx.asset_missing",
           "sfx.mix_failed"
@@ -25031,6 +25034,9 @@
           "huazi.planning_failed",
           "font.metrics_fallback",
           "caption.visual_analysis_failed",
+          "caption.emphasis_relaxed_safety",
+          "caption.emphasis_below_floor",
+          "tts.timing_unavailable",
           "postprocess.planning_failed",
           "sfx.asset_missing",
           "sfx.mix_failed"

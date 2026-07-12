@@ -164,6 +164,60 @@ def test_validator_rejects_dense_or_excess_hero_choices():
     assert any("0.8s" in error for error in errors)
 
 
+def _spaced_windows(count: int) -> list[dict]:
+    # 60-frame stride keeps every pair >= the 0.8s (24-frame) minimum gap.
+    return [_window(f"hz_{i:03d}", (i - 1) * 60, (i - 1) * 60 + 30) for i in range(1, count + 1)]
+
+
+def _validate_floor(windows: list[dict], selected_ids: list[str]) -> list[str]:
+    return validate_postprocess_selection(
+        PostProcessSelection(
+            bgm_id=None,
+            caption_choices=[_choice(event_id) for event_id in selected_ids],
+            analysis="",
+        ),
+        caption_windows={"fps": 30, "emphasis_windows": windows},
+        bgm_candidates=[],
+        bgm_enabled=False,
+        emphasis_enabled=True,
+    )
+
+
+def test_caption_floor_requires_five_to_eight_when_enough_offered():
+    windows = _spaced_windows(6)
+    ids = [f"hz_{i:03d}" for i in range(1, 7)]
+    errors = _validate_floor(windows, ids[:3])  # only 3 of 6 offered
+    assert any("必须选择 5 到 8 个" in error for error in errors)
+    assert _validate_floor(windows, ids[:5]) == []
+
+
+def test_caption_floor_rejects_more_than_eight():
+    windows = _spaced_windows(10)
+    ids = [f"hz_{i:03d}" for i in range(1, 11)]
+    errors = _validate_floor(windows, ids[:9])  # 9 > 8
+    assert any("exceed 8" in error or "5 到 8" in error for error in errors)
+
+
+def test_caption_floor_below_five_requires_all():
+    windows = _spaced_windows(3)
+    ids = [f"hz_{i:03d}" for i in range(1, 4)]
+    errors = _validate_floor(windows, ids[:2])  # 2 of 3 offered
+    assert any("必须全部选择" in error for error in errors)
+    assert _validate_floor(windows, ids) == []
+
+
+def test_caption_floor_ignores_disabled_emphasis():
+    windows = _spaced_windows(6)
+    errors = validate_postprocess_selection(
+        PostProcessSelection(bgm_id=None, caption_choices=[], analysis=""),
+        caption_windows={"fps": 30, "emphasis_windows": windows},
+        bgm_candidates=[],
+        bgm_enabled=False,
+        emphasis_enabled=False,
+    )
+    assert not any("必须选择" in error or "必须全部选择" in error for error in errors)
+
+
 def test_materializer_uses_only_authoritative_option_geometry_and_frames():
     window = _window("e1", 30, 60)
     events, diagnostics = materialize_overlay_events(

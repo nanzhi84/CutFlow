@@ -129,13 +129,47 @@ def _workflow_with_successful_asr() -> tuple[LocalRuntimeAdapter, SuccessfulAsrG
     return workflow, gateway
 
 
+def _workflow_with_real_tts_and_successful_asr() -> LocalRuntimeAdapter:
+    repository = Repository()
+    repository.provider_profiles["fake.asr.profile"] = ProviderProfile(
+        id="fake.asr.profile",
+        provider_id="fake.asr",
+        model_id="fake-asr",
+        capability="asr.transcribe",
+        display_name="Fake ASR",
+        environment="local",
+        options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.asr.options"),
+    )
+    repository.provider_profiles["real.tts.profile"] = ProviderProfile(
+        id="real.tts.profile",
+        provider_id="volcengine.tts",
+        model_id="volc-tts",
+        capability="tts.speech",
+        display_name="Real TTS",
+        environment="prod",
+        options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.tts.options"),
+    )
+    gateway = SuccessfulAsrGateway()
+    gateway.plugins = {"fake.asr": object(), "volcengine.tts": object()}
+    workflow = object.__new__(LocalRuntimeAdapter)
+    workflow.repository = repository
+    workflow.provider_gateway = gateway
+    return workflow
+
+
 def _run_state(
-    *, strict_timestamps: bool, tts_uri: str = "https://media.example/tts.mp3"
+    *,
+    strict_timestamps: bool,
+    tts_uri: str = "https://media.example/tts.mp3",
+    tts_profile_id: str | None = None,
 ) -> RunState:
+    voice: dict = {"voice_id": "voice_sandbox"}
+    if tts_profile_id is not None:
+        voice["provider_profile_id"] = tts_profile_id
     request = DigitalHumanVideoRequest(
         case_id="case_demo",
         script="第一句介绍痛点。第二句说明方案。第三句引导行动。",
-        voice={"voice_id": "voice_sandbox"},
+        voice=voice,
         strictness={"strict_timestamps": strict_timestamps},
     )
     tts = Artifact(
@@ -350,3 +384,84 @@ def test_narration_alignment_strict_raises_when_asr_fails():
 
     assert exc.value.error.code == ErrorCode.provider_remote_failed
     assert exc.value.error.retryable is True
+
+
+def test_asr_fallback_reports_tts_timing_unavailable_for_real_tts(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class FakeObjectStore:
+        def signed_url(self, uri):
+            return SignedUrlResponse(
+                url="https://media.example/signed/tts.mp3",
+                expires_at=utcnow() + timedelta(minutes=15),
+                request_id="req_signed",
+            )
+
+    workflow = _workflow_with_real_tts_and_successful_asr()
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store",
+        lambda: FakeObjectStore(),
+    )
+
+    output = _run_narration_alignment(
+        workflow,
+        _run(),
+        _node_run(),
+        _run_state(
+            strict_timestamps=True,
+            tts_uri="s3://cutagent-demo/generated-audio/tts.mp3",
+            tts_profile_id="real.tts.profile",
+        ),
+    )
+
+    narration = {artifact.kind: artifact for artifact in output.artifacts}[
+        ArtifactKind.narration_units
+    ].payload
+    assert narration["source"] == "asr"
+    assert WarningCode.tts_timing_unavailable in output.warnings
+    codes = [notice.code for notice in output.degradations]
+    assert WarningCode.tts_timing_unavailable in codes
+    notice = next(n for n in output.degradations if n.code == WarningCode.tts_timing_unavailable)
+    assert notice.affects_true_yield is False
+    assert notice.node_id == "NarrationAlignment"
+
+
+def test_asr_fallback_stays_silent_for_sandbox_tts(monkeypatch: pytest.MonkeyPatch):
+    class FakeObjectStore:
+        def signed_url(self, uri):
+            return SignedUrlResponse(
+                url="https://media.example/signed/tts.mp3",
+                expires_at=utcnow() + timedelta(minutes=15),
+                request_id="req_signed",
+            )
+
+    workflow, _gateway = _workflow_with_successful_asr()
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store",
+        lambda: FakeObjectStore(),
+    )
+
+    output = _run_narration_alignment(
+        workflow,
+        _run(),
+        _node_run(),
+        _run_state(strict_timestamps=True, tts_uri="s3://cutagent-demo/generated-audio/tts.mp3"),
+    )
+
+    assert WarningCode.tts_timing_unavailable not in output.warnings
+    assert WarningCode.tts_timing_unavailable not in [
+        notice.code for notice in output.degradations
+    ]
+
+
+def test_estimated_fallback_does_not_report_tts_timing_unavailable():
+    workflow = _workflow_with_failing_asr()
+
+    output = _run_narration_alignment(
+        workflow, _run(), _node_run(), _run_state(strict_timestamps=False)
+    )
+
+    assert output.warnings == [WarningCode.timestamp_estimated]
+    assert WarningCode.tts_timing_unavailable not in [
+        notice.code for notice in output.degradations
+    ]

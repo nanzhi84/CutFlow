@@ -22,6 +22,7 @@ from packages.core.contracts.artifacts import (
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.planning.editing import build_narration_units
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline._run_state import degradation_notice
 from packages.production.pipeline._speech_timing import (
     estimated_timing_for_script,
     normalize_timing_for_script,
@@ -107,6 +108,8 @@ def run(ctx: NodeContext) -> NodeOutput:
         tokens: list[SpeechTokenTiming] | None = None,
         diagnostics: dict | None = None,
         provider_invocation_ids: list[str] | None = None,
+        warnings: list[WarningCode] | None = None,
+        degradations: list[DegradationNotice] | None = None,
     ) -> NodeOutput:
         alignment = AlignmentArtifact(
             audio_artifact_id=tts.id,
@@ -137,8 +140,29 @@ def run(ctx: NodeContext) -> NodeOutput:
                     "NarrationUnitsArtifact.v1",
                 ),
             ],
+            warnings=warnings or [],
+            degradations=degradations or [],
             provider_invocation_ids=provider_invocation_ids or [],
         )
+
+    def tts_native_timing_degradations() -> list[DegradationNotice]:
+        """ASR fallback ran because native TTS timing was absent. Report it only
+        when a real TTS provider produced the audio — sandbox TTS never emits
+        native timing, so it must not raise a spurious degradation."""
+        try:
+            tts_profile_id = ctx.tts_provider_profile_id(state.request)
+        except NodeExecutionError:
+            return []
+        if tts_profile_id.startswith("sandbox"):
+            return []
+        return [
+            degradation_notice(
+                WarningCode.tts_timing_unavailable,
+                "TTS 未返回原生时间戳，已回退 ASR 对齐。",
+                node_id=node_run.node_id,
+                affects_true_yield=False,
+            )
+        ]
 
     # PRIMARY source: durable, provider-neutral TTS timing. Temporal activities
     # rehydrate artifacts, not RunState.scratch, so this is the only cross-node
@@ -248,6 +272,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             duration,
             script=state.request.script,
         )
+        degradations = tts_native_timing_degradations()
         return alignment_output(
             units,
             source="asr",
@@ -255,6 +280,8 @@ def run(ctx: NodeContext) -> NodeOutput:
             tokens=tokens,
             diagnostics=diagnostics,
             provider_invocation_ids=[invocation.id],
+            warnings=[WarningCode.tts_timing_unavailable] if degradations else None,
+            degradations=degradations or None,
         )
     if state.request.strictness.strict_timestamps:
         raise NodeExecutionError(

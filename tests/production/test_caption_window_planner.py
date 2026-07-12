@@ -113,7 +113,8 @@ def test_visual_safety_fails_closed_when_face_detector_is_unavailable(monkeypatc
 def test_visual_safety_materializes_only_safe_anchor_and_complete_options(monkeypatch):
     monkeypatch.setattr(visual, "face_detector_available", lambda: True)
     monkeypatch.setattr(visual, "detect_faces_strict", lambda _image: [])
-    monkeypatch.setattr(visual, "_detect_text_like_regions", lambda *_args: [])
+    monkeypatch.setattr(visual, "scene_text_detector_available", lambda: True)
+    monkeypatch.setattr(visual, "detect_scene_text_strict", lambda _image: [])
     images = [np.zeros((100, 100, 3), dtype=np.uint8) for _ in range(3)]
     result = visual.evaluate_anchor_safety(
         images=images,
@@ -392,7 +393,8 @@ def test_visual_safety_filters_hero_envelope_without_rejecting_emphasis(monkeypa
             )
         ],
     )
-    monkeypatch.setattr(visual, "_detect_text_like_regions", lambda *_args: [])
+    monkeypatch.setattr(visual, "scene_text_detector_available", lambda: True)
+    monkeypatch.setattr(visual, "detect_scene_text_strict", lambda _image: [])
     candidates = build_caption_option_candidates(
         event_id="e1",
         text="促销",
@@ -505,10 +507,11 @@ def test_visual_safety_rejects_face_text_and_busy_anchors_independently(monkeypa
             )
         ],
     )
+    monkeypatch.setattr(visual, "scene_text_detector_available", lambda: True)
     monkeypatch.setattr(
         visual,
-        "_detect_text_like_regions",
-        lambda *_args: [(0.4, 0.4, 0.2, 0.2)],
+        "detect_scene_text_strict",
+        lambda _image: [(0.4, 0.4, 0.2, 0.2)],
     )
     monkeypatch.setattr(
         visual,
@@ -542,7 +545,8 @@ def test_visual_safety_rejects_face_text_and_busy_anchors_independently(monkeypa
 def test_option_safety_fails_closed_for_invalid_or_unmeasurable_envelopes(monkeypatch):
     monkeypatch.setattr(visual, "face_detector_available", lambda: True)
     monkeypatch.setattr(visual, "detect_faces_strict", lambda _image: [])
-    monkeypatch.setattr(visual, "_detect_text_like_regions", lambda *_args: [])
+    monkeypatch.setattr(visual, "scene_text_detector_available", lambda: True)
+    monkeypatch.setattr(visual, "detect_scene_text_strict", lambda _image: [])
     images = [np.zeros((100, 100, 3), dtype=np.uint8) for _ in range(3)]
 
     invalid = visual.evaluate_option_safety(
@@ -571,13 +575,6 @@ def test_option_safety_fails_closed_for_invalid_or_unmeasurable_envelopes(monkey
 
 
 def test_visual_geometry_helpers_cover_real_opencv_paths():
-    image = np.zeros((240, 320, 3), dtype=np.uint8)
-    cv2.putText(image, "SALE 99", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
-
-    regions = visual._detect_text_like_regions(cv2, np, image)
-    assert regions
-    expected_text_zone = (0.04, 0.25, 0.5, 0.25)
-    assert any(visual._overlap_fraction(expected_text_zone, region) > 0.1 for region in regions)
     smooth = np.zeros((240, 320, 3), dtype=np.uint8)
     checker = (np.indices((240, 320)).sum(axis=0) % 2 * 255).astype(np.uint8)
     textured = np.repeat(checker[:, :, None], 3, axis=2)
@@ -586,11 +583,6 @@ def test_visual_geometry_helpers_cover_real_opencv_paths():
     assert smooth_score is not None and textured_score is not None
     assert textured_score > smooth_score
     assert visual._busy_score(cv2, None, (0.0, 0.0, 0.1, 0.1)) is None
-    assert visual._text_region_shape_ok(0, 0, 80, 12, 320, 240)
-    assert not visual._text_region_shape_ok(0, 0, 2, 2, 320, 240)
-    assert visual._merge_regions([(0.1, 0.1, 0.2, 0.1), (0.1, 0.1, 0.2, 0.1)]) == [
-        (0.1, 0.1, 0.2, 0.1)
-    ]
     assert visual._rect_tuple({"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2}) == (
         0.1,
         0.1,
