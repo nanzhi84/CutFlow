@@ -127,6 +127,7 @@ def test_contract_columns_for_core_boundaries_exist():
         "started_at",
         "finished_at",
         "idempotency_key",
+        "result_payload",
     } <= set(tables["provider_invocations"].columns.keys())
     assert {
         "cached_input_tokens",

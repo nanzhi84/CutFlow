@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 import hashlib
+import logging
 import math
 from time import perf_counter, sleep
 from typing import Protocol
@@ -21,19 +22,36 @@ from packages.core.contracts import (
     ProviderProfile,
     ProviderStatus,
     UsageMeterRecord,
-    zero_money,
     utcnow,
 )
 from packages.core.config.settings import build_providers_settings
 from packages.core.contracts.state_machines import assert_transition
-from packages.core.observability import record_provider_invocation
+from packages.core.observability import (
+    record_provider_call_replayed,
+    record_provider_call_reopened,
+    record_provider_invocation,
+)
 from packages.core.provider_idempotency import is_provider_call_idempotency_key
 from packages.core.storage import ObjectStore, get_object_store
 from packages.core.storage import Repository
+from packages.core.storage.object_store import parse_object_uri
 from packages.core.storage.repository import new_id
 from packages.core.storage.secret_store import SecretStore
 from packages.ai.gateway.provider_context import ProviderInvocationContext
 from packages.ai.gateway.provider_limiter import provider_slot
+from packages.ai.gateway.result_envelope import ProviderResult, ProviderResultEnvelope
+
+__all__ = [
+    "ProviderCall",
+    "ProviderGateway",
+    "ProviderPlugin",
+    "ProviderResult",
+    "ProviderResultEnvelope",
+    "ProviderRuntimeError",
+    "SandboxProvider",
+    "SUPPORTED_MULTIMODAL_EMBEDDING_DIMENSIONS",
+    "parse_multimodal_embedding_dimension",
+]
 
 
 # CAS loser that raced a concurrent executor for the prepared -> submitted claim
@@ -52,6 +70,8 @@ _TERMINAL_PROVIDER_STATUSES = frozenset(
     }
 )
 
+logger = logging.getLogger(__name__)
+
 
 class ProviderCall(BaseModel):
     case_id: str | None = None
@@ -62,19 +82,6 @@ class ProviderCall(BaseModel):
     prompt_version_id: str | None = None
     input: dict[str, JsonValue] = Field(default_factory=dict)
     idempotency_key: str | None = None
-
-
-class ProviderResult(BaseModel):
-    output: dict[str, JsonValue] = Field(default_factory=dict)
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cached_input_tokens: int = 0
-    audio_seconds: float = 0
-    video_seconds: float = 0
-    image_count: int = 0
-    provider_credits: Decimal | None = None
-    raw_usage: dict[str, JsonValue] = Field(default_factory=dict)
-    estimated_cost: Money = Field(default_factory=zero_money)
 
 
 class ProviderPlugin(Protocol):
@@ -460,7 +467,9 @@ class ProviderGateway:
                     result = plugin.invoke(call)
         except ProviderRuntimeError as exc:
             return self._finalize_failure(invocation, exc, started, store=store)
-        return self._finalize_success(call, profile, invocation, result, started, store=store)
+        return self._finalize_success(
+            call, profile, invocation, result, started, store=store, context=context
+        )
 
     def _resume(self, call, profile, invocation, external_job_id, started, *, store):
         # A durable 'polling' row already carries external_job_id from a prior attempt:
@@ -473,7 +482,9 @@ class ProviderGateway:
                 result = plugin.resume_with_context(call, context, external_job_id)
         except ProviderRuntimeError as exc:
             return self._finalize_failure(invocation, exc, started, store=store)
-        return self._finalize_success(call, profile, invocation, result, started, store=store)
+        return self._finalize_success(
+            call, profile, invocation, result, started, store=store, context=context
+        )
 
     def _invocation_context(self, invocation, profile, store) -> ProviderInvocationContext:
         return ProviderInvocationContext(
@@ -486,18 +497,27 @@ class ProviderGateway:
             durable_invocation_store=store,
         )
 
-    def _finalize_success(self, call, profile, invocation, result, started, *, store):
-        duration_ms = int((perf_counter() - started) * 1000)
+    def _finalize_success(self, call, profile, invocation, result, started, *, store, context):
+        envelope = self._seal_envelope(call, profile, invocation, result, started, context)
+        current_invocation = self.repository.provider_invocations[invocation.id]
+        assert_transition("provider", current_invocation.status, ProviderStatus.succeeded)
+        invocation = self._apply_success(call, current_invocation, envelope)
+        record_provider_invocation(invocation)
+        if store is not None:
+            store.mark_succeeded(invocation.id, envelope=envelope)
+        return invocation, envelope.result
+
+    def _seal_envelope(
+        self, call, profile, invocation, result, started, context
+    ) -> ProviderResultEnvelope:
         price_items = self._matching_price_items(
             provider_id=profile.provider_id,
             model_id=profile.model_id,
             capability_id=call.capability_id,
         )
         price_item_id = price_items[0].id if price_items else None
-        cost_unpriced = price_item_id is None
-        if cost_unpriced:
+        if price_item_id is None:
             self._record_unpriced_alert(invocation)
-        estimated_cost = self._estimated_cost_from_usage(result, price_items)
         usage = UsageMeterRecord(
             id=new_id("usage"),
             provider_invocation_id=invocation.id,
@@ -513,28 +533,52 @@ class ProviderGateway:
             provider_credits=result.provider_credits,
             raw_usage=result.raw_usage,
         )
-        current_invocation = self.repository.provider_invocations[invocation.id]
-        assert_transition("provider", current_invocation.status, ProviderStatus.succeeded)
-        invocation = current_invocation.model_copy(
+        return ProviderResultEnvelope(
+            result=result,
+            usage=usage,
+            artifacts=[
+                self.repository.artifacts[artifact_id]
+                for artifact_id in context.created_artifact_ids
+                if artifact_id in self.repository.artifacts
+            ],
+            price_item_id=price_item_id,
+            billing_status="estimated" if price_item_id else "unpriced",
+            duration_ms=int((perf_counter() - started) * 1000),
+            estimated_cost=self._estimated_cost_from_usage(result, price_items),
+        )
+
+    def _apply_success(self, call, invocation, envelope) -> ProviderInvocation:
+        """Land a succeeded call's result in the run's in-memory repository.
+
+        The fresh vendor return and the durable replay share this. On a replay the
+        envelope's artifacts are re-attached and rebound to the current run/node_run —
+        without that the node silently loses the provider's media and falls back to a
+        synthetic one. On the fresh path the invocation context already created them
+        under exactly those ids, so the rebind is a no-op.
+        """
+        for artifact in envelope.artifacts:
+            self.repository.artifacts[artifact.id] = artifact.model_copy(
+                update={"run_id": call.run_id, "node_run_id": call.node_run_id}
+            )
+        self.repository.usage_records[envelope.usage.id] = envelope.usage
+        now = utcnow()
+        invocation = invocation.model_copy(
             update={
                 "status": ProviderStatus.succeeded,
-                "usage": usage,
-                "price_item_id": price_item_id,
-                "billing_status": "unpriced" if cost_unpriced else "estimated",
-                "duration_ms": duration_ms,
-                "input_tokens": result.input_tokens,
-                "output_tokens": result.output_tokens,
-                "estimated_cost": estimated_cost,
-                "finished_at": utcnow(),
-                "updated_at": utcnow(),
+                "usage": envelope.usage,
+                "price_item_id": envelope.price_item_id,
+                "billing_status": envelope.billing_status,
+                "duration_ms": envelope.duration_ms,
+                "input_tokens": envelope.usage.input_tokens,
+                "output_tokens": envelope.usage.output_tokens,
+                "estimated_cost": envelope.estimated_cost,
+                "error": None,
+                "finished_at": invocation.finished_at or now,
+                "updated_at": now,
             }
         )
-        self.repository.usage_records[usage.id] = usage
         self.repository.provider_invocations[invocation.id] = invocation
-        record_provider_invocation(invocation)
-        if store is not None:
-            store.mark_terminal(invocation.id, ProviderStatus.succeeded, None)
-        return invocation, result
+        return invocation
 
     def _finalize_failure(self, invocation, exc, started, *, store):
         status = ProviderStatus.failed
@@ -567,7 +611,7 @@ class ProviderGateway:
         if status is ProviderStatus.polling:
             return self._resume_polling(call, profile, invocation, store, started)
         if status is ProviderStatus.succeeded:
-            return self._reject_completed(invocation)
+            return self._replay_completed(call, profile, invocation, store, started)
         # failed / timed_out / cancelled: do not open a new task under this key.
         return invocation, None
 
@@ -594,7 +638,7 @@ class ProviderGateway:
             return self._resume_polling(call, profile, row, store, started)
         if row.status in _TERMINAL_PROVIDER_STATUSES:
             if row.status is ProviderStatus.succeeded:
-                return self._reject_completed(row)
+                return self._replay_completed(call, profile, row, store, started)
             return row, None
         plugin = self.plugins.get(profile.provider_id)
         if bool(getattr(plugin, "supports_idempotent_submit", False)):
@@ -634,10 +678,60 @@ class ProviderGateway:
         self.repository.provider_invocations[invocation.id] = invocation
         return invocation, None
 
+    def _replay_completed(self, call, profile, invocation, store, started):
+        """Answer a re-entered succeeded call from its durable result, free of charge.
+
+        The activity-level no-op normally intercepts a completed node before it can
+        re-enter the gateway. It cannot cover the window this closes: the vendor
+        answered, but the node died before its completion snapshot, so the run has no
+        memory of the call while the (paid) durable row does.
+        """
+        envelope = store.load_result_envelope(invocation.id)
+        if envelope is None:
+            return self._reject_completed(invocation)
+        evicted = self._evicted_media_uris(envelope)
+        if evicted:
+            # The media is gone — ephemeral tier, collected with a failed run — so there
+            # is nothing left to replay. Handing the node a dead uri is worse than paying
+            # the vendor a second time, so re-open the key and re-submit, loudly.
+            logger.warning(
+                "provider result is no longer replayable (media evicted); re-submitting and "
+                "re-billing invocation_id=%s capability_id=%s uris=%s",
+                invocation.id,
+                invocation.capability_id,
+                evicted,
+            )
+            record_provider_call_reopened("media_evicted")
+            return self._reopen(call, profile, invocation, store, started)
+        invocation = self._apply_success(call, invocation, envelope)
+        record_provider_call_replayed()
+        return invocation, envelope.result
+
+    def _evicted_media_uris(self, envelope: ProviderResultEnvelope) -> list[str]:
+        evicted: list[str] = []
+        for uri in envelope.media_uris():
+            try:
+                present = self.object_store.exists(parse_object_uri(uri))
+            except Exception:
+                present = False
+            if not present:
+                evicted.append(uri)
+        return evicted
+
+    def _reopen(self, call, profile, invocation, store, started):
+        reopened = store.reopen(
+            call.idempotency_key,
+            self._new_prepared_invocation(
+                call, profile, utcnow(), idempotency_key=call.idempotency_key
+            ),
+        )
+        self.repository.provider_invocations[reopened.id] = reopened
+        return self._run_invocation(call, profile, reopened, started, store=store)
+
     def _reject_completed(self, invocation):
-        # The activity-level no-op normally intercepts a completed node before it can
-        # re-enter the gateway. If a succeeded invocation for this key still arrives, do
-        # not call the provider again and do not fabricate a result we no longer hold.
+        # A row that succeeded before result_payload existed carries no replayable
+        # result: do not call the provider again, and do not fabricate a result we
+        # never held.
         error = ProviderError(
             code=ErrorCode.idempotency_conflict,
             message="A succeeded provider invocation already exists for this idempotency key.",

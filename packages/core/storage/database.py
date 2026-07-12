@@ -509,6 +509,13 @@ class ProviderInvocationRow(TimestampMixin, Base):
     response_artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id"))
     external_job_id: Mapped[str | None] = mapped_column(String)
     error: Mapped[dict | None] = mapped_column(JSONB)
+    # Serialized ProviderResultEnvelope, written in the same transaction that marks the
+    # row succeeded. It carries the result, the usage record (with its id) and the
+    # artifact METADATA the call produced — never the media bytes, which are already in
+    # the object store. A re-run of the same logical call replays from here instead of
+    # paying the vendor again. none_as_null keeps "no replayable result" a SQL NULL
+    # rather than a JSON null, so `WHERE result_payload IS NULL` finds those rows.
+    result_payload: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
