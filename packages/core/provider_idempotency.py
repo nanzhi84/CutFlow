@@ -20,10 +20,32 @@ from __future__ import annotations
 
 import hashlib
 
+from packages.core.contracts import ErrorCode
+
 # Version marker used both as the hash domain separator and as the routable output
 # prefix. Bump the version when the key composition changes so old and new keys can
 # never collide.
 PROVIDER_CALL_KEY_SCHEME = "provider-call:v1"
+
+# What the Gateway reports when it declines to re-run a paid call: the prior attempt's
+# result cannot be recovered, or its submit may or may not have reached the vendor.
+# Neither says anything about the QUALITY of the request, so a node must never answer
+# one with its quality fallback — that turns a worker hiccup into a silently degraded
+# deliverable and hides the root cause. Fail the node instead and let a retry (or an
+# operator) re-drive it.
+PROVIDER_RECOVERY_ERROR_CODES = frozenset(
+    {
+        ErrorCode.idempotency_conflict,
+        ErrorCode.provider_submit_outcome_unknown,
+    }
+)
+
+
+def is_provider_recovery_error(code: ErrorCode | str | None) -> bool:
+    """True when ``code`` is a Gateway recovery outcome that must not be degraded away."""
+    if code is None:
+        return False
+    return ErrorCode(code) in PROVIDER_RECOVERY_ERROR_CODES
 
 
 def build_provider_call_idempotency_key(

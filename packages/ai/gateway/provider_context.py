@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,9 @@ class ProviderInvocationContext:
     # crash after acceptance recovers the task instead of re-submitting. None on the
     # in-memory/transient path, where only the run-state repository is updated.
     durable_invocation_store: Any | None = None
+    # Artifacts this one invocation created, in creation order. The Gateway seals them
+    # into the result envelope so a replay can re-attach them to the re-running node.
+    created_artifact_ids: list[str] = field(default_factory=list)
 
     def get_secret(self) -> str | None:
         if self.profile.secret_ref is None or self.secret_store is None:
@@ -131,13 +134,9 @@ class ProviderInvocationContext:
         stored = self.object_store.put_bytes(ref, content)
         self._ensure_stored_object_exists(stored.ref.uri)
         media_info = probe_media(local_object_path(self.object_store, stored.ref.uri))
-        return self.repository.create_artifact(
+        return self._create_artifact(
             kind=kind,
-            payload_schema="uri-only",
-            payload=None,
-            case_id=call.case_id,
-            run_id=call.run_id,
-            node_run_id=call.node_run_id,
+            call=call,
             uri=stored.ref.uri,
             size_bytes=stored.size_bytes,
             sha256=stored.sha256,
@@ -159,18 +158,34 @@ class ProviderInvocationContext:
         stored = self.object_store.upload_file(source, ref)
         self._ensure_stored_object_exists(stored.ref.uri)
         media_info = probe_media(source)
-        return self.repository.create_artifact(
+        return self._create_artifact(
+            kind=kind,
+            call=call,
+            uri=stored.ref.uri,
+            size_bytes=stored.size_bytes,
+            sha256=stored.sha256,
+            media_info=media_info,
+        )
+
+    def _create_artifact(self, *, kind, call, uri, size_bytes, sha256, media_info) -> Artifact:
+        # Run-state only. Writing an artifact ROW here would leak into the next
+        # attempt's input manifest (the node hydrates every persisted artifact of the
+        # run), change the derived idempotency key, and defeat the very de-duplication
+        # this call is trying to get. The node's completion snapshot persists it.
+        artifact = self.repository.create_artifact(
             kind=kind,
             payload_schema="uri-only",
             payload=None,
             case_id=call.case_id,
             run_id=call.run_id,
             node_run_id=call.node_run_id,
-            uri=stored.ref.uri,
-            size_bytes=stored.size_bytes,
-            sha256=stored.sha256,
+            uri=uri,
+            size_bytes=size_bytes,
+            sha256=sha256,
             media_info=media_info,
         )
+        self.created_artifact_ids.append(artifact.id)
+        return artifact
 
     def _ensure_stored_object_exists(self, uri: str) -> None:
         from packages.ai.gateway.provider_gateway import ProviderRuntimeError

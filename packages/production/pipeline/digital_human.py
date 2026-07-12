@@ -176,12 +176,17 @@ _MATERIAL_PACK_RETRY_POLICY = RetryPolicy(
     backoff_seconds=1,
     retryable_error_codes=[ErrorCode.validation_conflict],
 )
-# Async long-running paid nodes: a worker crash / heartbeat timeout mid-node must
-# re-run the activity so the durable idempotency key can recover the in-flight vendor
-# task (poll-only, no re-submit) instead of leaving the run stuck. Business failures
-# (NodeExecutionError) are still caught in _execute_node and never reach this retry.
-_INFRA_RETRY_NODES = {"LipSync", "SeedanceGenerateVideo", "NarrationAlignment"}
-_INFRA_RETRY_POLICY = RetryPolicy(max_attempts=3, backoff_seconds=1)
+# Every node that spends money: a worker crash / heartbeat timeout mid-node must re-run
+# the activity so the durable idempotency key can recover the call — poll an in-flight
+# vendor task, or replay a result the vendor already returned — instead of leaving the
+# run stuck on work that was paid for. Business failures (NodeExecutionError) are still
+# caught in _execute_node and never reach this retry, so it cannot amplify them.
+_INFRA_RETRY_NODES = set(_PROVIDER_SIDE_EFFECT_NODES)
+# Backoff has to outlast the crash it recovers from: the Gateway only takes over a
+# still-'submitted' row once it is stale beyond 2x the provider timeout, and waits just
+# seconds to see whether the previous holder is alive. Re-entering ~1s after a heartbeat
+# timeout would burn attempts 2 and 3 against a row that has not settled yet.
+_INFRA_RETRY_POLICY = RetryPolicy(max_attempts=3, backoff_seconds=60)
 
 _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
     "ValidateRequest": [ArtifactKind.validated_production_spec],

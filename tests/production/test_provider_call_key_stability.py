@@ -11,6 +11,7 @@ from packages.core.provider_idempotency import is_provider_call_idempotency_key
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline.digital_human import (
     _INFRA_RETRY_NODES,
+    _PROVIDER_SIDE_EFFECT_NODES,
     _node_retry_policy,
     template_for,
 )
@@ -75,21 +76,30 @@ def test_canonical_node_alias_folds_into_same_key():
     assert legacy == active
 
 
-def test_infra_retry_nodes_get_three_attempts_others_one():
-    assert _INFRA_RETRY_NODES == {"LipSync", "SeedanceGenerateVideo", "NarrationAlignment"}
+def test_every_paid_node_is_retried_and_free_nodes_are_not():
+    # A node that spends money must survive a worker crash: the durable key lets the
+    # re-run poll or replay the call it already paid for. A node that spends nothing has
+    # nothing to recover, so it keeps the single-attempt default.
+    assert _INFRA_RETRY_NODES == _PROVIDER_SIDE_EFFECT_NODES
     for node_id in _INFRA_RETRY_NODES:
         assert _node_retry_policy(node_id).max_attempts == 3
-    # MaterialPackPlanning keeps its own 3-attempt validation-retry policy; every other
-    # node stays at the single-attempt default.
+    # MaterialPackPlanning keeps its own 3-attempt validation-retry policy.
     assert _node_retry_policy("MaterialPackPlanning").max_attempts == 3
-    assert _node_retry_policy("TTS").max_attempts == 1
-    assert _node_retry_policy("ResolveCreativeIntent").max_attempts == 1
+    assert _node_retry_policy("RenderFinalTimeline").max_attempts == 1
+    assert _node_retry_policy("ValidateRequest").max_attempts == 1
+
+
+def test_infra_retry_backoff_outlasts_the_crash_it_recovers_from():
+    # Re-entering seconds after a heartbeat timeout burns attempts against a durable row
+    # the Gateway has not yet been able to judge dead.
+    assert _node_retry_policy("LipSync").backoff_seconds >= 60
 
 
 def test_template_specs_reflect_infra_retry_policy():
     main = {spec.node_id: spec for spec in template_for("digital_human_v2").nodes}
     assert main["LipSync"].retry_policy.max_attempts == 3
     assert main["NarrationAlignment"].retry_policy.max_attempts == 3
-    assert main["TTS"].retry_policy.max_attempts == 1
+    assert main["TTS"].retry_policy.max_attempts == 3
+    assert main["RenderFinalTimeline"].retry_policy.max_attempts == 1
     seedance = {spec.node_id: spec for spec in template_for("seedance_t2v_v1").nodes}
     assert seedance["SeedanceGenerateVideo"].retry_policy.max_attempts == 3

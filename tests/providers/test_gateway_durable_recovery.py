@@ -245,20 +245,25 @@ def _backdate_invocation(db_session_factory, key: str, *, seconds: int) -> None:
         session.commit()
 
 
-def test_recover_succeeded_row_rejects_without_calling_provider(db_session_factory):
+def test_recover_succeeded_row_replays_the_result_without_calling_provider(db_session_factory):
+    # A succeeded row used to answer with idempotency_conflict, which left the re-running
+    # node no result and failed it. It now hands back the result the vendor was paid for.
+    # Replay is covered in depth in test_gateway_result_replay.py.
     plugin = ScriptedProvider("succeed")
     gateway = _gateway(db_session_factory, plugin)
     key = _key()
 
-    gateway.invoke(_call(key))
+    first, first_result = gateway.invoke(_call(key))
     assert plugin.submit_count == 1
 
     invocation, result = gateway.invoke(_call(key))
 
     assert plugin.submit_count == 1
-    assert result is None
-    assert invocation.error is not None
-    assert invocation.error.code is ErrorCode.idempotency_conflict
+    assert result is not None
+    assert result.output == first_result.output
+    assert invocation.id == first.id
+    assert invocation.status is ProviderStatus.succeeded
+    assert invocation.error is None
 
 
 class _RacingBudgetGuard:

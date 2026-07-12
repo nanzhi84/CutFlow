@@ -18,6 +18,7 @@ from packages.core.contracts.artifacts import (
     CaptionWindowsPlanArtifact,
     PostProcessAgentDiagnosticsArtifact,
 )
+from packages.core.provider_idempotency import is_provider_recovery_error
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.production.pipeline._materialize import (
     eligible_bgm_candidates,
@@ -162,6 +163,8 @@ def run(ctx: NodeContext) -> NodeOutput:
             if not errors:
                 break
     except NodeExecutionError as exc:
+        if is_provider_recovery_error(exc.error.code):
+            raise
         return _degraded_output(
             ctx,
             material=material,

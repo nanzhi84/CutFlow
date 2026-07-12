@@ -16,6 +16,10 @@ from packages.ai.gateway.provider_gateway import (
     ProviderRuntimeError,
 )
 from packages.core.contracts import ErrorCode
+from packages.core.provider_idempotency import (
+    build_provider_call_idempotency_key,
+    is_provider_call_idempotency_key,
+)
 from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
 from packages.core.storage.secret_store import LocalSecretStore
@@ -58,9 +62,11 @@ class _FakeLlmProvider:
     def __init__(self, output):
         self._output = output
         self.prompts: list[str] = []
+        self.calls: list[ProviderCall] = []
 
     def invoke(self, call: ProviderCall) -> ProviderResult:
         self.prompts.append(str(call.input.get("prompt") or ""))
+        self.calls.append(call)
         return ProviderResult(output=self._output)
 
 
@@ -162,3 +168,43 @@ def test_extract_payload_rejects_non_dict_output():
     with pytest.raises(NodeExecutionError) as exc:
         _extract_publish_copy_payload(["not", "a", "dict"])
     assert exc.value.error.code == ErrorCode.prompt_output_invalid
+
+
+def test_publish_copy_key_is_the_workflow_key_and_is_absent_outside_a_run(tmp_path):
+    # The publish-copy call used to mint an ad-hoc key, which never routes through durable
+    # persistence: a node re-run bought the copy a second time. A Workflow node now injects
+    # its Run-scoped key; the publish-center endpoints run outside a Run and inject none.
+    repository, gateway, secret_store = _gateway(tmp_path)
+    _arm_llm_profile(repository, secret_store)
+    provider = _FakeLlmProvider({"content": json.dumps({"title": "t"}, ensure_ascii=False)})
+    gateway.register(provider)
+    node_key = build_provider_call_idempotency_key(
+        run_id="run_1",
+        canonical_node_id="ExportFinishedVideo",
+        logical_call_slot="publish_copy",
+        provider_profile_id="dashscope.llm.prod",
+        input_manifest_hash="sha256:test",
+    )
+
+    from_node = build_copy_llm_chat(
+        gateway=gateway,
+        repository=repository,
+        case_id="case_demo",
+        run_id="run_1",
+        idempotency_key_for_profile=lambda profile_id: build_provider_call_idempotency_key(
+            run_id="run_1",
+            canonical_node_id="ExportFinishedVideo",
+            logical_call_slot="publish_copy",
+            provider_profile_id=profile_id,
+            input_manifest_hash="sha256:test",
+        ),
+    )
+    from_node(context=PublishCopyContext(script=_SCRIPT))
+    from_endpoint = build_copy_llm_chat(
+        gateway=gateway, repository=repository, case_id="case_demo"
+    )
+    from_endpoint(context=PublishCopyContext(script=_SCRIPT))
+
+    keys = [call.idempotency_key for call in provider.calls]
+    assert keys == [node_key, None]
+    assert is_provider_call_idempotency_key(keys[0])

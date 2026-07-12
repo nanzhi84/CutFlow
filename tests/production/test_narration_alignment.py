@@ -38,6 +38,7 @@ class FailingAsrGateway:
 
     def __init__(self) -> None:
         self.invocation_id = "pinv_failed_asr"
+        self.error_code = ErrorCode.provider_remote_failed
 
     def invoke(self, call):
         invocation = ProviderInvocation(
@@ -51,7 +52,7 @@ class FailingAsrGateway:
             capability_id=call.capability_id,
             status=ProviderStatus.failed,
             error=ProviderError(
-                code=ErrorCode.provider_remote_failed,
+                code=self.error_code,
                 message="ASR provider failed.",
                 retryable=True,
             ),
@@ -384,6 +385,26 @@ def test_narration_alignment_strict_raises_when_asr_fails():
 
     assert exc.value.error.code == ErrorCode.provider_remote_failed
     assert exc.value.error.retryable is True
+
+
+@pytest.mark.parametrize(
+    "stop_code",
+    [ErrorCode.idempotency_conflict, ErrorCode.provider_submit_outcome_unknown],
+)
+def test_narration_alignment_never_estimates_over_a_gateway_recovery_failure(stop_code):
+    # This node is retried on infrastructure failure. If it answered a recovery outcome
+    # with estimated timestamps, one worker hiccup would silently ship the misaligned
+    # captions of issue #194 — under a warning, with the run still green. It must fail.
+    workflow = _workflow_with_failing_asr()
+    workflow.provider_gateway.error_code = stop_code
+
+    with pytest.raises(NodeExecutionError) as exc:
+        _run_narration_alignment(
+            workflow, _run(), _node_run(), _run_state(strict_timestamps=False)
+        )
+
+    assert exc.value.error.code is stop_code
+    assert exc.value.error.retryable is False
 
 
 def test_asr_fallback_reports_tts_timing_unavailable_for_real_tts(

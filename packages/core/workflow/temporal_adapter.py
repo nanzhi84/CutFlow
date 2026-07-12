@@ -170,6 +170,7 @@ class DigitalHumanVideoWorkflow:
                         "reuse_plan": reuse_plan,
                     },
                     start_to_close_timeout=timedelta(minutes=5),
+                    schedule_to_close_timeout=timedelta(minutes=20),
                     retry_policy=TemporalRetryPolicy(maximum_attempts=3),
                 )
                 start_index = len(reuse_summary.get("reused_node_ids", []))
@@ -181,6 +182,11 @@ class DigitalHumanVideoWorkflow:
                     "run_node",
                     {"run_id": run_id, "node_id": node["node_id"]},
                     start_to_close_timeout=timedelta(seconds=node["timeout_seconds"]),
+                    # Workflows started before this field existed are still replayable.
+                    schedule_to_close_timeout=timedelta(
+                        seconds=node.get("schedule_to_close_seconds")
+                        or _node_schedule_to_close_seconds(node["node_id"])
+                    ),
                     heartbeat_timeout=timedelta(seconds=NODE_HEARTBEAT_TIMEOUT_SECONDS),
                     retry_policy=_retry_policy(node["retry_policy"]),
                 )
@@ -204,6 +210,7 @@ class DigitalHumanVideoWorkflow:
                 "mark_run_failed",
                 {"run_id": run_id, "reason": "Worker lost or node activity timed out."},
                 start_to_close_timeout=timedelta(minutes=2),
+                schedule_to_close_timeout=timedelta(minutes=15),
                 retry_policy=TemporalRetryPolicy(maximum_attempts=5),
             )
             self.current_status = RunStatus.failed.value
@@ -223,6 +230,7 @@ class DigitalHumanVideoWorkflow:
             "mark_run_cancelled",
             {"run_id": run_id},
             start_to_close_timeout=timedelta(minutes=2),
+            schedule_to_close_timeout=timedelta(minutes=5),
         )
         self.current_status = RunStatus.cancelled.value
         return {"run_id": run_id, "status": result["run_status"]}
@@ -259,6 +267,7 @@ class CaseRunAdmissionWorkflow:
                 "admit_case_runs",
                 {"case_id": case_id},
                 start_to_close_timeout=timedelta(minutes=5),
+                schedule_to_close_timeout=timedelta(minutes=20),
                 retry_policy=TemporalRetryPolicy(maximum_attempts=3),
             )
             cycles += 1
@@ -798,6 +807,7 @@ def _workflow_payload(
                 "node_id": node.node_id,
                 "retry_policy": node.retry_policy.model_dump(mode="json"),
                 "timeout_seconds": _node_timeout_seconds(node.node_id),
+                "schedule_to_close_seconds": _node_schedule_to_close_seconds(node.node_id),
             }
             for node in template.nodes
         ],
@@ -828,3 +838,17 @@ def _node_timeout_seconds(node_id: str) -> int:
     if node_id == "SeedanceGenerateVideo":
         return 60 * 60
     return 30 * 60
+
+
+def _node_schedule_to_close_seconds(node_id: str) -> int:
+    """Ceiling across ALL attempts of a node, so retries cannot stack unbounded.
+
+    start_to_close bounds one attempt; without this a paid node that retries three
+    times could hang for three times its (multi-hour) attempt budget before anything
+    terminates it. Each value leaves room for the node's own attempts plus backoff.
+    """
+    if node_id == "LipSync":
+        return 4 * 60 * 60
+    if node_id == "SeedanceGenerateVideo":
+        return 150 * 60
+    return 90 * 60

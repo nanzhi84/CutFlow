@@ -12,6 +12,7 @@ and the publish-center copy endpoints, so neither re-implements the wiring.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 from typing import Any
 
@@ -50,12 +51,24 @@ def build_copy_llm_chat(
     case_id: str | None = None,
     run_id: str | None = None,
     node_run_id: str | None = None,
+    idempotency_key_for_profile: Callable[[str], str] | None = None,
 ) -> LlmChatPort | None:
     """Build an ``LlmChatPort`` for the Publishing Copy Node, or ``None`` when no
-    real ``llm.chat`` provider is armed (caller then uses deterministic copy)."""
+    real ``llm.chat`` provider is armed (caller then uses deterministic copy).
+
+    ``idempotency_key_for_profile`` takes the selected profile id and returns the
+    durable key for this call — a Workflow node passes its Run-scoped key so an
+    activity re-run replays the copy instead of buying it again. The publish-center
+    endpoints run outside a Run and pass nothing: their copy call stays transient.
+    """
     profile = _select_real_llm_profile(gateway, repository)
     if profile is None:
         return None
+    idempotency_key = (
+        idempotency_key_for_profile(profile.id)
+        if idempotency_key_for_profile is not None
+        else None
+    )
     registry = prompt_registry or PromptRegistry(repository)
 
     def _llm_chat(*, context: PublishCopyContext) -> tuple[dict, str | None]:
@@ -81,7 +94,7 @@ def build_copy_llm_chat(
                 capability_id="llm.chat",
                 prompt_version_id=prompt_invocation.prompt_version_id,
                 input={"prompt": rendered},
-                idempotency_key=f"publish-copy-{run_id}" if run_id else None,
+                idempotency_key=idempotency_key,
             )
         )
         repository.prompt_invocations[prompt_invocation.id] = prompt_invocation.model_copy(

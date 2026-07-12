@@ -5,7 +5,8 @@ import json
 import pytest
 
 from packages.ai.gateway import ProviderGateway, ProviderResult
-from packages.ai.gateway.provider_gateway import _deterministic_embedding
+from packages.ai.gateway.provider_gateway import SandboxProvider, _deterministic_embedding
+from packages.ai.gateway.sqlalchemy_repository import SqlAlchemyProviderInvocationStore
 from packages.ai.prompts import PromptRegistry
 from apps.api.services.clip_embeddings import _upsert_record
 from packages.core.provider_idempotency import is_provider_call_idempotency_key
@@ -21,6 +22,7 @@ from packages.core.contracts import (
     ClipV4,
     DigitalHumanVideoRequest,
     ErrorCode,
+    JobType,
     MediaAssetRecord,
     NodeRun,
     NodeStatus,
@@ -36,11 +38,15 @@ from packages.core.contracts import (
     WorkflowRun,
 )
 from packages.core.contracts.artifacts import ClipEmbeddingRecord
-from packages.core.storage.database import MediaAssetRow
+from packages.core.storage.database import JobRow, MediaAssetRow, WorkflowRunRow
 from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
 from packages.core.workflow import NodeExecutionError
-from packages.planning.material import CLIP_INDEX_VERSION, build_clip_embedding_record
+from packages.planning.material import (
+    CLIP_INDEX_VERSION,
+    build_clip_embedding_record,
+    extract_keywords,
+)
 from packages.production.pipeline import nodes
 from packages.production.pipeline._editing_agent import (
     BrollChoice,
@@ -2104,3 +2110,195 @@ def test_editing_agent_fallback_fails_when_retrieval_topk_cannot_cover_portrait_
         "portrait slots not covered: pwin_001" in error
         for error in exc.value.error.details["errors"]
     )
+
+
+class _CountingSandbox:
+    """The seeded sandbox embedding provider, counting one submit per window."""
+
+    provider_id = "sandbox"
+
+    def __init__(self) -> None:
+        self.inner = SandboxProvider()
+        self.submitted_keys: list[str] = []
+
+    def invoke(self, call):
+        self.submitted_keys.append(call.idempotency_key)
+        return self.inner.invoke(call)
+
+
+class _WorkerDied(Exception):
+    """Not a ProviderRuntimeError, so no terminal state is written — a worker dying."""
+
+
+def _windows_with_two_broll() -> dict:
+    windows = _windows()
+    windows["broll_windows"].append(
+        {
+            "window_id": "bwin_001",
+            "start_frame": 90,
+            "end_frame": 120,
+            "length_frames": 30,
+            "host_unit_ids": ["unit_1"],
+            "host_portrait_window_ids": ["pwin_000"],
+            "text": "施工后现场",
+            "boundary_source": "narration_unit",
+        }
+    )
+    return windows
+
+
+def _retrieval_media_assets() -> dict[str, MediaAssetRecord]:
+    # Built ONCE and shared by both attempts: a clip embedding key is scoped to the
+    # asset revision, which includes updated_at. In production both attempts hydrate the
+    # same persisted row; a fixture that mints a new record per attempt would silently
+    # invalidate the seeded index instead of testing the replay.
+    return {
+        asset_id: MediaAssetRecord(
+            id=asset_id,
+            case_id="case_demo",
+            title=asset_id,
+            kind="video",
+            annotation_status="annotated",
+            usable=True,
+        )
+        for asset_id in ("portrait_a", "broll_a", "broll_b")
+    }
+
+
+def _durable_adapter(tmp_path, db_session_factory, plugin, media_assets) -> LocalRuntimeAdapter:
+    # Profile resolution stays on the in-memory repository so the sandbox embeddings keep
+    # matching the seeded index; only the durable invocation store is added.
+    adapter = _adapter(tmp_path)
+    adapter.provider_gateway.register(plugin)
+    adapter.provider_gateway._invocation_store = SqlAlchemyProviderInvocationStore(
+        db_session_factory
+    )
+    adapter.repository.media_assets.update(media_assets)
+    adapter.production_repository = SqlAlchemyProductionRepository(db_session_factory)
+    return adapter
+
+
+def _seed_retrieval_run(db_session_factory) -> None:
+    with db_session_factory() as session:
+        session.add(
+            JobRow(
+                id="job_window_retrieval",
+                type=JobType.digital_human_video.value,
+                status="running",
+                case_id="case_demo",
+                created_by="usr_admin",
+                request_schema="DigitalHumanVideoRequest.v1",
+                request={"case_id": "case_demo", "script": "窗口检索重放测试。"},
+                active_run_id="run_window_retrieval",
+            )
+        )
+        session.add(
+            WorkflowRunRow(
+                id="run_window_retrieval",
+                job_id="job_window_retrieval",
+                case_id="case_demo",
+                workflow_template_id="digital_human_v2",
+                workflow_version="v1",
+                status=RunStatus.running.value,
+                run_attempt=1,
+                requested_by="usr_admin",
+            )
+        )
+        session.commit()
+
+
+def _seed_broll_embedding_for_window(db_session_factory, adapter, query_artifact, *, window_id):
+    """Index broll_a under the sandbox embedding of this window's intent, so the window
+    retrieves a real candidate and an emptied candidate list can only mean a failure."""
+    intent = next(
+        item["retrieval_intent"]
+        for item in query_artifact.payload["window_queries"]
+        if item["window_id"] == window_id
+    )
+    record = build_clip_embedding_record(
+        candidate=index_candidates(_material()).broll_by_id["bc_000"],
+        asset=adapter.repository.media_assets["broll_a"],
+        namespace="broll",
+        provider_profile_id="sandbox.embedding.default",
+        embedding=_deterministic_embedding(
+            f"sandbox.embedding.default:multimodal.embedding:{intent}", dimension=1024
+        ),
+    )
+    _seed_clip_embedding_record(db_session_factory, record)
+
+
+def _retrieval_ctx(adapter, windows, query_artifact):
+    return _ctx(
+        adapter,
+        "WindowMaterialRetrieval",
+        {
+            ArtifactKind.plan_material_pack: _artifact(ArtifactKind.plan_material_pack, _material()),
+            ArtifactKind.plan_timeline_windows: _artifact(
+                ArtifactKind.plan_timeline_windows, windows
+            ),
+            ArtifactKind.plan_window_queries: query_artifact,
+        },
+    )
+
+
+def test_window_material_retrieval_re_run_only_submits_the_window_it_never_reached(
+    tmp_path, db_session_factory, monkeypatch
+):
+    # One node, one paid embedding call per window: a crash partway through must not make
+    # the re-run buy the windows it already paid for. Each window carries its own slot, so
+    # each has its own durable identity.
+    _seed_retrieval_run(db_session_factory)
+    plugin = _CountingSandbox()
+    windows = _windows_with_two_broll()
+    media_assets = _retrieval_media_assets()
+    adapter = _durable_adapter(tmp_path / "w1", db_session_factory, plugin, media_assets)
+    query_output = nodes.window_query_planning.run(
+        _ctx(
+            adapter,
+            "WindowQueryPlanning",
+            {
+                ArtifactKind.plan_timeline_windows: _artifact(
+                    ArtifactKind.plan_timeline_windows, windows
+                ),
+                ArtifactKind.narration_units: _artifact(ArtifactKind.narration_units, _narration()),
+            },
+        )
+    )
+    query_artifact = query_output.artifacts[0]
+    _seed_broll_embedding_for_window(
+        db_session_factory, adapter, query_artifact, window_id="bwin_000"
+    )
+
+    # Die between the second and third window: extract_keywords runs just before the call.
+    reached = []
+
+    def _die_on_the_third_window(intent: str):
+        reached.append(intent)
+        if len(reached) == 3:
+            raise _WorkerDied("worker lost before the third window's embedding call")
+        return extract_keywords(intent)
+
+    monkeypatch.setattr(
+        nodes.window_material_retrieval, "extract_keywords", _die_on_the_third_window
+    )
+    with pytest.raises(_WorkerDied):
+        nodes.window_material_retrieval.run(_retrieval_ctx(adapter, windows, query_artifact))
+    assert len(plugin.submitted_keys) == 2
+    paid_keys = list(plugin.submitted_keys)
+    monkeypatch.undo()
+
+    # A replacement worker: empty run state, same durable rows.
+    replay_adapter = _durable_adapter(tmp_path / "w1", db_session_factory, plugin, media_assets)
+    output = nodes.window_material_retrieval.run(
+        _retrieval_ctx(replay_adapter, windows, query_artifact)
+    )
+
+    assert len(plugin.submitted_keys) == 3
+    # The two windows that were already paid for were replayed, not re-submitted.
+    assert plugin.submitted_keys[2] not in paid_keys
+    assert len(set(plugin.submitted_keys)) == 3
+    payload = output.artifacts[0].payload
+    assert set(payload["candidates_by_window"]) == {"pwin_000", "bwin_000", "bwin_001"}
+    rejections = {item["reason"] for item in payload["diagnostics"]["rejected_candidates"]}
+    assert "query_embedding_failed" not in rejections
+    assert payload["candidates_by_window"]["bwin_000"]

@@ -95,6 +95,7 @@ def _seed_durable_invocation(
     error=None,
     finished_at=None,
     updated_at=None,
+    result_payload=None,
 ):
     with db_session_factory() as session:
         row = ProviderInvocationRow(
@@ -109,6 +110,7 @@ def _seed_durable_invocation(
             external_job_id=external_job_id,
             error=error,
             finished_at=finished_at,
+            result_payload=result_payload,
         )
         if updated_at is not None:
             row.updated_at = updated_at
@@ -250,3 +252,37 @@ def test_snapshot_applies_forward_transition_to_terminal(db_session_factory):
     with db_session_factory() as session:
         row = session.get(ProviderInvocationRow, inv_id)
         assert row.status == ProviderStatus.succeeded.value
+
+
+def test_snapshot_keeps_the_durable_result_payload(db_session_factory):
+    # Nothing in the run state carries result_payload, so an unguarded merge would null
+    # it out — and the next attempt of this node would find a succeeded row it cannot
+    # replay, and pay the vendor again.
+    run_id = new_id("run")
+    inv_id = new_id("pinv")
+    key = _key()
+    job, run = _seed_run(db_session_factory, run_id, new_id("job"))
+    envelope = {"result": {"output": {"ok": True}}, "usage": {"id": "usage_x"}}
+    _seed_durable_invocation(
+        db_session_factory,
+        inv_id=inv_id,
+        run_id=run_id,
+        key=key,
+        status=ProviderStatus.succeeded.value,
+        external_job_id=None,
+        result_payload=envelope,
+    )
+
+    repository = Repository()
+    repository.jobs[job.id] = job
+    repository.runs[run.id] = run
+    repository.provider_invocations[inv_id] = _stale_invocation(
+        inv_id, run_id, key, ProviderStatus.succeeded
+    )
+
+    SqlAlchemyProductionRepository(db_session_factory).sync_workflow_snapshot(
+        job=job, run=run, repository=repository
+    )
+
+    with db_session_factory() as session:
+        assert session.get(ProviderInvocationRow, inv_id).result_payload == envelope
