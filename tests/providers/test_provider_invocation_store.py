@@ -18,7 +18,7 @@ from packages.core.storage.repository import new_id
 
 def _key(slot: str = "tts") -> str:
     return build_provider_call_idempotency_key(
-        run_id=new_id("run"),
+        job_id=new_id("job"),
         canonical_node_id="Tts",
         logical_call_slot=slot,
         provider_profile_id="profile_1",

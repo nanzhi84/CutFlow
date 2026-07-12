@@ -43,7 +43,7 @@ _EXTERNAL_JOB_ID = "vendor-job-in-flight"
 
 def _key() -> str:
     return build_provider_call_idempotency_key(
-        run_id=new_id("run"),
+        job_id=new_id("job"),
         canonical_node_id="Node",
         logical_call_slot="slot",
         provider_profile_id="profile_1",
@@ -338,7 +338,7 @@ def test_crash_after_polling_recovers_by_polling_only(db_session_factory, tmp_pa
     )
     gateway.register(plugin)
     key = build_provider_call_idempotency_key(
-        run_id=new_id("run"),
+        job_id=new_id("job"),
         canonical_node_id="Tts",
         logical_call_slot="tts",
         provider_profile_id="profile_1",
@@ -382,7 +382,7 @@ def test_resume_provider_error_is_surfaced_not_masked(db_session_factory, tmp_pa
     )
     gateway.register(plugin)
     key = build_provider_call_idempotency_key(
-        run_id=new_id("run"),
+        job_id=new_id("job"),
         canonical_node_id="Tts",
         logical_call_slot="tts",
         provider_profile_id="profile_1",

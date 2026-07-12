@@ -19,6 +19,7 @@ from typing import Any
 from packages.ai.gateway import ProviderCall
 from packages.ai.prompts.registry import PromptRegistry
 from packages.core.contracts import ErrorCode
+from packages.core.provider_idempotency import ProviderCallIdempotency
 from packages.core.workflow import NodeExecutionError
 from packages.publishing.copy_node import LlmChatPort, PublishCopyContext
 
@@ -51,23 +52,21 @@ def build_copy_llm_chat(
     case_id: str | None = None,
     run_id: str | None = None,
     node_run_id: str | None = None,
-    idempotency_key_for_profile: Callable[[str], str] | None = None,
+    idempotency_for_profile: Callable[[str], ProviderCallIdempotency] | None = None,
 ) -> LlmChatPort | None:
     """Build an ``LlmChatPort`` for the Publishing Copy Node, or ``None`` when no
     real ``llm.chat`` provider is armed (caller then uses deterministic copy).
 
-    ``idempotency_key_for_profile`` takes the selected profile id and returns the
-    durable key for this call — a Workflow node passes its Run-scoped key so an
-    activity re-run replays the copy instead of buying it again. The publish-center
-    endpoints run outside a Run and pass nothing: their copy call stays transient.
+    ``idempotency_for_profile`` takes the selected profile id and returns the durable
+    identity for this call — a Workflow node passes its Job-scoped one so a re-run
+    replays the copy instead of buying it again. The publish-center endpoints run
+    outside a Run and pass nothing: their copy call stays transient.
     """
     profile = _select_real_llm_profile(gateway, repository)
     if profile is None:
         return None
-    idempotency_key = (
-        idempotency_key_for_profile(profile.id)
-        if idempotency_key_for_profile is not None
-        else None
+    idempotency = (
+        idempotency_for_profile(profile.id) if idempotency_for_profile is not None else None
     )
     registry = prompt_registry or PromptRegistry(repository)
 
@@ -94,7 +93,10 @@ def build_copy_llm_chat(
                 capability_id="llm.chat",
                 prompt_version_id=prompt_invocation.prompt_version_id,
                 input={"prompt": rendered},
-                idempotency_key=idempotency_key,
+                idempotency_key=idempotency.key if idempotency is not None else None,
+                fallback_idempotency_keys=(
+                    list(idempotency.fallback_keys) if idempotency is not None else []
+                ),
             )
         )
         repository.prompt_invocations[prompt_invocation.id] = prompt_invocation.model_copy(

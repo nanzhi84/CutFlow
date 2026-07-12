@@ -210,6 +210,9 @@ def run(ctx: NodeContext) -> NodeOutput:
     asr_profile = ctx.first_available_provider_profile("asr.transcribe")
     if asr_profile is not None and tts.uri:
         audio_url = ctx.object_store().signed_url(tts.uri).url
+        idempotency = ctx.provider_call_idempotency(
+            logical_call_slot="asr", provider_profile_id=asr_profile.id
+        )
         invocation, result = ctx.provider_gateway.invoke(
             ProviderCall(
                 case_id=run.case_id,
@@ -218,10 +221,8 @@ def run(ctx: NodeContext) -> NodeOutput:
                 provider_profile_id=asr_profile.id,
                 capability_id="asr.transcribe",
                 input={"audio_uri": audio_url, "language_hints": ["zh"]},
-                idempotency_key=ctx.provider_call_idempotency_key(
-                    logical_call_slot="asr",
-                    provider_profile_id=asr_profile.id,
-                ),
+                idempotency_key=idempotency.key,
+                fallback_idempotency_keys=idempotency.fallback_keys,
             )
         )
         if result is None or invocation.error:

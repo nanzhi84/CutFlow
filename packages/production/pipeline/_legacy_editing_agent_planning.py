@@ -1119,6 +1119,10 @@ def select_editing_assignment(
                 attempt=attempt,
                 previous_errors=previous_errors,
             )
+            idempotency = ctx.provider_call_idempotency(
+                logical_call_slot=f"{idempotency_scope}:attempt-{attempt}",
+                provider_profile_id=profile.id,
+            )
             invocation, result = ctx.provider_gateway.invoke(
                 ProviderCall(
                     case_id=run.case_id,
@@ -1131,10 +1135,8 @@ def select_editing_assignment(
                         "prompt": rendered,
                         "response_format": {"type": "json_object"},
                     },
-                    idempotency_key=ctx.provider_call_idempotency_key(
-                        logical_call_slot=f"{idempotency_scope}:attempt-{attempt}",
-                        provider_profile_id=profile.id,
-                    ),
+                    idempotency_key=idempotency.key,
+                    fallback_idempotency_keys=idempotency.fallback_keys,
                 )
             )
             response_artifact = _record_llm_response_artifact(

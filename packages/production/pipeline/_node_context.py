@@ -28,7 +28,10 @@ from packages.core.contracts import (
     WorkflowTemplate,
 )
 from packages.core.contracts.artifacts import NarrationUnit
-from packages.core.provider_idempotency import build_provider_call_idempotency_key
+from packages.core.provider_idempotency import (
+    ProviderCallIdempotency,
+    build_provider_call_idempotency,
+)
 from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline.node_sequence import canonical_node_id
 
@@ -79,18 +82,21 @@ class NodeContext:
         ``digital_human.get_object_store`` symbol stays monkeypatchable."""
         return self.adapter._object_store()
 
-    def provider_call_idempotency_key(
+    def provider_call_idempotency(
         self, *, logical_call_slot: str, provider_profile_id: str
-    ) -> str:
-        """Stable idempotency key for one logical provider call in this node.
+    ) -> ProviderCallIdempotency:
+        """Stable idempotency identity for one logical provider call in this node.
 
-        Derived from Run-stable coordinates (run id, canonical node id, slot,
-        profile, ``node_run.input_manifest_hash``) and deliberately free of
-        ``node_run.id`` / Temporal attempt, so an infrastructure retry that
-        re-runs this activity reuses one durable provider-call identity instead
-        of re-submitting. ``logical_call_slot`` separates multiple calls inside a
-        node (a repair loop's n-th attempt must carry a distinct slot)."""
-        return build_provider_call_idempotency_key(
+        This is the single place the coordinates are assembled, so every paid node
+        gets the same identity by construction. They are Job-stable (job id, canonical
+        node id, slot, profile, ``node_run.input_manifest_hash``) and deliberately free
+        of ``run.id`` / ``node_run.id`` / Temporal attempt: an infrastructure retry OR
+        an operator resume — which creates a whole new run — reuses the one durable
+        provider-call identity instead of re-submitting and paying twice.
+        ``logical_call_slot`` separates multiple calls inside a node (a repair loop's
+        n-th attempt must carry a distinct slot)."""
+        return build_provider_call_idempotency(
+            job_id=self.run.job_id,
             run_id=self.run.id,
             canonical_node_id=canonical_node_id(self.node_run.node_id),
             logical_call_slot=logical_call_slot,

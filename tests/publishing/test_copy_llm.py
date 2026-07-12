@@ -17,6 +17,7 @@ from packages.ai.gateway.provider_gateway import (
 )
 from packages.core.contracts import ErrorCode
 from packages.core.provider_idempotency import (
+    build_provider_call_idempotency,
     build_provider_call_idempotency_key,
     is_provider_call_idempotency_key,
 )
@@ -179,7 +180,7 @@ def test_publish_copy_key_is_the_workflow_key_and_is_absent_outside_a_run(tmp_pa
     provider = _FakeLlmProvider({"content": json.dumps({"title": "t"}, ensure_ascii=False)})
     gateway.register(provider)
     node_key = build_provider_call_idempotency_key(
-        run_id="run_1",
+        job_id="job_1",
         canonical_node_id="ExportFinishedVideo",
         logical_call_slot="publish_copy",
         provider_profile_id="dashscope.llm.prod",
@@ -191,7 +192,8 @@ def test_publish_copy_key_is_the_workflow_key_and_is_absent_outside_a_run(tmp_pa
         repository=repository,
         case_id="case_demo",
         run_id="run_1",
-        idempotency_key_for_profile=lambda profile_id: build_provider_call_idempotency_key(
+        idempotency_for_profile=lambda profile_id: build_provider_call_idempotency(
+            job_id="job_1",
             run_id="run_1",
             canonical_node_id="ExportFinishedVideo",
             logical_call_slot="publish_copy",

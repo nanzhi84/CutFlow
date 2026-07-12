@@ -10,7 +10,7 @@ from time import perf_counter, sleep
 from typing import Protocol
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from packages.core.contracts import (
     ErrorCode,
@@ -74,6 +74,8 @@ logger = logging.getLogger(__name__)
 
 
 class ProviderCall(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     case_id: str | None = None
     run_id: str | None = None
     node_run_id: str | None = None
@@ -82,6 +84,11 @@ class ProviderCall(BaseModel):
     prompt_version_id: str | None = None
     input: dict[str, JsonValue] = Field(default_factory=dict)
     idempotency_key: str | None = None
+    # Keys the SAME logical call answered to under a superseded key scheme. READ-ONLY:
+    # the gateway recovers a durable row found under one of them, but never opens a new
+    # row under one. Without this a task already in flight when the scheme bumps would
+    # lose its durable identity on the next attempt and be re-submitted — re-billed.
+    fallback_idempotency_keys: list[str] = Field(default_factory=list)
 
 
 class ProviderPlugin(Protocol):
@@ -386,7 +393,7 @@ class ProviderGateway:
         return invocation.model_copy(update={"node_run_id": node_run_id})
 
     def _invoke_durable(self, call, profile, store, started_at, started):
-        existing = store.load_by_key(call.idempotency_key)
+        existing = store.load_by_key(call.idempotency_key) or self._load_superseded_key(call, store)
         if existing is not None:
             existing = self._bind_node_run(existing, call.node_run_id)
         if existing is not None and existing.status is not ProviderStatus.prepared:
@@ -403,6 +410,27 @@ class ProviderGateway:
             invocation = existing  # 'prepared' row left by a crashed prior attempt
         self.repository.provider_invocations[invocation.id] = invocation
         return self._run_invocation(call, profile, invocation, started, store=store)
+
+    def _load_superseded_key(self, call, store):
+        """The durable row this call opened under a key scheme that has since been bumped.
+
+        Only reachable in the window where a task was already in flight when the new
+        scheme deployed. Recovery proceeds against the row as found — it keeps its old
+        key — so the vendor task is polled/replayed rather than bought a second time.
+        """
+        for key in call.fallback_idempotency_keys:
+            row = store.load_by_key(key)
+            if row is None:
+                continue
+            logger.info(
+                "recovered durable provider call under superseded idempotency key "
+                "invocation_id=%s capability_id=%s status=%s",
+                row.id,
+                row.capability_id,
+                row.status.value,
+            )
+            return row
+        return None
 
     def _run_invocation(self, call, profile, invocation, started, *, store):
         validation_error = self._validate_profile(profile, call)
@@ -612,8 +640,53 @@ class ProviderGateway:
             return self._resume_polling(call, profile, invocation, store, started)
         if status is ProviderStatus.succeeded:
             return self._replay_completed(call, profile, invocation, store, started)
-        # failed / timed_out / cancelled: do not open a new task under this key.
+        if self._is_operator_resume(call, invocation):
+            return self._reopen_failed(call, profile, invocation, store, started)
+        # failed / timed_out / cancelled inside the run that already failed them: the
+        # node has no second attempt to give (a provider failure raises straight out to
+        # the run), so returning the recorded error is the whole story.
         return invocation, None
+
+    @staticmethod
+    def _is_operator_resume(call, invocation) -> bool:
+        """True when a DIFFERENT run is re-driving a call this key already terminated.
+
+        The key is Job-stable, so an operator's resume of a failed run lands on the
+        durable row the failed run left behind. Answering it with the stored error would
+        make the single most common resume — "the vendor 5xx'd, try again" — replay that
+        5xx forever without ever reaching the vendor: resume would stop working. So a
+        cross-run re-drive re-opens the key. An in-run re-entry does not: it is
+        infrastructure retrying a call whose failure the run already acted on.
+        """
+        return (
+            call.run_id is not None
+            and invocation.run_id is not None
+            and call.run_id != invocation.run_id
+        )
+
+    def _reopen_failed(self, call, profile, invocation, store, started):
+        unknown_outcome = (
+            invocation.error is not None
+            and invocation.error.code is ErrorCode.provider_submit_outcome_unknown
+        )
+        if unknown_outcome:
+            # The prior attempt never learned whether its submit reached the vendor, so
+            # this re-open MAY buy the same task twice. That is the accepted price of a
+            # working resume (the operator asked for it explicitly), but it must never be
+            # silent — it is the one path in the gateway that can double charge.
+            logger.warning(
+                "re-opening a provider call whose submit outcome was never resolved; the "
+                "vendor may have accepted it and this resume may pay for it twice "
+                "invocation_id=%s capability_id=%s failed_run_id=%s resuming_run_id=%s",
+                invocation.id,
+                invocation.capability_id,
+                invocation.run_id,
+                call.run_id,
+            )
+        record_provider_call_reopened(
+            "submit_outcome_unknown" if unknown_outcome else "terminal_failure"
+        )
+        return self._reopen(call, profile, invocation, store, started)
 
     def _recover_submitted(self, call, profile, invocation, store, started):
         """Recover a 'submitted' row — the request may have crossed the vendor boundary.
@@ -724,6 +797,7 @@ class ProviderGateway:
             self._new_prepared_invocation(
                 call, profile, utcnow(), idempotency_key=call.idempotency_key
             ),
+            superseded_invocation_id=invocation.id,
         )
         self.repository.provider_invocations[reopened.id] = reopened
         return self._run_invocation(call, profile, reopened, started, store=store)
