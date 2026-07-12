@@ -354,6 +354,10 @@ def _resolve_publish_copy(
         case_id=ctx.run.case_id,
         run_id=ctx.run.id,
         node_run_id=ctx.node_run.id,
+        idempotency_key_for_profile=lambda profile_id: ctx.provider_call_idempotency_key(
+            logical_call_slot="publish_copy",
+            provider_profile_id=profile_id,
+        ),
     )
     try:
         return generate_publish_copy(context, llm_chat=llm_chat)
