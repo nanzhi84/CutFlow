@@ -13995,6 +13995,7 @@
           "provider.circuit_open",
           "provider.auth_failed",
           "provider.cost_unpriced",
+          "provider.submit_outcome_unknown",
           "artifact.missing",
           "artifact.integrity_failed",
           "artifact.schema_mismatch",

@@ -87,6 +87,7 @@ class ProviderInvocation(EntityMeta):
     case_id: str | None = None
     run_id: str | None = None
     node_run_id: str | None = None
+    idempotency_key: str | None = None
     provider_id: str
     model_id: str
     provider_profile_id: str

@@ -126,6 +126,7 @@ def test_contract_columns_for_core_boundaries_exist():
         "estimated_cost",
         "started_at",
         "finished_at",
+        "idempotency_key",
     } <= set(tables["provider_invocations"].columns.keys())
     assert {
         "cached_input_tokens",
@@ -232,6 +233,22 @@ def test_selection_reservation_active_slot_unique_index_exists():
     )
     assert "reserved" in where_sql
     assert "committed" not in where_sql
+
+
+def test_provider_invocation_idempotency_key_partial_unique_index_exists():
+    provider_invocations = Base.metadata.tables["provider_invocations"]
+    indexes = {idx.name: idx for idx in provider_invocations.indexes}
+
+    unique = indexes["uq_provider_invocations_idempotency_key"]
+    assert unique.unique is True
+    assert [col.name for col in unique.columns] == ["idempotency_key"]
+    where = unique.dialect_options["postgresql"]["where"]
+    assert where is not None
+    where_sql = str(
+        where.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+    assert "idempotency_key" in where_sql
+    assert "NOT NULL" in where_sql.upper()
 
 
 def test_clip_embedding_index_keys_and_lookup_indexes_exist():

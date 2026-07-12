@@ -51,6 +51,7 @@ class ErrorCode(str, Enum):
     provider_circuit_open = "provider.circuit_open"
     provider_auth_failed = "provider.auth_failed"
     provider_cost_unpriced = "provider.cost_unpriced"
+    provider_submit_outcome_unknown = "provider.submit_outcome_unknown"
     artifact_missing = "artifact.missing"
     artifact_integrity_failed = "artifact.integrity_failed"
     artifact_schema_mismatch = "artifact.schema_mismatch"

@@ -490,6 +490,7 @@ class ProviderInvocationRow(TimestampMixin, Base):
     case_id: Mapped[str | None] = mapped_column(ForeignKey("cases.id", ondelete="SET NULL"))
     run_id: Mapped[str | None] = mapped_column(ForeignKey("workflow_runs.id", ondelete="SET NULL"))
     node_run_id: Mapped[str | None] = mapped_column(ForeignKey("node_runs.id", ondelete="SET NULL"))
+    idempotency_key: Mapped[str | None] = mapped_column(String)
     provider_id: Mapped[str] = mapped_column(String, nullable=False)
     model_id: Mapped[str] = mapped_column(String, nullable=False)
     provider_profile_id: Mapped[str] = mapped_column(String, nullable=False)
@@ -1188,6 +1189,12 @@ Index(
     postgresql_where=SelectionReservationRow.status == "reserved",
 )
 Index("idx_provider_invocations_case", ProviderInvocationRow.case_id, ProviderInvocationRow.provider_id)
+Index(
+    "uq_provider_invocations_idempotency_key",
+    ProviderInvocationRow.idempotency_key,
+    unique=True,
+    postgresql_where=ProviderInvocationRow.idempotency_key.isnot(None),
+)
 Index("idx_usage_meter_provider", UsageMeterRecordRow.provider_id, UsageMeterRecordRow.capability_id)
 Index("idx_case_memories_case_status", CaseMemoryRow.case_id, CaseMemoryRow.status)
 Index("idx_case_memories_case_type", CaseMemoryRow.case_id, CaseMemoryRow.memory_type)
