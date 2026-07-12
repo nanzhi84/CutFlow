@@ -74,7 +74,11 @@ PROVIDER_CALL_REPLAYS = Counter(
 )
 PROVIDER_CALL_REOPENS = Counter(
     "provider_call_reopens_total",
-    "Provider calls re-submitted (and re-billed) because the durable result was unusable.",
+    "Provider calls re-submitted (and re-billed) under a key that already had a terminal row. "
+    "reason=media_evicted: the durable result's media was collected, so it cannot be replayed. "
+    "reason=terminal_failure: an operator resumed a run whose call the vendor rejected. "
+    "reason=submit_outcome_unknown: same, but the failed attempt never learned whether its "
+    "submit reached the vendor — this one may genuinely pay twice, so watch it.",
     ["reason"],
     registry=REGISTRY,
 )

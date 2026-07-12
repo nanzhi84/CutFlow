@@ -389,23 +389,32 @@ class SqlAlchemyProviderInvocationStore(BaseRepository):
             return None
         return ProviderResultEnvelope.model_validate(payload)
 
-    def reopen(self, idempotency_key: str, invocation: ProviderInvocation) -> ProviderInvocation:
-        """Retire the row holding ``idempotency_key`` and open a fresh ``prepared`` one.
+    def reopen(
+        self,
+        idempotency_key: str,
+        invocation: ProviderInvocation,
+        *,
+        superseded_invocation_id: str,
+    ) -> ProviderInvocation:
+        """Retire ``superseded_invocation_id`` and open a fresh ``prepared`` row under ``idempotency_key``.
 
         The partial unique index admits one live row per key, so the retired row's key
         is rotated to a superseded alias rather than deleted: it keeps its usage and
-        cost rows, and the money it spent stays visible in the bill.
+        cost rows, and the money it spent stays visible in the bill. Retiring by row id
+        rather than by key also covers the row that was recovered under a superseded key
+        scheme, whose key is not the one the new row takes.
+
+        Both writes are one transaction: a crash between them would leave the key with no
+        live row at all, and the next attempt would open a third one.
         """
         with self.session_factory() as session:
-            superseded = session.scalar(
-                select(ProviderInvocationRow).where(
-                    ProviderInvocationRow.idempotency_key == idempotency_key
-                )
-            )
+            superseded = session.get(ProviderInvocationRow, superseded_invocation_id)
             retry_count = 0
             if superseded is not None:
                 retry_count = superseded.retry_count + 1
-                superseded.idempotency_key = f"{idempotency_key}#superseded-{superseded.id}"
+                superseded.idempotency_key = (
+                    f"{superseded.idempotency_key}#superseded-{superseded.id}"
+                )
                 superseded.updated_at = utcnow()
                 session.flush()
             row = ProviderInvocationRow(
