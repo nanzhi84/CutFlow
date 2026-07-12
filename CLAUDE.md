@@ -43,6 +43,6 @@ python scripts/provision_oss_cors.py # S3/OSS 浏览器直传上传前配置 COR
 - Postgres 主机端口是 **55432**（避让本地 5432）；MinIO 9000/9001、Temporal 7233 / UI 8080。
 - 存储后端只支持 `sqlalchemy`/`postgres`（内存后端已移除，配 `CUTAGENT_STORAGE_BACKEND=memory` 会显式报错）；缺 `CUTAGENT_DATABASE_URL` 会显式启动失败；测试全连真实 Postgres（见 `tests/CLAUDE.md`）。
 - `LocalObjectStore` 的 presign 是 dev/test 替身；生产直传上传需 `CUTAGENT_OBJECTSTORE_BACKEND=s3`/OSS，并先配置 bucket CORS/lifecycle。
-- `CUTAGENT_REDIS_URL` 让事件 fanout、stream token、provider limiter 跨进程协调；`CUTAGENT_REDIS_REQUIRED=1` 时这些组件退化到进程内会让 `/api/health/ready` 返回 503 摘流。
+- `CUTAGENT_REDIS_URL` 让事件 fanout、stream token、provider limiter、登录/注册防爆破计数跨进程协调（可选协调层，非查询缓存）；其中**前三项**退化到进程内且 `CUTAGENT_REDIS_REQUIRED=1` 时会让 `/api/health/ready` 返回 503 摘流，认证限流不在 readiness 判定内（无 30s 重连、无 degraded 遥测）。详见 `docs/architecture/redis-coordination.md`。
 - Temporal 测试需指向**共享 MinIO** 的 ephemeral 桶，节点本地 ephemeral 会被 fail-fast 拒绝。
 - lint：ruff（line-length 100，配置在 `pyproject.toml`）。
