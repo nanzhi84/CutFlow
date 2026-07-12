@@ -167,6 +167,13 @@ export CUTAGENT_EPHEMERAL_OBJECTSTORE_ADDRESSING_STYLE=path
 export CUTAGENT_ALLOW_SANDBOX_FALLBACK=1
 ```
 
+Redis 是**可选的跨进程协调依赖**，不是查询缓存，也不是生产任务的必需存储。单进程 / 单副本部署可以完全不启用；配了 `CUTAGENT_REDIS_URL` 后，provider 限流、事件实时 fanout、stream token、登录防爆破计数才跨 API / worker / 多副本共享，Redis 故障会 fail-safe 回退到进程内状态。多副本生产（`CUTAGENT_REPLICA_COUNT > 1`）下 preflight 强制要求 Redis，缺失即拒绝启动。业务事实仍在 PostgreSQL / Temporal / 对象存储。细节见 [docs/architecture/redis-coordination.md](docs/architecture/redis-coordination.md)。
+
+```bash
+# 可选：启用跨进程协调
+export CUTAGENT_REDIS_URL=redis://127.0.0.1:6379/0
+```
+
 完整 env 清单以 [.env.example](.env.example) 和 `packages/core/config/settings.py` 为准。
 
 ## 开发命令
@@ -280,10 +287,11 @@ python -m pytest -q tests/temporal
 
 ## 文档
 
-长期文档只保留三类信息：
+长期文档分两类：`docs/` 根下的三个概览文件，加上 `docs/architecture/` 子目录里的子系统权威参考。
 
 - [Milestones](docs/milestones.md)
 - [关键技术选型](docs/technical-choices.md)
 - [关键设计决策](docs/design-decisions.md)
+- [Redis 跨进程协调层](docs/architecture/redis-coordination.md)（架构参考）
 
 文档索引见 [docs/README.md](docs/README.md)。
