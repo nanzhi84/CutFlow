@@ -34,7 +34,14 @@ from packages.ai.gateway.provider_gateway import (
     ProviderResult,
     ProviderRuntimeError,
 )
-from packages.ai.providers.common import money_cny, option, request, require_secret, response_json
+from packages.ai.providers.common import (
+    map_http_status,
+    money_cny,
+    option,
+    request,
+    require_secret,
+    response_json,
+)
 from packages.ai.providers.volc_openapi import VolcSpeechOpenAPI
 from packages.core.contracts import (
     ArtifactKind,
@@ -47,6 +54,14 @@ from packages.core.contracts import (
 
 _DEFAULT_DATA_BASE_URL = "https://openspeech.bytedance.com"
 _CLONE_RESOURCE_ID = "volc.megatts.voiceclone"
+# v3 单向流式 (HTTP chunked, 逐行 JSON) 端点与复刻/预设音色的资源 id。v1 的 data
+# 接口对 volcano_icl 复刻音色不回时间戳；v3 支持 ``audio_params.enable_timestamp``。
+_V3_SYNTH_PATH = "/api/v3/tts/unidirectional"
+# 复刻音色（S_ 前缀）用 ``volc.megatts.default`` 才会回字级时间戳；``seed-icl-2.0``
+# 能合成但 ``sentence.words`` 恒空（实测）。预设/官方音色用 ``seed-tts-2.0``。
+_V3_CLONE_RESOURCE_ID = "volc.megatts.default"
+_V3_TTS_RESOURCE_ID = "seed-tts-2.0"
+_V3_STREAM_DONE_CODE = 20000000
 
 
 class VolcengineTTSProvider:
@@ -121,6 +136,8 @@ class VolcengineTTSProvider:
             raise ProviderRuntimeError(
                 ErrorCode.provider_unsupported_option, "Text and voice_id are required."
             )
+        if str(option(context, "api_version", "v1")) == "v3":
+            return self._speech_v3(call, context, text=text, voice_id=voice_id)
         x_api_key = self._x_api_key(context)
         base_url = str(option(context, "data_base_url", _DEFAULT_DATA_BASE_URL)).rstrip("/")
         cluster = str(option(context, "cluster", "volcano_icl"))
@@ -197,6 +214,148 @@ class VolcengineTTSProvider:
             raw_usage={"characters": len(text)},
             estimated_cost=money_cny(estimated),
         )
+
+    def _speech_v3(
+        self,
+        call: ProviderCall,
+        context: ProviderInvocationContext,
+        *,
+        text: str,
+        voice_id: str,
+    ) -> ProviderResult:
+        """v3 单向流式合成：拿回 v1 对复刻音色不返回的字级时间戳。"""
+        x_api_key = self._x_api_key(context)
+        appid = self._appid(context)
+        base_url = str(option(context, "data_base_url_v3", _DEFAULT_DATA_BASE_URL)).rstrip("/")
+        fmt = str(option(context, "format", "mp3"))
+        sample_rate = int(option(context, "sample_rate", 24000))
+        default_resource = (
+            _V3_CLONE_RESOURCE_ID if voice_id.startswith("S_") else _V3_TTS_RESOURCE_ID
+        )
+        resource_id = str(option(context, "resource_id", default_resource))
+        speed = float(call.input.get("speed") or option(context, "speed", 1.0))
+        audio_params: dict = {
+            "format": fmt,
+            "sample_rate": sample_rate,
+            "enable_timestamp": True,
+        }
+        # v3 语速是整数 ``speech_rate``（0=常速，[-50,100]，+100≈2x、-50≈0.5x），与 v1
+        # 的 ``speed_ratio`` 量纲不同；把倍率线性映射过去，常速时不下发。
+        if abs(speed - 1.0) > 1e-6:
+            audio_params["speech_rate"] = max(-50, min(100, round((speed - 1.0) * 100)))
+        req_params: dict = {
+            "text": text,
+            "speaker": voice_id,
+            "audio_params": audio_params,
+            "additions": json.dumps(
+                {"disable_markdown_filter": True, "enable_timestamp": True},
+                ensure_ascii=False,
+            ),
+        }
+        model = option(context, "v3_model")
+        if model:
+            req_params["model"] = str(model)
+        payload = {"user": {"uid": str(option(context, "uid", "cutagent"))}, "req_params": req_params}
+        # New-console single-key auth (``X-Api-Key`` = the issued x-api-key). The
+        # legacy ``X-Api-App-Id`` + ``X-Api-Access-Key`` pair is rejected for this
+        # account's v3 grants ("requested grant not found in SaaS storage").
+        headers = {
+            "X-Api-Key": x_api_key,
+            "X-Api-App-Id": appid,
+            "X-Api-Resource-Id": resource_id,
+            "X-Api-Request-Id": call.idempotency_key or f"cutagent-{uuid.uuid4().hex}",
+            "Content-Type": "application/json",
+            "Connection": "keep-alive",
+        }
+        audio_bytes, sentences = self._stream_v3(
+            f"{base_url}{_V3_SYNTH_PATH}",
+            headers=headers,
+            payload=payload,
+            timeout=float(context.profile.timeout_sec),
+        )
+        if not audio_bytes:
+            raise ProviderRuntimeError(
+                ErrorCode.provider_remote_failed, "Volcengine TTS v3 response missing audio."
+            )
+        artifact = context.store_media_bytes(
+            content=audio_bytes,
+            filename=f"{call.idempotency_key or 'volcengine-tts'}.{fmt}",
+            purpose="generated-audio",
+            kind=ArtifactKind.audio_tts,
+            call=call,
+        )
+        timing = _timing_from_v3_sentences(sentences, text=text)
+        duration = 0.0
+        if artifact.media_info and artifact.media_info.duration_sec:
+            duration = artifact.media_info.duration_sec
+        elif timing and timing.tokens:
+            duration = timing.tokens[-1].end
+        estimated = (Decimal(len(text)) / Decimal(1000)) * self.cost_per_1k_chars
+        output = TtsSpeechOutput(
+            audio_artifact_id=artifact.id,
+            audio_uri=artifact.uri,
+            duration_sec=duration,
+            voice_id=voice_id,
+            timing=timing,
+        ).model_dump(mode="json")
+        return ProviderResult(
+            output=output,
+            input_tokens=len(text),
+            audio_seconds=duration,
+            raw_usage={"characters": len(text)},
+            estimated_cost=money_cny(estimated),
+        )
+
+    def _stream_v3(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str],
+        payload: dict,
+        timeout: float,
+    ) -> tuple[bytes, list]:
+        """POST 到 v3 端点并把 chunked JSON 流拼成 (音频字节, sentence 事件列表)。"""
+        audio = bytearray()
+        sentences: list = []
+        try:
+            with self.client.stream(
+                "POST", url, headers=headers, json=payload, timeout=timeout
+            ) as response:
+                if response.status_code >= 400:
+                    response.read()
+                    raise map_http_status(response.status_code, response.text)
+                for line in response.iter_lines():
+                    event = _parse_v3_line(line)
+                    if event is None:
+                        continue
+                    code = event.get("code", 0)
+                    if code == _V3_STREAM_DONE_CODE:
+                        break
+                    if code:
+                        message = str(event.get("message") or "Volcengine TTS v3 failed.")
+                        raise ProviderRuntimeError(
+                            ErrorCode.provider_remote_failed,
+                            f"Volcengine TTS v3 code={code}: {message}",
+                        )
+                    chunk = event.get("data")
+                    if chunk:
+                        try:
+                            audio.extend(base64.b64decode(chunk))
+                        except (ValueError, TypeError) as exc:
+                            raise ProviderRuntimeError(
+                                ErrorCode.provider_remote_failed,
+                                "Volcengine TTS v3 audio chunk is invalid.",
+                            ) from exc
+                    sentence = event.get("sentence")
+                    if sentence:
+                        sentences.append(sentence)
+        except httpx.TimeoutException as exc:
+            raise ProviderRuntimeError(
+                ErrorCode.provider_timeout, "Volcengine TTS v3 request timed out."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ProviderRuntimeError(ErrorCode.provider_remote_failed, str(exc)) from exc
+        return bytes(audio), sentences
 
     def _voice_list(self, call: ProviderCall, context: ProviderInvocationContext) -> ProviderResult:
         appid = self._appid(context)
@@ -372,3 +531,72 @@ def _timestamp_seconds(value: object) -> float:
     except (TypeError, ValueError):
         return 0.0
     return max(0.0, number)
+
+
+def _parse_v3_line(line: object) -> dict | None:
+    """Decode one line of the v3 chunked/SSE stream into a JSON object (or None)."""
+    if isinstance(line, bytes):
+        line = line.decode("utf-8", "ignore")
+    if not isinstance(line, str):
+        return None
+    text = line.strip()
+    if text.startswith("data:"):  # tolerate the SSE (``.../unidirectional/sse``) framing too
+        text = text[len("data:") :].strip()
+    if not text or text == "[DONE]":
+        return None
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _v3_word_bounds(item: dict) -> tuple[float, float]:
+    """Read one v3 word's (start, end) in seconds.
+
+    The verified ``volc.megatts.default`` shape is camelCase ``startTime`` /
+    ``endTime`` already in seconds; snake_case ``start_time`` / ``end_time`` (the
+    legacy v1 millisecond shape) is tolerated as a fallback.
+    """
+    if "startTime" in item or "endTime" in item:
+        return _timestamp_seconds(item.get("startTime")), _timestamp_seconds(item.get("endTime"))
+    return (
+        _timestamp_seconds(item.get("start_time")) / 1000.0,
+        _timestamp_seconds(item.get("end_time")) / 1000.0,
+    )
+
+
+def _timing_from_v3_sentences(sentences: list, *, text: str) -> SpeechTiming | None:
+    """Build canonical timing from the v3 stream's ``sentence`` events.
+
+    Each ``sentence`` carries a ``words`` list of ``{word, startTime, endTime}``
+    (seconds). Word order is the stream order; a sentence may also arrive as a JSON
+    string, so it is parsed defensively.
+    """
+
+    tokens: list[SpeechTokenTiming] = []
+    for sentence in sentences:
+        obj = sentence if isinstance(sentence, dict) else _json_object(sentence)
+        raw_words = obj.get("words")
+        if not isinstance(raw_words, list):
+            continue
+        for item in raw_words:
+            if not isinstance(item, dict):
+                continue
+            token = str(item.get("word") or item.get("text") or "")
+            if not token.strip():
+                continue
+            start, end = _v3_word_bounds(item)
+            if end <= start:
+                continue
+            tokens.append(SpeechTokenTiming(text=token.strip(), start=start, end=end))
+    if not tokens:
+        return None
+    return SpeechTiming(
+        segments=[
+            SpeechSegmentTiming(text=text, start=tokens[0].start, end=tokens[-1].end)
+        ],
+        tokens=tokens,
+        granularity="character" if all(len(item.text) == 1 for item in tokens) else "token",
+        text_basis="original",
+    )
