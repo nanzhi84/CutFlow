@@ -217,6 +217,10 @@ def run(ctx: NodeContext) -> NodeOutput:
                 provider_profile_id=asr_profile.id,
                 capability_id="asr.transcribe",
                 input={"audio_uri": audio_url, "language_hints": ["zh"]},
+                idempotency_key=ctx.provider_call_idempotency_key(
+                    logical_call_slot="asr",
+                    provider_profile_id=asr_profile.id,
+                ),
             )
         )
         if result is None or invocation.error:

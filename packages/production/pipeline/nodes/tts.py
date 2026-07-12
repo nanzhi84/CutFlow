@@ -44,7 +44,10 @@ def run(ctx: NodeContext) -> NodeOutput:
             provider_profile_id=provider_profile_id,
             capability_id="tts.speech",
             input=call_input,
-            idempotency_key=f"{run.id}:{node_run.id}:tts",
+            idempotency_key=ctx.provider_call_idempotency_key(
+                logical_call_slot="tts",
+                provider_profile_id=provider_profile_id,
+            ),
         )
     )
     if result is None or invocation.error:

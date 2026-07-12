@@ -19,7 +19,6 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
-import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -488,7 +487,10 @@ def _generate_ai_cover(
             capability_id="image.generate",
             prompt_version_id=version.id if version is not None else None,
             input=call_input,
-            idempotency_key=f"cover-{run.id}-{_provider_key(profile_id)}",
+            idempotency_key=ctx.provider_call_idempotency_key(
+                logical_call_slot="cover",
+                provider_profile_id=profile_id,
+            ),
         )
     )
     invocation_ids.append(invocation.id)
@@ -595,10 +597,6 @@ def _cover_generation_size(profile) -> str:
     if profile is not None and profile.provider_id == "volcengine.seedream":
         return SEEDREAM_COVER_REQUEST_SIZE
     return DEFAULT_COVER_SIZE
-
-
-def _provider_key(profile_id: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9_-]+", "-", profile_id).strip("-") or "image"
 
 
 def _cover_provider_label(provider_id: str | None) -> str | None:

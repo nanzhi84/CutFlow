@@ -127,7 +127,10 @@ def run(ctx: NodeContext) -> NodeOutput:
                     "normalization": CLIP_EMBEDDING_NORMALIZATION,
                     "index_version": CLIP_INDEX_VERSION,
                 },
-                idempotency_key=f"{ctx.run.id}:{ctx.node_run.id}:{window_id}:query_embedding",
+                idempotency_key=ctx.provider_call_idempotency_key(
+                    logical_call_slot=f"embedding:{window_id}",
+                    provider_profile_id=profile.id,
+                ),
             )
         )
         provider_invocation_ids.append(invocation.id)

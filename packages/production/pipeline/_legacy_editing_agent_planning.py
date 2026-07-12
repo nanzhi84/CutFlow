@@ -1131,7 +1131,10 @@ def select_editing_assignment(
                         "prompt": rendered,
                         "response_format": {"type": "json_object"},
                     },
-                    idempotency_key=f"{run.id}:{node_run.id}:{idempotency_scope}:{attempt}",
+                    idempotency_key=ctx.provider_call_idempotency_key(
+                        logical_call_slot=f"{idempotency_scope}:attempt-{attempt}",
+                        provider_profile_id=profile.id,
+                    ),
                 )
             )
             response_artifact = _record_llm_response_artifact(

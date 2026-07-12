@@ -58,7 +58,10 @@ def run(ctx: NodeContext) -> NodeOutput:
                     "duration_sec": duration,
                     "timeout_minutes": state.request.lipsync.timeout_minutes,
                 },
-                idempotency_key=f"{run.id}:{node_run.id}:lipsync:{profile_id}",
+                idempotency_key=ctx.provider_call_idempotency_key(
+                    logical_call_slot="lipsync",
+                    provider_profile_id=profile_id,
+                ),
             )
         )
 

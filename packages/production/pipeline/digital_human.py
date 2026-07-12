@@ -149,6 +149,7 @@ logger = logging.getLogger(__name__)
 _PROVIDER_SIDE_EFFECT_NODES = {
     "TTS",
     "ResolveCreativeIntent",
+    "NarrationAlignment",
     "LipSync",
     "ExportFinishedVideo",
     "SeedanceGenerateVideo",
@@ -175,6 +176,12 @@ _MATERIAL_PACK_RETRY_POLICY = RetryPolicy(
     backoff_seconds=1,
     retryable_error_codes=[ErrorCode.validation_conflict],
 )
+# Async long-running paid nodes: a worker crash / heartbeat timeout mid-node must
+# re-run the activity so the durable idempotency key can recover the in-flight vendor
+# task (poll-only, no re-submit) instead of leaving the run stuck. Business failures
+# (NodeExecutionError) are still caught in _execute_node and never reach this retry.
+_INFRA_RETRY_NODES = {"LipSync", "SeedanceGenerateVideo", "NarrationAlignment"}
+_INFRA_RETRY_POLICY = RetryPolicy(max_attempts=3, backoff_seconds=1)
 
 _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
     "ValidateRequest": [ArtifactKind.validated_production_spec],
@@ -238,6 +245,14 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
 }
 
 
+def _node_retry_policy(node_id: str) -> RetryPolicy:
+    if node_id == "MaterialPackPlanning":
+        return _MATERIAL_PACK_RETRY_POLICY
+    if node_id in _INFRA_RETRY_NODES:
+        return _INFRA_RETRY_POLICY
+    return RetryPolicy()
+
+
 def _build_template(template_id: str, version: str, sequence: list[str]) -> WorkflowTemplate:
     # Dependency edges come from the template's DAG graph (node_sequence.WORKFLOW_GRAPHS);
     # the shipping templates are linear chains, so this is the same edge list as before.
@@ -262,9 +277,7 @@ def _build_template(template_id: str, version: str, sequence: list[str]) -> Work
             node_id=node_id,
             input_schema=f"{node_id}.input.v1",
             output_artifact_kinds=list(_NODE_OUTPUT_KINDS[node_id]),
-            retry_policy=(
-                _MATERIAL_PACK_RETRY_POLICY if node_id == "MaterialPackPlanning" else RetryPolicy()
-            ),
+            retry_policy=_node_retry_policy(node_id),
             side_effects=["provider_call"] if node_id in _PROVIDER_SIDE_EFFECT_NODES else [],
             idempotency_key=(
                 f"{template_id}:{node_id}:{{input_manifest_hash}}"
@@ -556,6 +569,19 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
     def run_node_activity(self, run_id: str, node_id: str) -> dict:
         run = self.repository.runs[run_id]
         job = self.repository.jobs[run.job_id]
+        # A lost activity completion (the node's snapshot committed to Postgres but the
+        # Temporal completion was never received) re-runs this activity. If a terminal
+        # NodeRun for this canonical node already exists, the paid work is done: return
+        # the existing summary WITHOUT re-entering the gateway. This precedes the
+        # job-status assert_transition below because a run that already reached succeeded
+        # (last node's completion lost) would trip that transition first.
+        if self._node_already_terminal(run_id, node_id):
+            if node_id == self._sequence_for_run(run)[-1] and run.status == RunStatus.running:
+                # Defensive for a future per-node sync wiring: today a node's terminal
+                # status and the run's terminal status commit together, so a terminal
+                # last node with a still-running run is unreachable.
+                self._complete_run(run_id)
+            return self._node_activity_summary(run_id, node_id)
         request = self._request(job)
         state = self._state_from_persisted_artifacts(run_id, request)
         if job.status != JobStatus.running:
@@ -614,6 +640,19 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         node_ids = [spec.node_id for spec in template.nodes]
         edges = [(edge.from_node_id, edge.to_node_id) for edge in template.edges]
         return topological_node_order(node_ids, edges)
+
+    def _node_already_terminal(self, run_id: str, node_id: str) -> bool:
+        """True when this canonical node already has a terminal NodeRun in this run.
+
+        Existence over "latest row": a re-invoked activity appends new NodeRuns and the
+        hydrated list has no reliable order, so match the done-set semantics of
+        _next_unfinished_node_id (canonical id + terminal status set)."""
+        target = canonical_node_id(node_id)
+        return any(
+            canonical_node_id(node_run.node_id) == target
+            and node_run.status in {NodeStatus.succeeded, NodeStatus.skipped, NodeStatus.degraded}
+            for node_run in self.repository.node_runs.get(run_id, [])
+        )
 
     def _next_unfinished_node_id(self, run: WorkflowRun, node_runs: list[NodeRun]) -> str | None:
         """First template node not yet completed — the node that was due to run."""
