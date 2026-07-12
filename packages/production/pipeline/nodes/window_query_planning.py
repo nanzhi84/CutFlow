@@ -95,7 +95,10 @@ def run(ctx: NodeContext) -> NodeOutput:
                     "prompt": rendered,
                     "response_format": {"type": "json_object"},
                 },
-                idempotency_key=f"{run.id}:{node_run.id}:window_query_llm",
+                idempotency_key=ctx.provider_call_idempotency_key(
+                    logical_call_slot="window_query_llm",
+                    provider_profile_id=profile.id,
+                ),
             )
         )
     except Exception as exc:

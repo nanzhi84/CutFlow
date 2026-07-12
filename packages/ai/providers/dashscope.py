@@ -74,6 +74,22 @@ class DashScopeASRProvider:
         if not task_id:
             raise ProviderRuntimeError(ErrorCode.provider_remote_failed, "DashScope ASR submit response missing task ID.")
         context.mark_polling(task_id)
+        return self._collect_result(base_url, api_key, task_id, context)
+
+    def resume_with_context(
+        self, call: ProviderCall, context: ProviderInvocationContext, external_job_id: str
+    ) -> ProviderResult:
+        # Recovery entrypoint: the transcription task was already submitted (external_job_id
+        # durable), so skip submit and only poll + download the existing task's result.
+        if call.capability_id != "asr.transcribe":
+            raise ProviderRuntimeError(ErrorCode.provider_unsupported_option, "DashScope ASR requires asr.transcribe.")
+        api_key = require_secret(context)
+        base_url = str(context.profile.default_options.get("base_url") or "https://dashscope.aliyuncs.com/api/v1").rstrip("/")
+        return self._collect_result(base_url, api_key, external_job_id, context)
+
+    def _collect_result(
+        self, base_url: str, api_key: str, task_id: str, context: ProviderInvocationContext
+    ) -> ProviderResult:
         task_payload, attempts = poll_dashscope_task(
             client=self.client,
             base_url=base_url,

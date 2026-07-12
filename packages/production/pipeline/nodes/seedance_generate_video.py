@@ -106,7 +106,10 @@ def run(ctx: NodeContext) -> NodeOutput:
                 "generate_audio": True,
                 "references": references,
             },
-            idempotency_key=f"{run.id}:{node_run.id}:seedance",
+            idempotency_key=ctx.provider_call_idempotency_key(
+                logical_call_slot="seedance",
+                provider_profile_id=profile.id,
+            ),
         )
     )
     if result is None or invocation.error:

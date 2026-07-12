@@ -8,6 +8,7 @@ from packages.ai.gateway import ProviderGateway, ProviderResult
 from packages.ai.gateway.provider_gateway import _deterministic_embedding
 from packages.ai.prompts import PromptRegistry
 from apps.api.services.clip_embeddings import _upsert_record
+from packages.core.provider_idempotency import is_provider_call_idempotency_key
 from packages.core.contracts import (
     AnnotationEditorVm,
     AnnotationMetaV4,
@@ -697,7 +698,7 @@ def test_window_query_planning_uses_llm_queries_and_unwraps_intent(tmp_path):
     assert payload["diagnostics"]["source"] == "llm_window_queries"
     call = provider.calls[0]
     assert call.input["response_format"] == {"type": "json_object"}
-    assert call.idempotency_key == "run_window_retrieval:nr_WindowQueryPlanning:window_query_llm"
+    assert is_provider_call_idempotency_key(call.idempotency_key)
     render_variables = spy_registry.render_calls[0]["variables"]
     assert set(render_variables) == {
         "script",

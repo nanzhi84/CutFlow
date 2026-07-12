@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import ARRAY, Float, Text, bindparam, case, cast, func, or_, select, text, true, update
 from sqlalchemy.exc import IntegrityError
@@ -173,6 +174,20 @@ SUPPORTED_IMPORT_TYPES = {
 _FINISHED_VIDEO_NUMBER_RETRY_LIMIT = 3
 _FINISHED_VIDEO_NUMBER_CONSTRAINT = "uq_finished_videos_case_video_number"
 _SELECTION_RESERVATION_ACTIVE_SLOT_CONSTRAINT = "uq_selection_reservations_active_slot"
+
+# Provider-invocation status order for the snapshot no-regression write. The Gateway
+# writes prepared/submitted/polling/terminal durably as they happen; a snapshot that
+# still holds a stale (earlier) in-memory copy must not roll the durable status or
+# external_job_id backwards. Terminal states all rank highest.
+_PROVIDER_STATUS_RANK = {
+    "prepared": 0,
+    "submitted": 1,
+    "polling": 2,
+    "succeeded": 3,
+    "failed": 3,
+    "timed_out": 3,
+    "cancelled": 3,
+}
 
 NODE_LABELS = {
     "ValidateRequest": "校验请求",
@@ -497,10 +512,20 @@ class SqlAlchemyProductionRepository(BaseRepository):
             session.flush()
 
             provider_invocation_ids = set()
-            for invocation in repository.provider_invocations.values():
-                if invocation.run_id == run.id:
+            run_invocations = [
+                invocation
+                for invocation in repository.provider_invocations.values()
+                if invocation.run_id == run.id
+            ]
+            if run_invocations:
+                durable_invocation_progress = self._durable_invocation_progress(session, run.id)
+                for invocation in run_invocations:
                     provider_invocation_ids.add(invocation.id)
-                    session.merge(self._provider_invocation_row(invocation))
+                    row = self._provider_invocation_row(invocation)
+                    self._preserve_durable_invocation_progress(
+                        row, durable_invocation_progress.get(invocation.id)
+                    )
+                    session.merge(row)
             session.flush()
 
             for usage in repository.usage_records.values():
@@ -1172,9 +1197,20 @@ class SqlAlchemyProductionRepository(BaseRepository):
                     source_run = workflow_run_row_to_contract(source_row)
                     repository.runs[source_run.id] = source_run
                     run_ids.add(source_run.id)
+            # Deterministic order matters beyond presentation: the hydrated dicts are
+            # iterated last-write-wins by artifact kind in _state_from_persisted_artifacts,
+            # and that winner feeds node_run.input_manifest_hash -> the provider-call
+            # idempotency key. An unordered scan would let two hydrations of the same rows
+            # pick different winners (a run can hold several artifacts of one kind, e.g. a
+            # repair loop's per-attempt provider_raw_request), minting a different key on
+            # retry and re-submitting a paid call. (created_at, id) is a total order.
             node_runs = [
                 node_run_row_to_contract(row)
-                for row in session.scalars(select(NodeRunRow).where(NodeRunRow.run_id.in_(run_ids)))
+                for row in session.scalars(
+                    select(NodeRunRow)
+                    .where(NodeRunRow.run_id.in_(run_ids))
+                    .order_by(NodeRunRow.created_at.asc(), NodeRunRow.id.asc())
+                )
             ]
             repository.node_runs[run_id] = [node for node in node_runs if node.run_id == run_id]
             if run.resume_from_run_id:
@@ -1197,7 +1233,11 @@ class SqlAlchemyProductionRepository(BaseRepository):
                     artifact_filter,
                     ArtifactRow.id.in_(referenced_artifact_ids),
                 )
-            for artifact in session.scalars(select(ArtifactRow).where(artifact_filter)):
+            for artifact in session.scalars(
+                select(ArtifactRow)
+                .where(artifact_filter)
+                .order_by(ArtifactRow.created_at.asc(), ArtifactRow.id.asc())
+            ):
                 contract = artifact_row_to_contract(artifact)
                 repository.artifacts[contract.id] = contract
 
@@ -2345,12 +2385,62 @@ class SqlAlchemyProductionRepository(BaseRepository):
             released_at=reservation.released_at,
         )
 
+    def _durable_invocation_progress(self, session: Session, run_id: str) -> dict[str, Any]:
+        """Current durable progress for this run's invocations, in one query.
+
+        Carries every field the Gateway writes out of band — status/external_job_id when
+        it submits and polls, error/finished_at on a terminal write, updated_at on all of
+        them — so the snapshot can decline to regress any of them.
+        """
+        rows = session.execute(
+            select(
+                ProviderInvocationRow.id,
+                ProviderInvocationRow.status,
+                ProviderInvocationRow.external_job_id,
+                ProviderInvocationRow.error,
+                ProviderInvocationRow.finished_at,
+                ProviderInvocationRow.updated_at,
+            ).where(ProviderInvocationRow.run_id == run_id)
+        ).all()
+        return {row.id: row for row in rows}
+
+    def _preserve_durable_invocation_progress(
+        self,
+        row: ProviderInvocationRow,
+        durable: Any | None,
+    ) -> None:
+        """Never let a stale snapshot copy regress what the Gateway already committed.
+
+        The Gateway persists submit/polling/terminal transitions the moment they happen.
+        A snapshot built from an older in-memory copy would otherwise merge an earlier
+        status over the durable row, drop its external_job_id, and erase the terminal
+        error detail (e.g. provider_submit_outcome_unknown). Accounting fields
+        (usage/cost/duration/node_run_id) still merge normally.
+        """
+        if durable is None:
+            return
+        memory_rank = _PROVIDER_STATUS_RANK.get(row.status, 0)
+        durable_rank = _PROVIDER_STATUS_RANK.get(durable.status, 0)
+        if memory_rank < durable_rank:
+            row.status = durable.status
+            row.external_job_id = durable.external_job_id
+            row.error = durable.error
+            row.finished_at = durable.finished_at
+        # updated_at must not move backwards even at an equal rank: the Gateway reads it
+        # to decide whether an in-flight holder has gone stale (presumed dead), so a
+        # rewind would make a live holder look abandoned and invite a takeover.
+        if durable.updated_at is not None and (
+            row.updated_at is None or row.updated_at < durable.updated_at
+        ):
+            row.updated_at = durable.updated_at
+
     def _provider_invocation_row(self, invocation: ProviderInvocation) -> ProviderInvocationRow:
         return ProviderInvocationRow(
             id=invocation.id,
             case_id=invocation.case_id,
             run_id=invocation.run_id,
             node_run_id=invocation.node_run_id,
+            idempotency_key=invocation.idempotency_key,
             provider_id=invocation.provider_id,
             model_id=invocation.model_id,
             provider_profile_id=invocation.provider_profile_id,

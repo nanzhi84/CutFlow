@@ -10,6 +10,7 @@ from packages.core.contracts import (
     DigitalHumanVideoRequest,
     WarningCode,
 )
+from packages.core.provider_idempotency import build_provider_call_idempotency_key
 from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline._materialize import (
     eligible_bgm_candidates,
@@ -655,7 +656,11 @@ def test_provider_invoke_records_raw_request_response_and_exact_output():
 
     class _Context:
         run = SimpleNamespace(id="run_1", case_id="case_demo")
-        node_run = SimpleNamespace(id="node_1", node_id="PostProcessAgentPlanning")
+        node_run = SimpleNamespace(
+            id="node_1",
+            node_id="PostProcessAgentPlanning",
+            input_manifest_hash="manifest_1",
+        )
         repository = SimpleNamespace(provider_invocations={"inv_1": _StoredInvocation()})
         prompt_registry = _PromptRegistry()
         provider_gateway = _Gateway()
@@ -667,6 +672,15 @@ def test_provider_invoke_records_raw_request_response_and_exact_output():
             artifact = _artifact(kind, payload, payload_schema)
             self.recorded_artifacts.append(artifact)
             return artifact
+
+        def provider_call_idempotency_key(self, *, logical_call_slot, provider_profile_id):
+            return build_provider_call_idempotency_key(
+                run_id=self.run.id,
+                canonical_node_id=self.node_run.node_id,
+                logical_call_slot=logical_call_slot,
+                provider_profile_id=provider_profile_id,
+                input_manifest_hash=self.node_run.input_manifest_hash,
+            )
 
     context = _Context()
     invocation_ids: list[str] = []
@@ -687,7 +701,15 @@ def test_provider_invoke_records_raw_request_response_and_exact_output():
 
     assert returned == output
     assert invocation_ids == ["inv_1"]
-    assert context.provider_gateway.calls[0].idempotency_key.endswith(":postprocess_agent:1")
+    # The repair attempt (attempt=1) flows into the logical call slot, so its key is
+    # distinct from attempt 0 and stable across node_run.id changes.
+    assert context.provider_gateway.calls[0].idempotency_key == build_provider_call_idempotency_key(
+        run_id="run_1",
+        canonical_node_id="PostProcessAgentPlanning",
+        logical_call_slot="postprocess_agent:attempt-1",
+        provider_profile_id="profile_1",
+        input_manifest_hash="manifest_1",
+    )
     assert context.prompt_registry.validated == {
         "prompt_version_id": "prompt_v1",
         "output": output,

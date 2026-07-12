@@ -85,7 +85,10 @@ def run(ctx: NodeContext) -> NodeOutput:
             capability_id="llm.chat",
             prompt_version_id=prompt_invocation.prompt_version_id,
             input={"prompt": rendered, "script": state.request.script},
-            idempotency_key=f"{run.id}:{node_run.id}:resolve_creative_intent",
+            idempotency_key=ctx.provider_call_idempotency_key(
+                logical_call_slot="resolve_creative_intent",
+                provider_profile_id=profile.id,
+            ),
         )
     )
     if result is None or invocation.error:

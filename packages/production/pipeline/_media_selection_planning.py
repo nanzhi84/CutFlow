@@ -240,8 +240,9 @@ def select_media_assignment(
                     capability_id="llm.chat",
                     prompt_version_id=prompt_invocation.prompt_version_id,
                     input={"prompt": rendered, "response_format": {"type": "json_object"}},
-                    idempotency_key=(
-                        f"{ctx.run.id}:{ctx.node_run.id}:media_selection_agent:{attempt}"
+                    idempotency_key=ctx.provider_call_idempotency_key(
+                        logical_call_slot=f"media_selection_agent:attempt-{attempt}",
+                        provider_profile_id=profile.id,
                     ),
                 )
             )

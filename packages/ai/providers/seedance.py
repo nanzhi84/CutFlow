@@ -84,26 +84,9 @@ class ArkSeedanceProvider:
         secret = require_secret(context)
         base_url = str(option(context, "base_url", ARK_DEFAULT_BASE_URL)).rstrip("/")
         timeout = float(context.profile.timeout_sec)
-        access_key_auth = self._use_access_key_auth(secret, context)
-        direct_signed_auth = self._use_direct_signed_auth(context)
-        model_id = context.profile.model_id
-        data_secret = secret
-        data_access_key_auth = False
-        if access_key_auth:
-            resource_type, resource_id, project_name = self._api_key_resource(context)
-            if resource_type == "endpoint":
-                model_id = resource_id
-            if direct_signed_auth:
-                data_access_key_auth = True
-            else:
-                data_secret = self._temporary_api_key(
-                    context,
-                    secret,
-                    resource_type=resource_type,
-                    resource_id=resource_id,
-                    project_name=project_name,
-                    timeout=timeout,
-                )
+        model_id, data_secret, data_access_key_auth = self._resolve_data_auth(
+            context, secret, timeout
+        )
 
         prompt = str(call.input.get("prompt") or "").strip()
         if not prompt:
@@ -146,7 +129,7 @@ class ArkSeedanceProvider:
             context=context,
         )
         context.mark_polling(task_id)
-        payload, attempts = self._poll(
+        return self._collect_result(
             base_url,
             data_secret,
             task_id,
@@ -154,8 +137,89 @@ class ArkSeedanceProvider:
             call,
             timeout,
             access_key_auth=data_access_key_auth,
+            duration=duration,
         )
 
+    def resume_with_context(
+        self, call: ProviderCall, context: ProviderInvocationContext, external_job_id: str
+    ) -> ProviderResult:
+        # Recovery entrypoint: the generation task was already submitted (external_job_id
+        # durable), so re-derive the poll credentials but skip submit — only poll +
+        # download + store the existing task.
+        if call.capability_id != "video.generate":
+            raise ProviderRuntimeError(
+                ErrorCode.provider_unsupported_option,
+                f"Ark Seedance cannot run {call.capability_id}.",
+            )
+        secret = require_secret(context)
+        base_url = str(option(context, "base_url", ARK_DEFAULT_BASE_URL)).rstrip("/")
+        timeout = float(context.profile.timeout_sec)
+        _, data_secret, data_access_key_auth = self._resolve_data_auth(context, secret, timeout)
+        duration = int(call.input.get("duration_sec") or option(context, "duration", 15))
+        return self._collect_result(
+            base_url,
+            data_secret,
+            external_job_id,
+            context,
+            call,
+            timeout,
+            access_key_auth=data_access_key_auth,
+            duration=duration,
+        )
+
+    # ------------------------------------------------------------------ helpers
+
+    def _resolve_data_auth(
+        self, context: ProviderInvocationContext, secret: str, timeout: float
+    ) -> tuple[str, str, bool]:
+        """Resolve the data-plane model id, poll secret and signed-auth flag.
+
+        Derives the credentials the submit/poll/download calls use from the profile
+        secret; runs no vendor generation call (GetApiKey is an idempotent key mint),
+        so resume can re-run it without re-submitting a task."""
+        access_key_auth = self._use_access_key_auth(secret, context)
+        direct_signed_auth = self._use_direct_signed_auth(context)
+        model_id = context.profile.model_id
+        data_secret = secret
+        data_access_key_auth = False
+        if access_key_auth:
+            resource_type, resource_id, project_name = self._api_key_resource(context)
+            if resource_type == "endpoint":
+                model_id = resource_id
+            if direct_signed_auth:
+                data_access_key_auth = True
+            else:
+                data_secret = self._temporary_api_key(
+                    context,
+                    secret,
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                    project_name=project_name,
+                    timeout=timeout,
+                )
+        return model_id, data_secret, data_access_key_auth
+
+    def _collect_result(
+        self,
+        base_url: str,
+        secret: str,
+        task_id: str,
+        context: ProviderInvocationContext,
+        call: ProviderCall,
+        timeout: float,
+        *,
+        access_key_auth: bool,
+        duration: int,
+    ) -> ProviderResult:
+        payload, attempts = self._poll(
+            base_url,
+            secret,
+            task_id,
+            context,
+            call,
+            timeout,
+            access_key_auth=access_key_auth,
+        )
         video_url = self._result_video_url(payload)
         if not video_url:
             raise ProviderRuntimeError(
@@ -189,8 +253,6 @@ class ArkSeedanceProvider:
             video_seconds=float(duration),
             raw_usage={"poll_attempts": attempts, "provider_response": payload},
         )
-
-    # ------------------------------------------------------------------ helpers
 
     def _reference_content(
         self, context: ProviderInvocationContext, call: ProviderCall

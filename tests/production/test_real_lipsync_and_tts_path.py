@@ -13,6 +13,7 @@ import pytest
 
 from packages.ai.gateway import ProviderResult
 from packages.ai.gateway.provider_gateway import ProviderCall, ProviderGateway, ProviderRuntimeError
+from packages.core.provider_idempotency import is_provider_call_idempotency_key
 from packages.core.contracts import (
     ArtifactKind,
     DigitalHumanVideoRequest,
@@ -317,11 +318,56 @@ def test_real_heygem_failure_falls_back_to_videoretalk(tmp_path, media_fixture_f
     assert output.status == NodeStatus.degraded
     assert output.warnings == [WarningCode.lipsync_fallback_used]
     assert [notice.code for notice in output.degradations] == [WarningCode.lipsync_fallback_used]
-    assert videoretalk.calls == ["run_1:nr_lipsync:lipsync:videoretalk.real"]
+    # The fallback provider was invoked exactly once, with a stable Run-scoped key.
+    assert len(videoretalk.calls) == 1
+    assert is_provider_call_idempotency_key(videoretalk.calls[0])
     report = next(artifact for artifact in output.artifacts if artifact.kind == ArtifactKind.lipsync_report)
     assert report.payload["fallback_from"] == "heygem.real"
     assert report.payload["fallback_to"] == "videoretalk.real"
     assert report.payload["fallback_reason"] == "boom"
+
+
+@pytest.mark.parametrize(
+    "stop_code",
+    [ErrorCode.provider_submit_outcome_unknown, ErrorCode.idempotency_conflict],
+)
+def test_unknown_submit_outcome_does_not_fail_over_to_second_vendor(
+    tmp_path, media_fixture_factory, monkeypatch, stop_code
+):
+    # Both codes mean a paid task under this key may already exist at the primary vendor
+    # (submit outcome unknown / already succeeded). Failing over would mint a new key for
+    # the backup vendor and pay a SECOND time, which is exactly what issue #193 exists to
+    # prevent — so the node must stop instead, leaving the backup untouched.
+    adapter, gateway, secret_store, object_store = _adapter(tmp_path)
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store", lambda: object_store
+    )
+    secret_ref = secret_store.put("rh-key")
+    ds_secret = secret_store.put("ds-key")
+    gateway.register(_FailingLipSyncProvider("runninghub.heygem", stop_code, "outcome unknown"))
+    videoretalk = _StoringLipSyncProvider(
+        "dashscope.videoretalk",
+        media_fixture_factory.video(duration_sec=2.0, filename="vrt.mp4"),
+    )
+    gateway.register(videoretalk)
+    adapter.repository.provider_profiles["heygem.real"] = _real_lipsync_profile(
+        "runninghub.heygem", "heygem.real", secret_ref
+    )
+    adapter.repository.provider_profiles["videoretalk.real"] = _real_lipsync_profile(
+        "dashscope.videoretalk", "videoretalk.real", ds_secret
+    )
+
+    state = _lipsync_state(adapter.repository, object_store, media_fixture_factory, profile_id="heygem.real")
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+    from packages.production.pipeline import nodes
+
+    with pytest.raises(NodeExecutionError) as exc:
+        nodes.lipsync.run(ctx)
+
+    assert exc.value.error.code is stop_code
+    assert exc.value.error.retryable is False
+    # The decisive assertion: the backup vendor was never submitted to.
+    assert videoretalk.calls == []
 
 
 def test_real_lipsync_call_carries_request_timeout_minutes(tmp_path, media_fixture_factory, monkeypatch):

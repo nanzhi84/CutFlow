@@ -6,6 +6,7 @@ from apps.api.app import create_app
 from packages.ai.gateway.provider_gateway import ProviderCall, ProviderResult
 from sqlalchemy import select
 
+from packages.core.provider_idempotency import is_provider_call_idempotency_key
 from packages.core.contracts import (
     ArtifactKind,
     CreateProviderProfileRequest,
@@ -239,7 +240,9 @@ def test_tts_node_uses_provider_audio_artifact(media_fixture_factory):
         run_id = response.json()["initial_run"]["id"]
         tts_node = next(node for node in repository.node_runs[run_id] if node.node_id == "TTS")
         assert tts_node.output_artifact_ids == [provider.artifact_id]
-        assert provider.calls[0].idempotency_key == f"{run_id}:{tts_node.id}:tts"
+        # Run-scoped stable key: excludes node_run.id so an infrastructure retry reuses it.
+        assert is_provider_call_idempotency_key(provider.calls[0].idempotency_key)
+        assert tts_node.id not in provider.calls[0].idempotency_key
 
 
 def test_lipsync_node_uses_provider_video_artifact(media_fixture_factory):
@@ -302,6 +305,16 @@ def test_strict_alignment_uses_available_asr_provider(media_fixture_factory):
         assert narration.payload["source"] == "asr"
         assert narration.payload["strict"] is True
         assert narration.payload["warnings"] == []
+        # NarrationAlignment's paid ASR call is Run-scoped: it must carry the stable key
+        # (it had none before issue #193), so a retried activity recovers the in-flight
+        # transcription task instead of paying for a second one.
+        asr_invocation = next(
+            invocation
+            for invocation in repository.provider_invocations.values()
+            if invocation.run_id == run["id"] and invocation.capability_id == "asr.transcribe"
+        )
+        assert is_provider_call_idempotency_key(asr_invocation.idempotency_key)
+        assert alignment_node.id not in asr_invocation.idempotency_key
 
 
 def test_annotation_rerun_degrades_without_source_video():

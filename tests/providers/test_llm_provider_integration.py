@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
 from packages.ai.gateway.provider_gateway import ProviderCall, ProviderResult
+from packages.core.provider_idempotency import is_provider_call_idempotency_key
 from packages.core.contracts import (
     CreateProviderProfileRequest,
     ProviderOptionsSchemaRef,
@@ -259,4 +260,6 @@ def test_creative_intent_prefers_real_llm_profile_over_sandbox():
         ]
         assert llm_invocations[-1].provider_id == "fake.llm"
         assert provider.calls
-        assert provider.calls[0].idempotency_key == f"{run_id}:{resolve_node.id}:resolve_creative_intent"
+        # Run-scoped stable key: excludes node_run.id so an infrastructure retry reuses it.
+        assert is_provider_call_idempotency_key(provider.calls[0].idempotency_key)
+        assert resolve_node.id not in provider.calls[0].idempotency_key

@@ -280,7 +280,10 @@ def _invoke(
             capability_id="llm.chat",
             prompt_version_id=prompt_invocation.prompt_version_id,
             input={"prompt": rendered, "response_format": {"type": "json_object"}},
-            idempotency_key=f"{ctx.run.id}:{ctx.node_run.id}:postprocess_agent:{attempt}",
+            idempotency_key=ctx.provider_call_idempotency_key(
+                logical_call_slot=f"postprocess_agent:attempt-{attempt}",
+                provider_profile_id=profile.id,
+            ),
         )
     )
     response_artifact = _record_provider_response(

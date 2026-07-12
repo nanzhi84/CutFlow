@@ -69,6 +69,36 @@ class DashScopeVideoReTalkProvider:
         audio_url = self._public_url(context, raw_audio_uri)
         task_id = self._submit(base_url, api_key, video_url, audio_url, call, context)
         context.mark_polling(task_id)
+        return self._collect_result(base_url, api_key, task_id, options, call, context)
+
+    def resume_with_context(
+        self,
+        call: ProviderCall,
+        context: ProviderInvocationContext,
+        external_job_id: str,
+    ) -> ProviderResult:
+        # Recovery entrypoint: the synthesis task was already submitted (external_job_id
+        # durable), so skip presign/submit and only poll + download + store. The rebuilt
+        # request would carry fresh presigned URLs, but recovery consumes only the task id.
+        if call.capability_id != "lipsync.video":
+            raise ProviderRuntimeError(
+                ErrorCode.provider_unsupported_option,
+                f"DashScope VideoReTalk cannot run {call.capability_id}.",
+            )
+        api_key = require_secret(context)
+        options = context.profile.default_options
+        base_url = str(options.get("base_url") or "https://dashscope.aliyuncs.com/api/v1").rstrip("/")
+        return self._collect_result(base_url, api_key, external_job_id, options, call, context)
+
+    def _collect_result(
+        self,
+        base_url: str,
+        api_key: str,
+        task_id: str,
+        options: dict[str, Any],
+        call: ProviderCall,
+        context: ProviderInvocationContext,
+    ) -> ProviderResult:
         task_payload, attempts = poll_dashscope_task(
             client=self.client,
             base_url=base_url,

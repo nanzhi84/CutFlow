@@ -9,6 +9,13 @@ from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline.degradation_policies import LIPSYNC_FAILOVER_POLICY
 from packages.production.pipeline.nodes._broll_policy import broll_full_coverage_enabled
 
+# Errors that mean "a paid task under this key may already exist at the vendor":
+# switching to the fallback profile mints a new key and submits again, so it could pay
+# twice. Both are terminal for the node.
+_NO_FAILOVER_ERROR_CODES = frozenset(
+    {ErrorCode.provider_submit_outcome_unknown, ErrorCode.idempotency_conflict}
+)
+
 
 def run(ctx: NodeContext) -> NodeOutput:
     state = ctx.state
@@ -58,7 +65,10 @@ def run(ctx: NodeContext) -> NodeOutput:
                     "duration_sec": duration,
                     "timeout_minutes": state.request.lipsync.timeout_minutes,
                 },
-                idempotency_key=f"{run.id}:{node_run.id}:lipsync:{profile_id}",
+                idempotency_key=ctx.provider_call_idempotency_key(
+                    logical_call_slot="lipsync",
+                    provider_profile_id=profile_id,
+                ),
             )
         )
 
@@ -115,6 +125,11 @@ def run(ctx: NodeContext) -> NodeOutput:
         return success_output(invocation, result, used_profile=profile)
 
     primary_error = invocation.error.message if invocation.error else "LipSync provider failed."
+    if invocation.error is not None and invocation.error.code in _NO_FAILOVER_ERROR_CODES:
+        # The primary task may already be accepted and billing (submit outcome unknown),
+        # or it already succeeded under this key. Failing over would mint a new key for
+        # the backup vendor and pay a second time — stop instead.
+        raise NodeExecutionError(invocation.error.code, primary_error, retryable=False)
     fallback_profile = ctx.select_lipsync_fallback_profile(profile, primary_error)
     if fallback_profile is None:
         raise NodeExecutionError(
