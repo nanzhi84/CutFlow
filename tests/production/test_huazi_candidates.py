@@ -85,6 +85,11 @@ def test_derive_counts_only_visual_chars_for_length():
     assert events[0].text == "8.5 折"
 
 
+def test_max_candidates_headroom_for_emphasis_floor():
+    # Raised from 6 to 10 so a >=5-event floor survives pixel-safety attrition.
+    assert HUAZI_MAX_CANDIDATES == 10
+
+
 def test_derive_caps_at_max_candidates():
     phrases = [EmphasisHint(phrase=f"短语{i}") for i in range(HUAZI_MAX_CANDIDATES + 3)]
     units = _units(*[(f"包含短语{i}的句子", float(i), float(i) + 1) for i in range(HUAZI_MAX_CANDIDATES + 3)])

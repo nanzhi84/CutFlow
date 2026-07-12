@@ -30,7 +30,14 @@ _SYNCABLE_PROMPT_VERSION_IDS = {
     "prompt_creative_intent_v1",
     "prompt_editing_agent_v1",
     "prompt_window_query_v1",
+    "prompt_postprocess_agent_v1",
 }
+# Emphasis floor (issue: caption-timing-huazi-floor): the CreativeIntent prompt must
+# request 8-10 emphasis phrases (2-10 chars), and the PostProcess prompt must force a
+# 5-8 event caption selection when >=5 options exist. These markers re-sync a stored
+# pre-floor prompt row to the current content.
+_CREATIVE_INTENT_EMPHASIS_FLOOR_MARKER = "至少给出 6 条"
+_POSTPROCESS_CAPTION_FLOOR_MARKER = "必须选择 5 到 8 个事件的 caption option"
 _LEGACY_EDITING_AGENT_MARKERS = (
     "{asr_segments}",
     "{portrait_slot_plan}",
@@ -419,13 +426,21 @@ def _needs_prompt_version_sync(existing: PromptVersionRow) -> bool:
             )
         )
     if existing.id == "prompt_creative_intent_v1":
-        return "bgm_mood" not in (existing.content or "")
+        content = existing.content or ""
+        return (
+            "bgm_mood" not in content
+            or _CREATIVE_INTENT_EMPHASIS_FLOOR_MARKER not in content
+        )
+    if existing.id == "prompt_postprocess_agent_v1":
+        return _POSTPROCESS_CAPTION_FLOOR_MARKER not in (existing.content or "")
     return False
 
 
 def _prompt_sync_changelog(version_id: str) -> str:
     if version_id == "prompt_creative_intent_v1":
-        return "Synced built-in CreativeIntent prompt BGM mood contract."
+        return "Synced built-in CreativeIntent prompt BGM mood + emphasis floor contract."
     if version_id == "prompt_window_query_v1":
         return "Synced built-in WindowQueryPlanning prompt contract."
+    if version_id == "prompt_postprocess_agent_v1":
+        return "Synced built-in PostProcess prompt emphasis floor contract."
     return "Synced built-in EditingAgentPlanning prompt huazi-only style contract."

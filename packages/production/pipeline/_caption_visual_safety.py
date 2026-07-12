@@ -1,10 +1,15 @@
 """Deterministic pixel safety analysis for emphasis-caption anchors.
 
 The planner samples the final subtitle-free composite and proves an anchor safe
-against three independent signals on every requested frame: YuNet faces, local
-OpenCV text-like regions, and visual busyness.  Missing frames or unavailable
+against three independent signals on every requested frame: YuNet faces, the
+PP-OCRv3 scene-text detector, and visual busyness.  Missing frames or unavailable
 detectors fail closed; an empty detector result is only trusted after the
 detector capability has been confirmed.
+
+Emphasis captions carry a floor: to hit it, option safety is measured once per
+window and then thresholded at graduated tiers.  The face gate never moves (it is
+the immovable red line); only the scene-text and busyness thresholds relax, and
+tier 3 falls back to the single least-busy face-clear option per event.
 """
 
 from __future__ import annotations
@@ -12,11 +17,31 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from packages.media.annotation.sensors import detect_faces_strict, face_detector_available
+from packages.media.annotation.sensors import (
+    detect_faces_strict,
+    detect_scene_text_strict,
+    face_detector_available,
+    scene_text_detector_available,
+)
 
+# Face overlap is the immovable red line: it is identical across all relaxation
+# tiers and is never widened to reach the emphasis floor.
 _FACE_OVERLAP_MAX = 0.02
+
+# Tier 1 (default) scene-text / busyness thresholds.
 _SCENE_TEXT_OVERLAP_MAX = 0.04
 _BUSY_SCORE_MAX = 0.72
+
+# Tier 2 relaxed thresholds (face unchanged), applied only to events that still
+# have no option after tier 1 and only while below the emphasis floor. Public so
+# the planner can pass them and report them in the relaxation degradation.
+EMPHASIS_TIER2_SCENE_TEXT_MAX = 0.12
+EMPHASIS_TIER2_BUSY_MAX = 0.80
+
+# Every finished video should carry at least this many emphasis-caption events
+# when emphasis is enabled and candidates exist.
+EMPHASIS_MIN_EVENTS = 5
+
 _FACE_PADDING_RATIO = 0.12
 _MAX_SAFE_ANCHORS = 6
 
@@ -45,6 +70,29 @@ class OptionSafetyResult:
     @property
     def rejected_total(self) -> int:
         return self.rejected_face + self.rejected_scene_text + self.rejected_busy
+
+
+@dataclass(frozen=True)
+class OptionMeasurement:
+    """One option candidate's measured overlaps on the sampled final frames.
+
+    Metrics are threshold-independent, so a window is measured once and then
+    re-thresholded per relaxation tier without re-running detection. ``valid`` is
+    False when the option carried no usable safety envelope.
+    """
+
+    option: dict
+    face_overlap: float
+    scene_text_overlap: float
+    busy_score: float
+    valid: bool = True
+
+
+@dataclass(frozen=True)
+class OptionMeasurementResult:
+    measurements: list[OptionMeasurement]
+    sample_frames: list[int]
+    unavailable_detector: str | None = None
 
 
 def sample_frame_indices(start_frame: int, end_frame: int) -> list[int]:
@@ -86,23 +134,10 @@ def evaluate_anchor_safety(
         if rect is None:
             rejected_busy += 1
             continue
-        face_overlap = 0.0
-        text_overlap = 0.0
-        busy_score = 0.0
-        for faces, text_regions, image in frame_observations:
-            face_overlap = max(
-                face_overlap,
-                max((_overlap_fraction(rect, face) for face in faces), default=0.0),
-            )
-            text_overlap = max(
-                text_overlap,
-                max((_overlap_fraction(rect, region) for region in text_regions), default=0.0),
-            )
-            score = _busy_score(cv2, image, rect)
-            if score is None:
-                return VisualSafetyResult(anchors=[], unavailable_detector="busy")
-            busy_score = max(busy_score, score)
-
+        overlaps = _measure_rect(cv2, frame_observations, rect)
+        if overlaps is None:
+            return VisualSafetyResult(anchors=[], unavailable_detector="busy")
+        face_overlap, text_overlap, busy_score = overlaps
         if face_overlap > _FACE_OVERLAP_MAX:
             rejected_face += 1
             continue
@@ -138,76 +173,201 @@ def evaluate_anchor_safety(
     )
 
 
-def evaluate_option_safety(
+def measure_option_candidates(
     *,
     images: list[Any],
     sample_frames: list[int],
     option_candidates: list[dict],
-) -> OptionSafetyResult:
-    """Hard-filter every anchor+animation envelope on all three final frames."""
+) -> OptionMeasurementResult:
+    """Measure each option's overlaps on all three final frames, once.
+
+    The result is threshold-independent so the planner can apply graduated tiers
+    (T1 default, T2 relaxed scene-text/busyness, T3 best face-clear option) without
+    re-extracting frames or re-running detection.
+    """
 
     cv2, frame_observations, unavailable = _collect_frame_observations(
         images=images,
         sample_frames=sample_frames,
     )
     if unavailable is not None or cv2 is None:
-        return OptionSafetyResult(options=[], unavailable_detector=unavailable)
+        return OptionMeasurementResult(
+            measurements=[], sample_frames=list(sample_frames), unavailable_detector=unavailable
+        )
+    measurements: list[OptionMeasurement] = []
+    for option in option_candidates:
+        envelope = _rect_tuple(option.get("safety_envelope"))
+        if envelope is None:
+            measurements.append(
+                OptionMeasurement(
+                    option=option, face_overlap=1.0, scene_text_overlap=1.0,
+                    busy_score=1.0, valid=False,
+                )
+            )
+            continue
+        overlaps = _measure_rect(cv2, frame_observations, envelope)
+        if overlaps is None:
+            return OptionMeasurementResult(
+                measurements=[], sample_frames=list(sample_frames), unavailable_detector="busy"
+            )
+        face_overlap, text_overlap, busy_score = overlaps
+        measurements.append(
+            OptionMeasurement(
+                option=option,
+                face_overlap=face_overlap,
+                scene_text_overlap=text_overlap,
+                busy_score=busy_score,
+            )
+        )
+    return OptionMeasurementResult(
+        measurements=measurements, sample_frames=list(sample_frames)
+    )
+
+
+def select_options_at_thresholds(
+    result: OptionMeasurementResult,
+    *,
+    face_max: float = _FACE_OVERLAP_MAX,
+    scene_text_max: float = _SCENE_TEXT_OVERLAP_MAX,
+    busy_max: float = _BUSY_SCORE_MAX,
+) -> tuple[list[dict], int, int, int]:
+    """Keep options passing all three gates at the given thresholds.
+
+    Rejections are attributed to the first failing gate in face -> scene-text ->
+    busyness order, matching the historical single-tier counting.
+    """
 
     safe: list[dict] = []
     rejected_face = 0
     rejected_text = 0
     rejected_busy = 0
-    for option in option_candidates:
-        envelope = _rect_tuple(option.get("safety_envelope"))
-        if envelope is None:
+    for measurement in result.measurements:
+        if not measurement.valid:
             rejected_busy += 1
             continue
-        face_overlap = 0.0
-        text_overlap = 0.0
-        busy_score = 0.0
-        for faces, text_regions, image in frame_observations:
-            face_overlap = max(
-                face_overlap,
-                max(
-                    (_overlap_fraction(envelope, face) for face in faces),
-                    default=0.0,
-                ),
-            )
-            text_overlap = max(
-                text_overlap,
-                max(
-                    (_overlap_fraction(envelope, region) for region in text_regions),
-                    default=0.0,
-                ),
-            )
-            score = _busy_score(cv2, image, envelope)
-            if score is None:
-                return OptionSafetyResult(options=[], unavailable_detector="busy")
-            busy_score = max(busy_score, score)
-        if face_overlap > _FACE_OVERLAP_MAX:
+        if measurement.face_overlap > face_max:
             rejected_face += 1
             continue
-        if text_overlap > _SCENE_TEXT_OVERLAP_MAX:
+        if measurement.scene_text_overlap > scene_text_max:
             rejected_text += 1
             continue
-        if busy_score > _BUSY_SCORE_MAX:
+        if measurement.busy_score > busy_max:
             rejected_busy += 1
             continue
-        safe.append(
-            {
-                **option,
-                "face_overlap": round(face_overlap, 4),
-                "scene_text_overlap": round(text_overlap, 4),
-                "busy_score": round(busy_score, 4),
-                "sample_frames": list(sample_frames),
-            }
-        )
+        safe.append(_materialize_safe_option(measurement, result.sample_frames))
+    return safe, rejected_face, rejected_text, rejected_busy
+
+
+def select_best_face_clear_option(
+    result: OptionMeasurementResult,
+    *,
+    face_max: float = _FACE_OVERLAP_MAX,
+) -> dict | None:
+    """Tier 3: the single least-busy face-clear option, ignoring scene-text/busy gates.
+
+    Face overlap still hard-filters (the red line); among survivors the option with
+    the smallest (scene_text_overlap, busy_score) wins, tie-broken by option id for
+    determinism. ``None`` when no face-clear option exists.
+    """
+
+    eligible = [
+        measurement
+        for measurement in result.measurements
+        if measurement.valid and measurement.face_overlap <= face_max
+    ]
+    if not eligible:
+        return None
+    best = min(
+        eligible,
+        key=lambda measurement: (
+            measurement.scene_text_overlap,
+            measurement.busy_score,
+            str(measurement.option.get("caption_option_id") or ""),
+        ),
+    )
+    return _materialize_safe_option(best, result.sample_frames)
+
+
+def count_face_blocked(
+    result: OptionMeasurementResult, *, face_max: float = _FACE_OVERLAP_MAX
+) -> int:
+    """How many measured options the face red line rejects (for tier-3 reporting)."""
+
+    return sum(
+        1
+        for measurement in result.measurements
+        if measurement.valid and measurement.face_overlap > face_max
+    )
+
+
+def evaluate_option_safety(
+    *,
+    images: list[Any],
+    sample_frames: list[int],
+    option_candidates: list[dict],
+) -> OptionSafetyResult:
+    """Hard-filter every anchor+animation envelope on all three final frames (tier 1)."""
+
+    result = measure_option_candidates(
+        images=images,
+        sample_frames=sample_frames,
+        option_candidates=option_candidates,
+    )
+    if result.unavailable_detector is not None:
+        return OptionSafetyResult(options=[], unavailable_detector=result.unavailable_detector)
+    safe, rejected_face, rejected_text, rejected_busy = select_options_at_thresholds(result)
     return OptionSafetyResult(
         options=safe,
         rejected_face=rejected_face,
         rejected_scene_text=rejected_text,
         rejected_busy=rejected_busy,
     )
+
+
+def _materialize_safe_option(measurement: OptionMeasurement, sample_frames: list[int]) -> dict:
+    return {
+        **measurement.option,
+        "face_overlap": round(measurement.face_overlap, 4),
+        "scene_text_overlap": round(measurement.scene_text_overlap, 4),
+        "busy_score": round(measurement.busy_score, 4),
+        "sample_frames": list(sample_frames),
+    }
+
+
+def _measure_rect(
+    cv2,
+    frame_observations: list[
+        tuple[
+            list[tuple[float, float, float, float]],
+            list[tuple[float, float, float, float]],
+            Any,
+        ]
+    ],
+    rect: tuple[float, float, float, float],
+) -> tuple[float, float, float] | None:
+    """Max face / scene-text overlap and busyness for one rect over all frames.
+
+    Returns ``None`` when busyness cannot be scored (a detector failure the caller
+    surfaces as unavailable), mirroring the historical fail-closed behavior.
+    """
+
+    face_overlap = 0.0
+    text_overlap = 0.0
+    busy_score = 0.0
+    for faces, text_regions, image in frame_observations:
+        face_overlap = max(
+            face_overlap,
+            max((_overlap_fraction(rect, face) for face in faces), default=0.0),
+        )
+        text_overlap = max(
+            text_overlap,
+            max((_overlap_fraction(rect, region) for region in text_regions), default=0.0),
+        )
+        score = _busy_score(cv2, image, rect)
+        if score is None:
+            return None
+        busy_score = max(busy_score, score)
+    return face_overlap, text_overlap, busy_score
 
 
 def _collect_frame_observations(
@@ -229,11 +389,12 @@ def _collect_frame_observations(
         return None, [], "frame_extraction"
     try:
         import cv2  # type: ignore
-        import numpy as np  # type: ignore
     except Exception:
         return None, [], "opencv"
     if not face_detector_available():
         return None, [], "face"
+    if not scene_text_detector_available():
+        return None, [], "scene_text"
 
     observations = []
     for image in images:
@@ -249,79 +410,12 @@ def _collect_frame_observations(
             ]
         except Exception:
             return None, [], "face"
-        text_regions = _detect_text_like_regions(cv2, np, image)
-        if text_regions is None:
+        try:
+            text_regions = list(detect_scene_text_strict(image))
+        except Exception:
             return None, [], "scene_text"
         observations.append((faces, text_regions, image))
     return cv2, observations, None
-
-
-def _detect_text_like_regions(cv2, np, image) -> list[tuple[float, float, float, float]] | None:
-    """Detect text-shaped occupied regions; recognition is intentionally unnecessary.
-
-    Horizontal and vertical morphology covers common shop signs, labels, and
-    burned-in source captions without a network model.  The result is geometry only.
-    """
-
-    try:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        height, width = gray.shape[:2]
-        regions: list[tuple[float, float, float, float]] = []
-        for dx, dy, kernel_shape in ((1, 0, (17, 3)), (0, 1, (3, 17))):
-            gradient = cv2.Sobel(gray, cv2.CV_32F, dx, dy, ksize=3)
-            gradient = cv2.convertScaleAbs(gradient)
-            gradient = cv2.GaussianBlur(gradient, (3, 3), 0)
-            _threshold, mask = cv2.threshold(
-                gradient, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU
-            )
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_shape)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-            contours, _hierarchy = cv2.findContours(
-                mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            )
-            for contour in contours:
-                x, y, box_w, box_h = cv2.boundingRect(contour)
-                if not _text_region_shape_ok(x, y, box_w, box_h, width, height):
-                    continue
-                roi = mask[y : y + box_h, x : x + box_w]
-                fill = float(np.count_nonzero(roi)) / float(max(1, roi.size))
-                if fill < 0.08:
-                    continue
-                regions.append((x / width, y / height, box_w / width, box_h / height))
-        return _merge_regions(regions)
-    except Exception:
-        return None
-
-
-def _text_region_shape_ok(
-    x: int,
-    y: int,
-    box_w: int,
-    box_h: int,
-    width: int,
-    height: int,
-) -> bool:
-    del x, y
-    if box_w < max(10, int(width * 0.035)) or box_h < max(6, int(height * 0.01)):
-        return False
-    area_ratio = (box_w * box_h) / float(max(1, width * height))
-    if area_ratio > 0.30:
-        return False
-    aspect = box_w / float(max(1, box_h))
-    inverse = box_h / float(max(1, box_w))
-    return 1.15 <= aspect <= 25.0 or 1.15 <= inverse <= 25.0
-
-
-def _merge_regions(
-    regions: list[tuple[float, float, float, float]],
-) -> list[tuple[float, float, float, float]]:
-    ordered = sorted(regions, key=lambda rect: (rect[1], rect[0], rect[2], rect[3]))
-    merged: list[tuple[float, float, float, float]] = []
-    for rect in ordered:
-        if any(_overlap_fraction(rect, existing) >= 0.85 for existing in merged):
-            continue
-        merged.append(rect)
-    return merged
 
 
 def _busy_score(cv2, image, rect: tuple[float, float, float, float]) -> float | None:

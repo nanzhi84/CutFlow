@@ -8,7 +8,7 @@ from packages.production.pipeline._huazi_layout import generate_layout_boxes
 
 _RES = (1920, 1080)
 # 10 full-width chars: drops the compact tier and, with a tight safety zone,
-# keeps the candidate count below the 24 cap so no truncation masks a filter.
+# keeps the candidate count small enough that no cap truncation masks a filter.
 _LONG = "一二三四五六七八九十"
 
 
@@ -37,11 +37,27 @@ def test_deterministic_snapshot_byte_equal():
 
 
 def test_candidate_count_within_band_and_capped():
-    assert 12 <= len(_boxes()) <= 24
-    # A permissive safety zone floods the grid; the cap holds at 24.
-    assert len(_boxes(top_y=0.95)) == 24
+    # The full 5x3x3 grid now reaches pixel analysis (no 24-seat starvation that
+    # used to drop the body bands before final-frame safety ever saw them).
+    assert len(_boxes()) == 45
+    # A permissive safety zone floods the grid; the cap is the whole grid.
+    assert len(_boxes(top_y=0.95)) == 45
     # A high safety zone leaves only the top two bands -> a smaller honest set.
     assert len(_boxes(text=_LONG, top_y=0.40)) == 12
+
+
+def test_all_five_bands_reach_candidates():
+    # With a permissive safety zone every band survives; none is starved by a cap.
+    bands = {box["region_tags"][0] for box in _boxes(top_y=0.95)}
+    assert bands == {"top", "upper", "middle", "lower_middle", "lower"}
+
+
+def test_body_bands_rank_below_top_but_above_face_colliding_middle():
+    by_id = {box["layout_box_id"]: box["collision_score"] for box in _boxes(top_y=0.95)}
+    # Chest-level body bands beat middle-center (the face) but sit under top/upper.
+    assert by_id["top_center_medium"] < by_id["lower_middle_center_medium"]
+    assert by_id["lower_middle_center_medium"] < by_id["lower_center_medium"]
+    assert by_id["lower_center_medium"] < by_id["middle_center_medium"]
 
 
 def test_required_fields_and_rect_bounds():

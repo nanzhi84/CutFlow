@@ -8,8 +8,15 @@ placement_id rendering). Pure function, no IO, no randomness.
 
 The grid is 5 vertical bands x 3 horizontal anchors x 3 width tiers. Boxes whose
 estimated text width exceeds their capacity, or that intrude into the normal
-caption safety zone, are dropped. Survivors are ranked by a static prior and
-capped at 24; they are not considered safe until final-frame analysis passes.
+caption safety zone, are dropped. Survivors are ranked by a static prior; they
+are not considered safe until final-frame analysis passes.
+
+Historically the survivors were capped at 24 to hit a 12-24 "target band", but
+the static prior sorted the top/upper/middle bands ahead of the two body bands
+(lower_middle / lower), so the 24-seat cap silently starved the body positions —
+exactly the chest-level placements that read best on a vertical digital human —
+before pixel analysis ever saw them. The cap is now the full grid (45) so every
+band reaches final-frame analysis; the prior only orders the survivors.
 """
 
 from __future__ import annotations
@@ -46,17 +53,20 @@ _SAFETY_MARGIN = 0.02
 # Extra collision penalty for a box already used by a neighbouring event.
 _NEIGHBOR_PENALTY = 0.30
 
-# Cap on emitted candidates (spec target band is 12-24).
-_MAX_CANDIDATES = 24
+# Cap on emitted candidates: the full 5x3x3 grid, so no band is starved before
+# pixel analysis (see module docstring — the old 24-cap dropped the body bands).
+_MAX_CANDIDATES = 45
 
 # Static collision priors for centered boxes. middle-center overlaps the digital
-# human face, so it is the most dangerous placement.
+# human face, so it is the most dangerous placement; the chest-level body bands
+# (lower_middle / lower) are the golden zone on a vertical digital human and rank
+# below the top/side positions but well above the face-colliding middle-center.
 _CENTER_COLLISION: dict[str, float] = {
     "top": 0.10,
     "upper": 0.10,
     "middle": 0.60,
-    "lower_middle": 0.35,
-    "lower": 0.35,
+    "lower_middle": 0.22,
+    "lower": 0.28,
 }
 
 # Static collision priors for edge-anchored boxes, rising top -> bottom (the
@@ -128,8 +138,8 @@ def generate_layout_boxes(
     normalized and does not consume it. ``normal_caption_top_y`` is the normalized
     top edge of the normal caption safety zone (worst-case 2 lines). Boxes that
     reach within ``_SAFETY_MARGIN`` of it, or that cannot hold ``event_text``, are
-    dropped. Returns 12-24 candidates ranked by ascending collision score; fewer
-    than 12 is possible (and honestly reported) when the safety zone is high.
+    dropped. Returns up to the full grid (45) ranked by ascending collision score;
+    fewer is possible (and honestly reported) when the safety zone is high.
     """
     del resolution  # reserved for future aspect-aware refinement
 
