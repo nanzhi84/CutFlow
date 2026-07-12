@@ -83,8 +83,8 @@ class ProviderPlugin(Protocol):
     # a same-key resubmit after an interrupted 'submitted' attempt cannot double
     # charge. Read via getattr with a False default, so an adapter opts in by
     # declaring the attribute; unknown submit outcomes otherwise stop instead of
-    # resubmitting. Stage B sets it on the async adapters that document idempotent
-    # submission.
+    # resubmitting. No adapter currently declares it — none of the integrated vendors
+    # documents request-id de-dup on submit, so all default to False.
     supports_idempotent_submit: bool
 
     def invoke(self, call: ProviderCall) -> ProviderResult:
@@ -368,8 +368,20 @@ class ProviderGateway:
             started_at=started_at,
         )
 
+    @staticmethod
+    def _bind_node_run(invocation, node_run_id):
+        # A durable row is loaded with node_run_id=NULL (the NodeRun is not persisted
+        # until the completion snapshot). Rebind the current attempt's node_run_id onto
+        # the in-memory copy so the snapshot back-fills it and the failure-path linkage
+        # (invocation.node_run_id == node_run.id) still resolves.
+        if node_run_id is None or invocation.node_run_id == node_run_id:
+            return invocation
+        return invocation.model_copy(update={"node_run_id": node_run_id})
+
     def _invoke_durable(self, call, profile, store, started_at, started):
         existing = store.load_by_key(call.idempotency_key)
+        if existing is not None:
+            existing = self._bind_node_run(existing, call.node_run_id)
         if existing is not None and existing.status is not ProviderStatus.prepared:
             return self._recover_existing(call, profile, existing, store, started)
         if existing is None:
@@ -425,17 +437,9 @@ class ProviderGateway:
 
     def _submit(self, call, profile, invocation, started, *, store):
         plugin = self.plugins[profile.provider_id]
+        context = self._invocation_context(invocation, profile, store)
+        contextual_invoke = getattr(plugin, "invoke_with_context", None)
         try:
-            context = ProviderInvocationContext(
-                repository=self.repository,
-                profile=profile,
-                invocation_id=invocation.id,
-                secret_store=self.secret_store,
-                object_store=self.object_store,
-                audit_sink=self._secret_read_audit_sink,
-                durable_invocation_store=store,
-            )
-            contextual_invoke = getattr(plugin, "invoke_with_context", None)
             # Bound concurrent in-flight provider calls per ProviderProfile
             # concurrency_key (fallback provider_id) so concurrent durable runs
             # do not fan out unbounded requests at vendor quotas. Per-process;
@@ -445,75 +449,105 @@ class ProviderGateway:
                     result = contextual_invoke(call, context)
                 else:
                     result = plugin.invoke(call)
-            duration_ms = int((perf_counter() - started) * 1000)
-            price_items = self._matching_price_items(
-                provider_id=profile.provider_id,
-                model_id=profile.model_id,
-                capability_id=call.capability_id,
-            )
-            price_item_id = price_items[0].id if price_items else None
-            cost_unpriced = price_item_id is None
-            if cost_unpriced:
-                self._record_unpriced_alert(invocation)
-            estimated_cost = self._estimated_cost_from_usage(result, price_items)
-            usage = UsageMeterRecord(
-                id=new_id("usage"),
-                provider_invocation_id=invocation.id,
-                provider_id=invocation.provider_id,
-                model_id=invocation.model_id,
-                capability_id=invocation.capability_id,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                cached_input_tokens=result.cached_input_tokens,
-                audio_seconds=result.audio_seconds,
-                video_seconds=result.video_seconds,
-                image_count=result.image_count,
-                provider_credits=result.provider_credits,
-                raw_usage=result.raw_usage,
-            )
-            current_invocation = self.repository.provider_invocations[invocation.id]
-            assert_transition("provider", current_invocation.status, ProviderStatus.succeeded)
-            invocation = current_invocation.model_copy(
-                update={
-                    "status": ProviderStatus.succeeded,
-                    "usage": usage,
-                    "price_item_id": price_item_id,
-                    "billing_status": "unpriced" if cost_unpriced else "estimated",
-                    "duration_ms": duration_ms,
-                    "input_tokens": result.input_tokens,
-                    "output_tokens": result.output_tokens,
-                    "estimated_cost": estimated_cost,
-                    "finished_at": utcnow(),
-                    "updated_at": utcnow(),
-                }
-            )
-            self.repository.usage_records[usage.id] = usage
-            self.repository.provider_invocations[invocation.id] = invocation
-            record_provider_invocation(invocation)
-            if store is not None:
-                store.mark_terminal(invocation.id, ProviderStatus.succeeded, None)
-            return invocation, result
         except ProviderRuntimeError as exc:
-            status = ProviderStatus.failed
-            if exc.code == ErrorCode.provider_timeout:
-                status = ProviderStatus.timed_out
-            current_invocation = self.repository.provider_invocations[invocation.id]
-            assert_transition("provider", current_invocation.status, status)
-            error = ProviderError(code=exc.code, message=exc.message, retryable=True)
-            invocation = current_invocation.model_copy(
-                update={
-                    "status": status,
-                    "duration_ms": int((perf_counter() - started) * 1000),
-                    "error": error,
-                    "finished_at": utcnow(),
-                    "updated_at": utcnow(),
-                }
-            )
-            self.repository.provider_invocations[invocation.id] = invocation
-            record_provider_invocation(invocation)
-            if store is not None:
-                store.mark_terminal(invocation.id, status, error)
-            return invocation, None
+            return self._finalize_failure(invocation, exc, started, store=store)
+        return self._finalize_success(call, profile, invocation, result, started, store=store)
+
+    def _resume(self, call, profile, invocation, external_job_id, started, *, store):
+        # A durable 'polling' row already carries external_job_id from a prior attempt:
+        # resume through the adapter's recovery entrypoint (poll + download + store only,
+        # no re-upload/re-submit) and finalize on the SAME path as a fresh submit.
+        plugin = self.plugins[profile.provider_id]
+        context = self._invocation_context(invocation, profile, store)
+        try:
+            with provider_slot(profile.concurrency_key, profile.provider_id):
+                result = plugin.resume_with_context(call, context, external_job_id)
+        except ProviderRuntimeError as exc:
+            return self._finalize_failure(invocation, exc, started, store=store)
+        return self._finalize_success(call, profile, invocation, result, started, store=store)
+
+    def _invocation_context(self, invocation, profile, store) -> ProviderInvocationContext:
+        return ProviderInvocationContext(
+            repository=self.repository,
+            profile=profile,
+            invocation_id=invocation.id,
+            secret_store=self.secret_store,
+            object_store=self.object_store,
+            audit_sink=self._secret_read_audit_sink,
+            durable_invocation_store=store,
+        )
+
+    def _finalize_success(self, call, profile, invocation, result, started, *, store):
+        duration_ms = int((perf_counter() - started) * 1000)
+        price_items = self._matching_price_items(
+            provider_id=profile.provider_id,
+            model_id=profile.model_id,
+            capability_id=call.capability_id,
+        )
+        price_item_id = price_items[0].id if price_items else None
+        cost_unpriced = price_item_id is None
+        if cost_unpriced:
+            self._record_unpriced_alert(invocation)
+        estimated_cost = self._estimated_cost_from_usage(result, price_items)
+        usage = UsageMeterRecord(
+            id=new_id("usage"),
+            provider_invocation_id=invocation.id,
+            provider_id=invocation.provider_id,
+            model_id=invocation.model_id,
+            capability_id=invocation.capability_id,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cached_input_tokens=result.cached_input_tokens,
+            audio_seconds=result.audio_seconds,
+            video_seconds=result.video_seconds,
+            image_count=result.image_count,
+            provider_credits=result.provider_credits,
+            raw_usage=result.raw_usage,
+        )
+        current_invocation = self.repository.provider_invocations[invocation.id]
+        assert_transition("provider", current_invocation.status, ProviderStatus.succeeded)
+        invocation = current_invocation.model_copy(
+            update={
+                "status": ProviderStatus.succeeded,
+                "usage": usage,
+                "price_item_id": price_item_id,
+                "billing_status": "unpriced" if cost_unpriced else "estimated",
+                "duration_ms": duration_ms,
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "estimated_cost": estimated_cost,
+                "finished_at": utcnow(),
+                "updated_at": utcnow(),
+            }
+        )
+        self.repository.usage_records[usage.id] = usage
+        self.repository.provider_invocations[invocation.id] = invocation
+        record_provider_invocation(invocation)
+        if store is not None:
+            store.mark_terminal(invocation.id, ProviderStatus.succeeded, None)
+        return invocation, result
+
+    def _finalize_failure(self, invocation, exc, started, *, store):
+        status = ProviderStatus.failed
+        if exc.code == ErrorCode.provider_timeout:
+            status = ProviderStatus.timed_out
+        current_invocation = self.repository.provider_invocations[invocation.id]
+        assert_transition("provider", current_invocation.status, status)
+        error = ProviderError(code=exc.code, message=exc.message, retryable=True)
+        invocation = current_invocation.model_copy(
+            update={
+                "status": status,
+                "duration_ms": int((perf_counter() - started) * 1000),
+                "error": error,
+                "finished_at": utcnow(),
+                "updated_at": utcnow(),
+            }
+        )
+        self.repository.provider_invocations[invocation.id] = invocation
+        record_provider_invocation(invocation)
+        if store is not None:
+            store.mark_terminal(invocation.id, status, error)
+        return invocation, None
 
     def _recover_existing(self, call, profile, invocation, store, started):
         # Durable row already advanced past 'prepared': recover per the issue #193
@@ -522,7 +556,7 @@ class ProviderGateway:
         if status is ProviderStatus.submitted:
             return self._recover_submitted(call, profile, invocation, store, started)
         if status is ProviderStatus.polling:
-            return self._resume_polling_placeholder(invocation)
+            return self._resume_polling(call, profile, invocation, store, started)
         if status is ProviderStatus.succeeded:
             return self._reject_completed(invocation)
         # failed / timed_out / cancelled: do not open a new task under this key.
@@ -544,8 +578,9 @@ class ProviderGateway:
         # Wait briefly for it to publish progress; only take over a still-'submitted'
         # row once it is stale beyond 2x the provider timeout.
         row = self._await_claim_progress(store, invocation.idempotency_key, profile) or invocation
+        row = self._bind_node_run(row, call.node_run_id)
         if row.status is ProviderStatus.polling:
-            return self._resume_polling_placeholder(row)
+            return self._resume_polling(call, profile, row, store, started)
         if row.status in _TERMINAL_PROVIDER_STATUSES:
             if row.status is ProviderStatus.succeeded:
                 return self._reject_completed(row)
@@ -571,11 +606,16 @@ class ProviderGateway:
             row = store.load_by_key(idempotency_key)
         return row
 
-    def _resume_polling_placeholder(self, invocation):
-        # Stage A: a durable 'polling' row carries external_job_id from a prior attempt.
-        # Recovery polling (adapter.resume_with_context) lands in stage B; here we
-        # surface the invocation without re-submitting, so no duplicate vendor task or
-        # media upload is issued.
+    def _resume_polling(self, call, profile, invocation, store, started):
+        # A durable 'polling' row carries external_job_id from a prior attempt. When the
+        # adapter exposes a recovery entrypoint, resume through it (poll + download only,
+        # no re-submit). Adapters without one — or a row missing its external_job_id —
+        # surface the invocation as-is so no duplicate vendor task or media upload issues.
+        plugin = self.plugins.get(profile.provider_id)
+        resume = getattr(plugin, "resume_with_context", None)
+        if callable(resume) and invocation.external_job_id:
+            self.repository.provider_invocations[invocation.id] = invocation
+            return self._resume(call, profile, invocation, invocation.external_job_id, started, store=store)
         self.repository.provider_invocations[invocation.id] = invocation
         return invocation, None
 
@@ -614,6 +654,7 @@ class ProviderGateway:
         refreshed = store.load_by_key(invocation.idempotency_key) or invocation.model_copy(
             update={"status": ProviderStatus.timed_out, "error": error, "finished_at": utcnow()}
         )
+        refreshed = self._bind_node_run(refreshed, invocation.node_run_id)
         self.repository.provider_invocations[refreshed.id] = refreshed
         record_provider_invocation(refreshed)
         return refreshed, None

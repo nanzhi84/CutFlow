@@ -196,8 +196,13 @@ class SqlAlchemyProviderInvocationStore(BaseRepository):
         ``ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING``
         makes a duplicate insert a no-op (the plain conflict target cannot match a
         partial index); the surviving row — ours or a concurrent creator's — is then
-        read back by key. The first write leaves ``node_run_id`` unset; the node's
-        completion snapshot back-fills it.
+        read back by key.
+
+        The durable row is inserted with ``node_run_id=NULL``: the NodeRun is not
+        persisted until the node's completion snapshot, so writing its id here would
+        violate the FK. The returned contract carries the caller's ``node_run_id`` so
+        the in-memory invocation keeps it for the snapshot back-fill and for the
+        failure-path linkage; the snapshot writes the (now persisted) NodeRun id.
         """
         insert_stmt = (
             pg_insert(ProviderInvocationRow)
@@ -206,7 +211,7 @@ class SqlAlchemyProviderInvocationStore(BaseRepository):
                 idempotency_key=invocation.idempotency_key,
                 case_id=invocation.case_id,
                 run_id=invocation.run_id,
-                node_run_id=invocation.node_run_id,
+                node_run_id=None,
                 provider_id=invocation.provider_id,
                 model_id=invocation.model_id,
                 provider_profile_id=invocation.provider_profile_id,
@@ -229,7 +234,9 @@ class SqlAlchemyProviderInvocationStore(BaseRepository):
                     ProviderInvocationRow.idempotency_key == invocation.idempotency_key
                 )
             )
-            return provider_invocation_row_to_contract(row)
+            return provider_invocation_row_to_contract(row).model_copy(
+                update={"node_run_id": invocation.node_run_id}
+            )
 
     def claim_submit(self, invocation_id: str) -> bool:
         """Conditionally advance ``prepared -> submitted``; ``True`` when this caller won."""
