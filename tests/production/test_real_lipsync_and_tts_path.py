@@ -13,6 +13,7 @@ import pytest
 
 from packages.ai.gateway import ProviderResult
 from packages.ai.gateway.provider_gateway import ProviderCall, ProviderGateway, ProviderRuntimeError
+from packages.core.provider_idempotency import is_provider_call_idempotency_key
 from packages.core.contracts import (
     ArtifactKind,
     DigitalHumanVideoRequest,
@@ -317,7 +318,9 @@ def test_real_heygem_failure_falls_back_to_videoretalk(tmp_path, media_fixture_f
     assert output.status == NodeStatus.degraded
     assert output.warnings == [WarningCode.lipsync_fallback_used]
     assert [notice.code for notice in output.degradations] == [WarningCode.lipsync_fallback_used]
-    assert videoretalk.calls == ["run_1:nr_lipsync:lipsync:videoretalk.real"]
+    # The fallback provider was invoked exactly once, with a stable Run-scoped key.
+    assert len(videoretalk.calls) == 1
+    assert is_provider_call_idempotency_key(videoretalk.calls[0])
     report = next(artifact for artifact in output.artifacts if artifact.kind == ArtifactKind.lipsync_report)
     assert report.payload["fallback_from"] == "heygem.real"
     assert report.payload["fallback_to"] == "videoretalk.real"

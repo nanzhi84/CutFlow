@@ -149,7 +149,8 @@ def test_recover_polling_row_does_not_resubmit(db_session_factory):
 
     invocation, result = gateway.invoke(_call(key))
 
-    # Stage A placeholder: surfaces the polling row without a second submit.
+    # This adapter exposes no resume_with_context, so recovery surfaces the polling row
+    # without a second submit (adapters that CAN recover are covered separately).
     assert plugin.submit_count == 1
     assert invocation.status is ProviderStatus.polling
     assert result is None

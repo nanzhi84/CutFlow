@@ -16,6 +16,7 @@ import pytest
 
 from packages.ai.gateway import ProviderGateway, ProviderResult
 from packages.ai.prompts import PromptRegistry
+from packages.core.provider_idempotency import is_provider_call_idempotency_key
 from packages.core.contracts import (
     Artifact,
     ArtifactKind,
@@ -1961,7 +1962,11 @@ def test_huazi_subagent_makes_second_call_and_materializes_rect(tmp_path):
     # Two separate llm.chat passes happened: main editing agent + huazi subagent.
     assert len(provider.calls) == 2
     assert len(output.provider_invocation_ids) == 2
-    assert provider.calls[1].idempotency_key.endswith(":huazi_agent:0")
+    # Both paid passes carry a stable Run-scoped key; the main agent and the huazi
+    # subagent occupy distinct logical slots, so their keys differ.
+    assert is_provider_call_idempotency_key(provider.calls[0].idempotency_key)
+    assert is_provider_call_idempotency_key(provider.calls[1].idempotency_key)
+    assert provider.calls[0].idempotency_key != provider.calls[1].idempotency_key
     style = _payload(output, ArtifactKind.plan_style)
     overlays = style["overlay_events"]
     assert len(overlays) == 1
