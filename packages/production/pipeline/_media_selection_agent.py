@@ -268,6 +268,11 @@ def build_media_agent_input(
             "required_frames": need,
             "required_seconds": round(to_seconds(need), 3),
             "multi_clip_allowed": False,
+            "legal_candidate_ids": [
+                candidate_id
+                for candidate_id, candidate in candidates.broll_by_id.items()
+                if _broll_source_frames_available(candidate) >= need
+            ],
         }
         if _has_retrieval_constraint(slot, retrieval_topk_by_window):
             payload["retrieval_topk_candidate_ids"] = _topk(slot, retrieval_topk_by_window)

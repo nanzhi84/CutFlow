@@ -8,6 +8,7 @@ from packages.production.pipeline._media_selection_agent import (
     MediaCandidates,
     MediaSelection,
     PortraitChoice,
+    build_media_agent_input,
     deterministic_media_selection,
     index_media_candidates,
     parse_media_selection,
@@ -399,14 +400,28 @@ def test_media_planning_utilities_keep_retrieval_and_defaults_media_only() -> No
                     "retrieval_topk_candidate_ids": ["pc1", "missing"],
                 },
             ],
-            "broll_slots": ["bad", {"slot_id": "b0", "required_seconds": 1.0, "text": "施工"}],
+            "broll_slots": [
+                "bad",
+                {
+                    "slot_id": "b0",
+                    "required_seconds": 1.0,
+                    "text": "施工",
+                    "legal_candidate_ids": ["bc0"],
+                    "retrieval_topk_candidate_ids": ["bc_short", "bc0"],
+                },
+            ],
             "portrait_candidates": [],
-            "broll_candidates": [{"candidate_id": "bc0", "asset_id": "broll_a"}],
+            "broll_candidates": [
+                {"candidate_id": "bc0", "asset_id": "broll_a"},
+                {"candidate_id": "bc_short", "asset_id": "broll_short"},
+            ],
         }
     )
     assert compact["portrait_slots"][0]["legal_candidate_ids"] == ["pc1"]
-    assert compact["broll_slots"][0]["slot_id"] == "b0"
-    assert "b0" in compact["broll_candidates"]
+    assert compact["broll_slots"][0]["legal_candidate_ids"] == ["bc0"]
+    assert "bc0" in compact["broll_candidates"]
+    assert "bc_short" not in compact["broll_candidates"]
+    assert "allowed_slot_ids" not in compact["broll_candidates"]
 
     windows = {
         "portrait_windows": [{"window_id": "p0"}],
@@ -421,6 +436,46 @@ def test_media_planning_utilities_keep_retrieval_and_defaults_media_only() -> No
     assert _default_portrait_payload(windows) == {"enabled": True, "segments": []}
     assert _candidate_metadata(None) == {}
     assert _candidate_metadata({"metadata": {"scene": "工地"}}) == {"scene": "工地"}
+
+
+def test_broll_prompt_legal_candidates_intersect_capacity_and_retrieval_topk() -> None:
+    request = DigitalHumanVideoRequest(
+        case_id="case_demo",
+        script="脚本",
+        voice={"voice_id": "voice_demo"},
+        broll={"enabled": True, "mode": "insert", "max_inserts": 1},
+    )
+    agent_input = build_media_agent_input(
+        request=request,
+        boundary={
+            "portrait_slots": [],
+            "broll_slots": [
+                {
+                    "slot_id": "b0",
+                    "start_frame": 0,
+                    "end_frame": 30,
+                    "text": "施工",
+                }
+            ],
+        },
+        candidates=_candidates(),
+        narration_units=[],
+        duration=1.0,
+        retrieval_topk_by_window={"b0": ["bc_short", "bc1", "missing"]},
+    )
+
+    assert agent_input["broll_slots"][0]["legal_candidate_ids"] == ["bc0", "bc1", "bc2"]
+    compact = _compact_prompt_input(agent_input)
+    assert compact["broll_slots"] == [
+        {
+            "slot_id": "b0",
+            "required_seconds": 1.0,
+            "text": "施工",
+            "legal_candidate_ids": ["bc1"],
+        }
+    ]
+    assert "bc1" in compact["broll_candidates"]
+    assert "bc_short" not in compact["broll_candidates"]
 
 
 def test_media_planning_feasibility_and_full_coverage_failures_are_explicit() -> None:
