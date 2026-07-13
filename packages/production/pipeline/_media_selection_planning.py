@@ -28,7 +28,6 @@ from packages.production.pipeline._materialize import (
     materialize_broll_from_assignment,
     materialize_full_coverage_broll_from_assignment,
     materialize_portrait_from_assignment,
-    portrait_cut_frames,
 )
 from packages.production.pipeline._media_selection_agent import (
     MediaCandidates,
@@ -394,7 +393,6 @@ def materialize_media_selection_outputs(
             windows=windows,
             assignment=assignment,
             candidates=candidates,
-            cut_frames=portrait_cut_frames(portrait_payload),
             enabled=request.broll.enabled,
             max_inserts=broll_limit,
         )

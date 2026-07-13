@@ -37,8 +37,6 @@ from packages.planning.editing.frame_grid import (
 )
 from packages.planning.material import longest_clean_portrait_source_span
 from packages.planning.material.broll_plan import (
-    BROLL_GEOMETRY_POLICY,
-    BrollGeometryPolicy,
     BrollInsertion,
 )
 TIMELINE_FPS = 30
@@ -166,29 +164,13 @@ def materialize_portrait_from_assignment(
     ).model_dump(mode="json")
 
 
-def portrait_cut_frames(portrait_payload: dict) -> list[int]:
-    return sorted(
-        {
-            int(frame)
-            for segment in portrait_payload.get("segments", [])
-            for frame in (
-                segment.get("timeline_start_frame"),
-                segment.get("timeline_end_frame"),
-            )
-            if frame is not None
-        }
-    )
-
-
 def materialize_broll_from_assignment(
     *,
     windows: dict,
     assignment: dict,
     candidates,
-    cut_frames: list[int],
     enabled: bool,
     max_inserts: int,
-    policy: BrollGeometryPolicy = BROLL_GEOMETRY_POLICY,
 ) -> tuple[dict, list[dict]]:
     if not enabled:
         return BrollPlanArtifact(enabled=False).model_dump(mode="json"), []
@@ -477,7 +459,6 @@ def materialize_style_from_selection(
     request,
     material: dict,
     overlay_events: list[OverlayEvent],
-    font_id: str | None = None,
     bgm_id: str | None = None,
     target_bgm_mood: str | None = None,
     strict_bgm_selection: bool = False,

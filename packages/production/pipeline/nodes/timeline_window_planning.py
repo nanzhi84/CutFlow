@@ -229,7 +229,6 @@ def _full_coverage_output(
         total_frames=total_frames,
         min_segment_duration=ctx.state.request.broll.min_segment_duration,
         max_source_frames_available=longest_candidate_frames,
-        fps=TIMELINE_FPS,
     )
     oversized_windows = [
         {
@@ -323,7 +322,6 @@ def compile_full_coverage_broll_windows(
     total_frames: int,
     min_segment_duration: float,
     max_source_frames_available: int | None = None,
-    fps: int = TIMELINE_FPS,
 ) -> tuple[list[dict], dict]:
     total_frames = max(1, int(total_frames))
     min_frames = max(1, frame_index(float(min_segment_duration)))

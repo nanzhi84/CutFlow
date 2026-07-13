@@ -20,7 +20,6 @@ from packages.production.pipeline._materialize import (
     materialize_full_coverage_broll_from_assignment,
     materialize_portrait_from_assignment,
     materialize_style_from_selection,
-    portrait_cut_frames,
 )
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
@@ -29,6 +28,7 @@ from packages.production.pipeline.nodes._broll_policy import (
     broll_generic_coverage_enabled,
     broll_recency_penalties,
 )
+
 
 def _narration_segments(units: list[NarrationUnit]) -> list[ScriptSegment]:
     """Real narration beats as matchable script segments (text + true timing).
@@ -115,7 +115,6 @@ def run(ctx: NodeContext) -> NodeOutput:
     broll_limit = _broll_assignment_limit(
         request=state.request,
         windows=windows,
-        broll_candidate_count=len(candidates.broll_by_id),
     )
     broll_assignment = _assign_broll_from_retrieval(
         retrieval=retrieval,
@@ -162,7 +161,6 @@ def run(ctx: NodeContext) -> NodeOutput:
             windows=windows,
             assignment=assignment,
             candidates=broll_candidate_index,
-            cut_frames=portrait_cut_frames(portrait_payload),
             enabled=state.request.broll.enabled,
             max_inserts=broll_limit,
         )
@@ -567,7 +565,7 @@ def _ensure_portrait_coverage(
         )
 
 
-def _broll_assignment_limit(*, request, windows: dict, broll_candidate_count: int = 0) -> int:
+def _broll_assignment_limit(*, request, windows: dict) -> int:
     if broll_full_coverage_enabled(request):
         window_count = len([w for w in (windows.get("broll_windows") or []) if isinstance(w, dict)])
         return window_count

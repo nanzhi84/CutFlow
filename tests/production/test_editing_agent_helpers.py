@@ -13,7 +13,6 @@ from pathlib import Path
 
 from packages.core.contracts import DigitalHumanVideoRequest, WarningCode
 from packages.planning.material import shortlist_for_windows
-from packages.planning.material.broll_plan import BROLL_GEOMETRY_POLICY
 from packages.production.pipeline import _editing_agent
 from packages.production.pipeline._editing_agent import (
     BrollChoice,
@@ -30,7 +29,6 @@ from packages.production.pipeline._materialize import (
     materialize_broll_from_assignment,
     materialize_portrait_from_assignment,
     materialize_style_from_selection,
-    portrait_cut_frames,
 )
 
 
@@ -194,7 +192,6 @@ def _valid_selection() -> EditingSelection:
                 slot_id="bslot_001", candidate_id="bc_001", reason="施工过程", confidence=0.7
             ),
         ],
-        font_id=None,
         bgm_id="bgm_001",
     )
 
@@ -832,16 +829,10 @@ def test_materialize_broll_overlays_have_frames_and_no_overlap():
     candidates = index_candidates(_material())
     selection = _valid_selection()
     assignment = _assignment(selection)
-    portrait_payload = materialize_portrait_from_assignment(
-        windows=_windows(boundary),
-        assignment=assignment,
-        candidates=candidates,
-    )
     payload, drops = materialize_broll_from_assignment(
         windows=_windows(boundary),
         assignment=assignment,
         candidates=candidates,
-        cut_frames=portrait_cut_frames(portrait_payload),
         enabled=True,
         max_inserts=4,
     )
@@ -874,7 +865,6 @@ def test_materialize_broll_disabled_returns_empty():
         windows=_windows(_boundary()),
         assignment=_assignment(_valid_selection()),
         candidates=index_candidates(_material()),
-        cut_frames=[0, 180, 360],
         enabled=False,
         max_inserts=4,
     )
@@ -910,7 +900,6 @@ def test_agent_broll_rejects_source_shorter_than_window():
         windows=_windows(boundary),
         assignment=_assignment(selection),
         candidates=index_candidates(material),
-        cut_frames=[488, 724, 816],
         enabled=True,
         max_inserts=4,
     )
@@ -948,7 +937,6 @@ def test_agent_broll_uses_window_frames_without_repositioning():
         windows=_windows(boundary),
         assignment=_assignment(selection),
         candidates=index_candidates(material),
-        cut_frames=[0, 150],
         enabled=True,
         max_inserts=4,
     )
@@ -994,7 +982,6 @@ def test_agent_broll_carries_snap_padding_without_requiring_extra_source_frames(
         windows=_windows(boundary),
         assignment=_assignment(selection),
         candidates=index_candidates(material),
-        cut_frames=[0, 360],
         enabled=True,
         max_inserts=4,
     )
@@ -1038,7 +1025,6 @@ def test_agent_broll_uses_full_authoritative_window_length():
         windows=_windows(boundary),
         assignment=_assignment(selection),
         candidates=index_candidates(material),
-        cut_frames=[0, 300, 600],
         enabled=True,
         max_inserts=4,
     )
@@ -1049,10 +1035,6 @@ def test_agent_broll_uses_full_authoritative_window_length():
     assert drops == [
         {"slot_id": "bslot_short", "candidate_id": "bc_001", "reason": "source_too_short"}
     ]
-
-
-def test_agent_broll_keeps_legacy_policy_argument_for_callers():
-    assert materialize_broll_from_assignment.__kwdefaults__["policy"] is BROLL_GEOMETRY_POLICY
 
 
 def test_same_assignment_same_frames_across_engines():
@@ -1091,7 +1073,6 @@ def test_same_assignment_same_frames_across_engines():
         windows=_windows(boundary),
         assignment={**assignment, "engine": "editing_agent_llm"},
         candidates=candidates,
-        cut_frames=portrait_cut_frames(llm_portrait),
         enabled=True,
         max_inserts=4,
     )
@@ -1099,7 +1080,6 @@ def test_same_assignment_same_frames_across_engines():
         windows=_windows(boundary),
         assignment={**assignment, "engine": "deterministic_fallback"},
         candidates=candidates,
-        cut_frames=portrait_cut_frames(fallback_portrait),
         enabled=True,
         max_inserts=4,
     )
@@ -1145,7 +1125,6 @@ def test_materialize_style_uses_chosen_font_and_bgm():
         ),
         material=_material(),
         overlay_events=[],
-        font_id=None,
         bgm_id=_valid_selection().bgm_id,
     )
     assert warnings == []
@@ -1173,7 +1152,6 @@ def test_materialize_style_empty_font_pool_falls_back_to_default():
         request=_request(),
         material=_material(with_font=False, with_bgm=False),
         overlay_events=[],
-        font_id=None,
         bgm_id=None,
     )
     assert payload["font_asset_id"] == "case_default_font"
@@ -1200,7 +1178,6 @@ def test_materialize_style_bgm_disabled_yields_no_bgm():
         request=req,
         material=_material(),
         overlay_events=[],
-        font_id=None,
         bgm_id=_valid_selection().bgm_id,
     )
     assert warnings == []
@@ -1222,7 +1199,6 @@ def test_style_selection_cannot_mutate_visual_windows():
         windows=_windows(boundary),
         assignment=assignment,
         candidates=candidates,
-        cut_frames=portrait_cut_frames(portrait_before),
         enabled=True,
         max_inserts=4,
     )
@@ -1230,7 +1206,6 @@ def test_style_selection_cannot_mutate_visual_windows():
         request=_request(),
         material=_material(),
         overlay_events=[],
-        font_id="font_yst",
         bgm_id="bgm_001",
     )
     assert "segments" not in style_payload
@@ -1244,7 +1219,6 @@ def test_style_selection_cannot_mutate_visual_windows():
         windows=_windows(boundary),
         assignment=assignment,
         candidates=candidates,
-        cut_frames=portrait_cut_frames(portrait_before),
         enabled=True,
         max_inserts=4,
     )[0]
@@ -1342,7 +1316,6 @@ def test_materialize_broll_drops_source_shorter_than_min_insert():
         windows=_windows(_boundary()),
         assignment=_assignment(selection),
         candidates=candidates,
-        cut_frames=[0, 180, 360],
         enabled=True,
         max_inserts=4,
     )

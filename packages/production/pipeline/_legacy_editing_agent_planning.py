@@ -52,7 +52,6 @@ from packages.production.pipeline._materialize import (
     materialize_broll_from_assignment,
     materialize_full_coverage_broll_from_assignment,
     materialize_portrait_from_assignment,
-    portrait_cut_frames,
 )
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
@@ -1074,7 +1073,6 @@ def select_editing_assignment(
         broll_limit = _broll_assignment_limit(
             request=state.request,
             windows=agent_context.windows,
-            broll_candidate_count=len(agent_context.candidates.broll_by_id),
         )
         selection = deterministic_selection(
             boundary=agent_context.agent_boundary,
@@ -1217,7 +1215,6 @@ def select_editing_assignment(
                     max_inserts=_broll_assignment_limit(
                         request=state.request,
                         windows=agent_context.windows,
-                        broll_candidate_count=len(agent_context.candidates.broll_by_id),
                     ),
                     retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
                     allow_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
@@ -1254,7 +1251,6 @@ def select_editing_assignment(
                 max_inserts=_broll_assignment_limit(
                     request=state.request,
                     windows=agent_context.windows,
-                    broll_candidate_count=len(agent_context.candidates.broll_by_id),
                 ),
                 retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
                 allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
@@ -1319,7 +1315,6 @@ def materialize_media_selection_outputs(
     broll_limit = _broll_assignment_limit(
         request=request,
         windows=windows,
-        broll_candidate_count=len(candidates.broll_by_id),
     )
     assignment_for_materialize = {
         "portrait": portrait_assignment,
@@ -1347,7 +1342,6 @@ def materialize_media_selection_outputs(
             windows=windows,
             assignment=assignment_for_materialize,
             candidates=candidates,
-            cut_frames=portrait_cut_frames(portrait_payload),
             enabled=request.broll.enabled,
             max_inserts=broll_limit,
         )
@@ -1429,7 +1423,7 @@ def materialize_media_selection_outputs(
     )
 
 
-def _broll_assignment_limit(*, request, windows: dict, broll_candidate_count: int = 0) -> int:
+def _broll_assignment_limit(*, request, windows: dict) -> int:
     if broll_full_coverage_enabled(request):
         window_count = len([w for w in (windows.get("broll_windows") or []) if isinstance(w, dict)])
         return window_count
