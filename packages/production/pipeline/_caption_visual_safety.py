@@ -43,9 +43,6 @@ EMPHASIS_TIER2_BUSY_MAX = 0.80
 EMPHASIS_MIN_EVENTS = 5
 
 _FACE_PADDING_RATIO = 0.12
-_MAX_SAFE_ANCHORS = 6
-
-
 @dataclass(frozen=True)
 class OptionMeasurement:
     """One option candidate's measured overlaps on the sampled final frames.
