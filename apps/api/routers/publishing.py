@@ -57,7 +57,7 @@ def publish_batch_attempts(request: Request, batch_id: str, limit: int = 50) -> 
 
 @router.delete("/api/publish/batches/{batch_id}", response_model=c.OkResponse)
 def delete_publish_batch(
-    batch_id: str, request: Request, payload: c.DeletePublishResourceRequest | None = None
+    batch_id: str, request: Request
 ) -> c.OkResponse | JSONResponse:
     require_role(request, c.UserRole.operator)
     return service.delete_publish_batch(batch_id, request)
@@ -136,7 +136,7 @@ def patch_publish_item(
 
 @router.delete("/api/publish/items/{item_id}", response_model=c.OkResponse)
 def delete_publish_item(
-    item_id: str, request: Request, payload: c.DeletePublishResourceRequest | None = None
+    item_id: str, request: Request
 ) -> c.OkResponse | JSONResponse:
     require_role(request, c.UserRole.operator)
     return service.delete_publish_item(item_id, request)

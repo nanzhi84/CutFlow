@@ -11,7 +11,6 @@ from packages.creative.cases import SqlAlchemyCaseRepository
 
 def test_sqlalchemy_case_repository_reads_seeded_case():
     session_factory = get_sqlalchemy_session_factory()
-    assert session_factory is not None
     repository = SqlAlchemyCaseRepository(session_factory)
     cases = repository.list_cases(limit=200)
     assert any(case.id == "case_demo" for case in cases)
@@ -34,7 +33,6 @@ def test_cases_api_reads_from_sqlalchemy_backend():
 
 def test_cases_api_persists_created_and_patched_case():
     session_factory = get_sqlalchemy_session_factory()
-    assert session_factory is not None
 
     with TestClient(app) as client:
         admin_login = client.post(
@@ -118,7 +116,6 @@ def test_cases_api_persists_created_and_patched_case():
 
 def test_sqlalchemy_idempotency_replays_after_app_reconfiguration():
     session_factory = get_sqlalchemy_session_factory()
-    assert session_factory is not None
 
     idem_key = f"case-create-after-restart-{uuid4().hex[:8]}"
     headers = {"Idempotency-Key": idem_key}

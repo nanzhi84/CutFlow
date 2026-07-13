@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Request
 
 from apps.api.dependencies import require_role
 from apps.api.services import cases as service
@@ -42,7 +42,6 @@ def patch_case(case_id: str, payload: c.PatchCaseRequest, request: Request) -> c
 def delete_case(
     case_id: str,
     request: Request,
-    payload: c.DeleteCaseRequest | None = Body(default=None),
 ) -> c.OkResponse:
     require_role(request, c.UserRole.operator)
     return service.delete_case(case_id, request)

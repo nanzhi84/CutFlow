@@ -12,7 +12,7 @@ const ANIMATION_LABELS: Record<string, string> = {
   punch: "冲击",
 };
 
-export type CaptionEmphasisEventView = {
+type CaptionEmphasisEventView = {
   eventId: string;
   text: string;
   start: number;
@@ -23,7 +23,7 @@ export type CaptionEmphasisEventView = {
   reason: string;
 };
 
-export type CaptionSuppressedCueView = {
+type CaptionSuppressedCueView = {
   start: number;
   end: number;
   firstLine: string;

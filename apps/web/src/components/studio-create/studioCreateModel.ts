@@ -107,12 +107,12 @@ function normalizeHexColor(value: unknown, fallback: string) {
   return /^#[0-9A-Fa-f]{6}$/.test(trimmed) ? trimmed.toUpperCase() : fallback;
 }
 
-export const SUBTITLE_RENDER_BASE_HEIGHT = 1080;
+const SUBTITLE_RENDER_BASE_HEIGHT = 1080;
 export const SUBTITLE_PREVIEW_OUTPUT_WIDTH = 1080;
 export const SUBTITLE_PREVIEW_OUTPUT_HEIGHT = 1920;
 export const SUBTITLE_PREVIEW_WIDTH = 320;
-export const SUBTITLE_PREVIEW_HEIGHT = SUBTITLE_PREVIEW_WIDTH * (SUBTITLE_PREVIEW_OUTPUT_HEIGHT / SUBTITLE_PREVIEW_OUTPUT_WIDTH);
-export const ASS_FONT_POINT_TO_CSS_PIXEL = 72 / 96;
+const SUBTITLE_PREVIEW_HEIGHT = SUBTITLE_PREVIEW_WIDTH * (SUBTITLE_PREVIEW_OUTPUT_HEIGHT / SUBTITLE_PREVIEW_OUTPUT_WIDTH);
+const ASS_FONT_POINT_TO_CSS_PIXEL = 72 / 96;
 
 export function subtitleAssFontSize(requestedSize: unknown, outputHeight = SUBTITLE_PREVIEW_OUTPUT_HEIGHT) {
   const parsed = Number(requestedSize || 64);

@@ -257,10 +257,6 @@ class ProviderBalanceReport(ContractModel):
     status: Literal["ok", "pending"] = "ok"
 
 
-class RefreshProviderBalancesRequest(ContractModel):
-    reason: str | None = None
-
-
 class ProviderBalanceSnapshot(EntityMeta):
     provider_id: str
     account_group: str | None = None

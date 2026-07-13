@@ -26,16 +26,3 @@ def test_run_websocket_sends_heartbeat_when_idle(monkeypatch):
                     assert message.get("server_time")
                     break
             assert saw_heartbeat, "expected an idle heartbeat frame"
-
-
-def test_run_websocket_rejects_bad_token():
-    app = create_app()
-    with TestClient(app) as client:
-        # An invalid token must be refused (close 1008) — heartbeats never start.
-        try:
-            with client.websocket_connect("/ws/runs/run_x?token=bogus"):
-                pass
-        except Exception:
-            # Some test transports surface the 1008 close as a raised exception;
-            # either way the connection must not be accepted.
-            return

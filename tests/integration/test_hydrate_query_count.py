@@ -9,7 +9,6 @@ during hydrate must stay at 1 regardless of how many assets exist.
 
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 
@@ -22,8 +21,6 @@ from packages.core.storage.repository import new_id
 
 def _session_factory():
     session_factory = get_sqlalchemy_session_factory()
-    if session_factory is None:
-        pytest.skip("Set CUTAGENT_STORAGE_BACKEND=sqlalchemy to run database integration tests.")
     return session_factory
 
 

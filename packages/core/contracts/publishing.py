@@ -102,10 +102,6 @@ class PatchPublishPackageRequest(ContractModel):
     cover_artifact_id: str | None = None
 
 
-class DeletePublishResourceRequest(ContractModel):
-    reason: str | None = None
-
-
 class PublishBatchStatus(str, Enum):
     draft = "draft"
     processing = "processing"
