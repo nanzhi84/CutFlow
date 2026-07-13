@@ -2,16 +2,15 @@
 
 The default pipeline should be able to use person-free "clean cover" clips that
 have NO keyword overlap with the narration as sparse b-roll fillers, drawn from
-the clean pool and sprinkled across the timeline — rather than soft-degrading to
-empty b-roll just because no clip literally shares a jieba keyword with the
-script.
+the clean pool — rather than soft-degrading to empty b-roll just because no clip
+literally shares a jieba keyword with the script.
 
-These tests pin the two halves of that behaviour:
-  (A1) generic candidates must NOT all collapse onto the first narration beat
-       (the matching.py +0.05 duration-fit bonus must not anchor them), so a
-       no-overlap generic candidate carries ``best_segment is None``;
-  (A2) ``plan_insertions`` must SPREAD anchorless generic candidates across
-       distinct narration units instead of stalling on the first window.
+These tests pin the candidate-side half of that behaviour: generic candidates
+must be admitted (with no matched keywords) when the knob is on, and they must
+NOT all collapse onto the first narration beat (the matching.py +0.05
+duration-fit bonus must not anchor them), so a no-overlap generic candidate
+carries ``best_segment is None`` and downstream placement is free to distribute
+it.
 
 The person filter, the relevance floor itself, and keyword-matched anchoring are
 unchanged and covered elsewhere (test_broll_person_exclusion / test_material_planning).
@@ -30,7 +29,7 @@ from packages.core.contracts import (
 )
 from packages.core.contracts.artifacts import NarrationUnit
 from packages.core.contracts.jobs import BrollOptions
-from packages.planning.material import extract_keywords, plan_insertions, rank_broll_candidates
+from packages.planning.material import rank_broll_candidates
 from packages.planning.material.keywords import ScriptSegment
 
 
@@ -100,9 +99,9 @@ def test_clean_no_overlap_clip_is_skipped_without_generic_but_admitted_with_it()
 
 
 def test_generic_candidates_do_not_all_anchor_to_the_first_beat():
-    # A1: the +0.05 duration-fit bonus must NOT pin every no-overlap clip to the
-    # same first narration beat. A generic (no real overlap) candidate carries no
-    # anchor, so plan_insertions is free to distribute it.
+    # The +0.05 duration-fit bonus must NOT pin every no-overlap clip to the same
+    # first narration beat. A generic (no real overlap) candidate carries no
+    # anchor, so downstream placement is free to distribute it.
     units = _units()
     segments = _segments(units)
     annotation = _video_annotation(
@@ -121,91 +120,3 @@ def test_generic_candidates_do_not_all_anchor_to_the_first_beat():
         "no-overlap generic candidates must not be anchored to a beat by the "
         "duration-fit tie-breaker"
     )
-
-
-def test_generic_inserts_spread_across_distinct_narration_units():
-    # A2: anchorless generic candidates must be sprinkled across DIFFERENT
-    # narration units, not stalled on the first window.
-    units = _units()
-    segments = _segments(units)
-    annotation = _video_annotation(
-        "vid",
-        [
-            _clean_clip("c1", 0.0, 3.0, keywords=("窗外", "绿植")),
-            _clean_clip("c2", 3.0, 6.0, keywords=("木纹", "桌面")),
-            _clean_clip("c3", 6.0, 9.0, keywords=("灯光", "氛围")),
-            _clean_clip("c4", 9.0, 12.0, keywords=("陈列", "样板")),
-        ],
-    )
-    cands = rank_broll_candidates(
-        annotations={"vid": annotation}, segments=segments, include_generic_coverage=True
-    )
-    insertions = plan_insertions(candidates=cands, units=units, max_inserts=4)
-
-    assert len(insertions) >= 2, "generic clips should yield multiple sprinkled inserts"
-    host_units = {
-        next(u.unit_id for u in units if u.start <= ins.timeline_start < u.end)
-        for ins in insertions
-    }
-    assert len(host_units) >= 2, "inserts must spread across distinct narration units"
-    # Invariant preserved: an insert never spills past its host beat.
-    for ins in insertions:
-        host = next(u for u in units if u.start <= ins.timeline_start < u.end)
-        assert ins.timeline_end <= host.end
-
-
-def test_generics_fill_earlier_windows_even_when_a_match_anchors_late():
-    # Regression for the two-phase placement: a keyword match anchored to the LAST
-    # window must NOT suppress generic fillers in the earlier empty windows. A
-    # single-pass cursor would jump to the late match and drop every earlier
-    # generic; the two-phase fill places generics per still-empty window regardless.
-    units = [
-        NarrationUnit(unit_id="u1", text="开场先随便说两句。", start=0.0, end=4.0, confidence=1.0),
-        NarrationUnit(unit_id="u2", text="中间也聊点别的事。", start=4.0, end=8.0, confidence=1.0),
-        NarrationUnit(unit_id="u3", text="然后继续说些内容。", start=8.0, end=12.0, confidence=1.0),
-        NarrationUnit(unit_id="u4", text="最后讲解打磨工艺的细节。", start=12.0, end=16.0, confidence=1.0),
-    ]
-    segments = [
-        ScriptSegment(text=u.text, start=u.start, end=u.end, keywords=tuple(extract_keywords(u.text)))
-        for u in units
-    ]
-    annotation = _video_annotation(
-        "vid",
-        [
-            _clean_clip("kw_late", 0.0, 3.0, keywords=("打磨", "工艺")),  # matches u4 only
-            _clean_clip("gen1", 3.0, 6.0, keywords=("窗外", "绿植")),
-            _clean_clip("gen2", 6.0, 9.0, keywords=("木纹", "桌面")),
-            _clean_clip("gen3", 9.0, 12.0, keywords=("灯光", "氛围")),
-        ],
-    )
-    cands = rank_broll_candidates(
-        annotations={"vid": annotation}, segments=segments, include_generic_coverage=True
-    )
-    insertions = plan_insertions(candidates=cands, units=units, max_inserts=4)
-    clip_ids = {ins.clip_id for ins in insertions}
-    host_units = {
-        next(u.unit_id for u in units if u.start <= ins.timeline_start < u.end)
-        for ins in insertions
-    }
-    assert "kw_late" in clip_ids, "the keyword match must be placed (Phase 1)"
-    assert "u4" in host_units, "the match anchors in the last window"
-    # generics still fill the earlier empty windows instead of being suppressed
-    assert len(host_units & {"u1", "u2", "u3"}) >= 2
-
-
-def test_clip_too_short_to_fill_min_insert_is_skipped_not_overtrimmed():
-    # A clean span (admitted from _MIN_CLEAN_SPAN_SEC=1.0s) shorter than the
-    # minimum insert (1.5s) must NOT be placed: forcing a 1.5s insert would trim
-    # 0.5s of source past the clean span (into avoided footage / EOF).
-    units = _units()
-    segments = _segments(units)
-    annotation = _video_annotation("vid", [_clean_clip("short", 0.0, 1.2, keywords=("窗外",))])
-    cands = rank_broll_candidates(
-        annotations={"vid": annotation}, segments=segments, include_generic_coverage=True
-    )
-    insertions = plan_insertions(candidates=cands, units=units, max_inserts=4)
-    # No insert may read more source than the clip actually offers.
-    for ins in insertions:
-        assert ins.source_end - ins.source_start <= 1.2 + 1e-6
-    # The sole sub-1.5s clip cannot supply a clean minimum-length insert.
-    assert all(ins.clip_id != "short" for ins in insertions)

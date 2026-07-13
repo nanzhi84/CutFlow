@@ -1,55 +1,17 @@
-"""Real portrait-clip / bgm / font candidate scoring (replaces the score=1 seed).
+"""Portrait-clip lip-sync usability predicate.
 
-Portrait candidates are clip-level talking-head windows, scored on lip-sync
-availability + VLM confidence, with a recency demotion so a source used in the
-last run is demoted below a fresh one. bgm/font score on availability and
-recency. All pure.
+A portrait candidate is a clip-level talking-head window. This module owns the
+single question "can this clip serve as a lip-sync source", which the material
+pack and the editing planners both ask. Pure.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
-
-from packages.core.contracts import AnnotationV4, SelectionLedgerEntry
 from packages.planning.material.subject_terms import PERSON_SUBJECT_TERMS
-from packages.planning.selection.recency import RecencyConfig, recency_penalty_for
-
-# A usable asset/clip starts from this fixed availability baseline. Portrait clips
-# add their lip-sync confidence on top; bgm/font stay flat at the baseline. (This was
-# historically _BASE_AVAILABLE 10.0 + a coverage term whose ratio was always 1.0 in the
-# only production path — collapsed here into one honest "available" constant.)
-_AVAILABLE_BASE = 70.0
-_LIPSYNC_WEIGHT = 30.0
-_RECENCY_WEIGHT = 12.0
 
 # A lip-sync source window shorter than this is too small to anchor a narration
 # chunk and would only fragment the portrait track, so it is never offered.
 _MIN_LIPSYNC_CLIP_SEC = 0.6
-
-@dataclass(frozen=True)
-class SimpleCandidate:
-    asset_id: str
-    score: float
-    base_score: float
-    recency_penalty: float
-    reason: str
-
-
-@dataclass(frozen=True)
-class PortraitClipCandidate:
-    """One lip-sync-usable clip window inside a unified visual asset."""
-
-    asset_id: str
-    clip_id: str
-    score: float
-    base_score: float
-    recency_penalty: float
-    source_start: float
-    source_end: float
-    duration: float
-    confidence: float
-    reason: str
 
 
 def clip_is_lip_sync_usable(clip) -> bool:
@@ -85,69 +47,3 @@ def _looks_like_static_lipsync_source(clip) -> bool:
     )
 
 
-def rank_portrait_clip_candidates(
-    *,
-    annotations: dict[str, AnnotationV4],
-    ledger_entries: Sequence[SelectionLedgerEntry] = (),
-    recency_cfg: RecencyConfig | None = None,
-) -> list[PortraitClipCandidate]:
-    """Rank lip-sync-usable clips across (unified ``video``) assets.
-
-    ``annotations`` maps asset_id -> AnnotationV4. Each usable clip scores on a fixed
-    availability baseline + its VLM lip-sync confidence, demoted by a recency penalty
-    on its source asset. Empty when no clip clears the gate (the honest "no usable
-    portrait" signal — the node then soft-degrades). Audio coverage/capacity is NOT
-    scored here; it is enforced downstream by TimelineWindowPlanning.
-    """
-    candidates: list[PortraitClipCandidate] = []
-    for asset_id, annotation in annotations.items():
-        for clip in annotation.clips:
-            if not clip_is_lip_sync_usable(clip):
-                continue
-            duration = max(0.0, float(clip.end) - float(clip.start))
-            base = _AVAILABLE_BASE + float(clip.confidence) * _LIPSYNC_WEIGHT
-            penalty = recency_penalty_for(ledger_entries, asset_id=asset_id, cfg=recency_cfg)
-            final = max(0.0, base - penalty * _RECENCY_WEIGHT)
-            reason = f"lip-sync clip {duration:.1f}s, confidence {float(clip.confidence):.0%}"
-            if penalty > 0:
-                reason += "; recently used (demoted)"
-            candidates.append(
-                PortraitClipCandidate(
-                    asset_id=asset_id,
-                    clip_id=clip.segment_id,
-                    score=round(final, 3),
-                    base_score=round(base, 3),
-                    recency_penalty=round(penalty, 3),
-                    source_start=round(float(clip.start), 3),
-                    source_end=round(float(clip.end), 3),
-                    duration=round(duration, 3),
-                    confidence=float(clip.confidence),
-                    reason=reason,
-                )
-            )
-    # Longer usable windows win ties (more coverage capacity for the boundary planner).
-    candidates.sort(key=lambda c: (-c.score, -c.duration, c.asset_id, c.clip_id))
-    return candidates
-
-
-def score_simple_candidate(
-    *,
-    asset_id: str,
-    medium_label: str,
-    ledger_entries: Sequence[SelectionLedgerEntry] = (),
-    recency_cfg: RecencyConfig | None = None,
-) -> SimpleCandidate:
-    """Score an available bgm/font asset (availability base - recency demotion)."""
-    base = _AVAILABLE_BASE  # fixed availability score
-    penalty = recency_penalty_for(ledger_entries, asset_id=asset_id, cfg=recency_cfg)
-    final = max(0.0, base - penalty * _RECENCY_WEIGHT)
-    reason = f"available {medium_label}"
-    if penalty > 0:
-        reason += "; recently used (demoted)"
-    return SimpleCandidate(
-        asset_id=asset_id,
-        score=round(final, 3),
-        base_score=round(base, 3),
-        recency_penalty=round(penalty, 3),
-        reason=reason,
-    )
