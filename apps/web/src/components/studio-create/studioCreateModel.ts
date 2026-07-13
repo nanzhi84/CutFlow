@@ -295,15 +295,6 @@ export function effectiveHuaziEnabled(form: FormState): boolean {
   return supportsEmphasisCaption(form.contentMode) && form.huaziEnabled;
 }
 
-export function subtitleLabel(value: FormState["subtitleStyle"]) {
-  if (value === "clean") return "简洁风";
-  if (value === "variety") return "综艺风";
-  if (value === "news") return "新闻风";
-  if (value === "movie") return "电影风";
-  if (value === "youshe_title_black") return "标题黑风";
-  return "抖音风";
-}
-
 const SUBTITLE_STYLES: LegacySubtitleStyle[] = [
   "douyin",
   "clean",

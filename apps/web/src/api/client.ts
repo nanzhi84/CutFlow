@@ -504,14 +504,6 @@ export const api = {
         "/api/media/assets/auto-match-replace",
         { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("media_auto_replace") },
       ),
-    replaceSource: (
-      assetId: string,
-      payload: JsonRequest<operations["replace_asset_source_api_media_assets__asset_id__replace_source_post"]>,
-    ) =>
-      fetchJson<JsonResponse<operations["replace_asset_source_api_media_assets__asset_id__replace_source_post"]>>(
-        `/api/media/assets/${enc(assetId)}/replace-source`,
-        { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("media_replace_source") },
-      ),
     previewUrl: (assetId: string) =>
       fetchJson<JsonResponse<operations["media_asset_preview_api_media_assets__asset_id__preview_url_get"]>>(
         `/api/media/assets/${enc(assetId)}/preview-url`,
@@ -622,11 +614,6 @@ export const api = {
         `/api/cases/${enc(caseId)}/finished-videos/downloads`,
         { query },
       ),
-    delete: (id: string) =>
-      fetchJson<JsonResponse<operations["delete_finished_video_api_finished_videos__id__delete"]>>(
-        `/api/finished-videos/${enc(id)}`,
-        { method: "DELETE", idempotencyKey: createIdempotencyKey("delete_video") },
-      ),
   },
   publishing: {
     packages: (query: QueryParams<operations["publish_packages_api_publish_packages_get"]> = {}) =>
@@ -681,29 +668,6 @@ export const api = {
       fetchJson<JsonResponse<operations["submit_publish_batch_api_publish_batches__batch_id__submit_post"]>>(
         `/api/publish/batches/${enc(batchId)}/submit`,
         { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("publish_submit") },
-      ),
-    retryItem: (batchId: string, itemId: string) =>
-      fetchJson<JsonResponse<operations["retry_publish_item_api_publish_batches__batch_id__items__item_id__retry_publish_post"]>>(
-        `/api/publish/batches/${enc(batchId)}/items/${enc(itemId)}/retry-publish`,
-        { method: "POST", idempotencyKey: createIdempotencyKey("publish_retry") },
-      ),
-    generateCover: (
-      batchId: string,
-      itemId: string,
-      payload: JsonRequest<operations["generate_publish_cover_api_publish_batches__batch_id__items__item_id__generate_cover_post"]>,
-    ) =>
-      fetchJson<JsonResponse<operations["generate_publish_cover_api_publish_batches__batch_id__items__item_id__generate_cover_post"]>>(
-        `/api/publish/batches/${enc(batchId)}/items/${enc(itemId)}/generate-cover`,
-        { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("publish_cover") },
-      ),
-    previewCoverFrame: (
-      batchId: string,
-      itemId: string,
-      payload: JsonRequest<operations["preview_publish_cover_frame_api_publish_batches__batch_id__items__item_id__preview_cover_frame_post"]>,
-    ) =>
-      fetchJson<JsonResponse<operations["preview_publish_cover_frame_api_publish_batches__batch_id__items__item_id__preview_cover_frame_post"]>>(
-        `/api/publish/batches/${enc(batchId)}/items/${enc(itemId)}/preview-cover-frame`,
-        { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("publish_cover_preview") },
       ),
     patchItem: (itemId: string, payload: JsonRequest<operations["patch_publish_item_api_publish_items__item_id__patch"]>) =>
       fetchJson<JsonResponse<operations["patch_publish_item_api_publish_items__item_id__patch"]>>(
@@ -926,7 +890,6 @@ export type PromptBindingView = components["schemas"]["PromptBindingView"];
 export type NodeRun = components["schemas"]["NodeRun"];
 export type RunCard = components["schemas"]["RunCard"];
 export type RunOverviewResponse = components["schemas"]["RunOverviewResponse"];
-export type BatchFeasibilityResponse = components["schemas"]["BatchFeasibilityResponse"];
 export type RunDetailResponse = components["schemas"]["RunDetailResponse"];
 export type RunConfigSummary = components["schemas"]["RunConfigSummary"];
 export type VoiceProfile = components["schemas"]["VoiceProfile"];
@@ -938,10 +901,7 @@ export type MediaAssetRecord = components["schemas"]["MediaAssetRecord"];
 export type SignedUrlResponse = components["schemas"]["SignedUrlResponse"];
 export type AnnotationEditorVm = components["schemas"]["AnnotationEditorVm"];
 export type FinishedVideo = components["schemas"]["FinishedVideo"];
-export type BatchFinishedVideoDownloadResponse = components["schemas"]["BatchFinishedVideoDownloadResponse"];
 export type ArtifactRef = components["schemas"]["ArtifactRef"];
-export type PublishCoverResult = components["schemas"]["PublishCoverResult"];
-export type PreviewCoverFrameResult = components["schemas"]["PreviewCoverFrameResult"];
 export type PublishAttempt = components["schemas"]["PublishAttempt"];
 export type PublishBatch = components["schemas"]["PublishBatchVm"];
 export type PublishBatchItem = components["schemas"]["PublishBatchItemVm"];

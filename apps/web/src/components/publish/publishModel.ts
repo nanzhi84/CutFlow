@@ -137,10 +137,6 @@ export function isBatchActive(batch?: PublishBatch | null) {
   return batch?.status === "draft" || batch?.status === "processing" || batch?.status === "publishing";
 }
 
-export function itemCanPublish(item: PublishBatchItem) {
-  return item.selected && !["published", "publishing", "excluded"].includes(item.status);
-}
-
 export function itemCanRetry(item: PublishBatchItem) {
   return item.status === "publish_failed";
 }
