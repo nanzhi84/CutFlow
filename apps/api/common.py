@@ -177,8 +177,3 @@ def signed(request: Request, path: str) -> c.SignedUrlResponse:
     )
 
 
-def ensure_artifact_ref(request: Request, artifact_id: str) -> c.ArtifactRef:
-    runtime_repo = repository(request)
-    if artifact_id not in runtime_repo.artifacts:
-        raise NodeExecutionError(c.ErrorCode.artifact_missing, f"Artifact {artifact_id} does not exist.")
-    return runtime_repo.artifact_ref(artifact_id)

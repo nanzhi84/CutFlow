@@ -308,25 +308,6 @@ def extract_frame_at_time(
     )
 
 
-def needs_normalize_for_upload(path: str | Path) -> bool:
-    """Whether the source must be transcoded to platform-safe upload codecs.
-
-    True when the video stream is not H.264, the audio stream is not AAC, or the
-    container is not MP4. Best-effort: a probe failure returns True so the caller
-    transcodes rather than uploading an unknown-format file.
-    """
-    try:
-        info = probe_media(path)
-    except FfmpegCommandError:
-        return True
-    if info.media_type != "video":
-        return False
-    fmt = (info.format or "").lower()
-    container_ok = "mp4" in fmt or "mov" in fmt or "m4a" in fmt
-    codec_ok = (info.codec or "").lower() in {"h264", "avc1"}
-    return not (container_ok and codec_ok)
-
-
 def stabilize_video(
     video_path: str | Path,
     output_path: str | Path | None = None,

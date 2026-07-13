@@ -11,9 +11,7 @@ say which upstream node must finish before a node may run. The shipping
 templates are linear chains (edge i -> i+1), so their behaviour is unchanged, but
 the runtime schedules from the *edges* via ``topological_node_order`` — a
 dependency ready-set, not a hard-coded list — so a non-linear template runs its
-independent nodes in a valid dependency order. ``ready_nodes`` exposes the set of
-nodes whose upstreams are all complete (the seam a future parallel scheduler fills;
-#137).
+independent nodes in a valid dependency order (#137).
 """
 
 from __future__ import annotations
@@ -225,17 +223,3 @@ def topological_node_order(nodes: Sequence[str], edges: Iterable[tuple[str, str]
     return order
 
 
-def ready_nodes(
-    nodes: Sequence[str], edges: Iterable[tuple[str, str]], completed: Iterable[str]
-) -> list[str]:
-    """Nodes not yet done whose every upstream dependency is complete.
-
-    Returned in ``nodes`` declaration order (stable). With single-threaded execution
-    the runtime takes the first; a parallel scheduler could dispatch the whole set.
-    """
-    done = set(completed)
-    dependencies: dict[str, set[str]] = {node: set() for node in nodes}
-    for from_node, to_node in edges:
-        if to_node in dependencies:
-            dependencies[to_node].add(from_node)
-    return [node for node in nodes if node not in done and dependencies[node] <= done]

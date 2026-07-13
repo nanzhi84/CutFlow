@@ -8,7 +8,6 @@ from packages.core.contracts.artifacts import (
     CaptionCue,
     CaptionWindowDiagnostics,
     CaptionWindowsPlanArtifact,
-    PostProcessAgentOutput,
 )
 
 
@@ -112,27 +111,6 @@ def test_caption_windows_plan_rejects_invalid_geometry_timing_and_option_referen
     payload["emphasis_windows"][0]["caption_options"][0]["animation_id"] = "punch"
     with pytest.raises(ValidationError, match="not allowed"):
         CaptionWindowsPlanArtifact.model_validate(payload)
-
-
-def test_postprocess_output_requires_all_three_fields_and_rejects_layout_overreach():
-    with pytest.raises(ValidationError):
-        PostProcessAgentOutput.model_validate({})
-
-    output = PostProcessAgentOutput.model_validate(
-        {"bgm_id": None, "caption_choices": [], "analysis": "没有合适候选"}
-    )
-    assert output.bgm_id is None
-    assert output.caption_choices == []
-
-    with pytest.raises(ValidationError):
-        PostProcessAgentOutput.model_validate(
-            {
-                "bgm_id": None,
-                "caption_choices": [],
-                "analysis": "非法越权",
-                "font_size": 72,
-            }
-        )
 
 
 def test_legacy_caption_cue_accepts_old_indices_and_v2_stable_unit_ids():

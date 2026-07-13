@@ -1267,6 +1267,3 @@ def create_database_engine(url: str | None = None) -> Engine:
 def create_session_factory(engine: Engine | None = None) -> sessionmaker:
     return sessionmaker(bind=engine or create_database_engine(), expire_on_commit=False)
 
-
-def table_names() -> set[str]:
-    return set(Base.metadata.tables)

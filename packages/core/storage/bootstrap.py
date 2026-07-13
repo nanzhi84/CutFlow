@@ -2,19 +2,8 @@ from __future__ import annotations
 
 from sqlalchemy import text
 
-from packages.core.config import build_settings
 from packages.core.storage.database import create_database_engine, create_session_factory
 from packages.core.storage.seed import seed_database
-
-
-def storage_backend() -> str:
-    return build_settings().storage.backend
-
-
-def sqlalchemy_backend_enabled() -> bool:
-    # The in-memory storage backend has been removed; the only supported backends
-    # are the SQLAlchemy-backed ones (Settings rejects anything else at build time).
-    return storage_backend() in {"sqlalchemy", "postgres"}
 
 
 def bootstrap_sqlalchemy_storage() -> int:

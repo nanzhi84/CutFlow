@@ -154,7 +154,7 @@ class StorageSettings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     # CUTAGENT_STORAGE_BACKEND: "sqlalchemy" | "postgres". Stored lower-cased,
-    # matching bootstrap.storage_backend(). The in-memory backend has been removed;
+    # The in-memory backend has been removed;
     # _reject_memory_backend below fails loudly if "memory" is still configured.
     backend: str = "sqlalchemy"
 

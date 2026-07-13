@@ -2,10 +2,10 @@
 
 These tests prove the Phase-1/2 slice: the registered shipping templates keep their exact
 linear behaviour when expressed as a graph, the pure scheduler orders nodes by their
-edges (not by list position) and exposes the ready-set of independent nodes, graph
-validation rejects cycles / unknown nodes / duplicates, template validation rejects a
-node with no handler or no declared outputs, and the local runtime schedules from the
-edges (a non-linear template runs in dependency order).
+edges (not by list position), graph validation rejects cycles / unknown nodes /
+duplicates, template validation rejects a node with no handler or no declared outputs,
+and the local runtime schedules from the edges (a non-linear template runs in dependency
+order).
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ from packages.production.pipeline.node_sequence import (
     EDITING_AGENT_V2_SEQUENCE,
     NODE_SEQUENCE,
     SEEDANCE_T2V_SEQUENCE,
-    ready_nodes,
     topological_node_order,
     validate_graph_structure,
     workflow_graph,
@@ -101,36 +100,23 @@ def test_topological_order_comes_from_edges_not_node_list_order():
     assert order.index("B") > order.index("A")
 
 
-def test_ready_nodes_exposes_independent_parallelizable_set():
-    # After only A completes, B and C are BOTH ready (no dependency between them) — the
-    # seam a parallel scheduler dispatches together.
-    assert ready_nodes(DIAMOND_NODES, DIAMOND_EDGES, {"A"}) == ["B", "C"]
-    # D is not ready until both B and C are done.
-    assert ready_nodes(DIAMOND_NODES, DIAMOND_EDGES, {"A", "B"}) == ["C"]
-    assert ready_nodes(DIAMOND_NODES, DIAMOND_EDGES, {"A", "B", "C"}) == ["D"]
-    assert ready_nodes(DIAMOND_NODES, DIAMOND_EDGES, {"A", "B", "C", "D"}) == []
-
-
-def test_ready_nodes_and_topological_order_are_deterministic():
+def test_topological_order_is_deterministic():
     # Same inputs -> same output every call (no set/dict iteration nondeterminism).
     for _ in range(5):
         assert topological_node_order(DIAMOND_NODES, DIAMOND_EDGES) == ["A", "B", "C", "D"]
-        assert ready_nodes(DIAMOND_NODES, DIAMOND_EDGES, {"A"}) == ["B", "C"]
 
 
 def test_empty_graph_is_valid_and_orders_to_empty():
     validate_graph_structure([], [])  # no raise
     assert topological_node_order([], []) == []
-    assert ready_nodes([], [], set()) == []
 
 
-def test_isolated_node_with_no_edges_is_ordered_and_immediately_ready():
-    # A node incident to no edge must still appear in the order and be ready from the start
-    # (a regression that dropped edge-less nodes would corrupt the run).
+def test_isolated_node_with_no_edges_is_ordered():
+    # A node incident to no edge must still appear in the order (a regression that
+    # dropped edge-less nodes would corrupt the run).
     nodes = ["A", "B", "C"]
     edges = [("A", "B")]  # C is isolated
     assert topological_node_order(nodes, edges) == ["A", "B", "C"]
-    assert ready_nodes(nodes, edges, set()) == ["A", "C"]
     validate_graph_structure(nodes, edges)  # no raise
 
 

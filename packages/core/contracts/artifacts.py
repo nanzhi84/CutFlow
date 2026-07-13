@@ -627,14 +627,6 @@ class PostProcessCaptionChoice(ContractModel):
     reason: str = ""
 
 
-class PostProcessAgentOutput(ContractModel):
-    """Strict ID-only LLM output; explicit empty choices are valid, ``{}`` is not."""
-
-    bgm_id: str | None
-    caption_choices: list[PostProcessCaptionChoice]
-    analysis: str
-
-
 class PostProcessCandidateCounts(ContractModel):
     bgm: int = Field(0, ge=0)
     caption_events: int = Field(0, ge=0)

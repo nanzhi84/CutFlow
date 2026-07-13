@@ -68,9 +68,6 @@ def _install_fake_cdp(
         async def close(self):
             recorded["closed"] = True
 
-        async def set_files_by_index(self, selector, index, files):
-            raise AssertionError("publish should use CatBridge tasks, not DOM file inputs")
-
         async def evaluate(self, expression, await_promise: bool = False):
             recorded["evals"] += 1
             if "Models.PublishLog.bulkCreateWithStat" in expression:
@@ -733,7 +730,7 @@ def test_driver_fetch_targets_parses_cdp_json_and_fallbacks(monkeypatch):
     assert driver.fetch_targets() == []
 
 
-def test_driver_cdp_commands_surface_protocol_and_dom_errors(monkeypatch):
+def test_driver_evaluate_surfaces_protocol_errors(monkeypatch):
     driver = cdp.XiaoVmaoDriver()
 
     async def error_send(_method, _params=None):
@@ -742,21 +739,6 @@ def test_driver_cdp_commands_surface_protocol_and_dom_errors(monkeypatch):
     driver.send = error_send  # type: ignore[method-assign]
     with pytest.raises(cdp.XiaoVmaoUnavailableError, match="js exploded"):
         asyncio.run(driver.evaluate("throw new Error()"))
-
-    async def query_send(method, _params=None):
-        if method == "DOM.getDocument":
-            return {"result": {"root": {"nodeId": 1}}}
-        if method == "DOM.querySelectorAll":
-            return {"result": {"nodeIds": [10, 11]}}
-        if method == "DOM.setFileInputFiles":
-            return {"result": {}}
-        raise AssertionError(method)
-
-    driver.send = query_send  # type: ignore[method-assign]
-    assert asyncio.run(driver.query_selector_all("input[type=file]")) == [10, 11]
-    asyncio.run(driver.set_files_by_index("input[type=file]", 1, ["/tmp/a.mp4"]))
-    with pytest.raises(cdp.XiaoVmaoUnavailableError, match="未找到第 4 个文件输入框"):
-        asyncio.run(driver.set_files_by_index("input[type=file]", 3, ["/tmp/a.mp4"]))
 
 
 def test_driver_connect_success_uses_main_target(monkeypatch):

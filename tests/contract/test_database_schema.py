@@ -4,7 +4,7 @@ from pathlib import Path
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateIndex, CreateTable
 
-from packages.core.storage.database import Base, table_names
+from packages.core.storage.database import Base
 
 
 REQUIRED_TABLES = {
@@ -70,7 +70,7 @@ REQUIRED_TABLES = {
 
 
 def test_sqlalchemy_metadata_covers_spec_table_families():
-    missing = REQUIRED_TABLES - table_names()
+    missing = REQUIRED_TABLES - set(Base.metadata.tables)
     assert not missing
 
 
