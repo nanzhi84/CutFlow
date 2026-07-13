@@ -35,9 +35,6 @@ _MIN_CONFIDENCE = 0.3
 _WINDOW_BOUND_TOL = 0.5  # tolerance (sec) for a segment exceeding the window bounds
 _COVERAGE_GAP_TOL = 0.75  # tolerance (sec) for a gap in window coverage
 
-# Legal role tokens (kept faithful to origin; cover is the b-roll voiceover role).
-_LEGAL_ROLES = {role.value for role in UsageRole}
-
 
 # build_window_prompt
 
