@@ -162,7 +162,12 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
         "volume": (("packages/production/pipeline/nodes/tts.py", "request.voice.volume"),),
     },
     BrollOptions: {
-        "enabled": (("packages/production/pipeline/nodes/broll_planning.py", "request.broll.enabled"),),
+        "enabled": (
+            (
+                "packages/production/pipeline/nodes/deterministic_editing_planning.py",
+                "request.broll.enabled",
+            ),
+        ),
         "mode": (
             (
                 "packages/production/pipeline/nodes/timeline_window_planning.py",
@@ -173,7 +178,10 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
             ("packages/production/pipeline/nodes/material_pack_planning.py", "request.broll.case_id"),
         ),
         "max_inserts": (
-            ("packages/production/pipeline/nodes/broll_planning.py", "request.broll.max_inserts"),
+            (
+                "packages/production/pipeline/nodes/deterministic_editing_planning.py",
+                "request.broll.max_inserts",
+            ),
         ),
         "min_segment_duration": (
             (

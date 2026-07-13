@@ -40,7 +40,7 @@
 - `TimelineAssemblyValidation` 保持 assembly + verify-only，只组装、校验上游已经决定的帧边界，不重新规划时间线；`TimelinePlanning` 仅作为历史 v1/in-flight 节点 ID 兼容别名。
 
 ## 测试
-- `pytest tests/production tests/workflow`。人像唯一性/恢复诊断重点见 `test_timeline_window_planning_node.py`；B-roll canonical overlays 见 `test_broll_overlays_helper.py`、`test_broll_planning_node.py`。
+- `pytest tests/production tests/workflow`。人像唯一性/恢复诊断重点见 `test_timeline_window_planning_node.py`；B-roll canonical overlays 见 `test_broll_overlays_helper.py`。
 
 ## 注意 / 坑
 - worker 是独立进程，改完节点逻辑要重启 worker，不只是重启 API。

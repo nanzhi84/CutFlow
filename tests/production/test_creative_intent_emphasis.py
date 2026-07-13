@@ -1,4 +1,4 @@
-"""CreativeIntent 强调字幕链路：容错读取 helper + resolver 映射 + StylePlanning 派生。"""
+"""CreativeIntent 强调字幕链路：容错读取 helper + resolver 映射 + style 物化。"""
 
 from __future__ import annotations
 
@@ -158,8 +158,7 @@ def test_intent_to_artifact_caps_emphasis_count():
 
 
 # --- 花字候选派生已搬到 _huazi_candidates.derive_huazi_candidates（见
-#     tests/production/test_huazi_candidates.py）；确定性链不再派生花字（见
-#     test_bgm_segment_selection.test_style_planning_never_derives_huazi_overlays）。
+#     tests/production/test_huazi_candidates.py）；确定性链不再派生花字。
 
 
 # --- _subtitles: emphasis rendering ---

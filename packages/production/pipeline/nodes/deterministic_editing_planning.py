@@ -7,7 +7,9 @@ from packages.core.contracts.artifacts import BrollPlanArtifact, MediaAssignment
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.planning.editing.frame_grid import frame_index
 from packages.planning.material import (
+    ScriptSegment,
     demote_recent_broll_candidates,
+    extract_keywords,
     longest_clean_portrait_source_span,
     rank_broll_candidates,
 )
@@ -27,10 +29,49 @@ from packages.production.pipeline.nodes._broll_policy import (
     broll_generic_coverage_enabled,
     broll_recency_penalties,
 )
-from packages.production.pipeline.nodes.broll_planning import (
-    _indexed_broll_candidates,
-    _narration_segments,
-)
+
+def _narration_segments(units: list[NarrationUnit]) -> list[ScriptSegment]:
+    """Real narration beats as matchable script segments (text + true timing).
+
+    Each beat carries its jieba-extracted keywords so the matcher can compute a
+    real keyword overlap against the b-roll clip retrieval keywords.
+    """
+    return [
+        ScriptSegment(
+            text=unit.text,
+            start=float(unit.start),
+            end=float(unit.end),
+            keywords=tuple(extract_keywords(unit.text)),
+        )
+        for unit in units
+        if unit.end > unit.start
+    ]
+
+
+def _indexed_broll_candidates(candidates) -> dict[str, dict[str, dict]]:
+    return {
+        "broll_by_id": {
+            f"bc_{index:03d}": {
+                "asset_id": candidate.asset_id,
+                "score": candidate.score,
+                "reason": (
+                    f"matched '{candidate.scene_name}' (base {candidate.base_score})"
+                    + ("; recently used" if candidate.recency_penalty else "")
+                ),
+                "metadata": {
+                    "clip_id": candidate.clip_id,
+                    "source_start": candidate.source_start,
+                    "source_end": candidate.source_end,
+                    "matched_keywords": list(candidate.matched_keywords),
+                    "scene_name": candidate.scene_name,
+                    "base_score": candidate.base_score,
+                    "recency_penalty": candidate.recency_penalty,
+                    "diversity_key": candidate.diversity_key,
+                },
+            }
+            for index, candidate in enumerate(candidates)
+        }
+    }
 
 
 def run(ctx: NodeContext) -> NodeOutput:
