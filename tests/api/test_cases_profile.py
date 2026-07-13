@@ -7,71 +7,20 @@ tests at real Postgres; pure helper checks in this file remain DB-free.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
-from apps.api.services.cases import _with_counts
 from packages.ai.prompts.registry import case_prompt_variables
 from packages.core import contracts as c
 
 
-def test_quality_count_only_counts_qcd_videos_not_pending():
-    # R6: the "质检" (quality_count) column counts finished videos that have
-    # actually been quality-checked — i.e. a terminal qc_status — NOT every
-    # finished video. ``qc_status`` is never empty (defaults to "pending"), so a
-    # "has any status" filter would silently count everything.
-    case = c.CaseDetail(id="case_q", name="Quality Case")
-    repo = SimpleNamespace(
-        media_assets={},
-        scripts={},
-        finished_videos={
-            "fv_pending": SimpleNamespace(case_id="case_q", qc_status="pending"),
-            "fv_passed": SimpleNamespace(case_id="case_q", qc_status="passed"),
-            "fv_failed": SimpleNamespace(case_id="case_q", qc_status="failed"),
-            "fv_warning": SimpleNamespace(case_id="case_q", qc_status="warning"),
-            "fv_other_case": SimpleNamespace(case_id="case_other", qc_status="passed"),
-        },
-    )
-    item = _with_counts(repo, case)
-    # passed + failed + warning for this case = 3; pending and the other case excluded.
-    assert item.quality_count == 3
-
-
-def test_material_count_includes_unified_video_assets():
-    case = c.CaseDetail(id="case_video_count", name="Video Count Case")
-    repo = SimpleNamespace(
-        media_assets={
-            "asset_video": SimpleNamespace(case_id="case_video_count", kind="video"),
-            "asset_video_b": SimpleNamespace(case_id="case_video_count", kind="video"),
-            "asset_voice": SimpleNamespace(case_id="case_video_count", kind="voice"),
-            "asset_other_case": SimpleNamespace(case_id="case_other", kind="video"),
-        },
-        voices={
-            "voice_bound": SimpleNamespace(case_ids=["case_video_count"]),
-            "voice_other": SimpleNamespace(case_ids=["case_other"]),
-        },
-        scripts={},
-        finished_videos={},
-    )
-
-    item = _with_counts(repo, case)
-
-    assert item.material_count == 2
-    assert item.voice_count == 2
-
-
 def test_case_count_material_kind_allowlists_include_unified_video_assets():
-    from apps.api.services.cases import MATERIAL_ASSET_KINDS as API_MATERIAL_ASSET_KINDS
     from packages.core.contracts import CASE_MATERIAL_ASSET_KINDS
     from packages.creative.cases.sqlalchemy_repository import (
         MATERIAL_ASSET_KINDS as SQLA_MATERIAL_ASSET_KINDS,
     )
 
-    assert API_MATERIAL_ASSET_KINDS is CASE_MATERIAL_ASSET_KINDS
     assert SQLA_MATERIAL_ASSET_KINDS is CASE_MATERIAL_ASSET_KINDS
-    assert "video" in API_MATERIAL_ASSET_KINDS
     assert "video" in SQLA_MATERIAL_ASSET_KINDS
 
 

@@ -119,20 +119,6 @@ def resolve_alert(event_id: str, payload: c.ResolveAlertRequest, request: Reques
     return ops_repository(request).patch_alert_status(event_id, "resolved")
 
 
-def _qc_run_ids(repo, *, target_type: str, target_id: str) -> tuple[str | None, str | None]:
-    """Best-effort (run_id, job_id) for a quality-check target so qc_* funnel
-    events stay run-scoped. A ``run`` target IS the run; a ``finished_video``
-    target resolves through the finished video's ``run_id``."""
-
-    if target_type == "run":
-        run = repo.runs.get(target_id)
-        return (target_id if run is not None else None), getattr(run, "job_id", None)
-    finished = repo.finished_videos.get(target_id) if target_id else None
-    run_id = getattr(finished, "run_id", None) if finished else None
-    run = repo.runs.get(run_id) if run_id else None
-    return run_id, getattr(run, "job_id", None)
-
-
 def run_quality_check(
     run_id: str, payload: c.CreateQualityCheckRequest, request: Request
 ) -> c.ProductionQualityCheck:

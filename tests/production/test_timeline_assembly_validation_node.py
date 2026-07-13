@@ -33,8 +33,6 @@ import packages.production.pipeline.nodes.timeline_assembly_validation as timeli
 
 def test_timeline_assembly_validation_stays_assembly_and_verify_only():
     source = inspect.getsource(timeline_assembly_validation)
-    assert "place_insertion_safely" not in source
-    assert "plan_insertions" not in source
     assert "align_insertions_to_portrait_cuts" not in source
     assert "slice_source_window" not in source
 

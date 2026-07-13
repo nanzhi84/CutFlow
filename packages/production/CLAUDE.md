@@ -35,7 +35,7 @@
 ## 剪辑职责矩阵
 - `NarrationBoundaryPlanning` 只产出安全切点事实和 base/available windows；`portrait_slots` / `broll_slots` 不是最终帧权威。
 - `TimelineWindowPlanning` 拥有人像主轨最终窗口与资产级容量判定，只发布 `plan_timeline_windows`；编译默认人像计划保存在 `default_assignment.portrait_plan_payload`，由后续确定性/Agent 媒体选择节点发布唯一的最终 `plan_portrait`；素材不足用 `material_insufficient_portrait` hard fail。
-- `BrollPlanning` 和 editing planner 的 B-roll 落点必须共用 `packages/planning/material/broll_plan.py` 的几何政策与安全放置函数。
+- B-roll 落点的帧几何是单一真源：窗口由 `TimelineWindowPlanning` 经 `packages/planning/material/broll_plan.py` 的 `BROLL_GEOMETRY_POLICY` + `legalize_broll_window_frames`（内含切点吸附与短残片拒绝）合法化后发布；`_materialize.py` 的各编排器只消费已合法化的窗口帧，不得自行重算几何。
 - `MediaSelectionAgentPlanning`（活动 v2）只做 portrait/B-roll 候选指派和本地校验，不读写字幕/BGM；LLM 不输出最终帧，任何 B-roll 几何丢弃必须进入 diagnostics / degradation。`EditingAgentPlanning` 仅指 legacy v1 恢复节点。
 - `TimelineAssemblyValidation` 保持 assembly + verify-only，只组装、校验上游已经决定的帧边界，不重新规划时间线；`TimelinePlanning` 仅作为历史 v1/in-flight 节点 ID 兼容别名。
 

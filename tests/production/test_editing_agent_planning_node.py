@@ -42,6 +42,7 @@ from packages.production.pipeline._editing_agent import (
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
+from packages.production.pipeline.nodes.legacy_huazi_planning import _empty_result
 
 SCRIPT = "今天带你看一下这套案例。第一步先看施工前的样子。"
 
@@ -892,7 +893,7 @@ def test_materialize_editing_outputs_runs_after_selection(tmp_path):
         node_id="EditingAgentPlanning",
         agent_context=context,
         selection_result=selection_result,
-        huazi_result=nodes.editing_agent_planning._empty_huazi_result("no_candidates"),
+        huazi_result=_empty_result("no_candidates"),
     )
 
     assert materialized.assignment_payload["engine"] == "deterministic_fallback"

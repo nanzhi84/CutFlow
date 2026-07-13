@@ -1,10 +1,9 @@
-"""Deterministic jieba keyword extraction + script segmentation.
+"""Deterministic jieba keyword extraction.
 
 Ported from the origin ``broll_clip_agent`` (``_extract_script_keywords`` /
-``_segment_script_by_sentence`` / ``_extract_scene_keywords``). Pure functions,
-no IO and no randomness: jieba's POS tagging is deterministic on a fixed
-dictionary, so two identical runs produce identical keyword sets and segment
-timings. This is the matching substrate consumed by :mod:`matching`.
+``_extract_scene_keywords``). Pure functions, no IO and no randomness: jieba's POS
+tagging is deterministic on a fixed dictionary, so two identical runs produce
+identical keyword sets. This is the matching substrate consumed by :mod:`matching`.
 """
 
 from __future__ import annotations

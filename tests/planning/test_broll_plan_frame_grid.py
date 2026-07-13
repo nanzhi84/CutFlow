@@ -14,9 +14,8 @@ from __future__ import annotations
 from packages.planning.material import (
     align_insertions_to_portrait_cuts,
     legalize_broll_window_frames,
-    place_insertion_safely,
 )
-from packages.planning.material.broll_plan import BROLL_GEOMETRY_POLICY, BrollInsertion
+from packages.planning.material.broll_plan import BrollInsertion
 
 
 def _ins(ts: float, te: float, ss: float, se: float, **kw) -> BrollInsertion:
@@ -216,43 +215,3 @@ def test_aligned_inserts_never_invert_or_overlap_on_track():
         if prev_end is not None:
             assert r.timeline_start_frame >= prev_end  # no same-track overlap
         prev_end = r.timeline_end_frame
-
-
-# --- shared safe placement (place_insertion_safely) ------------------------------
-
-
-def test_place_insertion_safely_rejects_unsnappable_short_portrait_sliver():
-    # Regression for run_39b847fc619b: the raw B-roll would end 9 frames before the
-    # portrait cut, leaving a 0.3s A-roll flash. That is too far for the 0.15s snap
-    # cap and too short to be a visible 2s portrait interval, so the placement is
-    # refused instead of silently widening the cap.
-    rejected = place_insertion_safely(
-        [],
-        _ins(22.267, 23.827, 0.04, 1.6, asset_id="asset_flash", clip_id="flash_clip"),
-        window_start=22.267,
-        window_end=23.833,
-        fps=30,
-        portrait_cut_frames=[488, 724, 816],
-        policy=BROLL_GEOMETRY_POLICY,
-    )
-
-    assert rejected is None
-
-
-def test_place_insertion_safely_repositions_candidate_to_avoid_short_sliver():
-    # An insert anchored at 2.7s would run 2.7-4.7, leaving a 0.3s tail before the
-    # portrait cut at 5.0s. The safe placement keeps the usable B-roll by moving it
-    # to the legal in-window position 3.0-5.0 (frames 90-150) instead of widening
-    # the 0.15s snap cap or dropping it.
-    [placed] = place_insertion_safely(
-        [],
-        _ins(2.7, 4.7, 0.0, 2.0, asset_id="asset_report", clip_id="report_clip"),
-        window_start=2.7,
-        window_end=5.0,
-        fps=30,
-        portrait_cut_frames=[0, 150],
-        policy=BROLL_GEOMETRY_POLICY,
-    )
-
-    assert (placed.timeline_start_frame, placed.timeline_end_frame) == (90, 150)
-    assert round(placed.pad_end, 3) == 0.0

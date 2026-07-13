@@ -14,7 +14,6 @@ from packages.core.contracts import (
     WarningCode,
 )
 from packages.core.contracts.artifacts import EmphasisHint
-from packages.media.annotation.sensors import FaceDetection
 from packages.production.pipeline import _caption_visual_safety as visual
 from packages.production.pipeline._font_metrics import FontMetrics, make_text_measurer
 from packages.production.pipeline._fonts import ResolvedFont
@@ -196,60 +195,6 @@ def test_emphasis_hold_never_shortens_windows_closer_than_the_gap():
     # A already ends only 3 frames before B's start (< the 24-frame gap); the clamp
     # would pull it back to 66, but a hold pass must never shorten an existing window.
     assert windows[0]["end_frame"] == 87
-
-
-def test_visual_safety_fails_closed_when_face_detector_is_unavailable(monkeypatch):
-    monkeypatch.setattr(visual, "face_detector_available", lambda: False)
-    result = visual.evaluate_anchor_safety(
-        images=[np.zeros((100, 100, 3), dtype=np.uint8) for _ in range(3)],
-        sample_frames=[0, 10, 20],
-        anchors=[
-            {
-                "anchor_id": "a1",
-                "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1},
-            }
-        ],
-    )
-    assert result.anchors == []
-    assert result.unavailable_detector == "face"
-
-
-def test_visual_safety_materializes_only_safe_anchor_and_complete_options(monkeypatch):
-    monkeypatch.setattr(visual, "face_detector_available", lambda: True)
-    monkeypatch.setattr(visual, "detect_faces_strict", lambda _image: [])
-    monkeypatch.setattr(visual, "scene_text_detector_available", lambda: True)
-    monkeypatch.setattr(visual, "detect_scene_text_strict", lambda _image: [])
-    images = [np.zeros((100, 100, 3), dtype=np.uint8) for _ in range(3)]
-    result = visual.evaluate_anchor_safety(
-        images=images,
-        sample_frames=[1, 10, 19],
-        anchors=[
-            {
-                "anchor_id": "hz_001__top_left",
-                "rect": {"x": 0.05, "y": 0.05, "w": 0.3, "h": 0.1},
-                "text_align": "left",
-                "max_lines": 1,
-                "text_capacity": 8,
-                "allowed_enter_directions": ["left", "up"],
-                "region_tags": ["top", "left"],
-            }
-        ],
-    )
-    assert len(result.anchors) == 1
-    options = build_caption_option_candidates(
-        event_id="hz_001",
-        text="限时五折",
-        anchors=result.anchors,
-        width=1080,
-        height=1920,
-        measure=lambda text: len(text) * 50.0,
-        font_size=100.0,
-        outline=5.0,
-        shadow=1.0,
-        normal_safe_rect=None,
-    )
-    assert options
-    assert all(option["caption_option_id"].startswith("hz_001__") for option in options)
 
 
 def test_hmtx_font_and_final_ass_size_drive_option_envelope():
@@ -484,53 +429,6 @@ def test_three_level_envelopes_reject_canvas_and_normal_caption_collisions():
     assert normal_collision == []
 
 
-def test_visual_safety_filters_hero_envelope_without_rejecting_emphasis(monkeypatch):
-    monkeypatch.setattr(visual, "face_detector_available", lambda: True)
-    monkeypatch.setattr(
-        visual,
-        "detect_faces_strict",
-        lambda _image: [
-            FaceDetection(
-                bbox=(600.0, 400.0, 200.0, 200.0),
-                score=0.9,
-                landmarks=(),
-            )
-        ],
-    )
-    monkeypatch.setattr(visual, "scene_text_detector_available", lambda: True)
-    monkeypatch.setattr(visual, "detect_scene_text_strict", lambda _image: [])
-    candidates = build_caption_option_candidates(
-        event_id="e1",
-        text="促销",
-        anchors=[
-            {
-                "anchor_id": "a1",
-                "rect": {"x": 0.3, "y": 0.45, "w": 0.4, "h": 0.1},
-                "text_align": "center",
-                "allowed_enter_directions": ["left"],
-            }
-        ],
-        width=1000,
-        height=1000,
-        measure=lambda _text: 100.0,
-        font_size=100.0,
-        outline=5.0,
-        shadow=1.0,
-        normal_safe_rect=None,
-        hero_eligible=True,
-    )
-    result = visual.evaluate_option_safety(
-        images=[np.zeros((1000, 1000, 3), dtype=np.uint8) for _ in range(3)],
-        sample_frames=[1, 10, 19],
-        option_candidates=candidates,
-    )
-
-    safe_animations = {item["animation_id"] for item in result.options}
-    assert "pop" in safe_animations
-    assert "slam_scale" not in safe_animations
-    assert result.rejected_face >= 1
-
-
 def test_safe_anchor_and_option_caps_are_diagnosed():
     anchors = [
         {
@@ -575,107 +473,6 @@ def test_safe_anchor_and_option_caps_are_diagnosed():
         "anchors_pruned_by_cap": 1,
         "options_pruned_by_cap": 25,
     }
-
-
-def test_visual_safety_fails_closed_when_face_detection_raises(monkeypatch):
-    monkeypatch.setattr(visual, "face_detector_available", lambda: True)
-
-    def _raise_detector_error(_image):
-        raise RuntimeError("YuNet runtime failure")
-
-    monkeypatch.setattr(visual, "detect_faces_strict", _raise_detector_error)
-    result = visual.evaluate_anchor_safety(
-        images=[np.zeros((100, 100, 3), dtype=np.uint8) for _ in range(3)],
-        sample_frames=[0, 10, 20],
-        anchors=[
-            {
-                "anchor_id": "a1",
-                "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1},
-            }
-        ],
-    )
-    assert result.anchors == []
-    assert result.unavailable_detector == "face"
-
-
-def test_visual_safety_rejects_face_text_and_busy_anchors_independently(monkeypatch):
-    monkeypatch.setattr(visual, "face_detector_available", lambda: True)
-    monkeypatch.setattr(
-        visual,
-        "detect_faces_strict",
-        lambda _image: [
-            FaceDetection(
-                bbox=(0.0, 0.0, 120.0, 120.0),
-                score=0.9,
-                landmarks=(),
-            )
-        ],
-    )
-    monkeypatch.setattr(visual, "scene_text_detector_available", lambda: True)
-    monkeypatch.setattr(
-        visual,
-        "detect_scene_text_strict",
-        lambda _image: [(0.4, 0.4, 0.2, 0.2)],
-    )
-    monkeypatch.setattr(
-        visual,
-        "_busy_score",
-        lambda _cv2, _image, rect: 0.9 if rect[0] > 0.7 else 0.0,
-    )
-    anchors = [
-        {"anchor_id": "face", "rect": {"x": 0.0, "y": 0.0, "w": 0.15, "h": 0.15}},
-        {"anchor_id": "text", "rect": {"x": 0.4, "y": 0.4, "w": 0.2, "h": 0.2}},
-        {"anchor_id": "busy", "rect": {"x": 0.8, "y": 0.2, "w": 0.1, "h": 0.1}},
-        {
-            "anchor_id": "safe",
-            "rect": {"x": 0.2, "y": 0.7, "w": 0.1, "h": 0.1},
-            "text_align": "center",
-        },
-    ]
-
-    result = visual.evaluate_anchor_safety(
-        images=[np.zeros((1000, 1000, 3), dtype=np.uint8) for _ in range(3)],
-        sample_frames=[1, 10, 19],
-        anchors=anchors,
-    )
-
-    assert [anchor["anchor_id"] for anchor in result.anchors] == ["safe"]
-    assert result.rejected_face == 1
-    assert result.rejected_scene_text == 1
-    assert result.rejected_busy == 1
-    assert result.rejected_total == 3
-
-
-def test_option_safety_fails_closed_for_invalid_or_unmeasurable_envelopes(monkeypatch):
-    monkeypatch.setattr(visual, "face_detector_available", lambda: True)
-    monkeypatch.setattr(visual, "detect_faces_strict", lambda _image: [])
-    monkeypatch.setattr(visual, "scene_text_detector_available", lambda: True)
-    monkeypatch.setattr(visual, "detect_scene_text_strict", lambda _image: [])
-    images = [np.zeros((100, 100, 3), dtype=np.uint8) for _ in range(3)]
-
-    invalid = visual.evaluate_option_safety(
-        images=images,
-        sample_frames=[1, 2, 3],
-        option_candidates=[
-            {"caption_option_id": "bad", "safety_envelope": {"x": 0, "y": 0, "w": 0, "h": 1}}
-        ],
-    )
-    assert invalid.options == []
-    assert invalid.rejected_total == 1
-
-    monkeypatch.setattr(visual, "_busy_score", lambda *_args: None)
-    unavailable = visual.evaluate_option_safety(
-        images=images,
-        sample_frames=[1, 2, 3],
-        option_candidates=[
-            {
-                "caption_option_id": "unmeasurable",
-                "safety_envelope": {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2},
-            }
-        ],
-    )
-    assert unavailable.options == []
-    assert unavailable.unavailable_detector == "busy"
 
 
 def test_visual_geometry_helpers_cover_real_opencv_paths():

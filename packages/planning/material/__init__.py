@@ -21,7 +21,6 @@ from packages.planning.material.broll_plan import (
     BrollWindowPlacement,
     align_insertions_to_portrait_cuts,
     legalize_broll_window_frames,
-    place_insertion_safely,
 )
 from packages.planning.material.keywords import (
     ScriptSegment,
@@ -65,7 +64,6 @@ __all__ = [
     "BrollWindowPlacement",
     "align_insertions_to_portrait_cuts",
     "legalize_broll_window_frames",
-    "place_insertion_safely",
     "ScriptSegment",
     "extract_keywords",
     "clip_is_lip_sync_usable",

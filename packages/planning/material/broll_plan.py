@@ -13,7 +13,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
 
-
 @dataclass(frozen=True)
 class BrollGeometryPolicy:
     fps: int = 30
@@ -66,10 +65,10 @@ class BrollInsertion:
     reason: str
     diversity_key: str = ""
     # Frame-aligned authoritative boundaries on the 30fps grid (#105). Set by
-    # ``plan_insertions`` when ``fps`` + ``portrait_cut_frames`` are supplied (the
-    # digital_human_v2 path); ``pad_start``/``pad_end`` carry the cut-snap residual the
-    # renderer clone-pads. Left None when no grid context is given (the seconds-only
-    # placement still stands and downstream derives frames from seconds).
+    # ``legalize_broll_window_frames`` / ``align_insertions_to_portrait_cuts``;
+    # ``pad_start``/``pad_end`` carry the cut-snap residual the renderer clone-pads.
+    # Left None when no grid context is given (the seconds-only placement still
+    # stands and downstream derives frames from seconds).
     timeline_start_frame: int | None = None
     timeline_end_frame: int | None = None
     source_start_frame: int | None = None
@@ -283,160 +282,6 @@ def _has_short_visible_portrait_gap(
         if 0 < tail_gap < residual_limit:
             return True
     return False
-
-
-def _align_insertions_to_grid_if_safe(
-    insertions: Sequence[BrollInsertion],
-    *,
-    fps: int | None,
-    portrait_cut_frames: Sequence[int] | None,
-    min_visible_residual_frames: int | None,
-    max_gap_frames: int = BROLL_PORTRAIT_CUT_SNAP_MAX_FRAMES,
-    max_pad_seconds: float = BROLL_MAX_PAD_SECONDS,
-) -> list[BrollInsertion] | None:
-    ordered = sorted(insertions, key=lambda ins: ins.timeline_start)
-    if fps is None or portrait_cut_frames is None:
-        return ordered
-
-    aligned = align_insertions_to_portrait_cuts(
-        ordered,
-        fps=fps,
-        portrait_cut_frames=portrait_cut_frames,
-        min_visible_residual_frames=min_visible_residual_frames,
-        max_gap_frames=max_gap_frames,
-        max_pad_seconds=max_pad_seconds,
-    )
-    if _has_short_visible_portrait_gap(
-        aligned,
-        fps=fps,
-        portrait_cut_frames=portrait_cut_frames,
-        min_visible_residual_frames=min_visible_residual_frames,
-    ):
-        return None
-    return aligned
-
-
-def _timeline_start_variants(
-    insert: BrollInsertion,
-    *,
-    start: float,
-    host_end: float,
-    fps: int | None,
-    portrait_cut_frames: Sequence[int] | None,
-    min_visible_residual_frames: int | None,
-) -> list[BrollInsertion]:
-    length = round(insert.timeline_end - insert.timeline_start, 6)
-    latest_start = round(host_end - length, 6)
-    if length <= 0 or latest_start < start:
-        return [insert]
-    if fps is None or portrait_cut_frames is None:
-        return [insert]
-
-    residual_frames = _resolved_min_visible_residual_frames(
-        fps=fps,
-        min_visible_residual_frames=min_visible_residual_frames,
-    )
-    residual_seconds = residual_frames / fps if fps > 0 else BROLL_MIN_VISIBLE_AROLL_SECONDS
-    candidates = {
-        round(insert.timeline_start, 3),
-        round(start, 3),
-        round(latest_start, 3),
-    }
-    for portrait_start, portrait_end in _portrait_windows_from_cuts(portrait_cut_frames):
-        portrait_start_seconds = portrait_start / fps
-        portrait_end_seconds = portrait_end / fps
-        candidates.update(
-            {
-                round(portrait_start_seconds, 3),
-                round(portrait_end_seconds - length, 3),
-                round(portrait_start_seconds + residual_seconds, 3),
-                round(portrait_end_seconds - residual_seconds - length, 3),
-            }
-        )
-
-    ordered_starts = sorted(
-        {
-            candidate
-            for candidate in candidates
-            if candidate >= round(start, 3) and candidate <= round(latest_start, 3)
-        },
-        key=lambda candidate: (abs(candidate - insert.timeline_start), candidate),
-    )
-    variants: list[BrollInsertion] = []
-    for candidate_start in ordered_starts:
-        variants.append(
-            replace(
-                insert,
-                timeline_start=round(candidate_start, 3),
-                timeline_end=round(candidate_start + length, 3),
-                timeline_start_frame=None,
-                timeline_end_frame=None,
-                source_start_frame=None,
-                source_end_frame=None,
-                pad_start=0.0,
-                pad_end=0.0,
-            )
-        )
-    return variants or [insert]
-
-
-def _accept_insertion_if_safe(
-    insertions: Sequence[BrollInsertion],
-    insert: BrollInsertion,
-    *,
-    start: float,
-    host_end: float,
-    fps: int | None,
-    portrait_cut_frames: Sequence[int] | None,
-    min_visible_residual_frames: int | None,
-    max_gap_frames: int = BROLL_PORTRAIT_CUT_SNAP_MAX_FRAMES,
-    max_pad_seconds: float = BROLL_MAX_PAD_SECONDS,
-) -> list[BrollInsertion] | None:
-    for variant in _timeline_start_variants(
-        insert,
-        start=start,
-        host_end=host_end,
-        fps=fps,
-        portrait_cut_frames=portrait_cut_frames,
-        min_visible_residual_frames=min_visible_residual_frames,
-    ):
-        accepted = _align_insertions_to_grid_if_safe(
-            [*insertions, variant],
-            fps=fps,
-            portrait_cut_frames=portrait_cut_frames,
-            min_visible_residual_frames=min_visible_residual_frames,
-            max_gap_frames=max_gap_frames,
-            max_pad_seconds=max_pad_seconds,
-        )
-        if accepted is not None:
-            return accepted
-    return None
-
-
-def place_insertion_safely(
-    existing: Sequence[BrollInsertion],
-    insert: BrollInsertion,
-    *,
-    window_start: float,
-    window_end: float,
-    fps: int | None,
-    portrait_cut_frames: Sequence[int] | None,
-    policy: BrollGeometryPolicy = BROLL_GEOMETRY_POLICY,
-) -> list[BrollInsertion] | None:
-    min_visible_residual_frames = (
-        _seconds_to_frame(policy.min_visible_aroll_seconds, fps) if fps is not None else None
-    )
-    return _accept_insertion_if_safe(
-        existing,
-        insert,
-        start=window_start,
-        host_end=window_end,
-        fps=fps,
-        portrait_cut_frames=portrait_cut_frames,
-        min_visible_residual_frames=min_visible_residual_frames,
-        max_gap_frames=policy.snap_max_frames,
-        max_pad_seconds=policy.max_pad_seconds,
-    )
 
 
 def legalize_broll_window_frames(
