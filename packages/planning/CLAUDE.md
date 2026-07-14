@@ -4,13 +4,14 @@
 
 ## 职责
 - material：jieba 关键词 + 同义扩展把脚本节拍与 b-roll 片段做 Jaccard 变体相似度匹配（`matching.py`），并据此对 b-roll（`broll_pack.py`）/ portrait·bgm·font（`portrait_pack.py`）候选打真实分。
-- material：b-roll 落点的几何策略与窗口合法化（`broll_plan.py` 的 `BROLL_GEOMETRY_POLICY` / `legalize_broll_window_frames`，后者内含 `align_insertions_to_portrait_cuts` 切点吸附与短残片拒绝），唯一消费者是 `TimelineWindowPlanning`；素材不足时返回空（上游软降级）。选片与插入计划本身由 `production/pipeline/_materialize.py` 负责。
+- material：当前生产链路的 b-roll 落点几何与窗口合法化由 `broll_plan.py` 的 `BROLL_GEOMETRY_POLICY` / `legalize_broll_window_frames` 负责（后者内含 `align_insertions_to_portrait_cuts` 切点吸附与短残片拒绝），唯一消费者是 `TimelineWindowPlanning`；素材不足时返回空（上游软降级）。`plan_coverage` / `plan_insertions` / `place_insertion_safely` 仅作为已发布 Python API 的兼容入口保留，不再被生产节点调用。
 - selection：从选择台账（`SelectionLedgerEntry`）算「近期使用」惩罚，让上一轮用过的素材这一轮被压到新素材之下（`recency.py`/`recency_context.py`）。生产链路只在 `MaterialPackPlanning` 读 ledger，再把 `recent_usage`/`recency_penalty` 写进候选 metadata，后续 planning 节点不再读 ledger。
 - editing：把旁白单元 + portrait 源窗口候选，经语义/停顿边界 → beam 搜索 → 容量打包 → 一次性量化到固定 30fps 帧网格，产出帧精确的 `BoundaryTimelinePlan`；人像主轨强制资产级唯一性（`template_id` 每 run 最多用一次，`max_uses=1`）。
 
 ## 关键文件 / 子目录
-- `material/keywords.py` — 确定性 jieba 关键词抽取 + `ScriptSegment`（匹配的底料）。
+- `material/keywords.py` — 确定性 jieba 关键词抽取 + `ScriptSegment`（匹配的底料）；`segment_script` 为已发布 API 的兼容入口。
 - `material/matching.py` — `score_segment`/`best_match`；`MatchResult.has_overlap` 区分真实语义重叠 vs. 仅时长契合的 tie-breaker。
+- `material/portrait_pack.py` — 当前生产链路复用 `clip_is_lip_sync_usable`；`rank_portrait_clip_candidates` / `score_simple_candidate` 为已发布 API 的兼容入口。
 - `selection/recency.py` — `compute_recency`/`recency_penalty_for`，台账驱动的衰减惩罚；`selection/recency_context.py` 产出人像 `recent_usage`（近期使用 + opening guard）。
 - `editing/plan.py` — 顶层入口 `plan_boundary_timeline`；`editing/frame_grid.py` 是 30fps 帧网格的唯一真源。子步骤：`boundary.py`（语义+停顿边界装配）→ `packing.py`（容量打包，内部跑 `beam.py` 定宽搜索 + `rescue.py` 回溯救援）；`constants.py` 是 beam 宽度/容量上限/救援上限等权重常量的集中真源。
 - `material/__init__` / `selection/__init__` / `editing/__init__` — 各子域公开 API（从这里 import）。
@@ -20,6 +21,7 @@
 - 多样性/近期性本身是软惩罚（demote），不是硬过滤；但人像主轨的资产级唯一性是硬约束，同一 `template_id` 不可通过多个窗口重复补时长。
 - 素材/标注不足时返回空结果由上游软降级，绝不伪造选片或机械占位（不要回到 `index*3` / `score=1` 老种子）。
 - 全部为纯函数：台账/停顿等都作为入参传入（most-recent-first），本层不查 DB、不跑 ffmpeg、不做音频检测。
+- `material/__init__.py` 已发布的兼容导出不能仅凭仓内零调用删除；需要先完成明确的弃用周期或按 breaking change 处理。
 - editing 只支持固定 30fps 网格（`TIMELINE_FPS`），fps 不符会 raise；移植自 origin 的权重/常量要与其标定一致。
 
 ## 测试

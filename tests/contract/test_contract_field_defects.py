@@ -369,9 +369,9 @@ _REMOVED_ARTIFACT_FIELDS = {
     StylePlanArtifact: ("subtitle_enabled", "selection_reservation_ids"),
     CaseContextArtifact: ("recent_video_versions", "negative_lessons"),
     # issue #100: written by the narration builders (end-start>=0.18) but never
-    # consumed -- BrollPlanning converts NarrationUnit into ScriptSegment using
-    # only text/start/end/keywords, and real inserts are
-    # governed by plan_insertions()'s host window + _MIN_INSERT_SECONDS.
+    # consumed. The current TimelineWindowPlanning path and the retained public
+    # plan_insertions() compatibility API both use the unit's real text/start/end
+    # window rather than this duplicate boolean.
     NarrationUnit: ("broll_overlay_allowed",),
 }
 

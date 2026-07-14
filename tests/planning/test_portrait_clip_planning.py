@@ -1,9 +1,9 @@
-"""P2: clip-level portrait (lip-sync A-roll) gating from a unified video.
+"""P2: clip-level portrait (lip-sync A-roll) candidate ranking from a unified video.
 
-In a single mixed ``video`` annotation only talking-head clips (single-face,
-recommended_for_lip_sync, long enough) are lip-sync usable; its cover clips go to
-the b-roll pool instead, and its talking-head clips are kept OUT of the b-roll
-pool.
+A single mixed ``video`` annotation yields lip-sync candidates ONLY from its
+talking-head clips (single-face, recommended_for_lip_sync, long enough), each
+carrying its source window; its cover clips go to the b-roll pool instead, and
+its talking-head clips are kept OUT of the b-roll pool.
 """
 
 from __future__ import annotations
@@ -17,7 +17,11 @@ from packages.core.contracts import (
     ClipV4,
     UsageRole,
 )
-from packages.planning.material import clip_is_lip_sync_usable, rank_broll_candidates
+from packages.planning.material import (
+    clip_is_lip_sync_usable,
+    rank_broll_candidates,
+    rank_portrait_clip_candidates,
+)
 from packages.planning.material.keywords import ScriptSegment
 
 
@@ -103,6 +107,37 @@ def test_static_single_face_person_clip_can_feed_lipsync_source():
 
     assert clip_is_lip_sync_usable(static_person)
 
+    candidates = rank_portrait_clip_candidates(
+        annotations={"vid_person": _video_annotation("vid_person", [static_person])},
+    )
+    assert [candidate.clip_id for candidate in candidates] == ["static_person"]
+
+
+def test_rank_portrait_clips_picks_only_lipsync_clips_with_source_windows():
+    annotation = _video_annotation(
+        "vid_mixed",
+        [
+            _clip("talk", 2.0, 9.0),  # usable A-roll
+            _clip("scenery", 9.0, 14.0, role=UsageRole.cover, lip_sync=False),  # B-roll
+            _clip("mirror", 14.0, 18.0, face_count_max=2),  # multi-face -> excluded
+            _clip("blip", 18.0, 18.3),  # too short -> excluded
+        ],
+    )
+    candidates = rank_portrait_clip_candidates(annotations={"vid_mixed": annotation})
+    assert len(candidates) == 1
+    cand = candidates[0]
+    assert cand.asset_id == "vid_mixed"
+    assert cand.clip_id == "talk"
+    # The candidate carries the talking-head clip's source window verbatim.
+    assert cand.source_start == 2.0
+    assert cand.source_end == 9.0
+    assert cand.duration == 7.0
+    # Base score is a fixed availability baseline + lip-sync confidence only (no
+    # clip-duration "coverage" term): 70.0 availability + 0.9 confidence * 30.0.
+    assert cand.base_score == 97.0
+    assert cand.recency_penalty == 0.0
+    assert cand.score == 97.0
+
 
 def test_video_talking_head_clips_stay_out_of_broll_pool():
     # A main-role lip-sync clip whose keywords match the script must NOT surface as a
@@ -181,6 +216,9 @@ def test_video_backup_lipsync_clip_stays_out_of_broll_pool():
             ),
         ],
     )
+    portrait = rank_portrait_clip_candidates(annotations={"vid_mixed": annotation})
+    assert {c.clip_id for c in portrait} == {"backup_talk"}
+
     segments = [ScriptSegment(text="打磨工艺细节", start=0.0, end=4.0, keywords=("打磨", "工艺"))]
     broll = rank_broll_candidates(annotations={"vid_mixed": annotation}, segments=segments)
     clip_ids = {c.clip_id for c in broll}

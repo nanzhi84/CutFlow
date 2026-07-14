@@ -21,5 +21,3 @@ HUAZI_ANIMATION_DIRECTIONS = {"slide_up": "up", "slide_left": "left", "slide_rig
 def huazi_placement(placement_id: str | None) -> dict[str, float | int]:
     resolved = str(placement_id or "").strip()
     return HUAZI_PLACEMENTS.get(resolved, HUAZI_PLACEMENTS["top_center_banner"])
-
-

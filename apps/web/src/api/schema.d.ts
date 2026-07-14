@@ -4904,6 +4904,16 @@ export interface components {
                 [key: string]: components["schemas"]["JsonValue"];
             };
         };
+        /** DeleteCaseRequest */
+        DeleteCaseRequest: {
+            /** Reason */
+            reason?: string | null;
+        };
+        /** DeletePublishResourceRequest */
+        DeletePublishResourceRequest: {
+            /** Reason */
+            reason?: string | null;
+        };
         /** DigitalHumanVideoRequest */
         DigitalHumanVideoRequest: {
             /**
@@ -8015,6 +8025,11 @@ export interface components {
             /** Request Id */
             request_id: string;
         };
+        /** RefreshProviderBalancesRequest */
+        RefreshProviderBalancesRequest: {
+            /** Reason */
+            reason?: string | null;
+        };
         /** RegisterRequest */
         RegisterRequest: {
             /** Email */
@@ -10112,7 +10127,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DeleteCaseRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -12530,7 +12549,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RefreshProviderBalancesRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -12539,6 +12562,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProviderBalanceReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -14057,7 +14089,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DeletePublishResourceRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -14329,7 +14365,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DeletePublishResourceRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

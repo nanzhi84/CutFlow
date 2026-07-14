@@ -1,7 +1,8 @@
 """Unit tests for the real material-planning domain (packages/planning).
 
 Fixture AnnotationV4 + NarrationUnits prove:
-  (a) real keyword matching picks the relevant clip and scores differ (not all 1);
+  (a) real keyword matching picks the relevant clip, scores differ (not all 1),
+      and insertion points land inside real narration windows (not 0/3/6/9...);
   (b) recency: a clip picked in run 1 is demoted in run 2 via the ledger;
   (c) insufficiency / no annotation -> empty result (honest soft-degrade upstream),
       never a fabricated pick.
@@ -24,8 +25,11 @@ from packages.core.contracts.artifacts import NarrationUnit
 from packages.planning.material import (
     demote_recent_broll_candidates,
     extract_keywords,
+    plan_insertions,
     rank_broll_candidates,
+    rank_portrait_clip_candidates,
 )
+from packages.planning.material.broll_pack import BrollCandidate
 from packages.planning.material.keywords import ScriptSegment
 
 
@@ -147,10 +151,29 @@ def test_distinct_clips_get_distinct_scores_not_all_one():
     assert scores != [1.0]
 
 
-def test_broll_candidate_carries_diversity_key_for_recency():
-    # The diversity cluster (scene_type / narrative_role) must be carried on the
-    # ranked candidate so the selection ledger can persist it and cluster-level
-    # recency demotion stops being dead in practice.
+def test_insertion_points_land_in_real_narration_windows():
+    units = _units()
+    segments = _narration_segments(units)
+    annotations = {
+        "asset_a": _annotation("asset_a", [_clip("a1", 0.0, 4.0, ["补漆", "效果"])]),
+    }
+    candidates = rank_broll_candidates(annotations=annotations, segments=segments)
+    insertions = plan_insertions(candidates=candidates, units=units, max_inserts=2)
+
+    assert insertions
+    for ins in insertions:
+        # Each insert starts inside a real narration window — never the old
+        # mechanical 0/3/6/9 grid.
+        assert any(u.start <= ins.timeline_start < u.end for u in units)
+        assert ins.timeline_end <= max(u.end for u in units)
+    starts = [ins.timeline_start for ins in insertions]
+    assert starts != [0.0, 3.0][: len(starts)]
+
+
+def test_broll_candidate_and_insert_carry_diversity_key_for_recency():
+    # The diversity cluster (scene_type / narrative_role) must be carried from the
+    # ranked candidate through to the insertion so the selection ledger can persist
+    # it and cluster-level recency demotion stops being dead in practice.
     units = _units()
     segments = _narration_segments(units)
     annotations = {
@@ -161,6 +184,94 @@ def test_broll_candidate_carries_diversity_key_for_recency():
     candidates = rank_broll_candidates(annotations=annotations, segments=segments)
     assert candidates
     assert candidates[0].diversity_key == "补漆台"
+    insertions = plan_insertions(candidates=candidates, units=units, max_inserts=2)
+    assert insertions
+    assert insertions[0].diversity_key == "补漆台"
+
+
+def test_broll_insert_never_spills_past_a_short_narration_beat():
+    # A timeline whose middle beat [4.0, 4.8] is shorter than _MIN_INSERT_SECONDS.
+    units = [
+        NarrationUnit(
+            unit_id="u1", text="先讲解打磨工艺的细节。", start=0.0, end=4.0, confidence=1.0
+        ),
+        NarrationUnit(unit_id="u2", text="补漆。", start=4.0, end=4.8, confidence=1.0),
+        NarrationUnit(
+            unit_id="u3", text="再展示补漆效果对比的整体呈现。", start=4.8, end=8.0, confidence=1.0
+        ),
+    ]
+    # A candidate matched to the short 0.8s beat. A real per-clause TTS unit is
+    # frequently sub-1.5s, so this path is hit in practice.
+    short_beat = ScriptSegment(text="补漆。", start=4.0, end=4.8, keywords=("补漆",))
+    candidate = BrollCandidate(
+        asset_id="asset_a",
+        clip_id="a1",
+        score=50.0,
+        base_score=50.0,
+        recency_penalty=0.0,
+        matched_keywords=("补漆",),
+        scene_name="补漆",
+        source_start=0.0,
+        source_end=4.0,
+        best_segment=short_beat,
+    )
+    insertions = plan_insertions(candidates=[candidate], units=units, max_inserts=2)
+
+    # Invariant: an insert must never extend past the narration beat it is anchored
+    # to (no overlay bleeding into the next spoken window).
+    for ins in insertions:
+        host = next(u for u in units if u.start <= ins.timeline_start < u.end)
+        assert ins.timeline_end <= host.end, (
+            f"insert {ins.timeline_start}-{ins.timeline_end} spills past beat {host.start}-{host.end}"
+        )
+    # The sole candidate's beat is too short to host a minimum-length insert, so it
+    # is honestly dropped rather than clamped up and spilled.
+    assert insertions == []
+
+
+def test_broll_insertions_use_freshness_seed_for_new_timing_and_trim():
+    units = [
+        NarrationUnit(
+            unit_id="u1", text="展示门店货架和热销商品。", start=0.0, end=7.0, confidence=1.0
+        )
+    ]
+    beat = ScriptSegment(text=units[0].text, start=0.0, end=7.0, keywords=("门店", "商品"))
+    candidate = BrollCandidate(
+        asset_id="asset_a",
+        clip_id="clip_a",
+        score=90.0,
+        base_score=90.0,
+        recency_penalty=0.0,
+        matched_keywords=("门店",),
+        scene_name="货架",
+        source_start=0.0,
+        source_end=9.0,
+        best_segment=beat,
+    )
+
+    first = plan_insertions(
+        candidates=[candidate],
+        units=units,
+        max_inserts=1,
+        freshness_seed="run_a",
+    )
+    second = plan_insertions(
+        candidates=[candidate],
+        units=units,
+        max_inserts=1,
+        freshness_seed="run_b",
+    )
+
+    assert first and second
+    assert (
+        first[0].timeline_start,
+        first[0].source_start,
+    ) != (
+        second[0].timeline_start,
+        second[0].source_start,
+    )
+    assert first[0].timeline_end <= units[0].end
+    assert second[0].timeline_end <= units[0].end
 
 
 def test_recency_demotes_clip_picked_in_previous_run():
@@ -228,6 +339,40 @@ def test_broll_recent_exact_clip_is_hard_ranked_after_fresh_clip():
     assert ranked[-1].asset_id == "asset_recent"
 
 
+def test_portrait_clip_recency_demotes_recently_used_portrait():
+    annotations = {
+        "p_fresh": _annotation(
+            "p_fresh",
+            [_clip("fresh_talk", 0.0, 15.0, ["口播"], role=UsageRole.main, lip_sync=True)],
+            duration=15.0,
+        ),
+        "p_used": _annotation(
+            "p_used",
+            [_clip("used_talk", 0.0, 15.0, ["口播"], role=UsageRole.main, lip_sync=True)],
+            duration=15.0,
+        ),
+    }
+    candidates = rank_portrait_clip_candidates(
+        annotations=annotations,
+        ledger_entries=[
+            SelectionLedgerEntry(
+                case_id="case_demo",
+                run_id="run_1",
+                medium="portrait",
+                asset_id="p_used",
+                slot_phase="portrait_main",
+            )
+        ],
+    )
+    by_asset = {candidate.asset_id: candidate for candidate in candidates}
+    assert by_asset["p_used"].clip_id == "used_talk"
+    assert by_asset["p_fresh"].clip_id == "fresh_talk"
+    assert by_asset["p_used"].source_start == 0.0
+    assert by_asset["p_used"].source_end == 15.0
+    assert by_asset["p_used"].recency_penalty > 0.0
+    assert by_asset["p_used"].score < by_asset["p_fresh"].score
+
+
 def test_demote_recent_broll_with_empty_penalties_is_a_noop_over_empty_ledger_ranking():
     # The b-roll planning nodes rank against an EMPTY ledger and then re-apply
     # MaterialPack's recency penalties. With no recorded penalties this is a pure
@@ -280,6 +425,7 @@ def test_no_annotations_yields_no_broll_candidates():
     segments = _narration_segments(units)
     candidates = rank_broll_candidates(annotations={}, segments=segments)
     assert candidates == []
+    assert plan_insertions(candidates=candidates, units=units, max_inserts=2) == []
 
 
 def test_unrelated_annotation_yields_no_candidate_not_a_fake_pick():

@@ -38,6 +38,10 @@ class PatchCaseRequest(ContractModel):
     competitor_names: list[str] | None = None
 
 
+class DeleteCaseRequest(ContractModel):
+    reason: str | None = None
+
+
 class CaseListItem(EntityMeta):
     name: str
     owner_user_id: str | None = None

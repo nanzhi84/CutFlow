@@ -151,6 +151,18 @@ def test_refresh_provider_balances_writes_snapshots_without_real_network():
     assert all(item.get("balance") is None for item in body["items"] if item["status"] != "ok")
 
 
+def test_refresh_provider_balances_rejects_unknown_body() -> None:
+    with TestClient(create_app()) as client:
+        login_admin(client)
+        response = client.post(
+            "/api/providers/balances/refresh",
+            json={"__unexpected": True},
+        )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "validation.invalid_options"
+
+
 def test_provider_usage_metrics_groups_invocations_by_provider_capability_and_model():
     app = create_app()
 

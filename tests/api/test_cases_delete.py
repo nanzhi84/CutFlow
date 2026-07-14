@@ -54,6 +54,22 @@ def test_delete_case_removes_unreferenced_case_from_listing() -> None:
         assert all(item["id"] != case["id"] for item in listed.json()["items"])
 
 
+def test_delete_case_rejects_unknown_body_without_deleting() -> None:
+    with TestClient(create_app()) as client:
+        _login(client)
+        case = _create_case(client, "Delete Validation Guard")
+
+        rejected = client.request(
+            "DELETE",
+            f"/api/cases/{case['id']}",
+            json={"__unexpected": True},
+        )
+
+        assert rejected.status_code == 422, rejected.text
+        assert rejected.json()["error"]["code"] == "validation.invalid_options"
+        assert client.get(f"/api/cases/{case['id']}").status_code == 200
+
+
 def test_delete_case_rejects_active_run_reference() -> None:
     app = create_app()
     with TestClient(app) as client:

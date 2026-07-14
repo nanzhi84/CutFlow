@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Body, Request
 
 from apps.api.dependencies import require_role
 from apps.api.services import providers as service
@@ -118,6 +118,7 @@ def provider_balances(
 @router.post("/api/providers/balances/refresh", response_model=c.ProviderBalanceReport)
 def refresh_provider_balances(
     request: Request,
+    payload: c.RefreshProviderBalancesRequest | None = Body(default=None),
 ) -> c.ProviderBalanceReport:
     require_role(request, c.UserRole.operator)
     return service.refresh_all_balances(request)

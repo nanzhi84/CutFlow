@@ -221,5 +221,3 @@ def topological_node_order(nodes: Sequence[str], edges: Iterable[tuple[str, str]
     if len(order) != len(list(nodes)):
         raise ValueError("workflow graph has a dependency cycle")
     return order
-
-
