@@ -25,6 +25,8 @@
 
 **Cache-Control: public, max-age=302400, immutable**。写入时经 `ExtraArgs` 打在对象上；读取时还额外通过签名子资源 `response-cache-control`（OSS 原生）/ `ResponseCacheControl`（SigV4）在 GET 响应里回一次——后者让**存量对象**（上传时没有这个头的）也立刻拿到缓存指令，不需要回填。`immutable` 让浏览器连条件请求都不发。
 
+> **OSS 原生签名的坑**：`response-*` 是**签名**子资源，必须同时出现在 canonicalized resource（进 string_to_sign）和 URL query 里，且 canonicalized resource 里要按**字典序**排列，否则整条链接 403。又因为 string_to_sign 用的是**字面空格**，query 侧必须用 `quote`（`%20`）而不是 `urlencode` 默认的 `quote_plus`（`+`）——阿里云自家 SDK 就是 emit `%20`，`+` 只是碰巧能过、没有任何文档保证。写测试时**要断言原始 query 串**：`parse_qs` 会把 `+` 解回空格，正好把这个差别遮住。
+
 ### 为什么重签阈值恰好是 50%
 
 `REFRESH_FRACTION = 0.5` 不是随手取的。设 TTL 为 `T`、重签阈值为 `f`（剩余不足 `f·T` 时重签），则：
@@ -46,6 +48,12 @@
 ## 轮询
 
 `RunsPage` 的三条轮询只在**确有 run 处于非终态**时保持 10s；全部终态后退避到 60s（仅用于发现别处新建的 run）；页面不可见则完全停。轮询是上面所有成本的放大系数。
+
+**但退避不能只靠轮询兜底**：成片行在 run 转终态**之前**就已提交，而 run 一转终态、interval 从 10s 换成 60s 时，react-query 会**清掉本来马上要触发的那次 tick**。所以必须跟着 run 事件一并 `invalidate(["finished-videos", caseId])`，否则用户会看到 run 已「成功」却一分钟拿不到成片播放器和下载入口。
+
+## 存量回填的坑
+
+`backfill_media_assets` 的「已完成」判断必须是 **SQL 谓词**，不能是 `LIMIT` 之后的 Python 过滤：写入缩略图会 bump `updated_at`（`TimestampMixin.onupdate`），而那正是排序列，于是 `--limit N` 会把刚做完的 N 行重新排到队首，第二次跑扫到的还是同一批——永远推进不了，却报告「0 条待处理」。按不可变的 `id` 排序，并把谓词下推。同理，`thumbnail_uri` 为 NULL 的**视频**资产没东西可缩（要 ffmpeg 才能派生），必须排除在扫描之外，否则它会把 `--limit` 的窗口占死。
 
 ## 效果
 
