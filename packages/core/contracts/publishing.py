@@ -22,6 +22,11 @@ class FinishedVideo(EntityMeta):
     video_number: str | None = None
     video_artifact: ArtifactRef
     cover_artifact: ArtifactRef | None = None
+    # Small WebP derivative of the cover, served to Outputs list cards so they no
+    # longer download the multi-megabyte cover PNG (issue #206). None on rows
+    # exported before this existed and on exports where the encode failed — both
+    # fall back to the full cover.
+    cover_thumb_artifact: ArtifactRef | None = None
     subtitle_artifact: ArtifactRef | None = None
     duration_sec: float = 0
     qc_status: Literal["pending", "passed", "failed", "warning"] = "pending"

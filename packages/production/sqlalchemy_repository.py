@@ -1051,12 +1051,18 @@ class SqlAlchemyProductionRepository(BaseRepository):
             session.commit()
 
     def _signed_run_thumbnail(self, fv_row) -> str | None:
-        """Signed https URL of a run's finished-video cover (image preferred, video
-        fallback) for the Outputs card thumbnail. None when there is no finished
-        video or the uri cannot be signed."""
+        """Signed https URL for the Outputs card thumbnail. None when there is no
+        finished video or no uri can be signed.
+
+        Preference order is smallest-first: the WebP cover thumbnail (~30 KB), then
+        the full cover PNG (~2.3 MB, for rows predating the thumbnail), then the
+        finished video itself (for rows with no cover at all). The signed URL is
+        cached by the object store, so the same card gets the same URL on every
+        poll and the browser stops re-downloading it (issue #206).
+        """
         if fv_row is None:
             return None
-        for art in (fv_row.cover_artifact, fv_row.video_artifact):
+        for art in (fv_row.cover_thumb_artifact, fv_row.cover_artifact, fv_row.video_artifact):
             uri = art.get("uri") if isinstance(art, dict) else None
             if uri and uri.startswith(("s3://", "local://")):
                 try:
@@ -2597,6 +2603,11 @@ class SqlAlchemyProductionRepository(BaseRepository):
             video_number=finished.video_number,
             video_artifact=finished.video_artifact.model_dump(mode="json"),
             cover_artifact=finished.cover_artifact.model_dump(mode="json") if finished.cover_artifact else None,
+            cover_thumb_artifact=(
+                finished.cover_thumb_artifact.model_dump(mode="json")
+                if finished.cover_thumb_artifact
+                else None
+            ),
             subtitle_artifact=(
                 finished.subtitle_artifact.model_dump(mode="json") if finished.subtitle_artifact else None
             ),

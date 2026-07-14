@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import timedelta
+from pathlib import Path
 
 from fastapi import Request
 
@@ -19,6 +20,11 @@ from packages.core.storage.object_store import ObjectStore, parse_object_uri, sh
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 from packages.media.assets import local_object_path, store_file
+from packages.media.cover_image import (
+    THUMBNAIL_SUFFIX,
+    WEB_THUMBNAIL_LABEL,
+    build_cover_thumbnail_bytes,
+)
 from packages.media.video.ffmpeg import (
     FfmpegCommandError,
     extract_thumbnails,
@@ -332,28 +338,66 @@ def _normalize_upload_video(
 
 
 def _create_upload_thumbnails(request: Request, artifact: c.Artifact) -> None:
-    if artifact.uri is None or artifact.media_info is None or artifact.media_info.media_type != "video":
+    """Register the library card's thumbnail for a freshly uploaded asset.
+
+    Videos also keep their two full-resolution frame grabs (they are the source
+    for cover work), but the object the CARD loads is a small WebP — the library
+    grid used to pull full-resolution lossless PNGs on a 10s poll (issue #206).
+    Images get a WebP too, so their card stops serving the original upload.
+    """
+    if artifact.uri is None or artifact.media_info is None:
         return
-    source_path = local_object_path(object_store(request), artifact.uri)
+    media_type = artifact.media_info.media_type
+    if media_type not in ("video", "image"):
+        return
+    store = object_store(request)
+    source_path = local_object_path(store, artifact.uri)
+    thumbnail_source: Path
+    if media_type == "video":
+        try:
+            frames = extract_thumbnails(source_path, source_path.parent / f"{source_path.stem}_thumbs")
+        except FfmpegCommandError as exc:
+            raise NodeExecutionError(
+                exc.error_code, "Uploaded media thumbnail extraction failed."
+            ) from exc
+        for frame in frames:
+            ref = store.prepare_upload(frame.path.name, "thumbnails")
+            stored = store.put_bytes(ref, frame.path.read_bytes())
+            upload_repository(request).create_artifact(
+                kind=c.ArtifactKind.cover_image,
+                payload_schema="uri-only",
+                payload={"source_artifact_id": artifact.id, "thumbnail_label": frame.label},
+                uri=stored.ref.uri,
+                sha256=stored.sha256,
+                media_info=frame.media_info,
+            )
+        thumbnail_source = frames[-1].path
+    else:
+        thumbnail_source = source_path
+    _create_web_thumbnail(request, artifact, thumbnail_source)
+
+
+def _create_web_thumbnail(request: Request, artifact: c.Artifact, source: Path) -> None:
+    """Store the small WebP the library card actually loads. Fail-open.
+
+    The upload itself is already accepted and registered by the time this runs, so
+    a thumbnail encode failure must not fail it; the card then falls back to the
+    frame grab (video) or the original (image), i.e. the pre-#206 behaviour.
+    """
     try:
-        thumbnails = extract_thumbnails(source_path, source_path.parent / f"{source_path.stem}_thumbs")
-    except FfmpegCommandError as exc:
-        raise NodeExecutionError(exc.error_code, "Uploaded media thumbnail extraction failed.") from exc
-    for thumbnail in thumbnails:
-        ref = object_store(request).prepare_upload(thumbnail.path.name, "thumbnails")
-        stored = object_store(request).put_bytes(ref, thumbnail.path.read_bytes())
-        payload = {
-            "source_artifact_id": artifact.id,
-            "thumbnail_label": thumbnail.label,
-        }
-        upload_repository(request).create_artifact(
-            kind=c.ArtifactKind.cover_image,
-            payload_schema="uri-only",
-            payload=payload,
-            uri=stored.ref.uri,
-            sha256=stored.sha256,
-            media_info=thumbnail.media_info,
-        )
+        content = build_cover_thumbnail_bytes(source.read_bytes())
+    except (ValueError, OSError):
+        return
+    store = object_store(request)
+    ref = store.prepare_upload(f"{WEB_THUMBNAIL_LABEL}{THUMBNAIL_SUFFIX}", "thumbnails")
+    stored = store.put_bytes(ref, content)
+    upload_repository(request).create_artifact(
+        kind=c.ArtifactKind.cover_thumbnail,
+        payload_schema="uri-only",
+        payload={"source_artifact_id": artifact.id, "thumbnail_label": WEB_THUMBNAIL_LABEL},
+        uri=stored.ref.uri,
+        sha256=stored.sha256,
+    )
 
 
 def cancel_upload(upload_session_id: str, request: Request) -> c.UploadSession:

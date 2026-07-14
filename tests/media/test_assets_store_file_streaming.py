@@ -29,6 +29,7 @@ class FakeS3Client:
         self.objects: dict[tuple[str, str], bytes] = {}
         # path-based, streaming multipart transfers (no full RAM buffer)
         self.upload_file_calls: list[tuple[str, str, str]] = []
+        self.extra_args: list[dict | None] = []
         self.download_file_calls: list[tuple[str, str, str]] = []
         # fileobj-based transfers that buffer whole objects in RAM
         self.upload_fileobj_calls: list[tuple[str, str]] = []
@@ -41,8 +42,16 @@ class FakeS3Client:
     def create_bucket(self, *, Bucket: str) -> None:
         self.bucket_created = True
 
-    def upload_file(self, Filename: str, Bucket: str, Key: str, Config: object) -> None:
+    def upload_file(
+        self,
+        Filename: str,
+        Bucket: str,
+        Key: str,
+        Config: object,
+        ExtraArgs: dict | None = None,
+    ) -> None:
         self.upload_file_calls.append((Filename, Bucket, Key))
+        self.extra_args.append(ExtraArgs)
         with open(Filename, "rb") as handle:
             self.objects[(Bucket, Key)] = handle.read()
 
@@ -51,7 +60,9 @@ class FakeS3Client:
         with open(Filename, "wb") as handle:
             handle.write(self.objects[(Bucket, Key)])
 
-    def upload_fileobj(self, Fileobj, Bucket: str, Key: str, Config: object) -> None:
+    def upload_fileobj(
+        self, Fileobj, Bucket: str, Key: str, Config: object, ExtraArgs: dict | None = None
+    ) -> None:
         self.upload_fileobj_calls.append((Bucket, Key))
         self.objects[(Bucket, Key)] = Fileobj.read()
 

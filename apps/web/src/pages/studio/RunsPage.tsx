@@ -43,13 +43,15 @@ export default function RunsPage() {
     queryKey: ["case-runs", caseId, runLimit],
     queryFn: () => api.cases.runs(caseId, { limit: runLimit }),
     enabled: Boolean(caseId),
-    refetchInterval: pageVisible ? 10000 : false,
+    refetchInterval: (query) => pollInterval(pageVisible, hasActiveRun(query.state.data?.items)),
   });
+  const runsAreActive = hasActiveRun(runs.data?.items);
   const finishedVideos = useQuery({
     queryKey: ["finished-videos", caseId, finishedVideoLimit],
     queryFn: () => api.finishedVideos.list(caseId, { limit: finishedVideoLimit }),
     enabled: Boolean(caseId),
-    refetchInterval: pageVisible ? 10000 : false,
+    // Finished videos only appear when a run completes, so an idle page needs no fast poll.
+    refetchInterval: pollInterval(pageVisible, runsAreActive),
   });
   const [selectedRunId, setSelectedRunId] = useState<string | null>(highlightedRunId);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -62,7 +64,10 @@ export default function RunsPage() {
     queryKey: ["run-detail", selectedCard?.runId],
     queryFn: () => api.runs.detail(selectedCard!.runId),
     enabled: Boolean(selectedCard?.runId),
-    refetchInterval: pageVisible ? 10000 : false,
+    refetchInterval: pollInterval(
+      pageVisible,
+      Boolean(selectedCard && isProcessingStatus(selectedCard.status)),
+    ),
   });
   const runEvents = useRunEvents(selectedCard?.runId, Boolean(selectedCard?.runId));
   const lastEventKey = runEvents.events.at(-1)?.event_id ?? runEvents.events.length;
@@ -76,6 +81,11 @@ export default function RunsPage() {
   useEffect(() => {
     if (!lastEventKey) return;
     void queryClient.invalidateQueries({ queryKey: ["case-runs", caseId] });
+    // 成片行在 run 转终态之前就已提交，而 run 一转终态轮询就退避到 60s（并且
+    // react-query 换 interval 时会丢掉本来马上要触发的那次 tick），只靠轮询的话
+    // 用户会看到 run 已「成功」却一分钟没有成片卡片。跟着 run 事件刷新，60s 那档
+    // 就只承担「发现别处新建的 run」这一件事。
+    void queryClient.invalidateQueries({ queryKey: ["finished-videos", caseId] });
     if (selectedCard?.runId) {
       void queryClient.invalidateQueries({ queryKey: ["run-detail", selectedCard.runId] });
     }
@@ -308,6 +318,19 @@ export default function RunsPage() {
 
 function isProcessingStatus(status: RunCard["status"]) {
   return status === "created" || status === "admitted" || status === "running" || status === "cancelling";
+}
+
+function hasActiveRun(items: RunCard[] | undefined) {
+  return Boolean(items?.some((run) => isProcessingStatus(run.status)));
+}
+
+/**
+ * 只有真的有 run 在跑时才需要 10s 快轮询；全部终态时退避到 60s，仅用于发现别处新建的 run。
+ * 页面不可见则完全停轮询。（issue #206：轮询是 OSS 流量的放大系数）
+ */
+function pollInterval(pageVisible: boolean, active: boolean): number | false {
+  if (!pageVisible) return false;
+  return active ? 10000 : 60000;
 }
 
 function RunThumbnail({ run }: { run: RunCard }) {

@@ -32,7 +32,14 @@ class FakeS3Client:
     def create_bucket(self, *, Bucket: str) -> None:
         self.buckets.add(Bucket)
 
-    def upload_fileobj(self, Fileobj: BytesIO, Bucket: str, Key: str, Config: object) -> None:
+    def upload_fileobj(
+        self,
+        Fileobj: BytesIO,
+        Bucket: str,
+        Key: str,
+        Config: object,
+        ExtraArgs: dict | None = None,
+    ) -> None:
         self.objects[(Bucket, Key)] = Fileobj.read()
 
     def download_fileobj(self, Bucket: str, Key: str, Fileobj: BytesIO, Config: object) -> None:

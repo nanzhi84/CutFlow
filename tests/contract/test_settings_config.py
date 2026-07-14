@@ -42,6 +42,7 @@ _INFRA_ENV_VARS = (
     "CUTAGENT_OBJECTSTORE_MAX_ATTEMPTS",
     "CUTAGENT_OBJECTSTORE_CACHE_MAX_BYTES",
     "CUTAGENT_OBJECTSTORE_CACHE_TTL_HOURS",
+    "CUTAGENT_OBJECTSTORE_SIGNED_GET_TTL_SECONDS",
     "CUTAGENT_EPHEMERAL_OBJECTSTORE_BACKEND",
     "CUTAGENT_EPHEMERAL_OBJECTSTORE_BUCKET",
     "CUTAGENT_OBJECTSTORE_EPHEMERAL_PATH",
@@ -158,6 +159,11 @@ def test_settings_built_in_defaults() -> None:
     assert obj.materials_bucket == ""
     assert obj.read_buckets == ()
     assert obj.local_path == ".data/objectstore"
+    assert obj.cache_max_bytes == 0
+    assert obj.cache_ttl_hours == 0
+    # 7 days, the SigV4 presign ceiling (issue #206). Independent of the upload
+    # (presigned PUT) TTL asserted below.
+    assert obj.signed_get_ttl_seconds == 604800
     assert obj.s3.endpoint_url == "http://127.0.0.1:9000"
     assert obj.s3.access_key == ""
     assert obj.s3.secret_key == ""

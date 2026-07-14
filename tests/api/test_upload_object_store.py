@@ -4,6 +4,8 @@ import math
 import struct
 import wave
 
+import cv2
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -455,6 +457,86 @@ def test_video_upload_probes_media_and_creates_real_thumbnail_artifacts(tmp_path
     assert {artifact.payload["thumbnail_label"] for artifact in thumbnails} == {"first", "mid"}
     assert all(artifact.sha256 for artifact in thumbnails)
     assert all(artifact.media_info and artifact.media_info.media_type == "image" for artifact in thumbnails)
+
+
+def _web_thumbnails_for_source(source_artifact_id: str) -> list[Artifact]:
+    """The small WebP thumbnails (cover.thumbnail) derived from a source artifact."""
+    with app.state.sqlalchemy_session_factory() as session:
+        rows = (
+            session.execute(
+                select(ArtifactRow).where(ArtifactRow.kind == ArtifactKind.cover_thumbnail.value)
+            )
+            .scalars()
+            .all()
+        )
+        artifacts = [artifact_row_to_contract(row) for row in rows]
+    return [
+        artifact
+        for artifact in artifacts
+        if isinstance(artifact.payload, dict)
+        and artifact.payload.get("source_artifact_id") == source_artifact_id
+    ]
+
+
+def test_video_upload_thumbnail_uri_points_at_a_small_webp_not_the_frame_grab(tmp_path):
+    """Issue #206: the library card must load a ~30 KB WebP, not a full-res PNG frame."""
+    login_admin()
+    video = generate_test_video(tmp_path, duration_sec=1, width=320, height=568)
+    content = video.read_bytes()
+    _prepared, completed = direct_upload(
+        client,
+        kind="video",
+        case_id="case_demo",
+        filename="portrait.mp4",
+        content_type="video/mp4",
+        body=content,
+        sha256=hashlib.sha256(content).hexdigest(),
+        metadata={"title": "webp thumb"},
+    )
+    assert completed.status_code == 200, completed.text
+    payload = completed.json()
+    artifact_id = payload["artifact"]["artifact_id"]
+
+    webp = _web_thumbnails_for_source(artifact_id)
+    assert len(webp) == 1
+    assert webp[0].uri and webp[0].uri.endswith(".webp")
+    # The asset row must POINT at the webp — the full-res frame grabs still exist as
+    # cover source material, but they are not what the card downloads any more.
+    frame_grabs = {artifact.uri for artifact in _cover_artifacts_for_source(artifact_id)}
+    with app.state.sqlalchemy_session_factory() as session:
+        asset = session.get(MediaAssetRow, payload["media_asset"]["id"])
+        assert asset.thumbnail_uri == webp[0].uri
+        assert asset.thumbnail_uri not in frame_grabs
+
+
+def test_image_upload_gets_its_own_webp_thumbnail(tmp_path):
+    """Image assets used to sign the ORIGINAL upload as their card thumbnail."""
+    login_admin()
+    source = tmp_path / "still.png"
+    image = np.zeros((600, 400, 3), dtype=np.uint8)
+    image[:, :, 1] = np.linspace(0, 255, 400, dtype=np.uint8)[None, :]
+    assert cv2.imwrite(str(source), image)
+    content = source.read_bytes()
+    _prepared, completed = direct_upload(
+        client,
+        kind="image",
+        case_id="case_demo",
+        filename="still.png",
+        content_type="image/png",
+        body=content,
+        sha256=hashlib.sha256(content).hexdigest(),
+        metadata={"title": "still"},
+    )
+    assert completed.status_code == 200, completed.text
+    payload = completed.json()
+
+    webp = _web_thumbnails_for_source(payload["artifact"]["artifact_id"])
+    assert len(webp) == 1
+    with app.state.sqlalchemy_session_factory() as session:
+        asset = session.get(MediaAssetRow, payload["media_asset"]["id"])
+        # Not the original upload — that is the whole point.
+        assert asset.thumbnail_uri == webp[0].uri
+        assert asset.thumbnail_uri != payload["artifact"]["uri"]
 
 
 def test_unified_video_kind_upload_creates_video_media_asset(tmp_path):

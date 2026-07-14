@@ -16,6 +16,15 @@ from urllib.parse import quote, urlencode, urlsplit
 from uuid import uuid4
 
 from packages.core.contracts import SignedUrlResponse, utcnow
+from packages.core.storage.signed_url_cache import REFRESH_FRACTION, SignedUrlCache, cache_key
+
+# How long a presigned GET URL stays valid (issue #206). Seven days is the SigV4
+# ceiling (the OSS V1 signer has none), and it is what makes a cached URL worth
+# caching: the browser is handed the same string for days instead of a fresh
+# signature every poll. Overridden per-deployment via
+# CUTAGENT_OBJECTSTORE_SIGNED_GET_TTL_SECONDS. Not to be confused with
+# ``settings.upload.presign_ttl_seconds``, which governs presigned PUT only.
+DEFAULT_SIGNED_GET_TTL = timedelta(days=7)
 
 
 def sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
@@ -62,6 +71,24 @@ class ObjectHead:
 
 
 class ObjectStore:
+    # Class-level fallbacks so a duck-typed test double that never calls
+    # ``super().__init__`` still reads sane values.
+    signed_get_ttl: timedelta = DEFAULT_SIGNED_GET_TTL
+    _signed_url_cache: SignedUrlCache | None = None
+
+    def __init__(
+        self,
+        *,
+        signed_get_ttl: timedelta | None = None,
+        signed_url_cache: SignedUrlCache | None = None,
+    ) -> None:
+        if signed_get_ttl is not None:
+            self.signed_get_ttl = signed_get_ttl
+        # Every real store caches its signed URLs. Without a Redis url the cache
+        # is per-process, which is still enough to keep a URL byte-identical
+        # across polls of one API replica.
+        self._signed_url_cache = signed_url_cache or SignedUrlCache()
+
     def prepare_upload(
         self,
         filename: str,
@@ -104,10 +131,56 @@ class ObjectStore:
         self,
         uri: str,
         *,
-        expires_in: timedelta = timedelta(minutes=15),
+        expires_in: timedelta | None = None,
         response_content_disposition: str | None = None,
     ) -> SignedUrlResponse:
+        """Return a presigned GET URL, reusing the previous signature when possible.
+
+        Signing is delegated to ``_sign_get_url``; this wrapper exists so the
+        same object always hands back the *same* URL string until the signature
+        approaches expiry. Without it every call produces a fresh signature and
+        the browser re-downloads the object on every poll (issue #206).
+
+        ``expires_in`` defaults to the configured ``signed_get_ttl``; callers who
+        pass it explicitly (URLs handed to external providers) get their own TTL
+        and their own cache entry.
+        """
+        ttl = expires_in if expires_in is not None else self.signed_get_ttl
+
+        def sign() -> SignedUrlResponse:
+            return self._sign_get_url(
+                uri,
+                expires_in=ttl,
+                response_content_disposition=response_content_disposition,
+            )
+
+        cache = self._signed_url_cache
+        if cache is None:
+            return sign()
+        return cache.get_or_sign(
+            cache_key(uri, ttl, response_content_disposition), ttl=ttl, sign=sign
+        )
+
+    def _sign_get_url(
+        self,
+        uri: str,
+        *,
+        expires_in: timedelta,
+        response_content_disposition: str | None = None,
+    ) -> SignedUrlResponse:
+        """Actually sign a GET URL. Backends implement this; callers use ``signed_url``."""
         raise NotImplementedError
+
+    def _cache_control(self) -> str:
+        """The ``Cache-Control`` this store attaches to immutable objects.
+
+        Object keys are content- or uuid-addressed, so the bytes at a key never
+        change and ``immutable`` is always sound: the browser is told never to
+        even revalidate. ``max-age`` is derived from the signing TTL so that it
+        can never outlive the signature it is served with — see ``REFRESH_FRACTION``.
+        """
+        max_age = int(self.signed_get_ttl.total_seconds() * REFRESH_FRACTION)
+        return f"public, max-age={max_age}, immutable"
 
     def delete(self, uri: str) -> None:
         raise NotImplementedError
@@ -137,7 +210,15 @@ class ObjectStore:
 
 
 class LocalObjectStore(ObjectStore):
-    def __init__(self, root: Path, bucket: str = "cutagent-local") -> None:
+    def __init__(
+        self,
+        root: Path,
+        bucket: str = "cutagent-local",
+        *,
+        signed_get_ttl: timedelta | None = None,
+        signed_url_cache: SignedUrlCache | None = None,
+    ) -> None:
+        super().__init__(signed_get_ttl=signed_get_ttl, signed_url_cache=signed_url_cache)
         self.root = root
         self.bucket = bucket
         self.root.mkdir(parents=True, exist_ok=True)
@@ -171,11 +252,11 @@ class LocalObjectStore(ObjectStore):
     def exists(self, ref: ObjectRef) -> bool:
         return self._path(ref).exists()
 
-    def signed_url(
+    def _sign_get_url(
         self,
         uri: str,
         *,
-        expires_in: timedelta = timedelta(minutes=15),
+        expires_in: timedelta,
         response_content_disposition: str | None = None,
     ) -> SignedUrlResponse:
         # The local double serves the object URI directly; there is no HTTP layer
@@ -256,9 +337,12 @@ class S3ObjectStore(ObjectStore):
         connect_timeout: int = 10,
         read_timeout: int = 120,
         max_attempts: int = 5,
+        signed_get_ttl: timedelta | None = None,
+        signed_url_cache: SignedUrlCache | None = None,
     ) -> None:
         from boto3.s3.transfer import TransferConfig
 
+        super().__init__(signed_get_ttl=signed_get_ttl, signed_url_cache=signed_url_cache)
         self.endpoint_url = endpoint_url
         self.bucket = bucket
         self._access_key = access_key
@@ -306,6 +390,7 @@ class S3ObjectStore(ObjectStore):
             io.BytesIO(content),
             ref.bucket,
             ref.key,
+            ExtraArgs={"CacheControl": self._cache_control()},
             Config=self._transfer_config,
         )
         path = self._cache_path(ref)
@@ -333,15 +418,16 @@ class S3ObjectStore(ObjectStore):
         # Streaming, multipart upload by path: boto3's upload_file never reads the
         # whole object into RAM (it streams from disk in multipart chunks).
         self._validate_write_ref(ref)
-        extra_args = {"ContentType": content_type} if content_type else None
-        kwargs = {"ExtraArgs": extra_args} if extra_args else {}
+        extra_args: dict[str, str] = {"CacheControl": self._cache_control()}
+        if content_type:
+            extra_args["ContentType"] = content_type
         source = Path(local_path)
         self._client.upload_file(
             str(source),
             ref.bucket,
             ref.key,
+            ExtraArgs=extra_args,
             Config=self._transfer_config,
-            **kwargs,
         )
         cache_path = self._cache_path(ref)
         if source.resolve() != cache_path.resolve():
@@ -392,11 +478,11 @@ class S3ObjectStore(ObjectStore):
             raise
         return True
 
-    def signed_url(
+    def _sign_get_url(
         self,
         uri: str,
         *,
-        expires_in: timedelta = timedelta(minutes=15),
+        expires_in: timedelta,
         response_content_disposition: str | None = None,
     ) -> SignedUrlResponse:
         ref = parse_object_uri(uri)
@@ -412,7 +498,10 @@ class S3ObjectStore(ObjectStore):
                 expires_at=utcnow() + expires_in,
                 request_id="req_oss",
             )
-        params = {"Bucket": ref.bucket, "Key": ref.key}
+        # ResponseCacheControl makes the GET response carry Cache-Control even for
+        # objects stored before that header was written at upload time, so the
+        # browser stops re-fetching historical covers too (issue #206).
+        params = {"Bucket": ref.bucket, "Key": ref.key, "ResponseCacheControl": self._cache_control()}
         if response_content_disposition:
             params["ResponseContentDisposition"] = response_content_disposition
         url = self._client.generate_presigned_url(
@@ -519,12 +608,17 @@ class S3ObjectStore(ObjectStore):
             "OSSAccessKeyId": self._access_key,
             "Expires": str(expires),
         }
+        # response-* overrides are signed OSS sub-resources: each must appear in
+        # BOTH the canonicalized resource (for the V1 signature) and the URL query,
+        # and the canonicalized resource must list them in lexicographic order, or
+        # the returned link 403s.
+        sub_resources = {"response-cache-control": self._cache_control()}
         if response_content_disposition:
-            # response-content-disposition is a signed OSS sub-resource: it must be
-            # in BOTH the canonicalized resource (for the V1 signature) and the URL
-            # query, or the returned link 403s.
-            canonical_resource += f"?response-content-disposition={response_content_disposition}"
-            query_params["response-content-disposition"] = response_content_disposition
+            sub_resources["response-content-disposition"] = response_content_disposition
+        canonical_resource += "?" + "&".join(
+            f"{name}={sub_resources[name]}" for name in sorted(sub_resources)
+        )
+        query_params.update(sub_resources)
         string_to_sign = f"GET\n\n\n{expires}\n{canonical_resource}"
         signature = base64.b64encode(
             hmac.new(
@@ -534,7 +628,14 @@ class S3ObjectStore(ObjectStore):
             ).digest()
         ).decode("ascii")
         query_params["Signature"] = signature
-        query = urlencode(query_params)
+        # quote (=> %20) rather than urlencode's default quote_plus (=> +). The
+        # string-to-sign carries literal spaces, so a "+" in the query only verifies
+        # if OSS's decoder happens to be form-style. It currently is (verified against
+        # the live endpoint), but Aliyun's own SDKs emit %20 and nothing documents the
+        # "+" behaviour — and a URL signed wrong would be pinned in the cache for days
+        # before anyone noticed. %20 is unambiguous under RFC 3986. Everything else
+        # (the base64 Signature's +, /, =) percent-encodes identically either way.
+        query = urlencode(query_params, quote_via=quote, safe="")
         host = f"{ref.bucket}.{endpoint.netloc}"
         path = "/" + quote(ref.key, safe="/")
         return f"{endpoint.scheme}://{host}{path}?{query}"
@@ -750,10 +851,12 @@ def reset_object_store() -> None:
 
 
 __all__ = [
+    "DEFAULT_SIGNED_GET_TTL",
     "ObjectRef",
     "ObjectStore",
     "LocalObjectStore",
     "S3ObjectStore",
+    "SignedUrlCache",
     "TieredObjectStore",
     "CacheSweepResult",
     "object_cache_status",

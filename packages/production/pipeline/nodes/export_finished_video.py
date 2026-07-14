@@ -43,6 +43,11 @@ from packages.media.cover import (
     CoverPromptInputs,
     build_cover_prompt,
 )
+from packages.media.cover_image import (
+    THUMBNAIL_CONTENT_TYPE,
+    THUMBNAIL_SUFFIX,
+    build_cover_thumbnail_bytes,
+)
 from packages.media.cover_frame import BestPortraitFrame, select_best_portrait_frame
 from packages.media.video.ffmpeg import (
     FfmpegCommandError,
@@ -105,6 +110,7 @@ def run(ctx: NodeContext) -> NodeOutput:
     cover_artifact, cover_degradations, cover_invocation_ids, cover_extra_artifacts = _build_cover(
         ctx, final, copy
     )
+    thumb_artifact = cover_thumbnail(ctx, cover_artifact)
     lipsync_provider_id, lipsync_fallback_used, lipsync_fallback_reason = (
         _resolve_lipsync_attribution(ctx)
     )
@@ -117,6 +123,9 @@ def run(ctx: NodeContext) -> NodeOutput:
         video_number=_next_video_number(repository, state.request.case_id),
         video_artifact=repository.artifact_ref(video_artifact.id),
         cover_artifact=repository.artifact_ref(cover_artifact.id),
+        cover_thumb_artifact=(
+            repository.artifact_ref(thumb_artifact.id) if thumb_artifact else None
+        ),
         subtitle_artifact=(
             repository.artifact_ref(state.artifacts[ArtifactKind.subtitle_ass].id)
             if ArtifactKind.subtitle_ass in state.artifacts
@@ -148,7 +157,13 @@ def run(ctx: NodeContext) -> NodeOutput:
     )
     return NodeOutput(
         status=NodeStatus.degraded if cover_degradations else NodeStatus.succeeded,
-        artifacts=[video_artifact, cover_artifact, package_artifact, *cover_extra_artifacts],
+        artifacts=[
+            video_artifact,
+            cover_artifact,
+            *([thumb_artifact] if thumb_artifact else []),
+            package_artifact,
+            *cover_extra_artifacts,
+        ],
         degradations=cover_degradations,
         provider_invocation_ids=cover_invocation_ids
         + ([copy_invocation_id] if copy_invocation_id else []),
@@ -399,6 +414,42 @@ def _frame_cover(
         media_info=selected.media_info,
     )
     return artifact
+
+
+def cover_thumbnail(ctx: NodeContext, cover: Artifact) -> Artifact | None:
+    """Small WebP derivative of ``cover``, for Outputs list cards (issue #206).
+
+    Called once, AFTER the cover is resolved, so it covers the AI cover and the
+    frame cover identically — the AI cover's bytes only exist in the object store
+    (the provider plugin uploads them), so it is read back through
+    ``artifact_path`` rather than from a temp file.
+
+    Fail-open by design: the video and the cover are already produced (and, for the
+    AI cover, already paid for), so a thumbnail encode failure must never fail the
+    export. A None return leaves ``cover_thumb_artifact`` NULL and the card falls
+    back to the full cover — the pre-#206 behaviour, i.e. costly, not broken.
+    """
+    try:
+        content = Path(ctx.artifact_path(cover)).read_bytes()
+        thumbnail = build_cover_thumbnail_bytes(content)
+        with tempfile.TemporaryDirectory(prefix="cutagent-cover-thumb-") as directory:
+            path = Path(directory) / f"cover_thumb{THUMBNAIL_SUFFIX}"
+            path.write_bytes(thumbnail)
+            stored = store_file(
+                ctx.object_store(),
+                path,
+                purpose="covers",
+                content_type=THUMBNAIL_CONTENT_TYPE,
+            )
+    except (NodeExecutionError, ValueError, FileNotFoundError, OSError):
+        return None
+    return ctx.artifact(
+        ArtifactKind.cover_thumbnail,
+        {"source_artifact_id": cover.id},
+        "uri-only",
+        uri=stored.ref.uri,
+        sha256=stored.sha256,
+    )
 
 
 def _resolve_cover_prompt_version_id(ctx: NodeContext) -> str | None:

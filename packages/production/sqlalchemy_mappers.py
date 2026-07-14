@@ -150,6 +150,9 @@ def finished_video_row_to_contract(row: FinishedVideoRow) -> FinishedVideo:
         video_number=row.video_number,
         video_artifact=ArtifactRef.model_validate(row.video_artifact),
         cover_artifact=ArtifactRef.model_validate(row.cover_artifact) if row.cover_artifact else None,
+        cover_thumb_artifact=(
+            ArtifactRef.model_validate(row.cover_thumb_artifact) if row.cover_thumb_artifact else None
+        ),
         subtitle_artifact=ArtifactRef.model_validate(row.subtitle_artifact) if row.subtitle_artifact else None,
         duration_sec=row.duration_sec,
         qc_status=row.qc_status,

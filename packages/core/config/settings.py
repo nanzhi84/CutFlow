@@ -250,6 +250,11 @@ class ObjectStoreSettings(BaseModel):
     # CUTAGENT_OBJECTSTORE_CACHE_MAX_BYTES / _CACHE_TTL_HOURS.
     cache_max_bytes: int = 0
     cache_ttl_hours: float = 0
+    # How long a presigned GET (read) URL stays valid, and therefore how long the
+    # browser can keep the object cached before the URL rotates (issue #206).
+    # 7 days is the SigV4 ceiling. Distinct from ``upload.presign_ttl_seconds``,
+    # which is the presigned PUT lifetime. CUTAGENT_OBJECTSTORE_SIGNED_GET_TTL_SECONDS
+    signed_get_ttl_seconds: int = 604800
     s3: S3TransportSettings = Field(default_factory=S3TransportSettings)
     ephemeral: EphemeralObjectStoreSettings = Field(
         default_factory=EphemeralObjectStoreSettings
@@ -613,6 +618,9 @@ def build_object_store_settings() -> ObjectStoreSettings:
         local_path=_env_str("CUTAGENT_LOCAL_OBJECTSTORE_PATH", ".data/objectstore"),
         cache_max_bytes=_env_int("CUTAGENT_OBJECTSTORE_CACHE_MAX_BYTES", 0),
         cache_ttl_hours=_env_float("CUTAGENT_OBJECTSTORE_CACHE_TTL_HOURS", 0),
+        signed_get_ttl_seconds=_env_int(
+            "CUTAGENT_OBJECTSTORE_SIGNED_GET_TTL_SECONDS", 604800
+        ),
         s3=S3TransportSettings(
             endpoint_url=_env_str(
                 "CUTAGENT_OBJECTSTORE_ENDPOINT", "http://127.0.0.1:9000"
