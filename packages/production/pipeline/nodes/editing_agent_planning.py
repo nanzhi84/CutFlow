@@ -30,7 +30,6 @@ from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline.nodes._creative_intent import load_creative_intent
 from packages.production.pipeline.nodes.legacy_huazi_planning import (
     HuaziPlanningResult,
-    _empty_result,
     plan_huazi_overlays,
 )
 
@@ -41,10 +40,6 @@ def _compact_prompt_input(agent_input: dict, *, include_bgm: bool = True) -> dic
 
 def _repair_broll_selection_to_constraints(**kwargs):
     return _media_repair_broll_selection(**kwargs)
-
-
-def _empty_huazi_result(reason: str) -> HuaziPlanningResult:
-    return _empty_result(reason)
 
 
 @dataclass(frozen=True)

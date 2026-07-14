@@ -1,5 +1,4 @@
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -23,8 +22,6 @@ from packages.core.storage.database import (
 
 def sqlalchemy_session_factory():
     session_factory = get_sqlalchemy_session_factory()
-    if session_factory is None:
-        pytest.skip("Set CUTAGENT_STORAGE_BACKEND=sqlalchemy to run database integration tests.")
     return session_factory
 
 

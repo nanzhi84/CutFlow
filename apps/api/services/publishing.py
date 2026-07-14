@@ -39,7 +39,6 @@ from packages.production.sqlalchemy_mappers import (
     workflow_run_row_to_contract,
 )
 from packages.core.workflow import NodeExecutionError
-from packages.core.observability import record_funnel_event
 from packages.publishing import normalize_publish_tags, normalize_scheduled_at, select_adapter
 from packages.publishing.platform_adapter import PublishOutcome, PublishPayload
 from packages.publishing.publish_executor import run_item_publish
@@ -77,65 +76,6 @@ def _sweep_publish_spool(root: Path = PUBLISH_SPOOL_DIR) -> None:
                 entry.unlink(missing_ok=True)
         except OSError as exc:
             logger.warning("publish spool sweep could not remove %s: %s", entry, exc)
-
-
-def _publish_run_ids(repo, package_id: str | None) -> tuple[str | None, str | None]:
-    """Best-effort resolution of (run_id, job_id) for a publish package so funnel
-    events stay linked to the originating run/job. Returns (None, None) when the
-    package is detached from a finished video (e.g. raw upload-artifact packages)."""
-
-    package = repo.publish_packages.get(package_id) if package_id else None
-    finished_video_id = getattr(package, "source_finished_video_id", None) if package else None
-    finished = repo.finished_videos.get(finished_video_id) if finished_video_id else None
-    run_id = getattr(finished, "run_id", None) if finished else None
-    run = repo.runs.get(run_id) if run_id else None
-    job_id = getattr(run, "job_id", None) if run else None
-    return run_id, job_id
-
-
-def _record_publish_attempt_funnel(repo, batch, item, attempt) -> None:
-    """Emit the §9.5 publish-stage funnel events for one publish attempt.
-
-    Always records ``publish_started`` (the attempt was submitted); then records
-    the terminal §9.5 stage (``published`` for a published attempt,
-    ``publish_failed`` for a failed one). Dry-run / manual-review-ready attempts
-    emit only ``publish_started``. All writes are best-effort.
-
-    ``published`` is the load-bearing true-yield success string (spec §9.5); the
-    read side keys ``true_yield_rate`` on it (run-scoped, excluding qc_failed /
-    manual_rejected runs)."""
-
-    run_id, job_id = _publish_run_ids(repo, getattr(item, "publish_package_id", None))
-    record_funnel_event(
-        repo,
-        event_type="publish_started",
-        job_id=job_id,
-        run_id=run_id,
-        publish_attempt_id=attempt.id,
-        dedupe_key=f"{attempt.id}:publish_started",
-        event_time=attempt.created_at,
-    )
-    status_value = attempt.status.value if hasattr(attempt.status, "value") else str(attempt.status)
-    if status_value == "published":
-        record_funnel_event(
-            repo,
-            event_type="published",
-            job_id=job_id,
-            run_id=run_id,
-            publish_attempt_id=attempt.id,
-            dedupe_key=f"{attempt.id}:published",
-            event_time=attempt.finished_at or attempt.updated_at,
-        )
-    elif status_value == "failed":
-        record_funnel_event(
-            repo,
-            event_type="publish_failed",
-            job_id=job_id,
-            run_id=run_id,
-            publish_attempt_id=attempt.id,
-            dedupe_key=f"{attempt.id}:publish_failed",
-            event_time=attempt.finished_at or attempt.updated_at,
-        )
 
 
 def _build_publish_runner(

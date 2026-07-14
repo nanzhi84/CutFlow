@@ -158,7 +158,8 @@ def _broll_slots(planner_units: list[NarrationUnit], *, total_frames: int) -> li
     """Per-narration-unit windows where B-roll may overlay (available windows, not a plan).
 
     These are the frame-clamped spans of each spoken unit plus its text; the actual B-roll
-    placement is still decided by BrollPlanning. Degenerate (< 1 frame) spans are dropped.
+    placement is still decided downstream by TimelineWindowPlanning + the editing planners.
+    Degenerate (< 1 frame) spans are dropped.
     """
     slots: list[dict] = []
     for index, unit in enumerate(planner_units):

@@ -89,6 +89,21 @@ def test_delete_publish_batch_ok_and_404s_missing():
     assert missing.status_code == 404, missing.text
 
 
+def test_delete_publish_batch_rejects_unknown_body_without_deleting():
+    _login_admin()
+    batch_id, _item_id = _make_batch()
+
+    rejected = client.request(
+        "DELETE",
+        f"/api/publish/batches/{batch_id}",
+        json={"__unexpected": True},
+    )
+
+    assert rejected.status_code == 422, rejected.text
+    assert rejected.json()["error"]["code"] == "validation.invalid_options"
+    assert client.get(f"/api/publish/batches/{batch_id}").status_code == 200
+
+
 def test_patch_publish_item_updates_and_404s_missing():
     _login_admin()
     _batch_id, item_id = _make_batch()
@@ -118,3 +133,20 @@ def test_delete_publish_item_ok_and_404s_missing():
 
     missing = client.delete("/api/publish/items/item_missing")
     assert missing.status_code == 404, missing.text
+
+
+def test_delete_publish_item_rejects_unknown_body_without_deleting():
+    _login_admin()
+    batch_id, item_id = _make_batch()
+
+    rejected = client.request(
+        "DELETE",
+        f"/api/publish/items/{item_id}",
+        json={"__unexpected": True},
+    )
+
+    assert rejected.status_code == 422, rejected.text
+    assert rejected.json()["error"]["code"] == "validation.invalid_options"
+    detail = client.get(f"/api/publish/batches/{batch_id}")
+    assert detail.status_code == 200, detail.text
+    assert any(item["id"] == item_id for item in detail.json()["items"])

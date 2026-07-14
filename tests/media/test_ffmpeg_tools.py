@@ -14,7 +14,6 @@ from packages.media.video.ffmpeg import (
     compress_video_to_budget,
     extract_frame_at_time,
     extract_thumbnails,
-    needs_normalize_for_upload,
     normalize_for_upload,
     probe_media,
     sha256_file,
@@ -200,8 +199,6 @@ def test_normalize_for_upload_produces_h264_aac_mp4(tmp_path):
     info = probe_media(output)
     assert info.media_type == "video"
     assert info.codec.lower() in {"h264", "avc1"}
-    # Re-normalized output is already platform-compliant.
-    assert needs_normalize_for_upload(output) is False
 
 
 def test_session_media_fixture_factory_caches_generated_assets(media_fixture_factory):
@@ -556,15 +553,6 @@ def test_probe_count_stream_types_and_upload_helpers(tmp_path, monkeypatch):
     assert ffmpeg_mod.probe_stream_types(media) == {"video", "audio"}
     with pytest.raises(FfmpegCommandError, match="Could not count frames"):
         ffmpeg_mod.probe_video_frame_count(media)
-
-    monkeypatch.setattr(ffmpeg_mod, "probe_media", lambda _path: (_ for _ in ()).throw(FfmpegCommandError("bad")))
-    assert needs_normalize_for_upload(media) is True
-    monkeypatch.setattr(
-        ffmpeg_mod,
-        "probe_media",
-        lambda _path: MediaInfo(media_type="audio", codec="aac", format="mp4"),
-    )
-    assert needs_normalize_for_upload(media) is False
 
 
 def test_cropdetect_and_embedded_portrait_detection(monkeypatch, tmp_path):

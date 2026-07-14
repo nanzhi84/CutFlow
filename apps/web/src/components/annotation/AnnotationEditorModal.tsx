@@ -57,7 +57,6 @@ type AnnotationForm = {
 };
 
 type ClipEmbeddingStatusVm = Awaited<ReturnType<typeof api.mediaAssets.clipEmbeddingStatus>>;
-type ClipEmbeddingJobVm = Awaited<ReturnType<typeof api.mediaAssets.clipEmbeddingJobStatus>>;
 
 function isClipEmbeddingJobActive(status: string | undefined): boolean {
   return status === "queued" || status === "running";

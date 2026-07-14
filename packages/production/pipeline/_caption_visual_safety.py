@@ -43,35 +43,6 @@ EMPHASIS_TIER2_BUSY_MAX = 0.80
 EMPHASIS_MIN_EVENTS = 5
 
 _FACE_PADDING_RATIO = 0.12
-_MAX_SAFE_ANCHORS = 6
-
-
-@dataclass(frozen=True)
-class VisualSafetyResult:
-    anchors: list[dict]
-    rejected_face: int = 0
-    rejected_scene_text: int = 0
-    rejected_busy: int = 0
-    unavailable_detector: str | None = None
-
-    @property
-    def rejected_total(self) -> int:
-        return self.rejected_face + self.rejected_scene_text + self.rejected_busy
-
-
-@dataclass(frozen=True)
-class OptionSafetyResult:
-    options: list[dict]
-    rejected_face: int = 0
-    rejected_scene_text: int = 0
-    rejected_busy: int = 0
-    unavailable_detector: str | None = None
-
-    @property
-    def rejected_total(self) -> int:
-        return self.rejected_face + self.rejected_scene_text + self.rejected_busy
-
-
 @dataclass(frozen=True)
 class OptionMeasurement:
     """One option candidate's measured overlaps on the sampled final frames.
@@ -108,69 +79,6 @@ def sample_frame_indices(start_frame: int, end_frame: int) -> list[int]:
         return []
     indices = [start, start + (end - start - 1) // 2, end - 1]
     return indices if len(set(indices)) == 3 else []
-
-
-def evaluate_anchor_safety(
-    *,
-    images: list[Any],
-    sample_frames: list[int],
-    anchors: list[dict],
-) -> VisualSafetyResult:
-    """Hard-filter anchor candidates using all three sampled final-video frames."""
-
-    cv2, frame_observations, unavailable = _collect_frame_observations(
-        images=images,
-        sample_frames=sample_frames,
-    )
-    if unavailable is not None or cv2 is None:
-        return VisualSafetyResult(anchors=[], unavailable_detector=unavailable)
-
-    safe: list[tuple[tuple[float, float, float, str], dict]] = []
-    rejected_face = 0
-    rejected_text = 0
-    rejected_busy = 0
-    for anchor in anchors:
-        rect = _rect_tuple(anchor.get("rect"))
-        if rect is None:
-            rejected_busy += 1
-            continue
-        overlaps = _measure_rect(cv2, frame_observations, rect)
-        if overlaps is None:
-            return VisualSafetyResult(anchors=[], unavailable_detector="busy")
-        face_overlap, text_overlap, busy_score = overlaps
-        if face_overlap > _FACE_OVERLAP_MAX:
-            rejected_face += 1
-            continue
-        if text_overlap > _SCENE_TEXT_OVERLAP_MAX:
-            rejected_text += 1
-            continue
-        if busy_score > _BUSY_SCORE_MAX:
-            rejected_busy += 1
-            continue
-
-        anchor_id = str(anchor.get("anchor_id") or anchor.get("layout_box_id") or "")
-        materialized = {
-            "anchor_id": anchor_id,
-            "rect": dict(anchor.get("rect") or {}),
-            "text_align": str(anchor.get("text_align") or "center"),
-            "max_lines": int(anchor.get("max_lines") or 1),
-            "text_capacity": int(anchor.get("text_capacity") or 0),
-            "allowed_enter_directions": list(anchor.get("allowed_enter_directions") or []),
-            "face_overlap": round(face_overlap, 4),
-            "scene_text_overlap": round(text_overlap, 4),
-            "busy_score": round(busy_score, 4),
-            "region_tags": [str(item) for item in (anchor.get("region_tags") or [])],
-            "sample_frames": list(sample_frames),
-        }
-        safe.append(((face_overlap, text_overlap, busy_score, anchor_id), materialized))
-
-    safe.sort(key=lambda item: item[0])
-    return VisualSafetyResult(
-        anchors=[item for _key, item in safe[:_MAX_SAFE_ANCHORS]],
-        rejected_face=rejected_face,
-        rejected_scene_text=rejected_text,
-        rejected_busy=rejected_busy,
-    )
 
 
 def measure_option_candidates(
@@ -297,30 +205,6 @@ def count_face_blocked(
         1
         for measurement in result.measurements
         if measurement.valid and measurement.face_overlap > face_max
-    )
-
-
-def evaluate_option_safety(
-    *,
-    images: list[Any],
-    sample_frames: list[int],
-    option_candidates: list[dict],
-) -> OptionSafetyResult:
-    """Hard-filter every anchor+animation envelope on all three final frames (tier 1)."""
-
-    result = measure_option_candidates(
-        images=images,
-        sample_frames=sample_frames,
-        option_candidates=option_candidates,
-    )
-    if result.unavailable_detector is not None:
-        return OptionSafetyResult(options=[], unavailable_detector=result.unavailable_detector)
-    safe, rejected_face, rejected_text, rejected_busy = select_options_at_thresholds(result)
-    return OptionSafetyResult(
-        options=safe,
-        rejected_face=rejected_face,
-        rejected_scene_text=rejected_text,
-        rejected_busy=rejected_busy,
     )
 
 

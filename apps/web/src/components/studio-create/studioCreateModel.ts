@@ -107,12 +107,12 @@ function normalizeHexColor(value: unknown, fallback: string) {
   return /^#[0-9A-Fa-f]{6}$/.test(trimmed) ? trimmed.toUpperCase() : fallback;
 }
 
-export const SUBTITLE_RENDER_BASE_HEIGHT = 1080;
+const SUBTITLE_RENDER_BASE_HEIGHT = 1080;
 export const SUBTITLE_PREVIEW_OUTPUT_WIDTH = 1080;
 export const SUBTITLE_PREVIEW_OUTPUT_HEIGHT = 1920;
 export const SUBTITLE_PREVIEW_WIDTH = 320;
-export const SUBTITLE_PREVIEW_HEIGHT = SUBTITLE_PREVIEW_WIDTH * (SUBTITLE_PREVIEW_OUTPUT_HEIGHT / SUBTITLE_PREVIEW_OUTPUT_WIDTH);
-export const ASS_FONT_POINT_TO_CSS_PIXEL = 72 / 96;
+const SUBTITLE_PREVIEW_HEIGHT = SUBTITLE_PREVIEW_WIDTH * (SUBTITLE_PREVIEW_OUTPUT_HEIGHT / SUBTITLE_PREVIEW_OUTPUT_WIDTH);
+const ASS_FONT_POINT_TO_CSS_PIXEL = 72 / 96;
 
 export function subtitleAssFontSize(requestedSize: unknown, outputHeight = SUBTITLE_PREVIEW_OUTPUT_HEIGHT) {
   const parsed = Number(requestedSize || 64);
@@ -293,15 +293,6 @@ export function supportsEmphasisCaption(mode: FormState["contentMode"]): boolean
 /** 当前表单实际会提交的花字启用态（叠加了模板能力约束）。 */
 export function effectiveHuaziEnabled(form: FormState): boolean {
   return supportsEmphasisCaption(form.contentMode) && form.huaziEnabled;
-}
-
-export function subtitleLabel(value: FormState["subtitleStyle"]) {
-  if (value === "clean") return "简洁风";
-  if (value === "variety") return "综艺风";
-  if (value === "news") return "新闻风";
-  if (value === "movie") return "电影风";
-  if (value === "youshe_title_black") return "标题黑风";
-  return "抖音风";
 }
 
 const SUBTITLE_STYLES: LegacySubtitleStyle[] = [

@@ -1,7 +1,6 @@
 import hashlib
 from uuid import uuid4
 
-import pytest
 from sqlalchemy import select
 from fastapi.testclient import TestClient
 
@@ -16,8 +15,6 @@ from packages.core.storage.object_store import parse_local_uri
 
 def sqlalchemy_session_factory():
     session_factory = get_sqlalchemy_session_factory()
-    if session_factory is None:
-        pytest.skip("Set CUTAGENT_STORAGE_BACKEND=sqlalchemy to run database integration tests.")
     return session_factory
 
 

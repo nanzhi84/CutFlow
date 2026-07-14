@@ -6,7 +6,6 @@ from packages.core.contracts import (
     AnnotationEditorVm,
     AnnotationMetaV4,
     AnnotationV4,
-    Artifact,
     ArtifactKind,
     BgmSegmentV4,
     DigitalHumanVideoRequest,
@@ -17,11 +16,13 @@ from packages.core.contracts import (
     RunStatus,
     SelectionLedgerEntry,
     WorkflowRun,
+    normalize_bgm_mood,
     utcnow,
 )
 from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
 from packages.production.pipeline import nodes
+from packages.production.pipeline._materialize import materialize_style_from_selection
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
@@ -68,16 +69,6 @@ def _ctx(adapter, request, node_id: str) -> NodeContext:
         input_manifest_hash="sha256:test",
     )
     return NodeContext(adapter=adapter, run=run, node_run=node_run, state=state)
-
-
-def _artifact(kind: ArtifactKind, payload: dict) -> Artifact:
-    return Artifact(
-        id=f"art_{kind.value.replace('.', '_')}",
-        run_id="run_bgm",
-        kind=kind,
-        payload_schema=f"{kind.value}.v1",
-        payload=payload,
-    )
 
 
 def _inject_bgm_asset(repo: Repository, asset_id: str, segments: list[BgmSegmentV4]) -> None:
@@ -345,14 +336,10 @@ def test_material_pack_complete_bgm_pool_includes_requested_asset(tmp_path, monk
     assert "asset_requested_bgm" in {reservation.asset_id for reservation in owned}
 
 
-def test_style_planning_carries_selected_bgm_segment_into_style_plan(tmp_path, monkeypatch):
-    object_store = LocalObjectStore(tmp_path / "objects")
-    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    adapter = _adapter(object_store)
-    ctx = _ctx(adapter, _request(), "StylePlanning")
-    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
-        ArtifactKind.plan_material_pack,
-        {
+def test_style_planning_carries_selected_bgm_segment_into_style_plan():
+    payload, _warnings, _degradations = materialize_style_from_selection(
+        request=_request(),
+        material={
             "bgm_candidates": [
                 {
                     "asset_id": "asset_bgm_song",
@@ -378,10 +365,9 @@ def test_style_planning_carries_selected_bgm_segment_into_style_plan(tmp_path, m
             ],
             "font_candidates": [],
         },
+        overlay_events=[],
+        target_bgm_mood="",
     )
-
-    output = nodes.style_planning.run(ctx)
-    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
 
     assert payload["bgm_asset_id"] == "asset_bgm_song"
     assert payload["bgm"]["asset_id"] == "asset_bgm_song"
@@ -400,60 +386,21 @@ def test_style_planning_carries_selected_bgm_segment_into_style_plan(tmp_path, m
     assert payload["bgm"]["avoid_script"] == ["沉浸睡眠"]
 
 
-def test_style_planning_never_derives_huazi_overlays(tmp_path, monkeypatch):
-    # Caption Display v2 (issue #188) froze the deterministic chain out of huazi:
-    # StylePlanning emits an empty overlay_events even when emphasis phrases and
-    # matching narration units are present. Huazi lives only on the agent chain.
-    object_store = LocalObjectStore(tmp_path / "objects")
-    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    adapter = _adapter(object_store)
-    ctx = _ctx(adapter, _request(bgm={"enabled": False}), "StylePlanning")
-    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
-        ArtifactKind.plan_material_pack, {"bgm_candidates": [], "font_candidates": []}
+def test_style_planning_consumes_subtitle_preset_defaults():
+    payload, _warnings, _degradations = materialize_style_from_selection(
+        request=_request(subtitle={"enabled": True, "style_preset": "movie"}),
+        material={"bgm_candidates": [], "font_candidates": []},
+        overlay_events=[],
+        target_bgm_mood="",
     )
-    ctx.state.artifacts[ArtifactKind.creative_intent] = _artifact(
-        ArtifactKind.creative_intent,
-        {"intent": {"hook": "h", "beats": ["a"]}, "emphasis": [{"phrase": "限时五折"}]},
-    )
-    ctx.state.artifacts[ArtifactKind.narration_units] = _artifact(
-        ArtifactKind.narration_units,
-        {"units": [{"text": "今天限时五折活动", "start": 0.0, "end": 2.0}]},
-    )
-
-    output = nodes.style_planning.run(ctx)
-    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
-
-    assert payload["overlay_events"] == []
-
-
-def test_style_planning_consumes_subtitle_preset_defaults(tmp_path, monkeypatch):
-    object_store = LocalObjectStore(tmp_path / "objects")
-    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    adapter = _adapter(object_store)
-    ctx = _ctx(
-        adapter,
-        _request(subtitle={"enabled": True, "style_preset": "movie"}),
-        "StylePlanning",
-    )
-    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
-        ArtifactKind.plan_material_pack,
-        {"bgm_candidates": [], "font_candidates": []},
-    )
-
-    output = nodes.style_planning.run(ctx)
-    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
 
     assert payload["subtitle"]["font_size"] == 44
     assert payload["subtitle"]["position"] == {"x": 0.5, "y": 0.82}
 
 
-def test_style_planning_preserves_explicit_subtitle_overrides(tmp_path, monkeypatch):
-    object_store = LocalObjectStore(tmp_path / "objects")
-    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    adapter = _adapter(object_store)
-    ctx = _ctx(
-        adapter,
-        _request(
+def test_style_planning_preserves_explicit_subtitle_overrides():
+    payload, _warnings, _degradations = materialize_style_from_selection(
+        request=_request(
             subtitle={
                 "enabled": True,
                 "style_preset": "movie",
@@ -461,28 +408,19 @@ def test_style_planning_preserves_explicit_subtitle_overrides(tmp_path, monkeypa
                 "position": {"x": 0.25, "y": 0.7},
             }
         ),
-        "StylePlanning",
+        material={"bgm_candidates": [], "font_candidates": []},
+        overlay_events=[],
+        target_bgm_mood="",
     )
-    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
-        ArtifactKind.plan_material_pack,
-        {"bgm_candidates": [], "font_candidates": []},
-    )
-
-    output = nodes.style_planning.run(ctx)
-    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
 
     assert payload["subtitle"]["font_size"] == 72
     assert payload["subtitle"]["position"] == {"x": 0.25, "y": 0.7}
 
 
-def test_style_planning_requires_segmented_bgm_candidate(tmp_path, monkeypatch):
-    object_store = LocalObjectStore(tmp_path / "objects")
-    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    adapter = _adapter(object_store)
-    ctx = _ctx(adapter, _request(), "StylePlanning")
-    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
-        ArtifactKind.plan_material_pack,
-        {
+def test_style_planning_requires_segmented_bgm_candidate():
+    payload, _warnings, degradations = materialize_style_from_selection(
+        request=_request(),
+        material={
             "bgm_candidates": [
                 {
                     "asset_id": "asset_unsegmented_bgm",
@@ -496,29 +434,22 @@ def test_style_planning_requires_segmented_bgm_candidate(tmp_path, monkeypatch):
             ],
             "font_candidates": [],
         },
+        overlay_events=[],
+        target_bgm_mood="",
     )
 
-    output = nodes.style_planning.run(ctx)
-    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
-
-    assert output.status == NodeStatus.degraded
+    # Equivalent of the node-level `NodeStatus.degraded`: the node derived its status
+    # purely from whether the materializer returned degradations.
+    assert degradations
     assert payload["bgm_asset_id"] is None
     assert payload["bgm"]["asset_id"] is None
     assert payload["bgm"]["segment_id"] is None
 
 
-def test_style_planning_chooses_bgm_clip_by_script_fit_over_raw_rank(tmp_path, monkeypatch):
-    object_store = LocalObjectStore(tmp_path / "objects")
-    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    adapter = _adapter(object_store)
-    ctx = _ctx(
-        adapter,
-        _request(script="开场先抛痛点，然后产品卖点强化，最后引导下单。"),
-        "StylePlanning",
-    )
-    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
-        ArtifactKind.plan_material_pack,
-        {
+def test_style_planning_chooses_bgm_clip_by_script_fit_over_raw_rank():
+    payload, _warnings, _degradations = materialize_style_from_selection(
+        request=_request(script="开场先抛痛点，然后产品卖点强化，最后引导下单。"),
+        material={
             "bgm_candidates": [
                 {
                     "asset_id": "asset_generic_high",
@@ -551,10 +482,9 @@ def test_style_planning_chooses_bgm_clip_by_script_fit_over_raw_rank(tmp_path, m
             ],
             "font_candidates": [],
         },
+        overlay_events=[],
+        target_bgm_mood="",
     )
-
-    output = nodes.style_planning.run(ctx)
-    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
 
     assert payload["bgm_asset_id"] == "asset_script_fit"
     assert payload["bgm"]["segment_id"] == "selling_clip"
@@ -562,20 +492,10 @@ def test_style_planning_chooses_bgm_clip_by_script_fit_over_raw_rank(tmp_path, m
     assert payload["bgm"]["source_end"] == 126.0
 
 
-def test_style_planning_demotes_short_non_loopable_bgm_for_single_clip_video(
-    tmp_path, monkeypatch
-):
-    object_store = LocalObjectStore(tmp_path / "objects")
-    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    adapter = _adapter(object_store)
-    ctx = _ctx(
-        adapter,
-        _request(script="适合稳定铺底的品牌介绍和产品卖点讲解。"),
-        "StylePlanning",
-    )
-    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
-        ArtifactKind.plan_material_pack,
-        {
+def test_style_planning_demotes_short_non_loopable_bgm_for_single_clip_video():
+    payload, _warnings, _degradations = materialize_style_from_selection(
+        request=_request(script="适合稳定铺底的品牌介绍和产品卖点讲解。"),
+        material={
             "bgm_candidates": [
                 {
                     "asset_id": "asset_short_non_loop",
@@ -608,31 +528,18 @@ def test_style_planning_demotes_short_non_loopable_bgm_for_single_clip_video(
             ],
             "font_candidates": [],
         },
+        overlay_events=[],
+        target_bgm_mood="",
     )
-
-    output = nodes.style_planning.run(ctx)
-    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
 
     assert payload["bgm_asset_id"] == "asset_macro_bed"
     assert payload["bgm"]["segment_id"] == "stable_main"
 
 
-def test_style_planning_exact_bgm_mood_match_flips_duration_penalty(tmp_path, monkeypatch):
-    object_store = LocalObjectStore(tmp_path / "objects")
-    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    adapter = _adapter(object_store)
-    ctx = _ctx(
-        adapter,
-        _request(script="这条片子需要快速推进和高能情绪。"),
-        "StylePlanning",
-    )
-    ctx.state.artifacts[ArtifactKind.creative_intent] = _artifact(
-        ArtifactKind.creative_intent,
-        {"intent": {"bgm_mood": "高能"}},
-    )
-    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
-        ArtifactKind.plan_material_pack,
-        {
+def test_style_planning_exact_bgm_mood_match_flips_duration_penalty():
+    payload, _warnings, _degradations = materialize_style_from_selection(
+        request=_request(script="这条片子需要快速推进和高能情绪。"),
+        material={
             "bgm_candidates": [
                 {
                     "asset_id": "asset_safe_bed",
@@ -665,27 +572,18 @@ def test_style_planning_exact_bgm_mood_match_flips_duration_penalty(tmp_path, mo
             ],
             "font_candidates": [],
         },
+        overlay_events=[],
+        target_bgm_mood=normalize_bgm_mood("高能"),
     )
-
-    output = nodes.style_planning.run(ctx)
-    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
 
     assert payload["bgm_asset_id"] == "asset_high_energy_short"
     assert payload["bgm"]["segment_id"] == "high_energy_intro"
 
 
-def test_style_planning_does_not_match_bgm_mood_by_script_substring(tmp_path, monkeypatch):
-    object_store = LocalObjectStore(tmp_path / "objects")
-    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    adapter = _adapter(object_store)
-    ctx = _ctx(
-        adapter,
-        _request(script="文案里说要轻快开场，但音乐意图没有显式指定。"),
-        "StylePlanning",
-    )
-    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
-        ArtifactKind.plan_material_pack,
-        {
+def test_style_planning_does_not_match_bgm_mood_by_script_substring():
+    payload, _warnings, _degradations = materialize_style_from_selection(
+        request=_request(script="文案里说要轻快开场，但音乐意图没有显式指定。"),
+        material={
             "bgm_candidates": [
                 {
                     "asset_id": "asset_light_short",
@@ -718,29 +616,18 @@ def test_style_planning_does_not_match_bgm_mood_by_script_substring(tmp_path, mo
             ],
             "font_candidates": [],
         },
+        overlay_events=[],
+        target_bgm_mood="",
     )
-
-    output = nodes.style_planning.run(ctx)
-    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
 
     assert payload["bgm_asset_id"] == "asset_stable"
     assert payload["bgm"]["segment_id"] == "stable_bed"
 
 
-def test_style_planning_respects_requested_bgm_asset_even_when_not_top_scored(
-    tmp_path, monkeypatch
-):
-    object_store = LocalObjectStore(tmp_path / "objects")
-    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    adapter = _adapter(object_store)
-    ctx = _ctx(
-        adapter,
-        _request(bgm={"enabled": True, "bgm_id": "asset_requested_bgm"}),
-        "StylePlanning",
-    )
-    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
-        ArtifactKind.plan_material_pack,
-        {
+def test_style_planning_respects_requested_bgm_asset_even_when_not_top_scored():
+    payload, _warnings, _degradations = materialize_style_from_selection(
+        request=_request(bgm={"enabled": True, "bgm_id": "asset_requested_bgm"}),
+        material={
             "bgm_candidates": [
                 {
                     "asset_id": "asset_high_score_bgm",
@@ -771,10 +658,9 @@ def test_style_planning_respects_requested_bgm_asset_even_when_not_top_scored(
             ],
             "font_candidates": [],
         },
+        overlay_events=[],
+        target_bgm_mood="",
     )
-
-    output = nodes.style_planning.run(ctx)
-    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
 
     assert payload["bgm_asset_id"] == "asset_requested_bgm"
     assert payload["bgm"]["asset_id"] == "asset_requested_bgm"
@@ -785,14 +671,10 @@ def test_style_planning_respects_requested_bgm_asset_even_when_not_top_scored(
     assert payload["bgm"]["scene_fit"] == ["品牌统一"]
 
 
-def test_style_planning_does_not_select_bgm_when_disabled(tmp_path, monkeypatch):
-    object_store = LocalObjectStore(tmp_path / "objects")
-    monkeypatch.setattr("packages.core.storage.object_store._OBJECT_STORE", object_store)
-    adapter = _adapter(object_store)
-    ctx = _ctx(adapter, _request(bgm={"enabled": False}), "StylePlanning")
-    ctx.state.artifacts[ArtifactKind.plan_material_pack] = _artifact(
-        ArtifactKind.plan_material_pack,
-        {
+def test_style_planning_does_not_select_bgm_when_disabled():
+    payload, _warnings, _degradations = materialize_style_from_selection(
+        request=_request(bgm={"enabled": False}),
+        material={
             "bgm_candidates": [
                 {
                     "asset_id": "asset_bgm_song",
@@ -808,10 +690,9 @@ def test_style_planning_does_not_select_bgm_when_disabled(tmp_path, monkeypatch)
             ],
             "font_candidates": [],
         },
+        overlay_events=[],
+        target_bgm_mood="",
     )
-
-    output = nodes.style_planning.run(ctx)
-    payload = next(a.payload for a in output.artifacts if a.kind == ArtifactKind.plan_style)
 
     assert payload["bgm_asset_id"] is None
     assert payload["bgm"]["enabled"] is False

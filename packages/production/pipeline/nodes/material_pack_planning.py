@@ -917,10 +917,6 @@ def _broll_motion_excluded_counts(annotations) -> dict[str, int]:
     return excluded
 
 
-def _broll_motion_excluded_count(annotations) -> int:
-    return sum(_broll_motion_excluded_counts(annotations).values())
-
-
 def _portrait_motion_excluded_counts(annotations) -> dict[str, int]:
     excluded: dict[str, int] = {}
     for asset_id, annotation in annotations.items():
@@ -947,10 +943,6 @@ def _portrait_motion_excluded_counts(annotations) -> dict[str, int]:
         if count:
             excluded[asset_id] = count
     return excluded
-
-
-def _portrait_motion_excluded_count(annotations) -> int:
-    return sum(_portrait_motion_excluded_counts(annotations).values())
 
 
 def _clip_overlaps_bad_span(clip, bad_spans: list[tuple[float, float]]) -> bool:

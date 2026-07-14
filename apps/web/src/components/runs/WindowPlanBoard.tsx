@@ -3,7 +3,7 @@ import type { RunDetailResponse } from "../../api/client";
 import { shortId } from "../../lib/format";
 import type { EditClip } from "./EditTimelinePreview";
 
-export type WindowCandidateView = {
+type WindowCandidateView = {
   candidateId: string;
   assetId: string;
   clipId: string;
@@ -12,7 +12,7 @@ export type WindowCandidateView = {
   chosen: boolean;
 };
 
-export type WindowView = {
+type WindowView = {
   windowId: string;
   kind: "portrait" | "broll";
   start: number;

@@ -2,14 +2,13 @@ import pytest
 from pydantic import ValidationError
 
 from packages.core.config import build_settings
-from packages.core.storage.bootstrap import sqlalchemy_backend_enabled
 from packages.core.storage.database import database_url
 
 
 def test_storage_backend_defaults_to_sqlalchemy(monkeypatch):
     monkeypatch.delenv("CUTAGENT_STORAGE_BACKEND", raising=False)
 
-    assert sqlalchemy_backend_enabled() is True
+    assert build_settings().storage.backend == "sqlalchemy"
 
 
 def test_sqlalchemy_backend_requires_explicit_database_url(monkeypatch):

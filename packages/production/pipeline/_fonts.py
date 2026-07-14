@@ -1,6 +1,6 @@
 """Resolve a selected subtitle ``font_id`` into a libass-burnable font.
 
-The StylePlanning node carries the user/agent-selected ``font_id`` (a media asset
+The style plan carries the user/agent-selected ``font_id`` (a media asset
 of kind ``font``) all the way to the burn step, but burning only honours it if two
 things happen at render time:
 

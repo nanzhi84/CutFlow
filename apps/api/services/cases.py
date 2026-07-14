@@ -9,7 +9,6 @@ from apps.api.common import (
     request_id,
 )
 from packages.core import contracts as c
-from packages.core.contracts import CASE_MATERIAL_ASSET_KINDS as MATERIAL_ASSET_KINDS
 from packages.core.workflow import NodeExecutionError
 
 
@@ -27,53 +26,6 @@ def list_cases(
         limit=limit,
     )
     return c.PageResponse(items=values, total_hint=len(values), request_id=request_id())
-
-
-def _with_counts(repo, case: c.CaseDetail) -> c.CaseListItem:
-    """Project an in-memory CaseDetail to a CaseListItem with per-case counts.
-
-    Production-dead after #87 A1 folded the in-memory list_cases dispatch (the SQL
-    case_repository.list_cases computes these counts now), but retained because
-    test_cases_profile pins the count semantics through it; migrating that to a
-    SQL-path test and deleting this is a follow-up.
-
-    Mirrors the SQLAlchemy R6 count semantics: material/voice from media assets,
-    scripts from script versions, quality from QC'd finished videos (a terminal
-    ``qc_status`` of passed/failed/warning — ``pending`` videos are not yet QC'd).
-    """
-    case_id = case.id
-    material_count = sum(
-        1
-        for asset in repo.media_assets.values()
-        if asset.case_id == case_id and asset.kind in MATERIAL_ASSET_KINDS
-    )
-    voice_count = sum(
-        1 for asset in repo.media_assets.values() if asset.case_id == case_id and asset.kind == "voice"
-    )
-    voice_count += sum(
-        1 for voice in getattr(repo, "voices", {}).values() if case_id in getattr(voice, "case_ids", [])
-    )
-    script_count = sum(1 for script in repo.scripts.values() if script.case_id == case_id)
-    quality_count = sum(
-        1
-        for video in repo.finished_videos.values()
-        if video.case_id == case_id and video.qc_status not in ("", "pending")
-    )
-    return c.CaseListItem(
-        id=case.id,
-        name=case.name,
-        owner_user_id=case.owner_user_id,
-        active_memory_count=case.active_memory_count,
-        status=case.status,
-        industry=case.industry,
-        material_count=material_count,
-        script_count=script_count,
-        voice_count=voice_count,
-        quality_count=quality_count,
-        schema_version=case.schema_version,
-        created_at=case.created_at,
-        updated_at=case.updated_at,
-    )
 
 
 def create_case(payload: c.CreateCaseRequest, request: Request, user: c.AuthUser) -> c.CaseDetail:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 COVER_TARGET_WIDTH = 1080
 COVER_TARGET_HEIGHT = 1920
-COVER_TARGET_ASPECT_RATIO = COVER_TARGET_WIDTH / COVER_TARGET_HEIGHT
 
 
 def normalize_cover_image_bytes(

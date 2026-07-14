@@ -205,7 +205,7 @@ class VolcengineTTSProvider:
             audio_uri=artifact.uri,
             duration_sec=duration,
             voice_id=voice_id,
-            timing=_timing_from_volcengine_addition(addition, duration=duration, text=text),
+            timing=_timing_from_volcengine_addition(addition, text=text),
         ).model_dump(mode="json")
         return ProviderResult(
             output=output,
@@ -470,9 +470,7 @@ def _json_value(value: object) -> object:
         return value
 
 
-def _timing_from_volcengine_addition(
-    addition: dict, *, duration: float, text: str
-) -> SpeechTiming | None:
+def _timing_from_volcengine_addition(addition: dict, *, text: str) -> SpeechTiming | None:
     """Normalize both legacy ``addition.frontend`` and newer subtitle payloads."""
 
     frontend = _json_object(addition.get("frontend")) or addition

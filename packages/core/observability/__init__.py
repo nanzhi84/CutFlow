@@ -34,7 +34,6 @@ from .telemetry import (
     record_temporal_activity_failure,
     record_workflow_run,
     record_yield_funnel_event,
-    update_outbox_lag,
 )
 
 __all__ = [
@@ -67,5 +66,4 @@ __all__ = [
     "replay_sqlalchemy_outbox",
     "reset_observability_context",
     "SqlAlchemyOutboxDispatcher",
-    "update_outbox_lag",
 ]

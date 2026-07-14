@@ -255,18 +255,6 @@ class XiaoVmaoDriver:
             raise XiaoVmaoUnavailableError(result["exceptionDetails"].get("text", "JS evaluation failed"))
         return result.get("result", {}).get("value")
 
-    async def query_selector_all(self, selector: str) -> list[int]:
-        document = await self.send("DOM.getDocument", {"depth": 4})
-        root_id = document["result"]["root"]["nodeId"]
-        response = await self.send("DOM.querySelectorAll", {"nodeId": root_id, "selector": selector})
-        return response["result"].get("nodeIds", [])
-
-    async def set_files_by_index(self, selector: str, index: int, files: list[str]) -> None:
-        node_ids = await self.query_selector_all(selector)
-        if index >= len(node_ids):
-            raise XiaoVmaoUnavailableError(f"未找到第 {index + 1} 个文件输入框: {selector}")
-        await self.send("DOM.setFileInputFiles", {"nodeId": node_ids[index], "files": files})
-
 
 # ---------------------------------------------------------------------------
 # CDP-driven login flow (dashboard QR stream via 小V猫)
