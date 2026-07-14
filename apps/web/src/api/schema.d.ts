@@ -2830,7 +2830,7 @@ export interface components {
          * ArtifactKind
          * @enum {string}
          */
-        ArtifactKind: "uploaded.file" | "spec.validated_production" | "case.context" | "creative.intent" | "audio.tts" | "audio.alignment.raw" | "audio.alignment" | "narration.units" | "plan.material_pack" | "plan.narration_boundary" | "plan.timeline_windows" | "plan.window_queries" | "plan.window_material_retrieval" | "plan.media_assignment" | "plan.portrait" | "plan.broll" | "plan.style" | "plan.timeline" | "plan.render" | "plan.editing_diagnostics" | "plan.media_selection_diagnostics" | "plan.caption_windows" | "plan.postprocess_diagnostics" | "plan.caption_display" | "video.portrait_track" | "video.lipsync" | "lipsync.report" | "video.rendered" | "video.final" | "video.finished" | "subtitle.ass" | "cover.image" | "publish.package" | "run.report.public" | "run.report.debug" | "editor.handoff_package" | "editor.jianying_draft_package" | "provider.raw_request" | "provider.raw_response" | "material.annotation";
+        ArtifactKind: "uploaded.file" | "spec.validated_production" | "case.context" | "creative.intent" | "audio.tts" | "audio.alignment.raw" | "audio.alignment" | "narration.units" | "plan.material_pack" | "plan.narration_boundary" | "plan.timeline_windows" | "plan.window_queries" | "plan.window_material_retrieval" | "plan.media_assignment" | "plan.portrait" | "plan.broll" | "plan.style" | "plan.timeline" | "plan.render" | "plan.editing_diagnostics" | "plan.media_selection_diagnostics" | "plan.caption_windows" | "plan.postprocess_diagnostics" | "plan.caption_display" | "video.portrait_track" | "video.lipsync" | "lipsync.report" | "video.rendered" | "video.final" | "video.finished" | "subtitle.ass" | "cover.image" | "cover.thumbnail" | "publish.package" | "run.report.public" | "run.report.debug" | "editor.handoff_package" | "editor.jianying_draft_package" | "provider.raw_request" | "provider.raw_response" | "material.annotation";
         /** ArtifactRef */
         ArtifactRef: {
             /** Artifact Id */
@@ -5135,6 +5135,7 @@ export interface components {
             video_number?: string | null;
             video_artifact: components["schemas"]["ArtifactRef"];
             cover_artifact?: components["schemas"]["ArtifactRef"] | null;
+            cover_thumb_artifact?: components["schemas"]["ArtifactRef"] | null;
             subtitle_artifact?: components["schemas"]["ArtifactRef"] | null;
             /**
              * Duration Sec

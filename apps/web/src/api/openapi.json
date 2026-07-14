@@ -9075,6 +9075,7 @@
           "video.finished",
           "subtitle.ass",
           "cover.image",
+          "cover.thumbnail",
           "publish.package",
           "run.report.public",
           "run.report.debug",
@@ -14357,6 +14358,16 @@
             "$ref": "#/components/schemas/ArtifactRef"
           },
           "cover_artifact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cover_thumb_artifact": {
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ArtifactRef"

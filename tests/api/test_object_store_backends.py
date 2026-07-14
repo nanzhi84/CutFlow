@@ -32,6 +32,7 @@ class FakeS3Client:
         self.bucket_created = False
         self.objects: dict[tuple[str, str], bytes] = {}
         self.upload_calls: list[tuple[str, str, object]] = []
+        self.extra_args: list[dict | None] = []
         self.download_calls: list[tuple[str, str, object]] = []
         self.presign_calls: list[tuple[str, dict[str, str], int]] = []
         self.delete_calls: list[tuple[str, str]] = []
@@ -43,8 +44,16 @@ class FakeS3Client:
     def create_bucket(self, *, Bucket: str) -> None:
         self.bucket_created = True
 
-    def upload_fileobj(self, Fileobj: BytesIO, Bucket: str, Key: str, Config: object) -> None:
+    def upload_fileobj(
+        self,
+        Fileobj: BytesIO,
+        Bucket: str,
+        Key: str,
+        Config: object,
+        ExtraArgs: dict | None = None,
+    ) -> None:
         self.upload_calls.append((Bucket, Key, Config))
+        self.extra_args.append(ExtraArgs)
         self.objects[(Bucket, Key)] = Fileobj.read()
 
     def download_fileobj(self, Bucket: str, Key: str, Fileobj: BytesIO, Config: object) -> None:
@@ -212,8 +221,20 @@ def test_s3_object_store_put_get_exists_signed_url_and_bucket_creation(tmp_path)
     assert signed.url.startswith("http://minio.local")
     assert "X-Amz-Signature=" in signed.url
     assert fake_client.presign_calls == [
-        ("get_object", {"Bucket": "cutagent-demo", "Key": ref.key}, 420)
+        (
+            "get_object",
+            {
+                "Bucket": "cutagent-demo",
+                "Key": ref.key,
+                # Served on GET even for objects uploaded before Cache-Control existed.
+                "ResponseCacheControl": "public, max-age=302400, immutable",
+            },
+            420,
+        )
     ]
+    # Every write carries the same immutable Cache-Control (keys are content- or
+    # uuid-addressed, so the bytes at a key never change).
+    assert fake_client.extra_args == [{"CacheControl": "public, max-age=302400, immutable"}]
     assert (tmp_path / "cache" / ref.bucket / ref.key).read_bytes() == b"s3-bytes"
 
     store.delete(ref.uri)
@@ -244,8 +265,12 @@ def test_s3_object_store_uses_native_oss_signed_get_url_for_aliyun_endpoint(tmp_
     assert parsed.scheme == "https"
     assert parsed.netloc == "cutagent-demo.oss-cn-shanghai.aliyuncs.com"
     assert parsed.path == "/clip-embeddings/sha/clip%20space.mp4"
-    assert set(query) == {"OSSAccessKeyId", "Expires", "Signature"}
+    # response-cache-control is a SIGNED OSS sub-resource: it rides in the query
+    # AND in the canonicalized resource, so the object is served with a
+    # Cache-Control header even though it was uploaded without one (issue #206).
+    assert set(query) == {"OSSAccessKeyId", "Expires", "Signature", "response-cache-control"}
     assert query["OSSAccessKeyId"] == ["oss-key"]
+    assert query["response-cache-control"] == ["public, max-age=302400, immutable"]
     assert fake_client.presign_calls == []
 
 

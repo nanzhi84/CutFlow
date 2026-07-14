@@ -101,9 +101,13 @@ class TieredObjectStore(ObjectStore):
         self,
         uri: str,
         *,
-        expires_in: timedelta = timedelta(minutes=15),
+        expires_in: timedelta | None = None,
         response_content_disposition: str | None = None,
     ) -> SignedUrlResponse:
+        # Pure routing: the sub-store owns both the signing TTL and the signed-URL
+        # cache, so the tier wrapper deliberately adds neither (a second cache here
+        # would just shadow theirs). ``expires_in=None`` means "use the sub-store's
+        # configured TTL" and must be forwarded as-is, not defaulted here.
         try:
             ref = parse_object_uri(uri)
         except ValueError:

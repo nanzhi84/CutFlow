@@ -870,6 +870,9 @@ class FinishedVideoRow(TimestampMixin, Base):
     video_number: Mapped[str | None] = mapped_column(String)
     video_artifact: Mapped[dict] = mapped_column(JSONB, nullable=False)
     cover_artifact: Mapped[dict | None] = mapped_column(JSONB)
+    # Small WebP cover derivative for Outputs list cards (migration 0052, issue #206).
+    # Nullable: pre-0052 rows and failed encodes fall back to cover_artifact.
+    cover_thumb_artifact: Mapped[dict | None] = mapped_column(JSONB)
     subtitle_artifact: Mapped[dict | None] = mapped_column(JSONB)
     duration_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     qc_status: Mapped[str] = mapped_column(String, nullable=False)

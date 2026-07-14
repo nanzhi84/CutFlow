@@ -169,6 +169,7 @@ def configure_app_state(app: FastAPI, *, session_factory=None) -> None:
     app.state.object_store = object_store_from_settings(
         app.state.settings.object_store,
         workflow_runtime=app.state.settings.workflow.runtime,
+        redis_url=app.state.settings.redis_url,
     )
     configure_object_store(app.state.object_store)
     local_secret_store = LocalSecretStore()

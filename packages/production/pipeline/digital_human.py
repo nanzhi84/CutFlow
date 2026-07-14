@@ -233,12 +233,14 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
     "ExportFinishedVideo": [
         ArtifactKind.video_finished,
         ArtifactKind.cover_image,
+        ArtifactKind.cover_thumbnail,
         ArtifactKind.publish_package,
     ],
     "SeedanceGenerateVideo": [ArtifactKind.video_rendered],
     "ExportSeedanceVideo": [
         ArtifactKind.video_finished,
         ArtifactKind.cover_image,
+        ArtifactKind.cover_thumbnail,
         ArtifactKind.publish_package,
     ],
     "FinalizeRunReport": [ArtifactKind.run_report_public, ArtifactKind.run_report_debug],

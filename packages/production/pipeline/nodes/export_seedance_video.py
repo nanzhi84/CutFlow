@@ -20,6 +20,7 @@ from packages.production.pipeline.nodes.export_finished_video import (
     _create_publish_package_artifact,
     _frame_cover,
     _resolve_owner_user_id,
+    cover_thumbnail,
 )
 
 _DEFAULT_DURATION_SEC = 15.0
@@ -41,6 +42,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         media_info=video.media_info,
     )
     cover_artifact = _safe_frame_cover(ctx, video)
+    thumb_artifact = cover_thumbnail(ctx, cover_artifact) if cover_artifact else None
 
     duration = (
         float(video.media_info.duration_sec)
@@ -60,6 +62,9 @@ def run(ctx: NodeContext) -> NodeOutput:
         ),
         video_artifact=repository.artifact_ref(video_artifact.id),
         cover_artifact=(repository.artifact_ref(cover_artifact.id) if cover_artifact else None),
+        cover_thumb_artifact=(
+            repository.artifact_ref(thumb_artifact.id) if thumb_artifact else None
+        ),
         duration_sec=duration,
         lipsync_provider_id=None,
         lipsync_fallback_used=False,
@@ -73,6 +78,8 @@ def run(ctx: NodeContext) -> NodeOutput:
     artifacts = [video_artifact]
     if cover_artifact is not None:
         artifacts.append(cover_artifact)
+    if thumb_artifact is not None:
+        artifacts.append(thumb_artifact)
     artifacts.append(package_artifact)
     return NodeOutput(artifacts=artifacts)
 

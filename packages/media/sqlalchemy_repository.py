@@ -150,6 +150,21 @@ def artifact_ref_from_row(row: ArtifactRow) -> ArtifactRef:
     )
 
 
+def _preferred_thumbnail(rows: list[ArtifactRow]) -> ArtifactRow | None:
+    """Pick the smallest usable thumbnail among an upload's derived images.
+
+    Order: the small WebP (``cover.thumbnail``), then the mid-point frame grab,
+    then whatever is newest. ``rows`` is already newest-first.
+    """
+    for row in rows:
+        if row.kind == ArtifactKind.cover_thumbnail.value:
+            return row
+    for row in rows:
+        if isinstance(row.payload, dict) and row.payload.get("thumbnail_label") == "mid":
+            return row
+    return rows[0] if rows else None
+
+
 def asset_record_is_v4(canonical: dict) -> bool:
     """A canonical dict is a real AnnotationV4 only when it carries a V4 meta layer."""
     meta = canonical.get("meta") if isinstance(canonical, dict) else None
@@ -316,22 +331,23 @@ class SqlAlchemyMediaRepository(BaseRepository):
                 raise NodeExecutionError(
                     ErrorCode.artifact_missing, "Completed upload artifact is missing."
                 )
+            # The card's thumbnail_uri points at the SMALL WebP when the upload flow
+            # produced one (issue #206); the full-resolution "mid" frame grab is the
+            # fallback for assets whose WebP encode failed. cover_thumbnail rows sort
+            # first because the kind ordering below is explicit, not chronological.
             thumbnails = list(
                 session.scalars(
                     select(ArtifactRow)
-                    .where(ArtifactRow.kind == ArtifactKind.cover_image.value)
+                    .where(
+                        ArtifactRow.kind.in_(
+                            (ArtifactKind.cover_thumbnail.value, ArtifactKind.cover_image.value)
+                        )
+                    )
                     .where(ArtifactRow.payload.contains({"source_artifact_id": artifact.id}))
                     .order_by(ArtifactRow.created_at.desc())
                 )
             )
-            thumbnail = next(
-                (
-                    row
-                    for row in thumbnails
-                    if isinstance(row.payload, dict) and row.payload.get("thumbnail_label") == "mid"
-                ),
-                thumbnails[0] if thumbnails else None,
-            )
+            thumbnail = _preferred_thumbnail(thumbnails)
             media_info = (
                 MediaInfo.model_validate(artifact.media_info)
                 if isinstance(artifact.media_info, dict)

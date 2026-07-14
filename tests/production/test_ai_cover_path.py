@@ -842,6 +842,100 @@ def test_frame_cover_default_mode_has_no_degradation(tmp_path, media_fixture_fac
     assert not output.provider_invocation_ids
 
 
+def _exported_thumbnail(output, adapter, run_id: str):
+    """The WebP the Outputs card will load, plus the FinishedVideo ref pointing at it."""
+    thumb = next(a for a in output.artifacts if a.kind == ArtifactKind.cover_thumbnail)
+    finished = next(v for v in adapter.repository.finished_videos.values() if v.run_id == run_id)
+    return thumb, finished
+
+
+def test_frame_cover_export_also_emits_a_small_webp_thumbnail(
+    tmp_path, media_fixture_factory, monkeypatch
+):
+    # Issue #206: the Outputs card must load THIS object, not the multi-megabyte cover.
+    adapter, gateway, secret_store, object_store = _adapter(tmp_path)
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store", lambda: object_store
+    )
+    state = _seed_final_state(
+        adapter.repository, object_store, media_fixture_factory, cover_mode="frame"
+    )
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+
+    from packages.production.pipeline import nodes
+
+    output = nodes.export_finished_video.run(ctx)
+
+    cover = next(a for a in output.artifacts if a.kind == ArtifactKind.cover_image)
+    thumb, finished = _exported_thumbnail(output, adapter, "run_cover")
+    assert thumb.uri and object_store.exists(parse_object_uri(thumb.uri)) is True
+    assert thumb.payload == {"source_artifact_id": cover.id}
+    # The card's preview_url resolves through this ref, so it must be wired onto the row.
+    assert finished.cover_thumb_artifact is not None
+    assert finished.cover_thumb_artifact.artifact_id == thumb.id
+    # It really is a WebP, and really is smaller than the cover it derives from.
+    thumb_bytes = object_store.get_bytes(parse_object_uri(thumb.uri))
+    assert thumb_bytes[:4] == b"RIFF" and thumb_bytes[8:12] == b"WEBP"
+    assert len(thumb_bytes) < len(object_store.get_bytes(parse_object_uri(cover.uri)))
+    assert output.status == NodeStatus.succeeded
+
+
+def test_ai_cover_export_also_emits_a_thumbnail(tmp_path, media_fixture_factory, monkeypatch):
+    # The AI cover's bytes only ever exist in the object store (the provider plugin
+    # uploads them), so this covers the path that a temp-file-based helper would miss.
+    adapter, gateway, secret_store, object_store = _adapter(tmp_path)
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store", lambda: object_store
+    )
+    _seed_image_profile(adapter.repository, secret_store.put("openai-image-key"))
+    gateway.register(_MockImageProvider())
+    state = _seed_final_state(
+        adapter.repository, object_store, media_fixture_factory, cover_mode="ai"
+    )
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+
+    from packages.production.pipeline import nodes
+
+    output = nodes.export_finished_video.run(ctx)
+
+    cover = next(a for a in output.artifacts if a.kind == ArtifactKind.cover_image)
+    thumb, finished = _exported_thumbnail(output, adapter, "run_cover")
+    assert thumb.payload == {"source_artifact_id": cover.id}
+    assert finished.cover_thumb_artifact.artifact_id == thumb.id
+
+
+def test_thumbnail_failure_does_not_fail_an_export_that_already_produced_a_video(
+    tmp_path, media_fixture_factory, monkeypatch
+):
+    # The video (and, on the AI path, a PAID cover) already exist by the time the
+    # thumbnail runs. A webp encode failure must degrade to "no thumbnail" — the card
+    # then falls back to the full cover — never take the export down with it.
+    adapter, gateway, secret_store, object_store = _adapter(tmp_path)
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store", lambda: object_store
+    )
+    monkeypatch.setattr(
+        "packages.production.pipeline.nodes.export_finished_video.build_cover_thumbnail_bytes",
+        lambda *_a, **_kw: (_ for _ in ()).throw(ValueError("webp encoder exploded")),
+    )
+    state = _seed_final_state(
+        adapter.repository, object_store, media_fixture_factory, cover_mode="frame"
+    )
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+
+    from packages.production.pipeline import nodes
+
+    output = nodes.export_finished_video.run(ctx)
+
+    assert output.status == NodeStatus.succeeded
+    assert not any(a.kind == ArtifactKind.cover_thumbnail for a in output.artifacts)
+    finished = next(
+        v for v in adapter.repository.finished_videos.values() if v.run_id == "run_cover"
+    )
+    assert finished.cover_thumb_artifact is None
+    assert finished.cover_artifact is not None  # the card still has something to show
+
+
 def test_seeded_image_profile_is_gated_without_an_active_secret(tmp_path):
     # The seeded openai.image.prod profile is enabled and its plugin is registered,
     # so the ACTIVE SECRET is the only thing keeping the PAID AI-cover path inert.

@@ -204,6 +204,9 @@ class ArtifactKind(str, Enum):
     video_finished = "video.finished"
     subtitle_ass = "subtitle.ass"
     cover_image = "cover.image"
+    # Small WebP derivative of cover_image, for list/grid cards. The full-size
+    # cover stays the publishing asset; this is what the browser downloads.
+    cover_thumbnail = "cover.thumbnail"
     publish_package = "publish.package"
     run_report_public = "run.report.public"
     run_report_debug = "run.report.debug"

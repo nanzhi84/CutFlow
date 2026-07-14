@@ -43,13 +43,15 @@ export default function RunsPage() {
     queryKey: ["case-runs", caseId, runLimit],
     queryFn: () => api.cases.runs(caseId, { limit: runLimit }),
     enabled: Boolean(caseId),
-    refetchInterval: pageVisible ? 10000 : false,
+    refetchInterval: (query) => pollInterval(pageVisible, hasActiveRun(query.state.data?.items)),
   });
+  const runsAreActive = hasActiveRun(runs.data?.items);
   const finishedVideos = useQuery({
     queryKey: ["finished-videos", caseId, finishedVideoLimit],
     queryFn: () => api.finishedVideos.list(caseId, { limit: finishedVideoLimit }),
     enabled: Boolean(caseId),
-    refetchInterval: pageVisible ? 10000 : false,
+    // Finished videos only appear when a run completes, so an idle page needs no fast poll.
+    refetchInterval: pollInterval(pageVisible, runsAreActive),
   });
   const [selectedRunId, setSelectedRunId] = useState<string | null>(highlightedRunId);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -62,7 +64,10 @@ export default function RunsPage() {
     queryKey: ["run-detail", selectedCard?.runId],
     queryFn: () => api.runs.detail(selectedCard!.runId),
     enabled: Boolean(selectedCard?.runId),
-    refetchInterval: pageVisible ? 10000 : false,
+    refetchInterval: pollInterval(
+      pageVisible,
+      Boolean(selectedCard && isProcessingStatus(selectedCard.status)),
+    ),
   });
   const runEvents = useRunEvents(selectedCard?.runId, Boolean(selectedCard?.runId));
   const lastEventKey = runEvents.events.at(-1)?.event_id ?? runEvents.events.length;
@@ -308,6 +313,19 @@ export default function RunsPage() {
 
 function isProcessingStatus(status: RunCard["status"]) {
   return status === "created" || status === "admitted" || status === "running" || status === "cancelling";
+}
+
+function hasActiveRun(items: RunCard[] | undefined) {
+  return Boolean(items?.some((run) => isProcessingStatus(run.status)));
+}
+
+/**
+ * 只有真的有 run 在跑时才需要 10s 快轮询；全部终态时退避到 60s，仅用于发现别处新建的 run。
+ * 页面不可见则完全停轮询。（issue #206：轮询是 OSS 流量的放大系数）
+ */
+function pollInterval(pageVisible: boolean, active: boolean): number | false {
+  if (!pageVisible) return false;
+  return active ? 10000 : 60000;
 }
 
 function RunThumbnail({ run }: { run: RunCard }) {

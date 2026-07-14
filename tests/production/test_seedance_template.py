@@ -60,6 +60,8 @@ def test_seedance_node_outputs_and_provider_side_effect():
     assert output_kinds["ExportSeedanceVideo"] == [
         ArtifactKind.video_finished,
         ArtifactKind.cover_image,
+        # The small WebP the Outputs card loads instead of the cover (issue #206).
+        ArtifactKind.cover_thumbnail,
         ArtifactKind.publish_package,
     ]
     specs = {spec.node_id: spec for spec in template.nodes}
