@@ -68,10 +68,14 @@ def _thumbnail_from(store: ObjectStore, uri: str) -> tuple[str, str] | None:
 def backfill_finished_videos(session_factory, store: ObjectStore, *, dry_run: bool, limit: int):
     done = failed = 0
     with session_factory() as session:
+        # Scan exactly the RESOLVABLE rows. `cover_artifact.isnot(None)` is not enough:
+        # a coverless export (Seedance's fail-open frame cover) stores JSON 'null',
+        # which is not SQL NULL, so such a row would match forever and — under
+        # --limit — wedge the window on a row that can never be filled.
         statement = (
             select(FinishedVideoRow)
             .where(FinishedVideoRow.cover_thumb_artifact.is_(None))
-            .where(FinishedVideoRow.cover_artifact.isnot(None))
+            .where(FinishedVideoRow.cover_artifact["uri"].astext.isnot(None))
             .order_by(FinishedVideoRow.created_at.desc())
         )
         if limit:

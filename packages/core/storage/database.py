@@ -872,7 +872,9 @@ class FinishedVideoRow(TimestampMixin, Base):
     cover_artifact: Mapped[dict | None] = mapped_column(JSONB)
     # Small WebP cover derivative for Outputs list cards (migration 0052, issue #206).
     # Nullable: pre-0052 rows and failed encodes fall back to cover_artifact.
-    cover_thumb_artifact: Mapped[dict | None] = mapped_column(JSONB)
+    # none_as_null: without it SQLAlchemy persists Python None as JSON 'null', not SQL
+    # NULL — and then the backfill's `IS NULL` scan silently matches nothing.
+    cover_thumb_artifact: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
     subtitle_artifact: Mapped[dict | None] = mapped_column(JSONB)
     duration_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     qc_status: Mapped[str] = mapped_column(String, nullable=False)
