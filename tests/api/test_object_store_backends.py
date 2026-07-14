@@ -272,6 +272,12 @@ def test_s3_object_store_uses_native_oss_signed_get_url_for_aliyun_endpoint(tmp_
     assert query["OSSAccessKeyId"] == ["oss-key"]
     assert query["response-cache-control"] == ["public, max-age=302400, immutable"]
     assert fake_client.presign_calls == []
+    # Assert on the RAW query, not parse_qs: the string-to-sign carries literal
+    # spaces, so a form-style "+" in the query would only verify if OSS's decoder
+    # happened to be form-style. Aliyun's own SDKs emit %20. parse_qs decodes "+"
+    # back to a space and would happily hide the difference.
+    assert "+" not in parsed.query
+    assert "response-cache-control=public%2C%20max-age%3D302400%2C%20immutable" in parsed.query
 
 
 def test_s3_object_store_passes_addressing_style_and_checksum_config_to_client_factory(tmp_path):

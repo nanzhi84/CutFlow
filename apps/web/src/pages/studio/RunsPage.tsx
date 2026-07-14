@@ -81,6 +81,11 @@ export default function RunsPage() {
   useEffect(() => {
     if (!lastEventKey) return;
     void queryClient.invalidateQueries({ queryKey: ["case-runs", caseId] });
+    // 成片行在 run 转终态之前就已提交，而 run 一转终态轮询就退避到 60s（并且
+    // react-query 换 interval 时会丢掉本来马上要触发的那次 tick），只靠轮询的话
+    // 用户会看到 run 已「成功」却一分钟没有成片卡片。跟着 run 事件刷新，60s 那档
+    // 就只承担「发现别处新建的 run」这一件事。
+    void queryClient.invalidateQueries({ queryKey: ["finished-videos", caseId] });
     if (selectedCard?.runId) {
       void queryClient.invalidateQueries({ queryKey: ["run-detail", selectedCard.runId] });
     }

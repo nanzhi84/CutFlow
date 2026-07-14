@@ -24,7 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from sqlalchemy import or_, select  # noqa: E402
+from sqlalchemy import and_, or_, select  # noqa: E402
 
 from packages.core.contracts import ArtifactKind  # noqa: E402
 from packages.core.storage.bootstrap import get_sqlalchemy_session_factory  # noqa: E402
@@ -128,23 +128,38 @@ def backfill_media_assets(session_factory, store: ObjectStore, *, dry_run: bool,
     """
     done = failed = 0
     with session_factory() as session:
+        # The "already done" test MUST be a SQL predicate, not a Python filter after
+        # the LIMIT: writing a thumbnail bumps updated_at (TimestampMixin.onupdate), so
+        # a --limit run ordered by updated_at would re-select the rows it just finished
+        # and never advance. Order by the immutable id for a stable, progressing scan.
         statement = (
             select(MediaAssetRow)
-            .where(or_(MediaAssetRow.kind == "image", MediaAssetRow.kind == "video"))
-            .order_by(MediaAssetRow.updated_at.desc())
+            .where(MediaAssetRow.kind.in_(("image", "video")))
+            .where(
+                or_(
+                    # A non-WebP thumbnail (a full-res frame grab) we can shrink...
+                    and_(
+                        MediaAssetRow.thumbnail_uri.isnot(None),
+                        ~MediaAssetRow.thumbnail_uri.like(f"%{THUMBNAIL_SUFFIX}"),
+                    ),
+                    # ...or an image with no thumbnail at all, whose card signs the
+                    # ORIGINAL upload today. A VIDEO with no thumbnail has nothing to
+                    # shrink (deriving one would need ffmpeg), so it is excluded here
+                    # rather than left to match the predicate forever and wedge --limit.
+                    and_(
+                        MediaAssetRow.thumbnail_uri.is_(None),
+                        MediaAssetRow.kind == "image",
+                        MediaAssetRow.source_artifact_id.isnot(None),
+                    ),
+                )
+            )
+            .order_by(MediaAssetRow.id)
         )
         if limit:
             statement = statement.limit(limit)
-        candidates = [
+        pending = [
             (row.id, row.thumbnail_uri, row.kind, row.source_artifact_id)
             for row in session.scalars(statement)
-        ]
-        # Already-WebP thumbnails are done; anything else (PNG frame grab, or the
-        # original because thumbnail_uri is NULL) still needs one.
-        pending = [
-            item
-            for item in candidates
-            if not (item[1] or "").endswith(THUMBNAIL_SUFFIX)
         ]
         sources: dict[str, str] = {}
         for asset_id, thumbnail_uri, kind, source_artifact_id in pending:
@@ -177,7 +192,7 @@ def backfill_media_assets(session_factory, store: ObjectStore, *, dry_run: bool,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="List what would change, write nothing.")
-    parser.add_argument("--limit", type=int, default=0, help="Cap rows scanned per table (0 = all).")
+    parser.add_argument("--limit", type=int, default=0, help="Cap rows scanned per table (0 = all). A row whose source object fails to encode stays in the window, so prefer the default for a full backfill.")
     parser.add_argument("--skip-finished-videos", action="store_true")
     parser.add_argument("--skip-media-assets", action="store_true")
     args = parser.parse_args()

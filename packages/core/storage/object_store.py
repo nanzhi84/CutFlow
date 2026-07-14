@@ -628,7 +628,14 @@ class S3ObjectStore(ObjectStore):
             ).digest()
         ).decode("ascii")
         query_params["Signature"] = signature
-        query = urlencode(query_params)
+        # quote (=> %20) rather than urlencode's default quote_plus (=> +). The
+        # string-to-sign carries literal spaces, so a "+" in the query only verifies
+        # if OSS's decoder happens to be form-style. It currently is (verified against
+        # the live endpoint), but Aliyun's own SDKs emit %20 and nothing documents the
+        # "+" behaviour — and a URL signed wrong would be pinned in the cache for days
+        # before anyone noticed. %20 is unambiguous under RFC 3986. Everything else
+        # (the base64 Signature's +, /, =) percent-encodes identically either way.
+        query = urlencode(query_params, quote_via=quote, safe="")
         host = f"{ref.bucket}.{endpoint.netloc}"
         path = "/" + quote(ref.key, safe="/")
         return f"{endpoint.scheme}://{host}{path}?{query}"
