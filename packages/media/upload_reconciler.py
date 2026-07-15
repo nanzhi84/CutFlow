@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 import logging
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event, Thread
 from uuid import uuid4
 
 from packages.core import contracts as c
@@ -83,18 +86,52 @@ class UploadReconciler:
             lease_seconds=self.settings.reconcile_lease_seconds,
         )
         for upload in claimed:
-            self.process(upload.id)
+            self.process(upload.id, _lease_owner=self.owner)
         derivations = self.repository.claim_ready_derivations(
             owner=self.owner,
             limit=max(0, limit - len(claimed)),
             lease_seconds=self.settings.reconcile_lease_seconds,
         )
         for upload in derivations:
-            self.process(upload.id)
+            self.process(upload.id, _lease_owner=self.owner)
         return len(expired) + len(claimed) + len(derivations)
 
     def process(
-        self, upload_session_id: str, *, raise_on_rejected: bool = False
+        self,
+        upload_session_id: str,
+        *,
+        raise_on_rejected: bool = False,
+        _lease_owner: str | None = None,
+    ) -> c.UploadSession:
+        # Batch worker claims reuse ``self.owner``; direct API/background calls
+        # receive a unique token so two requests in one replica cannot share a
+        # lease merely because they share one reconciler instance.
+        lease_owner = _lease_owner or f"{self.owner}:run:{uuid4().hex}"
+        claimed = self.repository.claim_for_processing(
+            upload_session_id,
+            owner=lease_owner,
+            lease_seconds=self.settings.reconcile_lease_seconds,
+        )
+        if claimed is None:
+            current = self.repository.get_upload(upload_session_id)
+            if current is None:
+                raise KeyError(upload_session_id)
+            if current.status in _CLEANUP_TERMINAL_STATUSES:
+                self._cleanup_upload(current)
+            return current
+        with self._lease_heartbeat(upload_session_id, lease_owner):
+            return self._process_claimed(
+                upload_session_id,
+                lease_owner=lease_owner,
+                raise_on_rejected=raise_on_rejected,
+            )
+
+    def _process_claimed(
+        self,
+        upload_session_id: str,
+        *,
+        lease_owner: str,
+        raise_on_rejected: bool,
     ) -> c.UploadSession:
         try:
             # A normal request can traverse all three durable stages immediately;
@@ -104,30 +141,38 @@ class UploadReconciler:
                 if upload is None:
                     raise KeyError(upload_session_id)
                 if upload.status == c.UploadStatus.completing:
-                    self._complete_object(upload)
+                    self._complete_object(upload, lease_owner=lease_owner)
                     continue
                 if upload.status == c.UploadStatus.object_completed:
-                    self._verify_and_promote(upload)
+                    self._verify_and_promote(upload, lease_owner=lease_owner)
                     continue
                 if upload.status == c.UploadStatus.verified:
                     self._assert_verified_object_exists(upload)
-                    upload, _, _, _ = self.repository.finalize_ready(upload.id)
+                    upload, _, _, _ = self.repository.finalize_ready(
+                        upload.id,
+                        release_lease=False,
+                        lease_owner=lease_owner,
+                    )
                     self._cleanup_staging_after_promotion(upload)
-                    self._derive_ready_artifacts(upload)
+                    self._derive_ready_artifacts(upload, lease_owner=lease_owner)
                     return upload
                 if upload.status == c.UploadStatus.ready:
                     self._cleanup_staging_after_promotion(upload)
-                    self._derive_ready_artifacts(upload)
+                    self._derive_ready_artifacts(upload, lease_owner=lease_owner)
                     return upload
                 if upload.status in _CLEANUP_TERMINAL_STATUSES:
                     self._cleanup_upload(upload)
-                self.repository.clear_lease(upload.id)
+                self.repository.clear_lease(upload.id, lease_owner=lease_owner)
                 return upload
             raise RuntimeError("Upload reconciler exceeded the state transition budget.")
         except UploadRejectedError as exc:
             upload = self.repository.get_upload(upload_session_id)
             if upload is not None:
-                rejected = self.repository.reject_upload(upload.id, str(exc))
+                rejected = self.repository.reject_upload(
+                    upload.id,
+                    str(exc),
+                    lease_owner=lease_owner,
+                )
                 if rejected.status == c.UploadStatus.rejected:
                     self._cleanup_upload(rejected)
                 if raise_on_rejected and rejected.status == c.UploadStatus.rejected:
@@ -141,11 +186,16 @@ class UploadReconciler:
                 # final object. Remove both known and derivable keys after observing
                 # the terminal winner instead of retrying an illegal transition.
                 self._cleanup_upload(current)
-                self.repository.clear_lease(upload_session_id)
+                self.repository.clear_lease(
+                    upload_session_id,
+                    lease_owner=lease_owner,
+                )
                 return current
             if current is not None and current.status == c.UploadStatus.ready:
                 upload = self.repository.record_derivation_retry(
-                    upload_session_id, f"{type(exc).__name__}: {exc}"
+                    upload_session_id,
+                    f"{type(exc).__name__}: {exc}",
+                    lease_owner=lease_owner,
                 )
                 logger.warning(
                     "upload derivative generation failed after ready",
@@ -161,6 +211,7 @@ class UploadReconciler:
                 upload_session_id,
                 f"{type(exc).__name__}: {exc}",
                 max_retries=self.settings.reconcile_max_retries,
+                lease_owner=lease_owner,
             )
             logger.warning(
                 "upload reconciliation failed",
@@ -176,21 +227,71 @@ class UploadReconciler:
                 self._cleanup_upload(upload)
             return upload
 
+    @contextmanager
+    def _lease_heartbeat(self, upload_session_id: str, lease_owner: str) -> Iterator[None]:
+        stop = Event()
+        interval = max(
+            0.25,
+            min(self.settings.reconcile_lease_seconds / 3, 30.0),
+        )
+
+        def renew() -> None:
+            while not stop.wait(interval):
+                try:
+                    renewed = self.repository.renew_processing_lease(
+                        upload_session_id,
+                        owner=lease_owner,
+                        lease_seconds=self.settings.reconcile_lease_seconds,
+                    )
+                except Exception:  # noqa: BLE001 - transient DB errors may recover next tick
+                    logger.warning(
+                        "upload lease heartbeat failed",
+                        extra={
+                            "event": "upload_lease_heartbeat_failed",
+                            "upload_session_id": upload_session_id,
+                        },
+                        exc_info=True,
+                    )
+                    continue
+                if not renewed:
+                    logger.warning(
+                        "upload processing lease was lost",
+                        extra={
+                            "event": "upload_lease_lost",
+                            "upload_session_id": upload_session_id,
+                        },
+                    )
+                    return
+
+        thread = Thread(
+            target=renew,
+            name=f"upload-lease-{upload_session_id}",
+            daemon=True,
+        )
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join(timeout=1)
+
     def cleanup_terminal(self, upload: c.UploadSession) -> None:
         """Idempotently remove remote state after a persisted terminal transition."""
 
         self._cleanup_upload(upload)
 
-    def _derive_ready_artifacts(self, upload: c.UploadSession) -> None:
+    def _derive_ready_artifacts(
+        self, upload: c.UploadSession, *, lease_owner: str | None = None
+    ) -> None:
         source = self.repository.artifact_for_upload(upload.id)
         if source is None:
             raise RuntimeError("Ready upload source artifact is missing.")
         if source.uri is None or source.media_info is None:
-            self.repository.mark_derivation_complete(upload.id)
+            self.repository.mark_derivation_complete(upload.id, lease_owner=lease_owner)
             return
         media_type = source.media_info.media_type
         if media_type not in {"video", "image"}:
-            self.repository.mark_derivation_complete(upload.id)
+            self.repository.mark_derivation_complete(upload.id, lease_owner=lease_owner)
             return
 
         source_path = local_object_path(self.object_store, source.uri)
@@ -227,7 +328,7 @@ class UploadReconciler:
         else:
             web_uri = self._create_web_thumbnail(source.id, thumbnail_source)
         self.repository.set_upload_thumbnail(upload.id, web_uri)
-        self.repository.mark_derivation_complete(upload.id)
+        self.repository.mark_derivation_complete(upload.id, lease_owner=lease_owner)
 
     def _create_web_thumbnail(self, source_artifact_id: str, source: Path) -> str:
         content = build_cover_thumbnail_file(source)
@@ -257,7 +358,9 @@ class UploadReconciler:
             raise RuntimeError("Derived thumbnail artifact has no URI.")
         return artifact.uri
 
-    def _complete_object(self, upload: c.UploadSession) -> None:
+    def _complete_object(
+        self, upload: c.UploadSession, *, lease_owner: str | None = None
+    ) -> None:
         staging_uri = upload.staging_uri or upload.object_uri
         if staging_uri is None:
             raise UploadRejectedError(
@@ -292,9 +395,8 @@ class UploadReconciler:
                 "last_error": None,
                 "retry_count": 0,
                 "next_retry_at": None,
-                "lease_owner": None,
-                "lease_expires_at": None,
             },
+            lease_owner=lease_owner,
         )
 
     @staticmethod
@@ -321,7 +423,9 @@ class UploadReconciler:
                     c.ErrorCode.upload_size_mismatch,
                 )
 
-    def _verify_and_promote(self, upload: c.UploadSession) -> None:
+    def _verify_and_promote(
+        self, upload: c.UploadSession, *, lease_owner: str | None = None
+    ) -> None:
         staging_uri = upload.staging_uri or upload.object_uri
         if staging_uri is None:
             raise UploadRejectedError(
@@ -429,9 +533,8 @@ class UploadReconciler:
                 "last_error": None,
                 "retry_count": 0,
                 "next_retry_at": None,
-                "lease_owner": None,
-                "lease_expires_at": None,
             },
+            lease_owner=lease_owner,
         )
         self._safe_delete(staging_uri)
 

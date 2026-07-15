@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timedelta
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from apps.api.main import app
+from packages.core import contracts as c
 from packages.core.storage.database import ArtifactRow
 from packages.core.storage.object_store import parse_object_uri, sha256_file
 from packages.media.assets import local_object_path
@@ -127,6 +130,77 @@ def test_prepare_is_idempotent_by_stable_client_id_and_rejects_identity_conflict
     )
     assert hash_conflict.status_code == 409, hash_conflict.text
     assert hash_conflict.json()["error"]["code"] == "idempotency.conflict"
+
+
+def test_expired_sessions_cannot_be_reprepared_or_resigned():
+    login_admin()
+    token = uuid4().hex
+    repository = app.state.sqlalchemy_upload_repository
+
+    single_payload = prepare_payload(
+        client_upload_id=f"client_expired_single_{token}",
+        size_bytes=1024,
+    )
+    single = client.post("/api/uploads/prepare", json=single_payload)
+    assert single.status_code == 201, single.text
+    single_id = single.json()["upload_session"]["id"]
+    repository.patch_upload(
+        single_id,
+        {"expires_at": c.utcnow() - timedelta(seconds=1)},
+    )
+
+    repeated = client.post("/api/uploads/prepare", json=single_payload)
+    assert repeated.status_code == 400, repeated.text
+    assert repeated.json()["error"]["code"] == "upload.invalid_state"
+    assert client.get(f"/api/uploads/{single_id}").json()["status"] == "expired"
+
+    multipart_payload = prepare_payload(
+        client_upload_id=f"client_expired_multipart_{token}",
+        size_bytes=16 * MIB,
+    )
+    multipart = client.post("/api/uploads/prepare", json=multipart_payload)
+    assert multipart.status_code == 201, multipart.text
+    upload = multipart.json()["upload_session"]
+    upload_id = upload["id"]
+    multipart_upload_id = repository.multipart_upload_id(upload_id)
+    assert multipart_upload_id is not None
+    repository.patch_upload(
+        upload_id,
+        {"expires_at": c.utcnow() - timedelta(seconds=1)},
+    )
+
+    signed = client.post(
+        f"/api/uploads/{upload_id}/parts/sign",
+        json={"part_numbers": [1]},
+    )
+    assert signed.status_code == 400, signed.text
+    assert signed.json()["error"]["code"] == "upload.invalid_state"
+    with pytest.raises(FileNotFoundError):
+        app.state.object_store.list_parts(
+            upload["staging_uri"],
+            upload_id=multipart_upload_id,
+        )
+
+
+def test_presigned_put_expires_before_the_upload_session():
+    login_admin()
+    payload = prepare_payload(
+        client_upload_id=f"client_bounded_presign_{uuid4().hex}",
+        size_bytes=1024,
+    )
+    prepared = client.post("/api/uploads/prepare", json=payload)
+    assert prepared.status_code == 201, prepared.text
+    upload_id = prepared.json()["upload_session"]["id"]
+    session_expiry = c.utcnow() + timedelta(minutes=2)
+    app.state.sqlalchemy_upload_repository.patch_upload(
+        upload_id,
+        {"expires_at": session_expiry},
+    )
+
+    refreshed = client.post("/api/uploads/prepare", json=payload)
+    assert refreshed.status_code == 201, refreshed.text
+    signed_expiry = datetime.fromisoformat(refreshed.json()["expires_at"])
+    assert signed_expiry < session_expiry
 
 
 def test_multipart_resume_uses_list_parts_and_completion_is_repeatable():

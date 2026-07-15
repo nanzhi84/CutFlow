@@ -4,7 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from math import ceil
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
+from time import sleep
 
 import pytest
 from sqlalchemy import func, select
@@ -174,12 +175,12 @@ def test_recovers_when_process_exits_after_complete_multipart(
     real_patch = repository.patch_upload
     crashed = False
 
-    def crash_before_object_completed(upload_id: str, updates: dict):
+    def crash_before_object_completed(upload_id: str, updates: dict, **kwargs):
         nonlocal crashed
         if updates.get("status") == c.UploadStatus.object_completed and not crashed:
             crashed = True
             raise RuntimeError("injected exit after CompleteMultipartUpload")
-        return real_patch(upload_id, updates)
+        return real_patch(upload_id, updates, **kwargs)
 
     monkeypatch.setattr(repository, "patch_upload", crash_before_object_completed)
     interrupted = reconciler.process(upload.id)
@@ -189,6 +190,7 @@ def test_recovers_when_process_exits_after_complete_multipart(
     assert store.exists(parse_object_uri(interrupted.staging_uri))
 
     monkeypatch.setattr(repository, "patch_upload", real_patch)
+    real_patch(upload.id, {"next_retry_at": None})
     recovered = reconciler.process(upload.id)
     assert recovered.status == c.UploadStatus.ready
     _assert_single_registration(db_session_factory, upload.id)
@@ -218,7 +220,11 @@ def test_normalization_state_and_asset_tag_are_persisted_without_platform_ffmpeg
         "packages.media.upload_reconciler.normalize_for_upload",
         lambda source, output: _fake_normalization(Path(source), Path(output), media_info),
     )
-    monkeypatch.setattr(reconciler, "_derive_ready_artifacts", lambda _upload: None)
+    monkeypatch.setattr(
+        reconciler,
+        "_derive_ready_artifacts",
+        lambda _upload, **_kwargs: None,
+    )
 
     ready = reconciler.process(upload.id)
     _, _, asset, _ = repository.ready_resources(upload.id)
@@ -286,12 +292,12 @@ def test_recovers_when_process_exits_after_verified_copy(
     real_patch = repository.patch_upload
     crashed = False
 
-    def crash_before_verified(upload_id: str, updates: dict):
+    def crash_before_verified(upload_id: str, updates: dict, **kwargs):
         nonlocal crashed
         if updates.get("status") == c.UploadStatus.verified and not crashed:
             crashed = True
             raise RuntimeError("injected exit after final object copy")
-        return real_patch(upload_id, updates)
+        return real_patch(upload_id, updates, **kwargs)
 
     monkeypatch.setattr(repository, "patch_upload", crash_before_verified)
     interrupted = reconciler.process(upload.id)
@@ -299,6 +305,7 @@ def test_recovers_when_process_exits_after_verified_copy(
     assert interrupted.retry_count == 1
 
     monkeypatch.setattr(repository, "patch_upload", real_patch)
+    real_patch(upload.id, {"next_retry_at": None})
     recovered = reconciler.process(upload.id)
     assert recovered.status == c.UploadStatus.ready
     _assert_single_registration(db_session_factory, upload.id)
@@ -352,9 +359,9 @@ def test_commit_succeeded_but_response_was_lost_is_idempotent(
     real_finalize = repository.finalize_ready
     crashed = False
 
-    def commit_then_exit(upload_id: str):
+    def commit_then_exit(upload_id: str, **kwargs):
         nonlocal crashed
-        result = real_finalize(upload_id)
+        result = real_finalize(upload_id, **kwargs)
         if not crashed:
             crashed = True
             raise RuntimeError("injected exit after registration commit")
@@ -484,6 +491,63 @@ def test_concurrent_prepare_and_multipart_creation_have_one_winner(
     assert create_calls == 1
 
 
+def test_long_processing_renews_lease_and_excludes_api_worker_race(
+    db_session_factory,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repository = _repository(db_session_factory)
+    store = LocalObjectStore(tmp_path / "objects")
+    upload = _create_upload(
+        repository,
+        store,
+        minimal_ttf_bytes(family="Lease heartbeat"),
+        multipart=False,
+    )
+    settings = UploadSettings(reconcile_lease_seconds=1)
+    api_reconciler = UploadReconciler(repository, store, settings, owner="api-immediate")
+    worker_reconciler = UploadReconciler(repository, store, settings, owner="worker")
+    entered = Event()
+    release = Event()
+    original_complete = api_reconciler._complete_object
+    complete_calls = 0
+
+    def blocked_complete(current, *, lease_owner=None):
+        nonlocal complete_calls
+        complete_calls += 1
+        entered.set()
+        assert release.wait(timeout=5)
+        original_complete(current, lease_owner=lease_owner)
+
+    monkeypatch.setattr(api_reconciler, "_complete_object", blocked_complete)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(api_reconciler.process, upload.id)
+        try:
+            assert entered.wait(timeout=5)
+            # Wait beyond the original one-second lease. The heartbeat must keep
+            # the row unavailable to both the worker batch claim and a direct
+            # process() call from another reconciler.
+            sleep(1.25)
+            assert (
+                repository.claim_reconcilable(
+                    owner=worker_reconciler.owner,
+                    limit=1,
+                    lease_seconds=1,
+                )
+                == []
+            )
+            observed = worker_reconciler.process(upload.id)
+            assert observed.status == c.UploadStatus.completing
+            assert complete_calls == 1
+        finally:
+            release.set()
+        ready = future.result(timeout=10)
+
+    assert ready.status == c.UploadStatus.ready
+    _assert_single_registration(db_session_factory, upload.id)
+
+
 def test_expired_incomplete_multipart_is_aborted(db_session_factory, tmp_path) -> None:
     repository = _repository(db_session_factory)
     store = LocalObjectStore(tmp_path / "objects")
@@ -492,7 +556,10 @@ def test_expired_incomplete_multipart_is_aborted(db_session_factory, tmp_path) -
         store,
         minimal_ttf_bytes(family="Expired upload"),
         multipart=True,
-        expires_at=c.utcnow() - timedelta(seconds=1),
+    )
+    repository.patch_upload(
+        upload.id,
+        {"expires_at": c.utcnow() - timedelta(seconds=1)},
     )
     staging_uri = upload.staging_uri
     multipart_upload_id = repository.multipart_upload_id(upload.id)

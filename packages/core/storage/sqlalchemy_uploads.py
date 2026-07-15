@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import timedelta
 from collections.abc import Callable
+from datetime import datetime, timedelta
 
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -38,6 +38,14 @@ _RECONCILABLE_STATUSES = (
     UploadStatus.object_completed.value,
     UploadStatus.verified.value,
 )
+_EXPIRABLE_STATUSES = (
+    UploadStatus.prepared.value,
+    UploadStatus.uploading.value,
+    UploadStatus.completing.value,
+    UploadStatus.object_completed.value,
+    UploadStatus.verified.value,
+)
+_PROCESSABLE_STATUSES = (*_RECONCILABLE_STATUSES, UploadStatus.ready.value)
 _IMMUTABLE_TERMINAL_STATUSES = {
     UploadStatus.ready.value,
     UploadStatus.rejected.value,
@@ -45,6 +53,24 @@ _IMMUTABLE_TERMINAL_STATUSES = {
     UploadStatus.cancelled.value,
     UploadStatus.expired.value,
 }
+
+
+def _expire_row_if_stale(row: UploadSessionRow, now: datetime) -> bool:
+    if (
+        row.status not in _EXPIRABLE_STATUSES
+        or row.expires_at is None
+        or row.expires_at > now
+        or (row.lease_expires_at is not None and row.lease_expires_at > now)
+    ):
+        return False
+    assert_transition("upload_session", row.status, UploadStatus.expired.value)
+    row.status = UploadStatus.expired.value
+    row.last_error = "Upload session expired before it became ready."
+    row.lease_owner = None
+    row.lease_expires_at = None
+    row.next_retry_at = None
+    row.updated_at = now
+    return True
 
 
 def upload_row_to_contract(row: UploadSessionRow) -> UploadSession:
@@ -316,7 +342,13 @@ class SqlAlchemyUploadRepository(BaseRepository):
             session.commit()
             return upload_id
 
-    def patch_upload(self, upload_session_id: str, updates: dict) -> UploadSession:
+    def patch_upload(
+        self,
+        upload_session_id: str,
+        updates: dict,
+        *,
+        lease_owner: str | None = None,
+    ) -> UploadSession:
         with self.session_factory() as session:
             # State transitions can race with cancel/expiry or another reconciler.
             # Lock and re-read the latest row so a stale transition can never
@@ -328,6 +360,11 @@ class SqlAlchemyUploadRepository(BaseRepository):
             )
             if row is None:
                 raise KeyError(upload_session_id)
+            if lease_owner is not None and row.lease_owner != lease_owner:
+                raise NodeExecutionError(
+                    ErrorCode.upload_invalid_state,
+                    "Upload processing lease was lost.",
+                )
             self._apply_updates(row, updates)
             row.updated_at = utcnow()
             session.commit()
@@ -363,6 +400,11 @@ class SqlAlchemyUploadRepository(BaseRepository):
             )
             if row is None:
                 raise KeyError(upload_session_id)
+            now = utcnow()
+            if _expire_row_if_stale(row, now):
+                session.commit()
+                session.refresh(row)
+                return upload_row_to_contract(row)
             if row.size_bytes != size_bytes:
                 raise NodeExecutionError(ErrorCode.upload_size_mismatch, "Upload size mismatch.")
             if (
@@ -407,6 +449,86 @@ class SqlAlchemyUploadRepository(BaseRepository):
             session.commit()
             session.refresh(row)
             return upload_row_to_contract(row)
+
+    def expire_if_stale(self, upload_session_id: str) -> UploadSession:
+        """Atomically expose expiry before an API can mint another upload URL."""
+
+        with self.session_factory() as session:
+            row = session.scalar(
+                select(UploadSessionRow)
+                .where(UploadSessionRow.id == upload_session_id)
+                .with_for_update()
+            )
+            if row is None:
+                raise KeyError(upload_session_id)
+            if _expire_row_if_stale(row, utcnow()):
+                session.commit()
+                session.refresh(row)
+            return upload_row_to_contract(row)
+
+    def claim_for_processing(
+        self,
+        upload_session_id: str,
+        *,
+        owner: str,
+        lease_seconds: int,
+    ) -> UploadSession | None:
+        """Claim one upload for API or worker processing using the same lease."""
+
+        now = utcnow()
+        with self.session_factory() as session:
+            row = session.scalar(
+                select(UploadSessionRow)
+                .where(UploadSessionRow.id == upload_session_id)
+                .with_for_update()
+            )
+            if row is None:
+                raise KeyError(upload_session_id)
+            if _expire_row_if_stale(row, now):
+                session.commit()
+                return None
+            if row.status not in _PROCESSABLE_STATUSES:
+                return None
+            if row.next_retry_at is not None and row.next_retry_at > now:
+                return None
+            if (
+                row.lease_owner not in {None, owner}
+                and row.lease_expires_at is not None
+                and row.lease_expires_at > now
+            ):
+                return None
+            row.lease_owner = owner
+            row.lease_expires_at = now + timedelta(seconds=lease_seconds)
+            row.updated_at = now
+            session.commit()
+            session.refresh(row)
+            return upload_row_to_contract(row)
+
+    def renew_processing_lease(
+        self,
+        upload_session_id: str,
+        *,
+        owner: str,
+        lease_seconds: int,
+    ) -> bool:
+        """Keep a long ffmpeg/object-store stage exclusive; crashes stop renewal."""
+
+        now = utcnow()
+        with self.session_factory() as session:
+            row = session.scalar(
+                select(UploadSessionRow)
+                .where(UploadSessionRow.id == upload_session_id)
+                .with_for_update()
+            )
+            if (
+                row is None
+                or row.status not in _PROCESSABLE_STATUSES
+                or row.lease_owner != owner
+            ):
+                return False
+            row.lease_expires_at = now + timedelta(seconds=lease_seconds)
+            session.commit()
+            return True
 
     def claim_reconcilable(
         self, *, owner: str, limit: int, lease_seconds: int
@@ -493,18 +615,11 @@ class SqlAlchemyUploadRepository(BaseRepository):
 
     def expire_stale_uploads(self, *, limit: int = 100) -> list[UploadSession]:
         now = utcnow()
-        expirable = (
-            UploadStatus.prepared.value,
-            UploadStatus.uploading.value,
-            UploadStatus.completing.value,
-            UploadStatus.object_completed.value,
-            UploadStatus.verified.value,
-        )
         with self.session_factory() as session:
             rows = list(
                 session.scalars(
                     select(UploadSessionRow)
-                    .where(UploadSessionRow.status.in_(expirable))
+                    .where(UploadSessionRow.status.in_(_EXPIRABLE_STATUSES))
                     .where(UploadSessionRow.expires_at <= now)
                     .where(
                         or_(
@@ -518,20 +633,18 @@ class SqlAlchemyUploadRepository(BaseRepository):
                 )
             )
             for row in rows:
-                assert_transition("upload_session", row.status, UploadStatus.expired.value)
-                row.status = UploadStatus.expired.value
-                row.last_error = "Upload session expired before it became ready."
-                row.lease_owner = None
-                row.lease_expires_at = None
-                row.next_retry_at = None
-                row.updated_at = now
+                assert _expire_row_if_stale(row, now)
             session.commit()
             return [upload_row_to_contract(row) for row in rows]
 
-    def clear_lease(self, upload_session_id: str) -> None:
+    def clear_lease(
+        self, upload_session_id: str, *, lease_owner: str | None = None
+    ) -> None:
         with self.session_factory() as session:
             row = session.get(UploadSessionRow, upload_session_id)
             if row is None:
+                return
+            if lease_owner is not None and row.lease_owner != lease_owner:
                 return
             row.lease_owner = None
             row.lease_expires_at = None
@@ -539,7 +652,12 @@ class SqlAlchemyUploadRepository(BaseRepository):
             session.commit()
 
     def record_retry(
-        self, upload_session_id: str, error: str, *, max_retries: int
+        self,
+        upload_session_id: str,
+        error: str,
+        *,
+        max_retries: int,
+        lease_owner: str | None = None,
     ) -> UploadSession:
         with self.session_factory() as session:
             row = session.scalar(
@@ -549,6 +667,8 @@ class SqlAlchemyUploadRepository(BaseRepository):
             )
             if row is None:
                 raise KeyError(upload_session_id)
+            if lease_owner is not None and row.lease_owner != lease_owner:
+                return upload_row_to_contract(row)
             if row.status in _IMMUTABLE_TERMINAL_STATUSES:
                 row.lease_owner = None
                 row.lease_expires_at = None
@@ -572,7 +692,13 @@ class SqlAlchemyUploadRepository(BaseRepository):
             session.refresh(row)
             return upload_row_to_contract(row)
 
-    def record_derivation_retry(self, upload_session_id: str, error: str) -> UploadSession:
+    def record_derivation_retry(
+        self,
+        upload_session_id: str,
+        error: str,
+        *,
+        lease_owner: str | None = None,
+    ) -> UploadSession:
         """Back off a post-ready derivative without rolling the upload out of ready."""
 
         with self.session_factory() as session:
@@ -583,6 +709,8 @@ class SqlAlchemyUploadRepository(BaseRepository):
             )
             if row is None:
                 raise KeyError(upload_session_id)
+            if lease_owner is not None and row.lease_owner != lease_owner:
+                return upload_row_to_contract(row)
             if row.status != UploadStatus.ready.value:
                 raise NodeExecutionError(
                     ErrorCode.upload_invalid_state,
@@ -598,10 +726,14 @@ class SqlAlchemyUploadRepository(BaseRepository):
             session.refresh(row)
             return upload_row_to_contract(row)
 
-    def mark_derivation_complete(self, upload_session_id: str) -> None:
+    def mark_derivation_complete(
+        self, upload_session_id: str, *, lease_owner: str | None = None
+    ) -> None:
         with self.session_factory() as session:
             row = session.get(UploadSessionRow, upload_session_id)
             if row is None:
+                return
+            if lease_owner is not None and row.lease_owner != lease_owner:
                 return
             row.retry_count = 0
             row.last_error = None
@@ -611,7 +743,13 @@ class SqlAlchemyUploadRepository(BaseRepository):
             row.updated_at = utcnow()
             session.commit()
 
-    def reject_upload(self, upload_session_id: str, reason: str) -> UploadSession:
+    def reject_upload(
+        self,
+        upload_session_id: str,
+        reason: str,
+        *,
+        lease_owner: str | None = None,
+    ) -> UploadSession:
         with self.session_factory() as session:
             row = session.scalar(
                 select(UploadSessionRow)
@@ -620,6 +758,8 @@ class SqlAlchemyUploadRepository(BaseRepository):
             )
             if row is None:
                 raise KeyError(upload_session_id)
+            if lease_owner is not None and row.lease_owner != lease_owner:
+                return upload_row_to_contract(row)
             if row.status in _IMMUTABLE_TERMINAL_STATUSES:
                 row.lease_owner = None
                 row.lease_expires_at = None
@@ -639,7 +779,11 @@ class SqlAlchemyUploadRepository(BaseRepository):
             return upload_row_to_contract(row)
 
     def finalize_ready(
-        self, upload_session_id: str
+        self,
+        upload_session_id: str,
+        *,
+        release_lease: bool = True,
+        lease_owner: str | None = None,
     ) -> tuple[UploadSession, ArtifactRef, MediaAssetRecord | None, PublishPackage | None]:
         """Atomically get/create upload resources and move verified -> ready."""
 
@@ -651,6 +795,11 @@ class SqlAlchemyUploadRepository(BaseRepository):
             )
             if row is None:
                 raise KeyError(upload_session_id)
+            if lease_owner is not None and row.lease_owner != lease_owner:
+                raise NodeExecutionError(
+                    ErrorCode.upload_invalid_state,
+                    "Upload processing lease was lost.",
+                )
             if row.status == UploadStatus.ready.value:
                 return self._resources_from_session(session, row)
             if row.status != UploadStatus.verified.value:
@@ -686,8 +835,9 @@ class SqlAlchemyUploadRepository(BaseRepository):
             assert_transition("upload_session", row.status, UploadStatus.ready.value)
             row.status = UploadStatus.ready.value
             row.object_uri = row.final_uri or row.object_uri
-            row.lease_owner = None
-            row.lease_expires_at = None
+            if release_lease:
+                row.lease_owner = None
+                row.lease_expires_at = None
             row.next_retry_at = None
             row.last_error = None
             row.updated_at = utcnow()

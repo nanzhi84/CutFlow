@@ -39,6 +39,7 @@ prepared -> uploading -> completing -> object_completed -> verified -> ready
 ```
 
 - `client_upload_id` 有唯一约束；相同请求重试返回同一会话，不会重复创建 multipart upload。复用同一 ID 但文件身份或参数不同会返回幂等冲突。
+- prepare 重试和分片签名前会在数据库行锁内刷新过期状态；已过期会话落成 `expired` 并清理远端状态，不能靠重签复活。PUT 签名 TTL 取配置值与会话剩余寿命的较小值，并预留 1 秒取整边界。
 - `completing` 先于 `CompleteMultipartUpload` 持久化，覆盖“对象存储成功、数据库尚未更新”的退出窗口。
 - `ListParts` 是唯一分片事实源；浏览器不提交用于完成对象的 ETag 清单。
 - 服务端按文件流式重算 `canonical_sha256`。客户端 SHA 只是期望值。
@@ -46,7 +47,7 @@ prepared -> uploading -> completing -> object_completed -> verified -> ready
 - `artifacts.source_upload_session_id` 是 nullable FK 且唯一，同一上传最多登记一个上传 Artifact。会话行锁和唯一约束共同处理 API/reconciler 并发。
 - 缩略图在 `ready` 后以确定性对象键和 Artifact ID 派生；失败只退避重试，不回滚可用上传。
 
-`POST /api/uploads/{id}/object-complete` 原子记录完成意图并返回 202。API 会触发一次后台推进，独立 worker 每隔 `CUTAGENT_UPLOAD_RECONCILE_INTERVAL_SECONDS` 扫描一次；多副本通过 `FOR UPDATE SKIP LOCKED` 和过期租约领取。
+`POST /api/uploads/{id}/object-complete` 原子记录完成意图并返回 202。API 会触发一次后台推进，独立 worker 每隔 `CUTAGENT_UPLOAD_RECONCILE_INTERVAL_SECONDS` 扫描一次；两条路径使用同一数据库租约。每次直接处理使用独立 lease token，长时 ffmpeg/对象存储阶段按租期三分之一（上限 30 秒）心跳续租，阶段提交以 token fencing；进程退出后心跳停止，租约过期即可由 worker 接管。多副本批量领取使用 `FOR UPDATE SKIP LOCKED`。
 
 关键路径：
 

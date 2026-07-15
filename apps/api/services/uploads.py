@@ -18,6 +18,10 @@ from packages.core.workflow import NodeExecutionError
 from packages.media import UploadReconciler
 
 _STAGING_PURPOSE = "incoming/uploads"
+_SIGNABLE_UPLOAD_STATUSES = {
+    c.UploadStatus.prepared,
+    c.UploadStatus.uploading,
+}
 
 
 def _visual_asset_kind_and_tags(upload_kind: c.UploadKind) -> tuple[str, list[str]]:
@@ -61,7 +65,8 @@ def prepare_upload(
     if existing is not None:
         _assert_access(existing, user)
         _assert_prepare_matches(existing, payload)
-        upload = existing
+        upload = _refresh_expiration(request, existing)
+        _raise_if_expired(upload)
     else:
         strategy = (
             c.UploadStrategy.multipart
@@ -101,22 +106,23 @@ def prepare_upload(
     staging_uri = upload.staging_uri or upload.object_uri
     if staging_uri is None:
         raise NodeExecutionError(c.ErrorCode.upload_invalid_state, "Upload staging URI is missing.")
-    if upload.upload_strategy == c.UploadStrategy.multipart:
-        repository.ensure_multipart_upload_id(
-            upload.id,
-            lambda: store.create_multipart_upload(staging_uri, content_type=upload.content_type),
-        )
-    ttl = timedelta(seconds=upload_settings.presign_ttl_seconds)
-    signed = (
-        store.signed_put_url(
-            staging_uri,
-            content_type=upload.content_type,
-            expires_in=ttl,
-        )
-        if upload.upload_strategy == c.UploadStrategy.single
-        and upload.status in {c.UploadStatus.prepared, c.UploadStatus.uploading}
-        else None
-    )
+    signed = None
+    if upload.status in _SIGNABLE_UPLOAD_STATUSES:
+        ttl = _presign_ttl(upload, upload_settings.presign_ttl_seconds)
+        if upload.upload_strategy == c.UploadStrategy.multipart:
+            repository.ensure_multipart_upload_id(
+                upload.id,
+                lambda: store.create_multipart_upload(
+                    staging_uri,
+                    content_type=upload.content_type,
+                ),
+            )
+        else:
+            signed = store.signed_put_url(
+                staging_uri,
+                content_type=upload.content_type,
+                expires_in=ttl,
+            )
     return c.PrepareUploadResponse(
         upload_session=upload,
         upload_strategy=upload.upload_strategy,
@@ -139,7 +145,7 @@ def sign_upload_parts(
         raise NodeExecutionError(
             c.ErrorCode.upload_invalid_state, "Upload session does not use multipart."
         )
-    if upload.status not in {c.UploadStatus.prepared, c.UploadStatus.uploading}:
+    if upload.status not in _SIGNABLE_UPLOAD_STATUSES:
         raise NodeExecutionError(
             c.ErrorCode.upload_invalid_state,
             f"Parts cannot be signed from status {upload.status.value}.",
@@ -160,7 +166,7 @@ def sign_upload_parts(
         part.part_number
         for part in object_store(request).list_parts(staging_uri, upload_id=multipart_upload_id)
     }
-    ttl = timedelta(seconds=settings(request).upload.presign_ttl_seconds)
+    ttl = _presign_ttl(upload, settings(request).upload.presign_ttl_seconds)
     signed_parts = []
     for part_number in payload.part_numbers:
         if part_number in completed:
@@ -240,6 +246,9 @@ def object_complete_upload(
         expected_sha256=payload.sha256,
         metadata=payload.metadata,
     )
+    if upload.status == c.UploadStatus.expired:
+        _reconciler(request).cleanup_terminal(upload)
+        _raise_if_expired(upload)
     if upload.status == c.UploadStatus.ready:
         upload, artifact, media_asset, publish_package = upload_repository(request).ready_resources(
             upload.id
@@ -272,12 +281,15 @@ def complete_upload(
 
     upload = _load_upload(request, payload.upload_session_id, user)
     expected_sha256 = payload.sha256 or upload.client_expected_sha256 or upload.sha256
-    upload_repository(request).mark_completing(
+    upload = upload_repository(request).mark_completing(
         upload.id,
         size_bytes=payload.size_bytes or upload.size_bytes,
         expected_sha256=expected_sha256,
         metadata=payload.metadata,
     )
+    if upload.status == c.UploadStatus.expired:
+        _reconciler(request).cleanup_terminal(upload)
+        _raise_if_expired(upload)
     upload = _reconciler(request).process(upload.id, raise_on_rejected=True)
     if upload.status != c.UploadStatus.ready:
         code = (
@@ -339,7 +351,37 @@ def _load_upload(request: Request, upload_id: str, user: c.AuthUser) -> c.Upload
     if upload is None:
         raise NodeExecutionError(c.ErrorCode.upload_invalid_state, "Upload session not found.")
     _assert_access(upload, user)
-    return upload
+    return _refresh_expiration(request, upload)
+
+
+def _refresh_expiration(request: Request, upload: c.UploadSession) -> c.UploadSession:
+    refreshed = upload_repository(request).expire_if_stale(upload.id)
+    if refreshed.status == c.UploadStatus.expired:
+        _reconciler(request).cleanup_terminal(refreshed)
+    return refreshed
+
+
+def _raise_if_expired(upload: c.UploadSession) -> None:
+    if upload.status == c.UploadStatus.expired:
+        raise NodeExecutionError(
+            c.ErrorCode.upload_invalid_state,
+            "Upload session expired; start a new upload.",
+        )
+
+
+def _presign_ttl(upload: c.UploadSession, configured_seconds: int) -> timedelta:
+    configured = timedelta(seconds=configured_seconds)
+    if upload.expires_at is None:
+        return configured
+    remaining = upload.expires_at - c.utcnow()
+    # Reserve one second for signing/whole-second rounding so a URL minted near
+    # the boundary still expires strictly before the durable session.
+    if remaining <= timedelta(seconds=2):
+        raise NodeExecutionError(
+            c.ErrorCode.upload_invalid_state,
+            "Upload session is too close to expiry; start a new upload.",
+        )
+    return min(configured, remaining - timedelta(seconds=1))
 
 
 def _assert_access(upload: c.UploadSession, user: c.AuthUser) -> None:
