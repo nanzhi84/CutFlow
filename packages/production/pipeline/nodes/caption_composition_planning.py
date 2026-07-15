@@ -5,14 +5,20 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from packages.core.contracts import (
     ArtifactKind,
     ErrorCode,
     NodeStatus,
-    SpeechTokenTiming,
     WarningCode,
 )
-from packages.core.contracts.artifacts import CaptionBand
+from packages.core.contracts.artifacts import (
+    AlignmentArtifact,
+    CaptionBand,
+    NarrationUnitsArtifact,
+    TimelinePlanArtifact,
+)
 from packages.core.contracts.caption_policy import (
     CAPTION_ANCHOR_X,
     CAPTION_BASELINE_Y,
@@ -47,32 +53,33 @@ from packages.production.pipeline.nodes._creative_intent import load_creative_in
 
 def run(ctx: NodeContext) -> NodeOutput:
     state = ctx.state
-    timeline = state.require(ArtifactKind.plan_timeline).payload or {}
-    narration = state.require(ArtifactKind.narration_units).payload or {}
-    alignment_artifact = state.artifacts.get(ArtifactKind.audio_alignment)
-    alignment = alignment_artifact.payload or {} if alignment_artifact is not None else {}
-    units = [item for item in narration.get("units") or [] if isinstance(item, dict)]
-    timing_tokens: list[SpeechTokenTiming] = []
-    for item in alignment.get("tokens") or []:
-        if not isinstance(item, dict):
-            continue
-        try:
-            timing_tokens.append(SpeechTokenTiming.model_validate(item))
-        except Exception:
-            continue
-    tokens = [
-        item.model_dump(mode="json")
-        for item in assign_token_ownership(
-            timing_tokens,
-            script=state.request.script,
-            units=list(units),
+    try:
+        timeline = TimelinePlanArtifact.model_validate(
+            state.require(ArtifactKind.plan_timeline).payload
         )
-    ]
+        narration = NarrationUnitsArtifact.model_validate(
+            state.require(ArtifactKind.narration_units).payload
+        )
+        alignment = AlignmentArtifact.model_validate(
+            state.require(ArtifactKind.audio_alignment).payload
+        )
+    except ValidationError as exc:
+        raise NodeExecutionError(
+            ErrorCode.artifact_schema_mismatch,
+            f"Caption planning input artifact is invalid: {exc}",
+            retryable=False,
+        ) from exc
+    units = narration.units
+    tokens = assign_token_ownership(
+        alignment.tokens,
+        script=state.request.script,
+        units=units,
+    )
     intent = load_creative_intent(state)
     width = int(state.request.output.width)
     height = int(state.request.output.height)
-    fps = max(1, int(timeline.get("fps") or state.request.output.fps))
-    total_frames = max(1, int(timeline.get("total_frames") or fps))
+    fps = max(1, timeline.fps)
+    total_frames = max(1, timeline.total_frames)
     normal_enabled = bool(state.request.subtitle.enabled and state.request.subtitle.normal_enabled)
     emphasis_enabled = bool(normal_enabled and state.request.subtitle.emphasis_enabled)
 
@@ -196,11 +203,14 @@ def run(ctx: NodeContext) -> NodeOutput:
             emphasis_metrics_source=emphasis_source,
         )
         if plan.diagnostics.units_unmatched:
+            fallback_payloads = [
+                item.model_dump(mode="json") for item in plan.diagnostics.fallbacks
+            ]
             raise NodeExecutionError(
                 ErrorCode.render_subtitle_failed,
                 "旁白单元无法单调映射回原始脚本，已停止字幕生成以避免静默漏字。",
                 retryable=False,
-                details={"fallbacks": plan.diagnostics.fallbacks},
+                details={"fallbacks": fallback_payloads},
             )
         if emphasis_font is not None:
             rendered_emphasis_text = [
@@ -224,6 +234,9 @@ def run(ctx: NodeContext) -> NodeOutput:
     degradations = []
     warnings = []
     if plan.diagnostics.fallbacks:
+        fallback_payloads = [
+            item.model_dump(mode="json") for item in plan.diagnostics.fallbacks
+        ]
         warnings.append(WarningCode.caption_composition_fallback)
         degradations.append(
             degradation_notice(
@@ -232,7 +245,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                 "已确定性降级为普通字幕。",
                 node_id=ctx.node_run.node_id,
                 affects_true_yield=False,
-            ).model_copy(update={"details": {"fallbacks": plan.diagnostics.fallbacks}})
+            ).model_copy(update={"details": {"fallbacks": fallback_payloads}})
         )
     return NodeOutput(
         status=NodeStatus.degraded if degradations else NodeStatus.succeeded,
@@ -284,11 +297,10 @@ def _baseline_offset(metrics, font_size: int) -> float:
     return metrics.ascender * font_size / metrics.cell_height
 
 
-def _timing_source(alignment: dict) -> str:
-    diagnostics = alignment.get("diagnostics")
-    if isinstance(diagnostics, dict) and int(diagnostics.get("char_fallback") or 0) > 0:
+def _timing_source(alignment: AlignmentArtifact) -> str:
+    if int(alignment.diagnostics.get("char_fallback") or 0) > 0:
         return "interpolated"
-    source = str(alignment.get("source") or "estimated")
+    source = alignment.source
     if source == "tts":
         return "native"
     if source in {"asr", "forced_alignment", "tts_subtitle"}:

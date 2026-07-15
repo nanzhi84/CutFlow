@@ -222,8 +222,8 @@ def test_historical_subtitle_failure_reuses_lipsync_and_starts_new_caption_segme
     assert plan.decisions[-1].reason == "node_run_missing"
 
 
-def test_sql_run_card_resume_gate_rejects_v1_and_removed_failed_nodes():
-    from packages.production.sqlalchemy_repository import _run_has_retryable_failure
+def test_shared_resume_gate_rejects_v1_and_removed_failed_nodes():
+    from packages.production.pipeline.reuse import has_retryable_active_failure
 
     retryable_error = c.NodeError(
         code=c.ErrorCode.provider_timeout,
@@ -254,12 +254,12 @@ def test_sql_run_card_resume_gate_rejects_v1_and_removed_failed_nodes():
         error=retryable_error,
     )
 
-    assert _run_has_retryable_failure(v1_run, [failed]) is False
-    assert _run_has_retryable_failure(active_run, [failed]) is False
+    assert has_retryable_active_failure(v1_run, [failed]) is False
+    assert has_retryable_active_failure(active_run, [failed]) is False
     active_failed = failed.model_copy(
         update={"run_id": active_run.id, "node_id": "SubtitleAndBgmMix"}
     )
-    assert _run_has_retryable_failure(active_run, [active_failed]) is True
+    assert has_retryable_active_failure(active_run, [active_failed]) is True
 
 
 def test_failed_resume_drops_legacy_window_portrait_double_write(tmp_path):
@@ -329,6 +329,69 @@ def test_default_strict_reuses_completed_nodes(tmp_path):
     plan = compute_reuse_plan(source, template, artifacts)
 
     assert plan.reused_node_ids == ["A", "B"]
+    assert plan.rerun_from_node_id is None
+
+
+def test_file_uri_is_reusable_without_a_local_path_field(tmp_path):
+    path = tmp_path / "artifact.json"
+    path.write_text("artifact", encoding="utf-8")
+    artifact = _artifact("art_a", path).model_copy(update={"local_path": None})
+
+    plan = compute_reuse_plan(_run([_node_run("A", "art_a")]), _template(_node("A")), {"art_a": artifact})
+
+    assert plan.reused_node_ids == ["A"]
+
+
+def test_reuse_rejects_a_deleted_local_artifact(tmp_path):
+    path = tmp_path / "deleted.json"
+    path.write_text("artifact", encoding="utf-8")
+    artifact = _artifact("art_a", path)
+    path.unlink()
+
+    plan = compute_reuse_plan(_run([_node_run("A", "art_a")]), _template(_node("A")), {"art_a": artifact})
+
+    assert plan.decisions[-1].reason == "artifact_file_missing"
+
+
+def test_reuse_rejects_an_artifact_kind_outside_the_node_contract(tmp_path):
+    path = tmp_path / "wrong-kind.json"
+    path.write_text("artifact", encoding="utf-8")
+    artifact = _artifact("art_a", path).model_copy(
+        update={"kind": c.ArtifactKind.plan_timeline}
+    )
+
+    plan = compute_reuse_plan(_run([_node_run("A", "art_a")]), _template(_node("A")), {"art_a": artifact})
+
+    assert plan.decisions[-1].reason == "artifact_kind_mismatch"
+
+
+def test_completed_node_without_declared_output_cannot_be_reused():
+    node_run = _node_run("A", "unused").model_copy(update={"output_artifact_ids": []})
+
+    plan = compute_reuse_plan(_run([node_run]), _template(_node("A")), {})
+
+    assert plan.decisions[-1].reason == "artifact_missing"
+
+
+def test_reuse_stops_at_a_retired_source_node_after_the_reusable_prefix(tmp_path):
+    path = tmp_path / "artifact.json"
+    path.write_text("artifact", encoding="utf-8")
+    source = _run([_node_run("A", "art_a"), _node_run("Retired", "art_retired")])
+
+    plan = compute_reuse_plan(source, _template(_node("A")), {"art_a": _artifact("art_a", path)})
+
+    assert plan.reused_node_ids == ["A"]
+    assert plan.decisions[-1].reason == "node_not_in_template"
+
+
+def test_failed_run_without_a_failed_node_uses_normal_reuse_checks(tmp_path):
+    path = tmp_path / "artifact.json"
+    path.write_text("artifact", encoding="utf-8")
+    source = _run([_node_run("A", "art_a")], status=c.RunStatus.failed)
+
+    plan = compute_reuse_plan(source, _template(_node("A")), {"art_a": _artifact("art_a", path)})
+
+    assert plan.reused_node_ids == ["A"]
     assert plan.rerun_from_node_id is None
 
 

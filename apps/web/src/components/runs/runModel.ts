@@ -37,10 +37,6 @@ export function nodeLabel(id: string): string {
   return NODE_LABELS[id] ?? id;
 }
 
-function canonicalNodeId(id: string): string {
-  return id;
-}
-
 // 各工作流模板的节点顺序，镜像 packages/production/pipeline/node_sequence.py。
 // 节点流水线用它补齐"尚未创建 NodeRun 的待执行节点"（后端 node runs 是懒创建的）。
 const TEMPLATE_NODE_SEQUENCES: Record<string, string[]> = {
@@ -109,16 +105,16 @@ export function buildNodeTimeline(
   nodes: NodeRun[],
   runStatus?: string,
 ): NodeTimelineItem[] {
-  const byId = new Map(nodes.map((node) => [canonicalNodeId(node.node_id), node]));
+  const byId = new Map(nodes.map((node) => [node.node_id, node]));
   const sequence = TEMPLATE_NODE_SEQUENCES[templateId ?? ""] ?? [];
   const items: NodeTimelineItem[] = sequence.flatMap((nodeId) => {
-    const node = byId.get(canonicalNodeId(nodeId));
+    const node = byId.get(nodeId);
     if (!node && runStatus === "succeeded") return [];
     return [{ nodeId, status: node?.status ?? "pending", node }];
   });
-  const known = new Set(sequence.map(canonicalNodeId));
+  const known = new Set(sequence);
   for (const node of nodes) {
-    if (!known.has(canonicalNodeId(node.node_id))) {
+    if (!known.has(node.node_id)) {
       items.push({ nodeId: node.node_id, status: node.status, node });
     }
   }
@@ -224,7 +220,7 @@ export function warningLabel(value: string) {
   }
   if (value === "font.metrics_fallback") return "字体度量回退估算";
   if (value === "caption.composition_fallback") return "部分强调已回退为普通字幕";
-  if (value === "bgm.planning_failed") return "BGM 规划失败，本次未使用配乐";
+  if (value === "bgm.planning_failed") return "BGM Agent 未成功，已使用确定性本地选择";
   return "未知警告";
 }
 

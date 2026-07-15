@@ -5,8 +5,8 @@ import json
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0058_bgm_agent_prompt"
-down_revision = "0057_drop_provider_retry_policy"
+revision = "0059_bgm_agent_prompt"
+down_revision = "0058_resumable_uploads"
 branch_labels = None
 depends_on = None
 
@@ -19,11 +19,11 @@ _CONTENT = """你是短视频背景音乐选择 Agent。你的唯一职责是从
 口播脚本：
 {script}
 
-背景音乐候选（candidate_id、asset_id、segment_id、mood、scene_fit、script_fit、avoid_script、duration、volume）：
+背景音乐候选（bgm_id、asset_id、segment_id、mood、energy_profile、scene_fit、script_fit、avoid_script）：
 {bgm_candidates}
 
 选择规则：
-1. bgm_id 只能复制候选中的 candidate_id；没有合适候选或不应配乐时输出 null。
+1. bgm_id 只能复制候选中的 bgm_id；没有合适候选或不应配乐时输出 null。
 2. 结合 mood、scene_fit、script_fit 与 avoid_script 判断，禁止虚构 ID。
 3. 字幕、强调、字体、颜色、坐标、时间线和音效不属于你的职责。
 4. 只能输出 bgm_id 和 analysis，不要 Markdown 或额外字段。
@@ -31,7 +31,7 @@ _CONTENT = """你是短视频背景音乐选择 Agent。你的唯一职责是从
 {repair_feedback}
 
 只输出如下 JSON：
-{{"bgm_id": "bgm_001", "analysis": "选择理由"}}"""
+{{"bgm_id": "bgmseg_001", "analysis": "选择理由"}}"""
 
 
 def upgrade() -> None:

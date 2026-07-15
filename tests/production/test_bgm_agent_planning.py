@@ -25,7 +25,6 @@ from packages.production.pipeline.nodes import bgm_agent_planning
 from packages.production.pipeline.nodes.bgm_agent_planning import (
     _attach_provider_artifacts,
     _compact,
-    _diagnostics,
     _parse,
     _unwrap,
 )
@@ -140,7 +139,7 @@ def _ctx(tmp_path, *, outputs: list[dict] | None = None) -> tuple[NodeContext, _
     )
 
 
-def test_bgm_response_accepts_only_candidate_id_and_analysis() -> None:
+def test_bgm_response_accepts_only_bgm_id_and_analysis() -> None:
     selected, errors = _parse(
         {"bgm_id": "bgmseg_001", "analysis": "语气匹配"},
         candidates=[_candidate()],
@@ -203,18 +202,7 @@ def test_provider_response_type_errors_are_explicit() -> None:
     assert "BGM response bgm_id must be null or a string" in errors
 
 
-def test_bgm_diagnostics_normalizes_non_mapping_metadata_and_missing_invocation(tmp_path) -> None:
-    diagnostics = _diagnostics(
-        planned=False,
-        reason="test",
-        bgm_id="bgm_bad_metadata",
-        analysis="",
-        repair_trace=[],
-        candidates=[{"candidate_id": "bgm_bad_metadata", "asset_id": "asset", "metadata": []}],
-        provider_invocation_ids=[],
-    )
-    assert diagnostics["segment_id"] is None
-
+def test_attaching_provider_evidence_ignores_missing_invocation(tmp_path) -> None:
     ctx, _ = _ctx(tmp_path)
     artifact = ctx.artifact(ArtifactKind.provider_raw_request, {}, "fixture")
     _attach_provider_artifacts(

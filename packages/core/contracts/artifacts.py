@@ -481,7 +481,6 @@ class BgmAgentDiagnosticsArtifact(ContractModel):
     planned: bool
     reason: str = ""
     bgm_id: str | None = None
-    candidate_id: str | None = None
     asset_id: str | None = None
     segment_id: str | None = None
     analysis: str = ""
@@ -598,6 +597,24 @@ class CaptionBand(ContractModel):
     max_width_ratio: float = Field(CAPTION_MAX_WIDTH_RATIO, gt=0.0, le=1.0)
 
 
+class CaptionTokenFallback(ContractModel):
+    reason: Literal["token_unmatched"] = "token_unmatched"
+    hint_ids: list[str] = Field(min_length=1)
+    phrase: str
+
+
+class CaptionLayoutFallback(ContractModel):
+    reason: Literal["emphasis_unbreakable"] = "emphasis_unbreakable"
+    hint_ids: list[str] = Field(min_length=1)
+    source_unit_ids: list[str] = Field(min_length=1)
+
+
+class CaptionUnitFallback(ContractModel):
+    reason: Literal["narration_unit_unmatched", "narration_unit_timing_invalid"]
+    source_unit_ids: list[str] = Field(min_length=1)
+    text: str
+
+
 class CaptionCompositionDiagnostics(ContractModel):
     timing_source: Literal["native", "asr_anchored", "interpolated"] = "interpolated"
     font_metrics_source: Literal["hmtx", "eaw_fallback"] = "hmtx"
@@ -611,7 +628,9 @@ class CaptionCompositionDiagnostics(ContractModel):
     hints_token_unmatched: int = Field(0, ge=0)
     hints_overlapped: int = Field(0, ge=0)
     hints_unbreakable: int = Field(0, ge=0)
-    fallbacks: list[dict[str, Any]] = Field(default_factory=list)
+    fallbacks: list[CaptionTokenFallback | CaptionLayoutFallback | CaptionUnitFallback] = Field(
+        default_factory=list
+    )
 
 
 class CaptionCompositionPlanArtifact(ContractModel):

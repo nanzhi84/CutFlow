@@ -68,10 +68,7 @@ def reset_detector_cache() -> None:
 
 
 def _warn_unavailable_once(reason: str) -> None:
-    """Warn once when the detector is unavailable.
-
-    Keep the optional sensor failure visible for any future annotation consumer.
-    """
+    """Log detector unavailability once."""
     global _warned_unavailable
     if not _warned_unavailable:
         logger.warning(

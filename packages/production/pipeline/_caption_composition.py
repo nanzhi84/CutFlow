@@ -8,15 +8,20 @@ import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from packages.core.contracts import SpeechTokenTiming
 from packages.core.contracts.artifacts import (
     CaptionBand,
     CaptionCompositionDiagnostics,
+    CaptionLayoutFallback,
     CaptionCompositionPlanArtifact,
     CaptionCue,
     CaptionFrameSpan,
     CaptionLine,
     CaptionRun,
+    CaptionTokenFallback,
+    CaptionUnitFallback,
     EmphasisHint,
+    NarrationUnit,
 )
 
 _MIN_DISPLAY_SEC = 0.6
@@ -66,8 +71,8 @@ class _LaidOutCue:
 def build_caption_composition(
     *,
     script: str,
-    units: list[dict],
-    tokens: list[dict],
+    units: list[NarrationUnit],
+    tokens: list[SpeechTokenTiming],
     hints: list[EmphasisHint],
     fps: int,
     total_frames: int,
@@ -122,13 +127,9 @@ def build_caption_composition(
             continue
         diagnostics.hints_token_unmatched += 1
         diagnostics.fallbacks.append(
-            {
-                "reason": "token_unmatched",
-                "hint_ids": [hint.hint_id],
-                "phrase": hint.phrase,
-            }
+            CaptionTokenFallback(hint_ids=[hint.hint_id], phrase=hint.phrase)
         )
-    by_cue = _resolve_hints_by_cue(cues, timed_hints, diagnostics)
+    by_cue = _resolve_hints_by_cue(cues, timed_hints, script, diagnostics)
     max_width = width * band.max_width_ratio
     laid_out: list[tuple[_LaidOutCue, list[_BoundHint]]] = []
     for cue_index, cue in enumerate(cues):
@@ -137,6 +138,7 @@ def build_caption_composition(
             cue,
             script=script,
             hints=cue_hints,
+            tokens=tokens,
             normal_measure=normal_measure,
             emphasis_measure=emphasis_measure,
             max_width=max_width,
@@ -145,17 +147,17 @@ def build_caption_composition(
         if failed:
             diagnostics.hints_unbreakable += len(cue_hints)
             diagnostics.fallbacks.append(
-                {
-                    "cue_source_unit_ids": list(cue.source_unit_ids),
-                    "reason": "emphasis_unbreakable",
-                    "hint_ids": [item.hint_id for item in cue_hints],
-                }
+                CaptionLayoutFallback(
+                    source_unit_ids=list(cue.source_unit_ids),
+                    hint_ids=[item.hint_id for item in cue_hints],
+                )
             )
             cue_hints = []
             values, _ = _layout_cue(
                 cue,
                 script=script,
                 hints=[],
+                tokens=tokens,
                 normal_measure=normal_measure,
                 emphasis_measure=emphasis_measure,
                 max_width=max_width,
@@ -205,42 +207,50 @@ def build_caption_composition(
 
 def _locate_units(
     script: str,
-    units: list[dict],
+    units: list[NarrationUnit],
     diagnostics: CaptionCompositionDiagnostics,
 ) -> list[_Cue]:
     result: list[_Cue] = []
     normalized_script, source_spans = _normalize_with_source_spans(script)
     cursor = 0
     for index, unit in enumerate(units):
-        unit_id = str(unit.get("unit_id") or f"unit_{index + 1:04d}")
-        raw_text = str(unit.get("text") or "")
+        unit_id = unit.unit_id or f"unit_{index + 1:04d}"
+        raw_text = unit.text
         text, _ = _normalize_with_source_spans(raw_text)
         if not text or not source_spans:
+            diagnostics.units_unmatched += 1
+            diagnostics.fallbacks.append(
+                CaptionUnitFallback(
+                    reason="narration_unit_unmatched",
+                    source_unit_ids=[unit_id],
+                    text=raw_text,
+                )
+            )
             continue
         normalized_start = normalized_script.find(text, cursor)
         if normalized_start < 0:
             diagnostics.units_unmatched += 1
             diagnostics.fallbacks.append(
-                {
-                    "reason": "narration_unit_unmatched",
-                    "source_unit_ids": [unit_id],
-                    "text": raw_text,
-                }
+                CaptionUnitFallback(
+                    reason="narration_unit_unmatched",
+                    source_unit_ids=[unit_id],
+                    text=raw_text,
+                )
             )
             continue
         normalized_end = normalized_start + len(text)
         start = source_spans[normalized_start][0]
         end = source_spans[normalized_end - 1][1]
-        unit_start = max(0.0, float(unit.get("start") or 0.0))
-        unit_end = max(unit_start, float(unit.get("end") or unit_start))
+        unit_start = max(0.0, unit.start)
+        unit_end = max(unit_start, unit.end)
         if unit_end <= unit_start:
             diagnostics.units_unmatched += 1
             diagnostics.fallbacks.append(
-                {
-                    "reason": "narration_unit_timing_invalid",
-                    "source_unit_ids": [unit_id],
-                    "text": raw_text,
-                }
+                CaptionUnitFallback(
+                    reason="narration_unit_timing_invalid",
+                    source_unit_ids=[unit_id],
+                    text=raw_text,
+                )
             )
             continue
         result.append(
@@ -329,17 +339,15 @@ def _bind_hints(
         if match is None:
             diagnostics.hints_unmatched += 1
             continue
-        display_end = _extend_run_end(script, match[1])
-        display_match = (match[0], display_end)
-        occupied_by_phrase.setdefault(phrase, []).append(display_match)
+        occupied_by_phrase.setdefault(phrase, []).append(match)
         result.append(
             _BoundHint(
                 hint_id=f"hint_{order + 1:04d}",
                 phrase=phrase,
                 priority=hint.priority,
                 display_mode=hint.display_mode,
-                start=display_match[0],
-                end=display_match[1],
+                start=match[0],
+                end=match[1],
                 order=order,
             )
         )
@@ -349,13 +357,26 @@ def _bind_hints(
 def _resolve_hints_by_cue(
     cues: list[_Cue],
     hints: list[_BoundHint],
+    script: str,
     diagnostics: CaptionCompositionDiagnostics,
 ) -> dict[int, list[_BoundHint]]:
     result: dict[int, list[_BoundHint]] = {}
     assigned_hint_ids: set[str] = set()
     for cue_index, cue in enumerate(cues):
-        candidates = [
+        exact_candidates = [
             item for item in hints if cue.char_start <= item.start and item.end <= cue.char_end
+        ]
+        candidates = [
+            _BoundHint(
+                hint_id=item.hint_id,
+                phrase=item.phrase,
+                priority=item.priority,
+                display_mode=item.display_mode,
+                start=item.start,
+                end=_extend_run_end(script, item.end, limit=cue.char_end),
+                order=item.order,
+            )
+            for item in exact_candidates
         ]
         assigned_hint_ids.update(item.hint_id for item in candidates)
         whole = [item for item in candidates if item.display_mode == "whole_cue"]
@@ -394,6 +415,7 @@ def _layout_cue(
     *,
     script: str,
     hints: list[_BoundHint],
+    tokens: list[SpeechTokenTiming],
     normal_measure: Callable[[str], float],
     emphasis_measure: Callable[[str], float],
     max_width: float,
@@ -404,13 +426,14 @@ def _layout_cue(
         cue,
         script=script,
         hints=hints,
+        tokens=tokens,
         normal_measure=normal_measure,
         emphasis_measure=emphasis_measure,
         max_width=max_width,
     )
     if lines is not None:
         return [_LaidOutCue(cue=cue, lines=lines, omitted=_omitted_breaks(cue, lines, script))], False
-    break_at = _time_split_index(cue, script=script, hints=hints)
+    break_at = _time_split_index(cue, script=script, hints=hints, tokens=tokens)
     if break_at is None or depth >= _MAX_SPLIT_DEPTH:
         if hints:
             return [], True
@@ -418,6 +441,7 @@ def _layout_cue(
             cue,
             script=script,
             hints=[],
+            tokens=tokens,
             normal_measure=normal_measure,
             emphasis_measure=emphasis_measure,
             max_width=float("inf"),
@@ -432,6 +456,7 @@ def _layout_cue(
         left,
         script=script,
         hints=left_hints,
+        tokens=tokens,
         normal_measure=normal_measure,
         emphasis_measure=emphasis_measure,
         max_width=max_width,
@@ -442,6 +467,7 @@ def _layout_cue(
         right,
         script=script,
         hints=right_hints,
+        tokens=tokens,
         normal_measure=normal_measure,
         emphasis_measure=emphasis_measure,
         max_width=max_width,
@@ -456,11 +482,12 @@ def _choose_lines(
     *,
     script: str,
     hints: list[_BoundHint],
+    tokens: list[SpeechTokenTiming],
     normal_measure: Callable[[str], float],
     emphasis_measure: Callable[[str], float],
     max_width: float,
 ) -> list[tuple[int, int]] | None:
-    protected = _protected_spans(cue, script, hints)
+    protected = _protected_spans(cue, script, hints, tokens)
     legal = [
         index
         for index in range(cue.char_start + 1, cue.char_end)
@@ -502,7 +529,12 @@ def _choose_lines(
     return None
 
 
-def _protected_spans(cue: _Cue, script: str, hints: list[_BoundHint]) -> list[tuple[int, int]]:
+def _protected_spans(
+    cue: _Cue,
+    script: str,
+    hints: list[_BoundHint],
+    tokens: list[SpeechTokenTiming],
+) -> list[tuple[int, int]]:
     text = script[cue.char_start : cue.char_end]
     spans = [
         (cue.char_start + match.start(), cue.char_start + match.end())
@@ -510,6 +542,13 @@ def _protected_spans(cue: _Cue, script: str, hints: list[_BoundHint]) -> list[tu
         for match in pattern.finditer(text)
     ]
     spans.extend((item.start, item.end) for item in hints if item.display_mode == "inline")
+    spans.extend(
+        token.char_span
+        for token in tokens
+        if token.char_span is not None
+        and cue.char_start <= token.char_span[0]
+        and token.char_span[1] <= cue.char_end
+    )
     return spans
 
 
@@ -525,8 +564,14 @@ def _legal_break(script: str, cue: _Cue, index: int, protected: list[tuple[int, 
     return sum(_meaningful(char) for char in script[right_start:right_end]) >= 2
 
 
-def _time_split_index(cue: _Cue, *, script: str, hints: list[_BoundHint]) -> int | None:
-    protected = _protected_spans(cue, script, hints)
+def _time_split_index(
+    cue: _Cue,
+    *,
+    script: str,
+    hints: list[_BoundHint],
+    tokens: list[SpeechTokenTiming],
+) -> int | None:
+    protected = _protected_spans(cue, script, hints, tokens)
     candidates = [
         index
         for index in range(cue.char_start + 1, cue.char_end)
@@ -567,7 +612,7 @@ def _materialize_cue(
     item: _LaidOutCue,
     hints: list[_BoundHint],
     script: str,
-    tokens: list[dict],
+    tokens: list[SpeechTokenTiming],
     fps: int,
     total_frames: int,
     normal_measure: Callable[[str], float],
@@ -627,7 +672,7 @@ def _materialize_cue(
                     text=text,
                     role=role,
                     hint_id=hint.hint_id if hint else None,
-                    token_ids=[str(token.get("token_id") or "") for token in run_tokens if token.get("token_id")],
+                    token_ids=[token.token_id for token in run_tokens if token.token_id],
                     char_span=(segment_start - cue.char_start, segment_end - cue.char_start),
                     enter_frame=max(start_frame, min(end_frame - 1, enter_frame)),
                     exit_frame=end_frame,
@@ -679,19 +724,13 @@ def _mixed_width(
     return width + normal_measure(script[cursor:end])
 
 
-def _token_inside(token: dict, start: int, end: int) -> bool:
-    span = token.get("char_span")
-    return (
-        isinstance(span, (list, tuple))
-        and len(span) == 2
-        and start <= int(span[0])
-        and int(span[1]) <= end
-    )
+def _token_inside(token: SpeechTokenTiming, start: int, end: int) -> bool:
+    return token.char_span is not None and start <= token.char_span[0] and token.char_span[1] <= end
 
 
 def _tokens_cover_meaningful_span(
     script: str,
-    tokens: list[dict],
+    tokens: list[SpeechTokenTiming],
     start: int,
     end: int,
 ) -> bool:
@@ -700,10 +739,10 @@ def _tokens_cover_meaningful_span(
         return False
     covered: set[int] = set()
     for token in tokens:
-        span = token.get("char_span")
-        if not isinstance(span, (list, tuple)) or len(span) != 2:
+        span = token.char_span
+        if span is None:
             continue
-        token_start, token_end = int(span[0]), int(span[1])
+        token_start, token_end = span
         if token_start < start or token_end > end or token_end <= token_start:
             continue
         covered.update(range(token_start, token_end))
@@ -714,7 +753,7 @@ def _line_start_frame(
     script: str,
     start: int,
     end: int,
-    tokens: list[dict],
+    tokens: list[SpeechTokenTiming],
     fps: int,
     fallback: int,
     end_frame: int,
@@ -728,19 +767,18 @@ def _line_start_frame(
     owner = [
         token
         for token in tokens
-        if isinstance(token.get("char_span"), (list, tuple))
-        and len(token["char_span"]) == 2
-        and int(token["char_span"][0]) <= first_meaningful < int(token["char_span"][1])
+        if token.char_span is not None
+        and token.char_span[0] <= first_meaningful < token.char_span[1]
     ]
     return _token_start_frame(owner, fps, fallback, end_frame)
 
 
 def _token_start_frame(
-    tokens: list[dict], fps: int, fallback: int, end_frame: int
+    tokens: list[SpeechTokenTiming], fps: int, fallback: int, end_frame: int
 ) -> int:
     if not tokens:
         return fallback
-    start = min(float(token.get("start") or 0.0) for token in tokens)
+    start = min(token.start for token in tokens)
     return max(fallback, min(end_frame - 1, round(start * fps)))
 
 
@@ -787,10 +825,10 @@ def _normalize_with_source_spans(text: str) -> tuple[str, list[tuple[int, int]]]
     return "".join(normalized), spans
 
 
-def _extend_run_end(script: str, end: int) -> int:
+def _extend_run_end(script: str, end: int, *, limit: int) -> int:
     """Assign boundary whitespace/punctuation to the preceding inline run."""
 
-    while end < len(script):
+    while end < limit:
         char = script[end]
         if not char.isspace() and unicodedata.category(char)[0] != "P":
             break

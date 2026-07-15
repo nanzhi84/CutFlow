@@ -402,24 +402,39 @@ def test_build_video_segments_from_plans_uses_timeline_frames_and_asset_sources(
 
 
 def test_build_text_segments_from_caption_composition_exports_run_semantics():
+    from packages.core.contracts.artifacts import CaptionCompositionPlanArtifact
+
     segments = build_text_segments_from_narration(
         [{"unit_id": "n1", "text": "普通字幕", "start": 0.0, "end": 1.0}],
-        {
+        CaptionCompositionPlanArtifact.model_validate({
             "fps": 30,
             "width": 1080,
             "height": 1920,
+            "normal_enabled": True,
+            "emphasis_enabled": True,
+            "normal_font_asset_id": "font_normal",
+            "emphasis_font_asset_id": "font_emphasis",
             "normal_font_size": 64,
             "emphasis_font_size": 72,
             "band": {"anchor_x": 0.5, "baseline_y": 0.84, "line_height_ratio": 1.12},
             "cues": [
                 {
+                    "cue_id": "cue_1",
+                    "text": "普通强调",
+                    "start_frame": 0,
+                    "end_frame": 30,
+                    "spoken_span": {"start_frame": 0, "end_frame": 30},
+                    "display_span": {"start_frame": 0, "end_frame": 30},
+                    "source_unit_ids": ["n1"],
                     "lines": [
                         {
                             "advance_px": 136,
                             "runs": [
                                 {
+                                    "run_id": "run_1",
                                     "text": "普通",
                                     "role": "normal",
+                                    "char_span": [0, 2],
                                     "enter_frame": 0,
                                     "exit_frame": 30,
                                     "effect_id": "soft_in",
@@ -427,9 +442,11 @@ def test_build_text_segments_from_caption_composition_exports_run_semantics():
                                     "baseline_offset_px": 48,
                                 },
                                 {
+                                    "run_id": "run_2",
                                     "text": "强调",
                                     "role": "emphasis",
                                     "hint_id": "hint_0001",
+                                    "char_span": [2, 4],
                                     "enter_frame": 9,
                                     "exit_frame": 30,
                                     "effect_id": "pop",
@@ -441,7 +458,7 @@ def test_build_text_segments_from_caption_composition_exports_run_semantics():
                     ]
                 }
             ],
-        },
+        }),
     )
 
     assert [segment.track_name for segment in segments] == ["字幕-普通", "字幕-强调"]
@@ -570,24 +587,7 @@ def test_jianying_input_normalizers_cover_invalid_and_fallback_shapes(tmp_path):
             {"text": "bad timing", "start": 1, "end": 1},
             {"text": "fallback", "start": 0, "end": 1},
         ],
-        {
-            "fps": 30,
-            "cues": [
-                None,
-                {
-                    "lines": [
-                        None,
-                        {
-                            "advance_px": 10,
-                            "runs": [
-                                None,
-                                {"text": "", "enter_frame": 0, "exit_frame": 1},
-                            ],
-                        },
-                    ]
-                },
-            ],
-        },
+        None,
     )
     assert [segment.text for segment in text_segments] == ["fallback"]
 

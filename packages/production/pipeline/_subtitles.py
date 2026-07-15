@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from packages.core.contracts.artifacts import CaptionCompositionPlanArtifact, StylePlanArtifact
+
 _ASS_MARGIN_L = 80
 _ASS_MARGIN_R = 80
 
@@ -24,26 +26,26 @@ def ass_escape(text: str) -> str:
 def write_ass_subtitles(
     output_path: Path,
     *,
-    style: dict,
-    width: int,
-    height: int,
-    caption_composition: dict,
-    font_name: str | None = None,
-    emphasis_font_name: str | None = None,
+    style: StylePlanArtifact,
+    caption_composition: CaptionCompositionPlanArtifact,
+    font_name: str,
+    emphasis_font_name: str,
 ) -> list[str]:
     """Write one Dialogue per CaptionRun; line breaks and x positions are preplanned."""
 
-    subtitle = style.get("subtitle") if isinstance(style.get("subtitle"), dict) else {}
-    resolved_font = (font_name or "").replace(",", " ").strip() or "Arial"
-    resolved_emphasis_font = (
-        (emphasis_font_name or font_name or "").replace(",", " ").strip() or resolved_font
-    )
-    normal_size = int(caption_composition.get("normal_font_size") or 64)
-    emphasis_size = int(caption_composition.get("emphasis_font_size") or normal_size)
-    band = caption_composition.get("band") if isinstance(caption_composition.get("band"), dict) else {}
-    anchor_x = float(band.get("anchor_x", 0.5)) * width
-    baseline_y = float(band.get("baseline_y", 0.84)) * height
-    line_height = max(normal_size, emphasis_size) * float(band.get("line_height_ratio", 1.12))
+    subtitle = style.subtitle
+    resolved_font = font_name.replace(",", " ").strip()
+    resolved_emphasis_font = emphasis_font_name.replace(",", " ").strip()
+    if not resolved_font or not resolved_emphasis_font:
+        raise ValueError("resolved caption font family names must not be empty")
+    normal_size = caption_composition.normal_font_size
+    emphasis_size = caption_composition.emphasis_font_size
+    band = caption_composition.band
+    width = caption_composition.width
+    height = caption_composition.height
+    anchor_x = band.anchor_x * width
+    baseline_y = band.baseline_y * height
+    line_height = max(normal_size, emphasis_size) * band.line_height_ratio
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -63,45 +65,36 @@ def write_ass_subtitles(
             "Normal",
             resolved_font,
             normal_size,
-            primary=subtitle.get("primary_color"),
-            outline_color=subtitle.get("outline_color"),
-            outline=subtitle.get("outline"),
+            primary=subtitle.primary_color,
+            outline_color=subtitle.outline_color,
+            outline=subtitle.outline,
         ),
         _style_row(
             "Emphasis",
             resolved_emphasis_font,
             emphasis_size,
-            primary=subtitle.get("emphasis_primary_color"),
-            outline_color=subtitle.get("emphasis_outline_color"),
-            outline=subtitle.get("emphasis_outline"),
+            primary=subtitle.emphasis_primary_color,
+            outline_color=subtitle.emphasis_outline_color,
+            outline=subtitle.emphasis_outline,
         ),
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    fps = max(1, int(caption_composition.get("fps") or 30))
-    for cue in caption_composition.get("cues") or []:
-        cue_lines = cue.get("lines") if isinstance(cue, dict) else []
-        if not isinstance(cue_lines, list):
-            continue
+    fps = caption_composition.fps
+    for cue in caption_composition.cues:
+        cue_lines = cue.lines
         for line_index, line in enumerate(cue_lines):
-            if not isinstance(line, dict):
-                continue
-            advance = float(line.get("advance_px") or 0.0)
+            advance = line.advance_px
             x = anchor_x - advance / 2.0
             baseline = baseline_y - (len(cue_lines) - line_index - 1) * line_height
-            for run in line.get("runs") or []:
-                if not isinstance(run, dict):
-                    continue
-                text = ass_escape(str(run.get("text") or ""))
-                run_advance = float(run.get("advance_px") or 0.0)
-                if not text:
-                    x += run_advance
-                    continue
-                role = "Emphasis" if run.get("role") == "emphasis" else "Normal"
-                top_y = baseline - float(run.get("baseline_offset_px") or 0.0)
+            for run in line.runs:
+                text = ass_escape(run.text)
+                run_advance = run.advance_px
+                role = "Emphasis" if run.role == "emphasis" else "Normal"
+                top_y = baseline - run.baseline_offset_px
                 tags = ["\\an7", f"\\pos({round(x)},{round(top_y)})"]
-                effect = str(run.get("effect_id") or "none")
+                effect = run.effect_id
                 if effect == "soft_in":
                     tags.append("\\fad(120,0)")
                 elif effect == "pop":
@@ -112,8 +105,8 @@ def write_ass_subtitles(
                             "\\t(120,240,\\fscx100\\fscy100)",
                         ]
                     )
-                start = int(run.get("enter_frame") or 0) / fps
-                end = int(run.get("exit_frame") or 0) / fps
+                start = run.enter_frame / fps
+                end = run.exit_frame / fps
                 if end > start:
                     lines.append(
                         f"Dialogue: 0,{ass_time(start)},{ass_time(end)},{role},,0,0,0,,"
@@ -160,17 +153,11 @@ def _parse_hex_rgb(value: object) -> tuple[int, int, int] | None:
         return None
 
 
-def _ass_outline(value: object, fallback: float = 4.0) -> str:
-    try:
-        return f"{max(0.0, float(value if value is not None else fallback)):g}"
-    except (TypeError, ValueError):
-        return f"{fallback:g}"
+def _ass_outline(value: float | None, fallback: float = 4.0) -> str:
+    return f"{max(0.0, value if value is not None else fallback):g}"
 
 
-def ass_font_size(requested_size: object, *, height: int) -> int:
-    try:
-        base_size = int(requested_size or 64)
-    except (TypeError, ValueError):
-        base_size = 64
-    scale = max(1.0, float(height or 1080) / 1080.0)
+def ass_font_size(requested_size: int | None, *, height: int) -> int:
+    base_size = requested_size or 64
+    scale = max(1.0, height / 1080.0)
     return max(12, int(round(base_size * scale)))

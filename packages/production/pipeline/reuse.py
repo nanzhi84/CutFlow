@@ -15,7 +15,7 @@ from packages.core.contracts import (
     WorkflowRun,
     WorkflowTemplate,
 )
-from packages.production.pipeline.node_sequence import canonical_node_id
+from packages.production.pipeline.node_sequence import workflow_graph
 
 
 REUSABLE_NODE_STATUSES = {NodeStatus.succeeded, NodeStatus.degraded, NodeStatus.skipped}
@@ -63,19 +63,14 @@ def compute_reuse_plan(
     artifacts: Mapping[str, Artifact],
 ) -> ReusePlan:
     plan = ReusePlan(source_run_id=source_run.run.id)
-    previous_by_node = {
-        canonical_node_id(node.node_id): node for node in source_run.node_runs
-    }
-    template_by_node = {
-        canonical_node_id(node.node_id): node for node in template.nodes
-    }
+    previous_by_node = {node.node_id: node for node in source_run.node_runs}
+    template_by_node = {node.node_id: node for node in template.nodes}
     failed_resume_anchor = _failed_resume_anchor(source_run, template, previous_by_node)
 
     for template_node in template.nodes:
         if template_node.reuse_policy == "never" and failed_resume_anchor is None:
             return _stop(plan, template_node.node_id, "reuse_policy_forces_rerun")
-        canonical_id = canonical_node_id(template_node.node_id)
-        previous_node = previous_by_node.get(canonical_id)
+        previous_node = previous_by_node.get(template_node.node_id)
         if previous_node is None:
             return _stop(plan, template_node.node_id, "node_run_missing")
         if previous_node.status not in REUSABLE_NODE_STATUSES:
@@ -137,7 +132,7 @@ def compute_reuse_plan(
 
     for previous_node in source_run.node_runs:
         if (
-            canonical_node_id(previous_node.node_id) not in template_by_node
+            previous_node.node_id not in template_by_node
             and plan.rerun_from_node_id is None
         ):
             return _stop(plan, previous_node.node_id, "node_not_in_template")
@@ -177,10 +172,31 @@ def _failed_resume_anchor(
     if source_run.run.status != RunStatus.failed:
         return None
     for template_node in template.nodes:
-        previous_node = previous_by_node.get(canonical_node_id(template_node.node_id))
+        previous_node = previous_by_node.get(template_node.node_id)
         if previous_node is not None and previous_node.status == NodeStatus.failed:
             return template_node.node_id
     return None
+
+
+def latest_failed_node(node_runs: list[NodeRun]) -> NodeRun | None:
+    return next(
+        (node for node in reversed(node_runs) if node.status == NodeStatus.failed),
+        None,
+    )
+
+
+def has_retryable_active_failure(run: WorkflowRun, node_runs: list[NodeRun]) -> bool:
+    if run.status != RunStatus.failed:
+        return False
+    graph = workflow_graph(run.workflow_template_id)
+    failed_node = latest_failed_node(node_runs)
+    return bool(
+        graph is not None
+        and failed_node is not None
+        and failed_node.error is not None
+        and failed_node.error.retryable
+        and failed_node.node_id in graph["nodes"]
+    )
 
 
 def _stop(

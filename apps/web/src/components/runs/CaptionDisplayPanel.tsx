@@ -159,7 +159,7 @@ export function CaptionDisplayPanel({ plan }: { plan: CaptionCompositionView | n
           固定字幕带 Cue · 共 {plan.cues.length} 条
         </p>
         <div className="grid gap-2 rounded-xl border border-border/60 bg-white/60 p-3">
-          {plan.cues.slice(0, 8).map((cue) => (
+          {plan.cues.map((cue) => (
             <div key={cue.cueId} className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
               <span className="min-w-0 text-text-primary">
                 {cue.lines.map((line, lineIndex) => (

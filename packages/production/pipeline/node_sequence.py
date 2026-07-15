@@ -21,12 +21,6 @@ from collections.abc import Iterable, Sequence
 TIMELINE_ASSEMBLY_VALIDATION_NODE_ID = "TimelineAssemblyValidation"
 
 
-def canonical_node_id(node_id: str) -> str:
-    """Return the active node id; retired workflow aliases are not executable."""
-
-    return node_id
-
-
 NODE_SEQUENCE = [
     "ValidateRequest",
     "LoadCaseContext",

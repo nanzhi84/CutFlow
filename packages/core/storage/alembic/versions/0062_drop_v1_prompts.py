@@ -3,8 +3,8 @@ from __future__ import annotations
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0061_drop_v1_prompts"
-down_revision = "0060_caption_cleanslate_cleanup"
+revision = "0062_drop_v1_prompts"
+down_revision = "0061_caption_cleanslate_cleanup"
 branch_labels = None
 depends_on = None
 

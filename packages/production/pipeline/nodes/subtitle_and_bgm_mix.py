@@ -5,6 +5,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from packages.core.contracts import (
     ArtifactKind,
     DegradationNotice,
@@ -12,7 +14,11 @@ from packages.core.contracts import (
     NodeStatus,
     WarningCode,
 )
-from packages.core.contracts.artifacts import CaptionCompositionPlanArtifact
+from packages.core.contracts.artifacts import (
+    CaptionCompositionPlanArtifact,
+    StylePlanArtifact,
+    TimelinePlanArtifact,
+)
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.media.assets import store_file
 from packages.media.rendering import validate_rendered_output
@@ -38,20 +44,22 @@ def run(ctx: NodeContext) -> NodeOutput:
     state = ctx.state
     rendered = state.require(ArtifactKind.video_rendered)
     audio = state.require(ArtifactKind.audio_tts)
-    timeline = state.require(ArtifactKind.plan_timeline).payload or {}
-    style = state.require(ArtifactKind.plan_style).payload or {}
     try:
         composition = CaptionCompositionPlanArtifact.model_validate(
             state.require(ArtifactKind.plan_caption_composition).payload
-        ).model_dump(mode="json")
-    except Exception as exc:
+        )
+        timeline = TimelinePlanArtifact.model_validate(
+            state.require(ArtifactKind.plan_timeline).payload
+        )
+        style = StylePlanArtifact.model_validate(state.require(ArtifactKind.plan_style).payload)
+    except ValidationError as exc:
         raise NodeExecutionError(
-            ErrorCode.render_subtitle_failed,
-            f"Caption composition artifact is invalid: {exc}",
+            ErrorCode.artifact_schema_mismatch,
+            f"Final mix planning artifact is invalid: {exc}",
             retryable=False,
         ) from exc
-    fps = int(timeline.get("fps") or state.request.output.fps)
-    total_frames = int(timeline.get("total_frames") or 0)
+    fps = timeline.fps
+    total_frames = timeline.total_frames
     duration = total_frames / fps if total_frames else float(rendered.media_info.duration_sec or 0)
     subtitle_artifact = None
     degradations: list[DegradationNotice] = []
@@ -59,22 +67,22 @@ def run(ctx: NodeContext) -> NodeOutput:
     try:
         with tempfile.TemporaryDirectory(prefix="cutagent-final-") as directory:
             temp_dir = Path(directory)
-            subtitle_path = temp_dir / "subtitle.ass" if composition["normal_enabled"] else None
+            subtitle_path = temp_dir / "subtitle.ass" if composition.normal_enabled else None
             fonts_dir = temp_dir / "fonts"
             resolved_font: ResolvedFont | None = None
             resolved_emphasis_font: ResolvedFont | None = None
             if subtitle_path is not None:
                 resolved_font = _resolve_planned_font(
                     ctx,
-                    font_asset_id=composition.get("normal_font_asset_id"),
+                    font_asset_id=composition.normal_font_asset_id,
                     runtime_dir=fonts_dir,
                     label="普通字幕",
                 )
-                if composition.get("emphasis_enabled"):
-                    emphasis_id = composition.get("emphasis_font_asset_id")
+                if composition.emphasis_enabled:
+                    emphasis_id = composition.emphasis_font_asset_id
                     resolved_emphasis_font = (
                         resolved_font
-                        if emphasis_id == composition.get("normal_font_asset_id")
+                        if emphasis_id == composition.normal_font_asset_id
                         else _resolve_planned_font(
                             ctx,
                             font_asset_id=emphasis_id,
@@ -87,17 +95,15 @@ def run(ctx: NodeContext) -> NodeOutput:
                 write_ass_subtitles(
                     subtitle_path,
                     style=style,
-                    width=state.request.output.width,
-                    height=state.request.output.height,
                     caption_composition=composition,
                     font_name=resolved_font.family_name,
                     emphasis_font_name=resolved_emphasis_font.family_name,
                 )
 
             bgm_path = None
-            bgm_plan = style.get("bgm") if isinstance(style.get("bgm"), dict) else {}
-            bgm_asset_id = style.get("bgm_asset_id") or (bgm_plan or {}).get("asset_id")
-            if bgm_plan and bgm_plan.get("enabled") and bgm_asset_id:
+            bgm_plan = style.bgm
+            bgm_asset_id = style.bgm_asset_id or (bgm_plan.asset_id if bgm_plan else None)
+            if bgm_plan is not None and bgm_plan.enabled and bgm_asset_id:
                 bgm_path = ctx.artifact_path(ctx.source_artifact_for_asset(bgm_asset_id))
 
             sfx_mix_events: list[SfxMixEvent] = []
@@ -109,10 +115,10 @@ def run(ctx: NodeContext) -> NodeOutput:
                 duration=duration,
                 sfx_asset_id=selected_sfx_id,
             ):
-                asset_id = str(request["asset_id"])
+                asset_id = request.asset_id
                 try:
                     source_path = ctx.artifact_path(ctx.source_artifact_for_asset(asset_id))
-                except Exception:
+                except NodeExecutionError:
                     warnings.append(WarningCode.sfx_asset_missing)
                     degradations.append(
                         degradation_notice(
@@ -126,8 +132,8 @@ def run(ctx: NodeContext) -> NodeOutput:
                 sfx_mix_events.append(
                     SfxMixEvent(
                         path=Path(source_path),
-                        start_ms=int(request["start_ms"]),
-                        volume=float(request["volume"]),
+                        start_ms=request.start_ms,
+                        volume=request.volume,
                         asset_id=asset_id,
                     )
                 )
@@ -152,13 +158,17 @@ def run(ctx: NodeContext) -> NodeOutput:
                 "output_path": output_path,
                 "subtitle_path": burn_subtitle_path,
                 "bgm_path": bgm_path,
-                "bgm_volume": float((bgm_plan or {}).get("volume", state.request.bgm.volume)),
+                "bgm_volume": bgm_plan.volume if bgm_plan else state.request.bgm.volume,
                 "duration": duration,
                 "fps": fps,
                 "fonts_dir": burn_fonts_dir,
-                "auto_mix": bool((bgm_plan or {}).get("auto_mix", state.request.bgm.auto_mix)),
-                "bgm_source_start": _float_or_zero((bgm_plan or {}).get("source_start")),
-                "bgm_source_end": _float_or_none((bgm_plan or {}).get("source_end")),
+                "auto_mix": bgm_plan.auto_mix if bgm_plan else state.request.bgm.auto_mix,
+                "bgm_source_start": max(0.0, bgm_plan.source_start or 0.0)
+                if bgm_plan
+                else 0.0,
+                "bgm_source_end": max(0.0, bgm_plan.source_end)
+                if bgm_plan and bgm_plan.source_end is not None
+                else None,
                 "sfx_events": sfx_mix_events,
             }
             try:
@@ -208,7 +218,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                     media_info=probe_media(subtitle_path),
                 )
     except FfmpegCommandError as exc:
-        code = ErrorCode.render_subtitle_failed if composition["normal_enabled"] else exc.error_code
+        code = ErrorCode.render_subtitle_failed if composition.normal_enabled else exc.error_code
         raise NodeExecutionError(code, "Subtitle/BGM mix rendering failed.") from exc
     final = ctx.artifact(
         ArtifactKind.video_final,
@@ -269,17 +279,3 @@ def _resolve_planned_font(
             retryable=False,
         )
     return resolved
-
-
-def _float_or_zero(value: object) -> float:
-    try:
-        return max(0.0, float(value or 0.0))
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _float_or_none(value: object) -> float | None:
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return None

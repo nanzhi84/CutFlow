@@ -59,7 +59,6 @@ from packages.production.pipeline.node_sequence import (
     EDITING_AGENT_V2_SEQUENCE,
     NODE_SEQUENCE,
     SEEDANCE_T2V_SEQUENCE,
-    canonical_node_id,
     _linear_edges,
     topological_node_order,
     validate_graph_structure,
@@ -701,9 +700,8 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         Existence over "latest row": a re-invoked activity appends new NodeRuns and the
         hydrated list has no reliable order, so match the done-set semantics of
         _next_unfinished_node_id (canonical id + terminal status set)."""
-        target = canonical_node_id(node_id)
         return any(
-            canonical_node_id(node_run.node_id) == target
+            node_run.node_id == node_id
             and node_run.status in {NodeStatus.succeeded, NodeStatus.skipped, NodeStatus.degraded}
             for node_run in self.repository.node_runs.get(run_id, [])
         )
@@ -711,7 +709,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
     def _next_unfinished_node_id(self, run: WorkflowRun, node_runs: list[NodeRun]) -> str | None:
         """First template node not yet completed — the node that was due to run."""
         done = {
-            canonical_node_id(node_run.node_id)
+            node_run.node_id
             for node_run in node_runs
             if node_run.status in {NodeStatus.succeeded, NodeStatus.skipped, NodeStatus.degraded}
         }
@@ -719,7 +717,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             (
                 node_id
                 for node_id in self._sequence_for_run(run)
-                if canonical_node_id(node_id) not in done
+                if node_id not in done
             ),
             None,
         )
@@ -1265,13 +1263,11 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                 template_for(run.workflow_template_id),
                 self.repository.artifacts,
             )
-        previous_by_node = {canonical_node_id(node.node_id): node for node in previous}
-        decisions_by_node = {
-            canonical_node_id(decision.node_id): decision for decision in reuse_plan.decisions
-        }
+        previous_by_node = {node.node_id: node for node in previous}
+        decisions_by_node = {decision.node_id: decision for decision in reuse_plan.decisions}
         for node_id in reuse_plan.reused_node_ids:
-            previous_node_run = previous_by_node[canonical_node_id(node_id)]
-            decision = decisions_by_node.get(canonical_node_id(node_id))
+            previous_node_run = previous_by_node[node_id]
+            decision = decisions_by_node.get(node_id)
             reusable_artifact_ids = (
                 list(decision.artifact_ids)
                 if decision is not None

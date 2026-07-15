@@ -305,10 +305,16 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
     },
     OutputOptions: {
         "width": (
-            ("packages/production/pipeline/nodes/subtitle_and_bgm_mix.py", "request.output.width"),
+            (
+                "packages/production/pipeline/nodes/caption_composition_planning.py",
+                "request.output.width",
+            ),
         ),
         "height": (
-            ("packages/production/pipeline/nodes/subtitle_and_bgm_mix.py", "request.output.height"),
+            (
+                "packages/production/pipeline/nodes/caption_composition_planning.py",
+                "request.output.height",
+            ),
         ),
         "fps": (("packages/production/pipeline/nodes/render_final_timeline.py", "request.output.fps"),),
     },

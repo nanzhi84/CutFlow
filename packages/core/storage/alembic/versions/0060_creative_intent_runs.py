@@ -3,8 +3,8 @@ from __future__ import annotations
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0059_creative_intent_runs"
-down_revision = "0058_bgm_agent_prompt"
+revision = "0060_creative_intent_runs"
+down_revision = "0059_bgm_agent_prompt"
 branch_labels = None
 depends_on = None
 

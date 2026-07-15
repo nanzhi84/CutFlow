@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from packages.core.contracts import SpeechTokenTiming
 from packages.media.video.ffmpeg import probe_audio_channels, probe_video_frame_count
 from packages.core.contracts.artifacts import (
+    AlignmentArtifact,
     CaptionBand,
     CaptionCompositionDiagnostics,
     CaptionCompositionPlanArtifact,
     EmphasisHint,
+    NarrationUnit,
+    StylePlanArtifact,
 )
 from packages.production.pipeline._caption_composition import (
     _Cue,
@@ -28,26 +33,28 @@ from packages.production.pipeline._caption_composition import (
 from packages.production.pipeline._ffmpeg import SfxMixEvent, render_final_media
 from packages.production.pipeline.nodes.caption_composition_planning import _timing_source
 from packages.production.pipeline._speech_timing import proportional_tokens
-from packages.production.pipeline._subtitles import write_ass_subtitles
+from packages.production.pipeline._subtitles import _parse_hex_rgb, write_ass_subtitles
 from tests.fixtures.media import ffmpeg_has_filter
 
 
-def _units(script: str, *, duration: float = 4.0) -> list[dict]:
+def _unit(unit_id: str, text: str, start: float, end: float) -> NarrationUnit:
+    return NarrationUnit(
+        unit_id=unit_id,
+        text=text,
+        start=start,
+        end=end,
+        confidence=1.0,
+    )
+
+
+def _units(script: str, *, duration: float = 4.0) -> list[NarrationUnit]:
     return [
-        {
-            "unit_id": "unit_0001",
-            "text": script,
-            "start": 0.0,
-            "end": duration,
-        }
+        _unit("unit_0001", script, 0.0, duration)
     ]
 
 
-def _tokens(script: str, *, duration: float = 4.0) -> list[dict]:
-    return [
-        token.model_dump(mode="json")
-        for token in proportional_tokens(script, start=0.0, end=duration)
-    ]
+def _tokens(script: str, *, duration: float = 4.0) -> list[SpeechTokenTiming]:
+    return proportional_tokens(script, start=0.0, end=duration)
 
 
 def _build(
@@ -61,7 +68,7 @@ def _build(
     timing_source: str = "native",
     normal_enabled: bool = True,
     emphasis_enabled: bool = True,
-    tokens_override: list[dict] | None = None,
+    tokens_override: list[SpeechTokenTiming] | None = None,
 ) -> CaptionCompositionPlanArtifact:
     return build_caption_composition(
         script=script,
@@ -123,8 +130,10 @@ def test_inline_emphasis_can_appear_at_every_sentence_position(script: str, phra
     emphasized = [run for run in runs if run.role == "emphasis"]
     assert [run.text for run in emphasized] == [phrase]
     phrase_start = script.find(phrase)
-    first_token = next(token for token in _tokens(script) if token["char_span"][0] == phrase_start)
-    assert emphasized[0].enter_frame == round(first_token["start"] * 30)
+    first_token = next(
+        token for token in _tokens(script) if token.char_span and token.char_span[0] == phrase_start
+    )
+    assert emphasized[0].enter_frame == round(first_token.start * 30)
 
 
 def test_repeated_phrase_claims_first_unoccupied_instances_in_token_order() -> None:
@@ -189,7 +198,7 @@ def test_token_miss_falls_back_to_normal_with_explicit_diagnostics() -> None:
     assert {run.role for run in _runs(plan)} == {"normal"}
     assert plan.diagnostics.hints_token_unmatched == 1
     assert plan.diagnostics.hints_applied == 0
-    assert plan.diagnostics.fallbacks == [
+    assert [item.model_dump(mode="json") for item in plan.diagnostics.fallbacks] == [
         {
             "reason": "token_unmatched",
             "hint_ids": ["hint_0001"],
@@ -202,7 +211,7 @@ def test_partial_token_coverage_cannot_emphasize_a_whole_phrase() -> None:
     tokens = _tokens("脚本包含重点短语")
     phrase_start = "脚本包含重点短语".index("重点短语")
     partial = [
-        token for token in tokens if tuple(token["char_span"]) == (phrase_start, phrase_start + 1)
+        token for token in tokens if token.char_span == (phrase_start, phrase_start + 1)
     ]
     plan = _build(
         "脚本包含重点短语",
@@ -217,8 +226,8 @@ def test_partial_token_coverage_cannot_emphasize_a_whole_phrase() -> None:
 def test_normalized_units_map_monotonically_back_to_original_whitespace() -> None:
     script = "第一段  有双空格。\n第二段。"
     units = [
-        {"unit_id": "u1", "text": "第一段 有双空格。", "start": 0.0, "end": 1.0},
-        {"unit_id": "u2", "text": "第二段。", "start": 1.4, "end": 2.0},
+        _unit("u1", "第一段 有双空格。", 0.0, 1.0),
+        _unit("u2", "第二段。", 1.4, 2.0),
     ]
     plan = build_caption_composition(
         script=script,
@@ -252,7 +261,7 @@ def test_normalized_units_map_monotonically_back_to_original_whitespace() -> Non
 def test_unmatched_unit_is_explicitly_diagnosed() -> None:
     plan = build_caption_composition(
         script="原始脚本",
-        units=[{"unit_id": "u1", "text": "另一个脚本", "start": 0.0, "end": 1.0}],
+        units=[_unit("u1", "另一个脚本", 0.0, 1.0)],
         tokens=[],
         hints=[],
         fps=30,
@@ -277,14 +286,14 @@ def test_unmatched_unit_is_explicitly_diagnosed() -> None:
 
     assert plan.cues == []
     assert plan.diagnostics.units_unmatched == 1
-    assert plan.diagnostics.fallbacks[0]["reason"] == "narration_unit_unmatched"
+    assert plan.diagnostics.fallbacks[0].reason == "narration_unit_unmatched"
 
 
 def test_first_tiny_cue_merges_forward_when_gap_is_short() -> None:
     script = "嗨！这是后续完整说明。"
     units = [
-        {"unit_id": "u1", "text": "嗨！", "start": 0.0, "end": 0.2},
-        {"unit_id": "u2", "text": "这是后续完整说明。", "start": 0.21, "end": 2.0},
+        _unit("u1", "嗨！", 0.0, 0.2),
+        _unit("u2", "这是后续完整说明。", 0.21, 2.0),
     ]
     plan = build_caption_composition(
         script=script,
@@ -319,9 +328,9 @@ def test_first_tiny_cue_merges_forward_when_gap_is_short() -> None:
 def test_consecutive_leading_tiny_cues_keep_merging_forward() -> None:
     script = "嗨！啊！这是后续完整说明。"
     units = [
-        {"unit_id": "u1", "text": "嗨！", "start": 0.0, "end": 0.1},
-        {"unit_id": "u2", "text": "啊！", "start": 0.11, "end": 0.2},
-        {"unit_id": "u3", "text": "这是后续完整说明。", "start": 0.21, "end": 2.0},
+        _unit("u1", "嗨！", 0.0, 0.1),
+        _unit("u2", "啊！", 0.11, 0.2),
+        _unit("u3", "这是后续完整说明。", 0.21, 2.0),
     ]
     plan = build_caption_composition(
         script=script,
@@ -354,12 +363,16 @@ def test_consecutive_leading_tiny_cues_keep_merging_forward() -> None:
 
 
 def test_timing_source_downgrades_when_any_char_timing_is_interpolated() -> None:
-    assert _timing_source({"source": "tts", "diagnostics": {"char_fallback": 1}}) == (
-        "interpolated"
-    )
-    assert _timing_source({"source": "asr", "diagnostics": {"char_fallback": 0}}) == (
-        "asr_anchored"
-    )
+    assert _timing_source(
+        AlignmentArtifact(
+            audio_artifact_id="audio", segments=[], source="tts", diagnostics={"char_fallback": 1}
+        )
+    ) == "interpolated"
+    assert _timing_source(
+        AlignmentArtifact(
+            audio_artifact_id="audio", segments=[], source="asr", diagnostics={"char_fallback": 0}
+        )
+    ) == "asr_anchored"
 
 
 def test_unbreakable_emphasis_falls_back_to_normal_without_overlay() -> None:
@@ -374,7 +387,7 @@ def test_unbreakable_emphasis_falls_back_to_normal_without_overlay() -> None:
     assert {run.role for run in _runs(plan)} == {"normal"}
     assert "".join(run.text for run in _runs(plan)) == phrase
     assert plan.diagnostics.hints_unbreakable == 1
-    assert plan.diagnostics.fallbacks[0]["reason"] == "emphasis_unbreakable"
+    assert plan.diagnostics.fallbacks[0].reason == "emphasis_unbreakable"
     assert all(
         line.advance_px <= plan.width * plan.band.max_width_ratio + 0.01
         for cue in plan.cues
@@ -415,6 +428,41 @@ def test_inline_boundary_whitespace_and_punctuation_belong_to_preceding_run() ->
     assert "".join(run.text for run in runs) == script
 
 
+def test_sentence_end_emphasis_does_not_cross_its_narration_cue() -> None:
+    script = "第一句重点。\n第二句继续"
+    plan = build_caption_composition(
+        script=script,
+        units=[
+            _unit("u1", "第一句重点", 0.0, 1.0),
+            _unit("u2", "第二句继续", 1.2, 2.2),
+        ],
+        tokens=_tokens(script, duration=2.2),
+        hints=[EmphasisHint(phrase="重点")],
+        fps=30,
+        total_frames=66,
+        width=1080,
+        height=1920,
+        band=CaptionBand(),
+        normal_enabled=True,
+        emphasis_enabled=True,
+        normal_font_asset_id="font_normal",
+        emphasis_font_asset_id="font_emphasis",
+        normal_font_size=64,
+        emphasis_font_size=72,
+        normal_measure=lambda text: len(text) * 20,
+        emphasis_measure=lambda text: len(text) * 28,
+        normal_baseline_offset=48,
+        emphasis_baseline_offset=55,
+        timing_source="native",
+        normal_metrics_source="hmtx",
+        emphasis_metrics_source="hmtx",
+    )
+
+    emphasized = [run for run in _runs(plan) if run.role == "emphasis"]
+    assert [run.text for run in emphasized] == ["重点"]
+    assert plan.diagnostics.hints_unmatched == 0
+
+
 def test_chinese_line_break_keeps_protected_numeric_token_whole() -> None:
     script = "限时套餐只要299元起现在预订"
     plan = _build(script, max_width_ratio=0.15)
@@ -423,6 +471,28 @@ def test_chinese_line_break_keeps_protected_numeric_token_whole() -> None:
     assert len(line_texts) > 1
     assert sum("299元起" in text for text in line_texts) == 1
     assert all(text not in {"299", "元起"} for text in line_texts)
+
+
+def test_line_break_never_splits_a_multi_character_speech_token() -> None:
+    script = "前面超级词后面内容"
+    tokens = [
+        SpeechTokenTiming(
+            text="超级词",
+            start=0.8,
+            end=1.4,
+            token_id="token_phrase",
+            char_span=(2, 5),
+        )
+    ]
+    plan = _build(
+        script,
+        max_width_ratio=0.08,
+        tokens_override=tokens,
+    )
+    line_texts = ["".join(run.text for run in line.runs) for cue in plan.cues for line in cue.lines]
+
+    assert sum("超级词" in text for text in line_texts) == 1
+    assert all(text not in {"超", "超级", "级词", "词"} for text in line_texts)
 
 
 def test_emphasis_span_is_not_split_across_lines_or_time_cues() -> None:
@@ -445,8 +515,8 @@ def test_timing_source_is_reported_without_fabricating_precision(source: str) ->
 
     assert plan.diagnostics.timing_source == source
     emphasis = next(run for run in _runs(plan) if run.role == "emphasis")
-    owned = [token for token in _tokens("时间分档") if token["token_id"] in emphasis.token_ids]
-    assert emphasis.enter_frame == round(min(token["start"] for token in owned) * 30)
+    owned = [token for token in _tokens("时间分档") if token.token_id in emphasis.token_ids]
+    assert emphasis.enter_frame == round(min(token.start for token in owned) * 30)
 
 
 def test_disabled_normal_band_forces_empty_emphasis_plan() -> None:
@@ -483,23 +553,23 @@ def test_contract_rejects_emphasis_only_payload() -> None:
 def test_ass_golden_uses_one_dialogue_per_run_and_no_legacy_geometry(tmp_path) -> None:
     plan = _build("普通强调收尾", [EmphasisHint(phrase="强调")])
     output = tmp_path / "subtitle.ass"
-    style = {
-        "subtitle": {
+    style = StylePlanArtifact.model_validate(
+        {
+            "subtitle": {
             "primary_color": "#FFFFFF",
             "outline_color": "#000000",
             "outline": 4,
             "emphasis_primary_color": "#FFE84A",
             "emphasis_outline_color": "#000000",
             "emphasis_outline": 4,
+            }
         }
-    }
+    )
 
     write_ass_subtitles(
         output,
         style=style,
-        width=1080,
-        height=1920,
-        caption_composition=plan.model_dump(mode="json"),
+        caption_composition=plan,
         font_name="Normal Face",
         emphasis_font_name="Emphasis Face",
     )
@@ -525,11 +595,26 @@ def test_ass_golden_uses_one_dialogue_per_run_and_no_legacy_geometry(tmp_path) -
     assert rendered_text == "普通强调收尾"
 
 
+def test_ass_writer_requires_resolved_fonts_and_rejects_invalid_hex() -> None:
+    plan = _build("普通字幕")
+
+    with pytest.raises(ValueError, match="font family names"):
+        write_ass_subtitles(
+            Path("unused.ass"),
+            style=StylePlanArtifact.model_validate({"subtitle": {}}),
+            caption_composition=plan,
+            font_name=" ",
+            emphasis_font_name="Emphasis Face",
+        )
+
+    assert _parse_hex_rgb("GGGGGG") is None
+
+
 def test_all_cues_share_the_same_band_baseline() -> None:
     script = "第一句。第二句。"
     units = [
-        {"unit_id": "u1", "text": "第一句。", "start": 0.0, "end": 1.5},
-        {"unit_id": "u2", "text": "第二句。", "start": 2.0, "end": 3.5},
+        _unit("u1", "第一句。", 0.0, 1.5),
+        _unit("u2", "第二句。", 2.0, 3.5),
     ]
     plan = build_caption_composition(
         script=script,
@@ -566,15 +651,15 @@ def test_caption_private_boundaries_fail_or_split_deterministically() -> None:
     located = _locate_units(
         "abc",
         [
-            {"unit_id": "empty", "text": "", "start": 0, "end": 1},
-            {"unit_id": "missing", "text": "zzz", "start": 0, "end": 1},
-            {"unit_id": "invalid-time", "text": "abc", "start": 1, "end": 1},
+            _unit("empty", "", 0, 1),
+            _unit("missing", "zzz", 0, 1),
+            _unit("invalid-time", "abc", 1, 1),
         ],
         diagnostics,
     )
     assert located == []
-    assert diagnostics.units_unmatched == 2
-    assert {item["reason"] for item in diagnostics.fallbacks} == {
+    assert diagnostics.units_unmatched == 3
+    assert {item.reason for item in diagnostics.fallbacks} == {
         "narration_unit_unmatched",
         "narration_unit_timing_invalid",
     }
@@ -589,6 +674,7 @@ def test_caption_private_boundaries_fail_or_split_deterministically() -> None:
         cue,
         script=script,
         hints=[],
+        tokens=[],
         normal_measure=lambda text: len(text) * 100,
         emphasis_measure=lambda text: len(text) * 100,
         max_width=1,
@@ -608,9 +694,18 @@ def test_caption_private_boundaries_fail_or_split_deterministically() -> None:
     assert (
         _tokens_cover_meaningful_span(
             "ab",
-            [{"char_span": "bad"}, {"char_span": [0, 1]}],
+            [SpeechTokenTiming(text="a", start=0, end=1, char_span=(0, 1))],
             0,
             2,
+        )
+        is False
+    )
+    assert (
+        _tokens_cover_meaningful_span(
+            "a",
+            [SpeechTokenTiming(text="a", start=0, end=1, char_span=None)],
+            0,
+            1,
         )
         is False
     )
@@ -637,10 +732,8 @@ def test_real_single_pass_voice_bgm_sfx_mix_preserves_frames_and_stereo(
     subtitle_path = tmp_path / "caption.ass"
     write_ass_subtitles(
         subtitle_path,
-        style={"subtitle": {}},
-        width=320,
-        height=568,
-        caption_composition=plan.model_dump(mode="json"),
+        style=StylePlanArtifact.model_validate({"subtitle": {}}),
+        caption_composition=plan,
         font_name="Arial",
         emphasis_font_name="Arial",
     )

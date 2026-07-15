@@ -55,26 +55,26 @@ def _upgrade(engine, filename: str) -> None:
 def test_caption_cleanslate_migrations_form_the_single_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert script.get_heads() == ["0061_drop_v1_prompts"]
-    assert script.get_revision("0058_bgm_agent_prompt").down_revision == (
-        "0057_drop_provider_retry_policy"
+    assert script.get_heads() == ["0062_drop_v1_prompts"]
+    assert script.get_revision("0059_bgm_agent_prompt").down_revision == (
+        "0058_resumable_uploads"
     )
-    assert script.get_revision("0059_creative_intent_runs").down_revision == (
-        "0058_bgm_agent_prompt"
+    assert script.get_revision("0060_creative_intent_runs").down_revision == (
+        "0059_bgm_agent_prompt"
     )
-    assert script.get_revision("0060_caption_cleanslate_cleanup").down_revision == (
-        "0059_creative_intent_runs"
+    assert script.get_revision("0061_caption_cleanslate_cleanup").down_revision == (
+        "0060_creative_intent_runs"
     )
-    assert script.get_revision("0061_drop_v1_prompts").down_revision == (
-        "0060_caption_cleanslate_cleanup"
+    assert script.get_revision("0062_drop_v1_prompts").down_revision == (
+        "0061_caption_cleanslate_cleanup"
     )
     assert all(
         len(revision) <= 32
         for revision in (
-            "0058_bgm_agent_prompt",
-            "0059_creative_intent_runs",
-            "0060_caption_cleanslate_cleanup",
-            "0061_drop_v1_prompts",
+            "0059_bgm_agent_prompt",
+            "0060_creative_intent_runs",
+            "0061_caption_cleanslate_cleanup",
+            "0062_drop_v1_prompts",
         )
     )
 
@@ -99,8 +99,8 @@ def test_0058_and_0059_publish_current_prompt_contracts_idempotently(
         )
 
     for _ in range(2):
-        _upgrade(engine, "0058_bgm_agent_prompt.py")
-        _upgrade(engine, "0059_creative_intent_runs.py")
+        _upgrade(engine, "0059_bgm_agent_prompt.py")
+        _upgrade(engine, "0060_creative_intent_runs.py")
 
     with engine.connect() as connection:
         bgm_content = connection.execute(
@@ -238,8 +238,8 @@ def test_0060_cleans_caption_rows_reports_and_emphasis_only_settings_idempotentl
         )
         session.commit()
 
-    _upgrade(engine, "0060_caption_cleanslate_cleanup.py")
-    _upgrade(engine, "0060_caption_cleanslate_cleanup.py")
+    _upgrade(engine, "0061_caption_cleanslate_cleanup.py")
+    _upgrade(engine, "0061_caption_cleanslate_cleanup.py")
 
     with db_session_factory() as session:
         node = session.get(NodeRunRow, node_id)
@@ -370,8 +370,8 @@ def test_0061_drops_v1_prompts_and_v1_warning_codes_idempotently(
         )
         session.commit()
 
-    _upgrade(engine, "0061_drop_v1_prompts.py")
-    _upgrade(engine, "0061_drop_v1_prompts.py")
+    _upgrade(engine, "0062_drop_v1_prompts.py")
+    _upgrade(engine, "0062_drop_v1_prompts.py")
 
     with db_session_factory() as session:
         assert session.get(PromptTemplateRow, "prompt_editing_agent") is None
@@ -621,7 +621,7 @@ def test_real_0057_to_0061_upgrade_keeps_historical_run_apis_readable(
         ]
         with isolated_engine.connect() as connection:
             assert connection.execute(text("select version_num from alembic_version")).scalar_one() == (
-                "0061_drop_v1_prompts"
+                "0062_drop_v1_prompts"
             )
     finally:
         if isolated_engine is not None:

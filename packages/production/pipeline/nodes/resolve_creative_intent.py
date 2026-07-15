@@ -27,7 +27,7 @@ def _intent_to_artifact(output: dict, script: str) -> CreativeIntentArtifact:
 
     The LLM emits {hook, beats, emphasis, ...} which the provider wraps under the
     ``intent`` object (validate_output requires intent.hook/beats). We promote the
-    emphasis phrases to a typed field, dropping malformed/duplicate entries so
+    emphasis phrases to a typed field, dropping malformed entries so
     downstream consumers never see junk; the raw intent blob is preserved as-is.
     """
     intent = output.get("intent") if isinstance(output.get("intent"), dict) else {}
@@ -35,7 +35,6 @@ def _intent_to_artifact(output: dict, script: str) -> CreativeIntentArtifact:
     if normalized_bgm_mood:
         intent = {**intent, "bgm_mood": normalized_bgm_mood}
     emphasis: list[EmphasisHint] = []
-    seen_phrases: set[str] = set()
     raw_emphasis = intent.get("emphasis")
     if isinstance(raw_emphasis, list):
         for item in raw_emphasis:
@@ -46,7 +45,6 @@ def _intent_to_artifact(output: dict, script: str) -> CreativeIntentArtifact:
             display_mode = item.get("display_mode", "inline")
             if (
                 phrase is None
-                or phrase in seen_phrases
                 or phrase not in script
                 or not isinstance(priority, int)
                 or isinstance(priority, bool)
@@ -61,7 +59,6 @@ def _intent_to_artifact(output: dict, script: str) -> CreativeIntentArtifact:
                     display_mode=display_mode,
                 )
             )
-            seen_phrases.add(phrase)
             if len(emphasis) >= _MAX_EMPHASIS:
                 break
     return CreativeIntentArtifact(intent=intent or None, emphasis=emphasis)

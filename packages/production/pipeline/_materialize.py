@@ -542,7 +542,7 @@ def materialize_style_from_selection(
         request.subtitle.font_size,
     )
     emphasis_font_size = _subtitle_emphasis_font_size(
-        getattr(request.subtitle, "emphasis_font_size", None),
+        request.subtitle.emphasis_font_size,
         font_size,
     )
     position = _subtitle_position(

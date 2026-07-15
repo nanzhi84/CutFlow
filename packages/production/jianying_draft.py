@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from packages.core.contracts.artifacts import CaptionCompositionPlanArtifact
 from packages.core.storage.object_store import ObjectStore
 from packages.media.video.ffmpeg import probe_media
 from . import jianying_draft_json as jy_json
@@ -170,76 +171,60 @@ def build_audio_segments_from_sources(
 
 def build_text_segments_from_narration(
     narration_units: list[dict[str, Any]],
-    caption_composition: dict[str, Any] | None = None,
+    caption_composition: CaptionCompositionPlanArtifact | None = None,
 ) -> list[JianyingTextSegment]:
     """Export fixed-band caption Runs; use narration only for captionless history."""
 
     segments: list[JianyingTextSegment] = []
-    composition = caption_composition or {}
-    fps = max(1, int(composition.get("fps") or 30))
-    width = max(1, int(composition.get("width") or 1080))
-    height = max(1, int(composition.get("height") or 1920))
-    band = composition.get("band") if isinstance(composition.get("band"), dict) else {}
-    anchor_x = float(band.get("anchor_x") or 0.5) * width
-    baseline_y = float(band.get("baseline_y") or 0.84)
-    line_height = max(
-        int(composition.get("normal_font_size") or 64),
-        int(composition.get("emphasis_font_size") or 64),
-    ) * float(band.get("line_height_ratio") or 1.12)
-    normal_font_size = float(composition.get("normal_font_size") or 64)
-    emphasis_font_size = float(
-        composition.get("emphasis_font_size") or normal_font_size
-    )
-    for cue in composition.get("cues") or []:
-        if not isinstance(cue, dict):
-            continue
-        cue_lines = cue.get("lines") or []
-        for line_index, line in enumerate(cue_lines):
-            if not isinstance(line, dict):
-                continue
-            line_advance = float(line.get("advance_px") or 0.0)
-            cursor_x = anchor_x - line_advance / 2.0
-            baseline = (
-                baseline_y * height
-                - (len(cue_lines) - line_index - 1) * line_height
-            )
-            for run in line.get("runs") or []:
-                if not isinstance(run, dict):
-                    continue
-                text = str(run.get("text") or "")
-                enter_frame = int(run.get("enter_frame") or 0)
-                exit_frame = int(run.get("exit_frame") or 0)
-                if not text or exit_frame <= enter_frame:
-                    cursor_x += float(run.get("advance_px") or 0.0)
-                    continue
-                role = str(run.get("role") or "normal")
-                advance = float(run.get("advance_px") or 0.0)
-                baseline_offset = float(run.get("baseline_offset_px") or 0.0)
-                font_size = emphasis_font_size if role == "emphasis" else normal_font_size
-                transform_x = max(
-                    -1.0,
-                    min(1.0, 2.0 * (cursor_x + advance / 2.0) / width - 1.0),
+    if caption_composition is not None:
+        fps = caption_composition.fps
+        width = caption_composition.width
+        height = caption_composition.height
+        band = caption_composition.band
+        anchor_x = band.anchor_x * width
+        line_height = max(
+            caption_composition.normal_font_size,
+            caption_composition.emphasis_font_size,
+        ) * band.line_height_ratio
+        for cue in caption_composition.cues:
+            cue_lines = cue.lines
+            for line_index, line in enumerate(cue_lines):
+                line_advance = line.advance_px
+                cursor_x = anchor_x - line_advance / 2.0
+                baseline = (
+                    band.baseline_y * height
+                    - (len(cue_lines) - line_index - 1) * line_height
                 )
-                center_y = baseline - baseline_offset + font_size / 2.0
-                transform_y = max(-1.0, min(1.0, 1.0 - 2.0 * center_y / height))
-                segments.append(
-                    JianyingTextSegment(
-                        track_name="字幕-强调" if role == "emphasis" else "字幕-普通",
-                        text=text,
-                        start_us=_sec_to_us(enter_frame / fps),
-                        duration_us=_sec_to_us((exit_frame - enter_frame) / fps),
-                        transform_x=transform_x,
-                        transform_y=transform_y,
-                        role=role,
-                        hint_id=_str_or_none(run.get("hint_id")),
-                        line_index=line_index,
-                        effect_id=_str_or_none(run.get("effect_id")),
-                        advance_px=advance,
-                        baseline_offset_px=baseline_offset,
-                        font_size_px=font_size,
+                for run in line.runs:
+                    font_size = (
+                        caption_composition.emphasis_font_size
+                        if run.role == "emphasis"
+                        else caption_composition.normal_font_size
                     )
-                )
-                cursor_x += advance
+                    transform_x = max(
+                        -1.0,
+                        min(1.0, 2.0 * (cursor_x + run.advance_px / 2.0) / width - 1.0),
+                    )
+                    center_y = baseline - run.baseline_offset_px + font_size / 2.0
+                    transform_y = max(-1.0, min(1.0, 1.0 - 2.0 * center_y / height))
+                    segments.append(
+                        JianyingTextSegment(
+                            track_name="字幕-强调" if run.role == "emphasis" else "字幕-普通",
+                            text=run.text,
+                            start_us=_sec_to_us(run.enter_frame / fps),
+                            duration_us=_sec_to_us((run.exit_frame - run.enter_frame) / fps),
+                            transform_x=transform_x,
+                            transform_y=transform_y,
+                            role=run.role,
+                            hint_id=run.hint_id,
+                            line_index=line_index,
+                            effect_id=run.effect_id,
+                            advance_px=run.advance_px,
+                            baseline_offset_px=run.baseline_offset_px,
+                            font_size_px=font_size,
+                        )
+                    )
+                    cursor_x += run.advance_px
     if segments:
         return segments
     for unit in narration_units:

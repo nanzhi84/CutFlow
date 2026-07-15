@@ -38,7 +38,13 @@ from packages.core.observability.telemetry import (
     record_event_stream_disconnected,
     record_event_stream_heartbeat,
 )
-from packages.production.pipeline import ReusePlan, ReuseSourceRun, compute_reuse_plan
+from packages.production.pipeline import (
+    ReusePlan,
+    ReuseSourceRun,
+    compute_reuse_plan,
+    has_retryable_active_failure,
+    latest_failed_node,
+)
 from packages.production.pipeline.digital_human import template_for
 from packages.production.pipeline.node_sequence import expected_node_count
 
@@ -111,7 +117,7 @@ def _admit_run(
         )
     template = template_for(job.request.workflow_template_id)
     if mode == "resume" and from_run_id is not None:
-        failed_node = _failed_node(repo, from_run_id)
+        failed_node = latest_failed_node(repo.node_runs.get(from_run_id, []))
         active_node_ids = {node.node_id for node in template.nodes}
         if failed_node is not None and failed_node.node_id not in active_node_ids:
             raise NodeExecutionError(
@@ -206,33 +212,11 @@ def _admit_run(
     return job, run, template
 
 
-def _failed_node(repo, run_id: str) -> c.NodeRun | None:
-    return next(
-        (
-            node
-            for node in reversed(repo.node_runs.get(run_id, []))
-            if node.status == c.NodeStatus.failed
-        ),
-        None,
-    )
-
-
 def _run_has_retryable_failure(repo, run_id: str) -> bool:
-    if repo.runs[run_id].status != c.RunStatus.failed:
-        return False
     run = repo.runs[run_id]
     if run.workflow_template_id == _RETIRED_EDITING_AGENT_TEMPLATE_ID:
         return False
-    failed_node = _failed_node(repo, run_id)
-    if failed_node is None or not failed_node.error or not failed_node.error.retryable:
-        return False
-    try:
-        active_node_ids = {
-            node.node_id for node in template_for(run.workflow_template_id).nodes
-        }
-    except NodeExecutionError:
-        return False
-    return failed_node.node_id in active_node_ids
+    return has_retryable_active_failure(run, repo.node_runs.get(run_id, []))
 
 
 def _node_label(node_id: str | None) -> str | None:

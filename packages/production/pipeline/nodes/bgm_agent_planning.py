@@ -238,12 +238,12 @@ def _invoke(
         {
             "capability_id": "llm.chat",
             "provider_invocation_id": invocation.id,
-            "provider_profile_id": getattr(invocation, "provider_profile_id", None),
-            "provider_id": getattr(invocation, "provider_id", None),
-            "model_id": getattr(invocation, "model_id", None),
-            "prompt_version_id": getattr(invocation, "prompt_version_id", None),
+            "provider_profile_id": invocation.provider_profile_id,
+            "provider_id": invocation.provider_id,
+            "model_id": invocation.model_id,
+            "prompt_version_id": invocation.prompt_version_id,
             "attempt": attempt,
-            "status": getattr(invocation.status, "value", str(invocation.status)),
+            "status": invocation.status.value,
             "error": invocation.error.model_dump(mode="json") if invocation.error else None,
             "output": result.output if result is not None else None,
         },
@@ -373,15 +373,12 @@ def _diagnostics(
         (item for item in candidates if item.get("candidate_id") == bgm_id),
         None,
     )
-    metadata = candidate.get("metadata") if isinstance(candidate, dict) else {}
-    if not isinstance(metadata, dict):
-        metadata = {}
+    metadata = candidate["metadata"] if candidate else {}
     return {
         "policy_version": "bgm_agent_v1",
         "planned": planned,
         "reason": reason,
         "bgm_id": bgm_id,
-        "candidate_id": candidate.get("candidate_id") if candidate else None,
         "asset_id": candidate.get("asset_id") if candidate else None,
         "segment_id": metadata.get("clip_id") if candidate else None,
         "analysis": analysis,

@@ -76,6 +76,7 @@ def test_intent_to_artifact_accepts_only_exact_typed_script_phrases():
     assert [(item.phrase, item.priority, item.display_mode) for item in artifact.emphasis] == [
         ("限时五折", 90, "inline"),
         ("最后一天", 70, "whole_cue"),
+        ("限时五折", 20, "inline"),
     ]
 
 

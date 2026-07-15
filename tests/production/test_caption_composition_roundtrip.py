@@ -10,12 +10,22 @@ from fontTools.pens.ttGlyphPen import TTGlyphPen
 from packages.core.contracts import (
     ArtifactKind,
     DigitalHumanVideoRequest,
+    ErrorCode,
     MediaAssetRecord,
     MediaInfo,
     NodeRun,
     NodeStatus,
     RunStatus,
     WorkflowRun,
+)
+from packages.core.contracts.artifacts import (
+    AlignmentArtifact,
+    CaptionBand,
+    CaptionCompositionPlanArtifact,
+    CaptionCue,
+    CaptionFrameSpan,
+    CaptionLine,
+    CaptionRun,
 )
 from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
@@ -34,8 +44,6 @@ from packages.production.pipeline.nodes import (
     subtitle_and_bgm_mix,
 )
 from packages.production.pipeline.nodes.subtitle_and_bgm_mix import (
-    _float_or_none,
-    _float_or_zero,
     _resolve_planned_font,
     _select_emphasis_sfx_asset_id,
 )
@@ -130,23 +138,58 @@ def test_emphasis_sfx_selection_requires_an_explicit_light_caption_tag() -> None
 
 def test_emphasis_sfx_events_are_frame_synchronous_cooled_down_and_bounded() -> None:
     runs = [
-        {
-            "run_id": f"run_{index:02d}",
-            "role": "emphasis" if index != 1 else "normal",
-            "effect_id": "pop" if index != 2 else "none",
-            "enter_frame": frame,
-        }
+        CaptionRun(
+            run_id=f"run_{index:02d}",
+            text="字",
+            role="emphasis" if index != 1 else "normal",
+            hint_id=f"hint_{index:02d}" if index != 1 else None,
+            char_span=(index, index + 1),
+            enter_frame=frame,
+            exit_frame=60,
+            effect_id=("none" if index == 2 else "soft_in" if index == 1 else "pop"),
+            advance_px=10,
+            baseline_offset_px=0,
+        )
         for index, frame in enumerate([0, 1, 2, 6, 12, 18, 24, 30, 36, 42])
     ]
     runs.append(
-        {
-            "run_id": "run_cooldown",
-            "role": "emphasis",
-            "effect_id": "pop",
-            "enter_frame": 1,
-        }
+        CaptionRun(
+            run_id="run_cooldown",
+            text="字",
+            role="emphasis",
+            hint_id="hint_cooldown",
+            char_span=(10, 11),
+            enter_frame=1,
+            exit_frame=60,
+            effect_id="pop",
+            advance_px=10,
+            baseline_offset_px=0,
+        )
     )
-    composition = {"fps": 30, "cues": [{"lines": [{"runs": runs}]}]}
+    composition = CaptionCompositionPlanArtifact(
+        fps=30,
+        width=1080,
+        height=1920,
+        normal_enabled=True,
+        emphasis_enabled=True,
+        band=CaptionBand(),
+        normal_font_asset_id="font_normal",
+        emphasis_font_asset_id="font_emphasis",
+        normal_font_size=64,
+        emphasis_font_size=72,
+        cues=[
+            CaptionCue(
+                cue_id="cue_1",
+                text="字" * len(runs),
+                start_frame=0,
+                end_frame=60,
+                spoken_span=CaptionFrameSpan(start_frame=0, end_frame=60),
+                display_span=CaptionFrameSpan(start_frame=0, end_frame=60),
+                source_unit_ids=["unit_1"],
+                lines=[CaptionLine(runs=runs, advance_px=10 * len(runs))],
+            )
+        ],
+    )
 
     assert (
         plan_emphasis_sfx_events(
@@ -163,19 +206,12 @@ def test_emphasis_sfx_events_are_frame_synchronous_cooled_down_and_bounded() -> 
     )
 
     assert len(events) == 4
-    assert [event["start_ms"] for event in events] == [0, 200, 400, 600]
-    assert all(event["asset_id"] == "sfx_light" for event in events)
-    assert all(event["volume"] == 0.48 for event in events)
+    assert [event.start_ms for event in events] == [0, 200, 400, 600]
+    assert all(event.asset_id == "sfx_light" for event in events)
+    assert all(event.volume == 0.48 for event in events)
 
 
-def test_mix_numeric_helpers_and_planned_font_fail_closed(tmp_path, monkeypatch) -> None:
-    assert _float_or_zero("1.5") == 1.5
-    assert _float_or_zero(-1) == 0.0
-    assert _float_or_zero("bad") == 0.0
-    assert _float_or_none("2.5") == 2.5
-    assert _float_or_none(-1) == 0.0
-    assert _float_or_none(None) is None
-
+def test_planned_font_fails_closed(tmp_path, monkeypatch) -> None:
     ctx = SimpleNamespace(
         source_artifact_for_asset=lambda _asset_id: object(),
         artifact_path=lambda _artifact: tmp_path / "font.ttf",
@@ -203,7 +239,12 @@ def test_mix_numeric_helpers_and_planned_font_fail_closed(tmp_path, monkeypatch)
             label="强调字幕",
         )
 
-    assert caption_composition_planning._timing_source({}) == "interpolated"
+    assert (
+        caption_composition_planning._timing_source(
+            AlignmentArtifact(audio_artifact_id="audio", segments=[])
+        )
+        == "interpolated"
+    )
     assert caption_composition_planning._baseline_offset(None, 10) == 8
     assert (
         caption_composition_planning._baseline_offset(
@@ -225,6 +266,33 @@ def test_mix_numeric_helpers_and_planned_font_fail_closed(tmp_path, monkeypatch)
             label="强调字幕",
             defaulted=False,
         )
+
+
+def test_caption_composition_rejects_an_invalid_input_artifact() -> None:
+    state = SimpleNamespace(
+        require=lambda _kind: SimpleNamespace(payload={}),
+    )
+
+    with pytest.raises(NodeExecutionError) as exc:
+        caption_composition_planning.run(SimpleNamespace(state=state))
+
+    assert exc.value.error.code == ErrorCode.artifact_schema_mismatch
+    assert exc.value.error.retryable is False
+
+
+def test_final_mix_rejects_an_invalid_composition_artifact() -> None:
+    artifacts = {
+        ArtifactKind.video_rendered: SimpleNamespace(),
+        ArtifactKind.audio_tts: SimpleNamespace(),
+        ArtifactKind.plan_caption_composition: SimpleNamespace(payload={}),
+    }
+    state = SimpleNamespace(require=artifacts.__getitem__)
+
+    with pytest.raises(NodeExecutionError) as exc:
+        subtitle_and_bgm_mix.run(SimpleNamespace(state=state))
+
+    assert exc.value.error.code == ErrorCode.artifact_schema_mismatch
+    assert exc.value.error.retryable is False
 
 
 @pytest.mark.parametrize(
@@ -285,6 +353,8 @@ def test_caption_composition_to_mix_roundtrip_is_shared_by_both_workflows(
         kind=ArtifactKind.narration_units,
         payload_schema="NarrationUnitsArtifact.v1",
         payload={
+            "source": "tts",
+            "strict": True,
             "units": [
                 {
                     "unit_id": "unit_0001",
@@ -301,6 +371,8 @@ def test_caption_composition_to_mix_roundtrip_is_shared_by_both_workflows(
         kind=ArtifactKind.audio_alignment,
         payload_schema="AlignmentArtifact.v1",
         payload={
+            "audio_artifact_id": audio.id,
+            "segments": [],
             "source": "tts",
             "tokens": [
                 token.model_dump(mode="json")
