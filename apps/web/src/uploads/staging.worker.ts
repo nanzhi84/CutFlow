@@ -40,7 +40,7 @@ async function uploadDirectory(userId: string): Promise<FileSystemDirectoryHandl
 async function hashFile(
   file: Blob,
   requestId: string,
-  onChunk?: (chunk: Uint8Array, offset: number) => Promise<void>,
+  onChunk?: (chunk: Uint8Array<ArrayBuffer>, offset: number) => Promise<void>,
 ): Promise<string> {
   const hasher = new IncrementalSha256();
   for (let offset = 0; offset < file.size; offset += CHUNK_SIZE_BYTES) {
@@ -62,9 +62,7 @@ async function stage(request: StageRequest): Promise<void> {
   const writable = await handle.createWritable({ keepExistingData: false });
   try {
     const sha256 = await hashFile(request.file, request.requestId, async (chunk, offset) => {
-      const data = new ArrayBuffer(chunk.byteLength);
-      new Uint8Array(data).set(chunk);
-      await writable.write({ type: "write", position: offset, data });
+      await writable.write({ type: "write", position: offset, data: chunk });
     });
     await writable.close();
     post({ type: "completed", requestId: request.requestId, sha256, sizeBytes: request.file.size });

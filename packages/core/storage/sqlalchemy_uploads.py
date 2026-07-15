@@ -844,10 +844,11 @@ class SqlAlchemyUploadRepository(BaseRepository):
             try:
                 session.commit()
             except IntegrityError:
-                # A non-cooperating concurrent writer may win a unique constraint.
-                # Treat it as the idempotent winner and read the canonical result.
                 session.rollback()
-                return self.ready_resources(upload_session_id)
+                winner = session.get(UploadSessionRow, upload_session_id)
+                if winner is not None and winner.status == UploadStatus.ready.value:
+                    return self._resources_from_session(session, winner)
+                raise
             session.refresh(row)
             session.refresh(artifact)
             if media_asset is not None:
@@ -968,23 +969,6 @@ class SqlAlchemyUploadRepository(BaseRepository):
             _artifact_ref(artifact),
             _media_asset_contract(media) if media else None,
             _publish_package_contract(package) if package else None,
-        )
-
-    def create_artifact_from_upload(
-        self, upload: UploadSession, *, media_info: MediaInfo | None = None
-    ) -> Artifact:
-        existing = self.artifact_for_upload(upload.id)
-        if existing is not None:
-            return existing
-        return self.create_artifact(
-            kind=ArtifactKind.uploaded_file,
-            uri=upload.object_uri,
-            size_bytes=upload.size_bytes,
-            sha256=upload.sha256,
-            media_info=media_info,
-            payload_schema="UploadedFileArtifact.v1",
-            payload=upload.model_dump(mode="json"),
-            source_upload_session_id=upload.id,
         )
 
     def artifact_for_upload(self, upload_session_id: str) -> Artifact | None:

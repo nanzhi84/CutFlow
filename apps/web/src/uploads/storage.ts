@@ -17,8 +17,7 @@ export type StoredUploadStatus =
 export type StoredUploadTask = {
   clientUploadId: string;
   userId: string;
-  /** Persisted for diagnostics; legacy v1 records can derive the same path. */
-  opfsPath?: string;
+  opfsPath: string;
   filename: string;
   contentType: string;
   sizeBytes: number;

@@ -110,33 +110,3 @@ def test_failed_upload_cleans_up_normalized_derived_object(
     assert not local_object_path(store, final_uri).exists()
     assert normalized_path is not None
     assert not normalized_path.exists()
-
-
-def test_fail_upload_best_effort_deletes_staging_and_all_derived_objects(monkeypatch):
-    """Deterministic guard for the C5 cleanup contract (no ffmpeg / DB needed, so it
-    runs in every environment regardless of the normalize-path media gating above).
-
-    The original _fail_upload only dropped ``staging_uri``; the fix must also drop
-    every server-written derived object. Pre-fix this test is red (the derived URIs
-    never reach _safe_delete because the parameter did not exist)."""
-    from apps.api.services import uploads
-
-    deleted: list[str] = []
-    monkeypatch.setattr(uploads, "_safe_delete", lambda store, uri: deleted.append(uri))
-    monkeypatch.setattr(uploads, "_patch_upload", lambda *a, **k: None)
-
-    uploads._fail_upload(
-        request=object(),
-        store=object(),
-        upload_id="up_c5",
-        staging_uri="local://incoming/uploads/up_c5",
-        derived_uris={
-            "local://materials/media-normalized/up_c5.mp4",
-            "local://materials/media-stabilized/up_c5.mp4",
-        },
-    )
-
-    assert "local://incoming/uploads/up_c5" in deleted  # staging always dropped
-    assert "local://materials/media-normalized/up_c5.mp4" in deleted  # derived
-    assert "local://materials/media-stabilized/up_c5.mp4" in deleted  # derived
-    assert len(deleted) == 3

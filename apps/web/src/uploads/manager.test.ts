@@ -198,6 +198,7 @@ describe("UploadManager recovery", () => {
     const task: StoredUploadTask = {
       clientUploadId: "client_upload_recovery",
       userId: "user_a",
+      opfsPath: "cutagent-uploads-v1/user_a/client_upload_recovery.bin",
       filename: "recovery.mp4",
       contentType: "video/mp4",
       sizeBytes: 20,
@@ -298,6 +299,7 @@ describe("UploadManager recovery", () => {
     const otherTask = {
       clientUploadId: "client_upload_other",
       userId: "user_b",
+      opfsPath: "cutagent-uploads-v1/user_b/client_upload_other.bin",
       filename: "other.mp4",
       contentType: "video/mp4",
       sizeBytes: 1,
@@ -340,6 +342,7 @@ describe("UploadManager recovery", () => {
     const task = {
       clientUploadId: "client_upload_recovery",
       userId: "user_a",
+      opfsPath: "cutagent-uploads-v1/user_a/client_upload_recovery.bin",
       filename: "recovery.mp4",
       contentType: "video/mp4",
       sizeBytes: 20,

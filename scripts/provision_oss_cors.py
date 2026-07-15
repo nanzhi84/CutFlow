@@ -48,6 +48,7 @@ def main() -> int:
 
 def _ensure_staging_lifecycle(cfg) -> None:
     import boto3
+    from botocore.exceptions import ClientError
     from botocore.config import Config
 
     s3 = cfg.s3
@@ -62,9 +63,8 @@ def _ensure_staging_lifecycle(cfg) -> None:
     try:
         current = client.get_bucket_lifecycle_configuration(Bucket=cfg.bucket)
         existing_rules = list(current.get("Rules", []))
-    except Exception as exc:  # no lifecycle configured yet is an expected first run
-        response = getattr(exc, "response", {})
-        code = str(response.get("Error", {}).get("Code", "")) if isinstance(response, dict) else ""
+    except ClientError as exc:
+        code = str(exc.response.get("Error", {}).get("Code", ""))
         if code not in {"NoSuchLifecycleConfiguration", "NoSuchLifecycle"}:
             raise
         existing_rules = []

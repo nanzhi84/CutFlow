@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
 from datetime import timedelta
 from math import ceil
 
@@ -12,7 +11,6 @@ from packages.core.contracts.media import (
     ALLOWED_UPLOAD_CONTENT_TYPES,
     UPLOAD_KIND_MAX_SIZE_BYTES,
 )
-from packages.core.storage.object_store import ObjectStore
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 from packages.media import UploadReconciler
@@ -22,16 +20,6 @@ _SIGNABLE_UPLOAD_STATUSES = {
     c.UploadStatus.prepared,
     c.UploadStatus.uploading,
 }
-
-
-def _visual_asset_kind_and_tags(upload_kind: c.UploadKind) -> tuple[str, list[str]]:
-    """Keep the shared visual-kind normalization seam used by ingestion tests."""
-
-    persisted_kind, legacy_tag = c.normalize_visual_asset_kind(upload_kind.value)
-    tags = [persisted_kind, "upload"]
-    if legacy_tag is not None:
-        tags.append(legacy_tag)
-    return persisted_kind, tags
 
 
 def prepare_upload(
@@ -410,33 +398,3 @@ def _assert_prepare_matches(upload: c.UploadSession, payload: c.PrepareUploadReq
 
 def _reconciler(request: Request) -> UploadReconciler:
     return request.app.state.upload_reconciler
-
-
-def _safe_delete(store: ObjectStore, uri: str) -> None:
-    try:
-        store.delete(uri)
-    except Exception:  # noqa: BLE001 - best-effort terminal cleanup
-        pass
-
-
-def _patch_upload(request: Request, upload_id: str, updates: dict) -> c.UploadSession:
-    return upload_repository(request).patch_upload(upload_id, updates)
-
-
-def _fail_upload(
-    request: Request,
-    store: ObjectStore,
-    upload_id: str,
-    staging_uri: str,
-    derived_uris: Iterable[str] = (),
-) -> None:
-    """Legacy test/helper seam using the new terminal cleanup semantics."""
-
-    _safe_delete(store, staging_uri)
-    for uri in derived_uris:
-        if uri and uri != staging_uri:
-            _safe_delete(store, uri)
-    try:
-        _patch_upload(request, upload_id, {"status": c.UploadStatus.failed})
-    except Exception:  # noqa: BLE001 - never mask the original failure
-        pass

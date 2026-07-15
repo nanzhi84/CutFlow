@@ -89,7 +89,7 @@ class UploadReconciler:
             self.process(upload.id, _lease_owner=self.owner)
         derivations = self.repository.claim_ready_derivations(
             owner=self.owner,
-            limit=max(0, limit - len(claimed)),
+            limit=limit,
             lease_seconds=self.settings.reconcile_lease_seconds,
         )
         for upload in derivations:
@@ -587,15 +587,28 @@ class UploadReconciler:
         ):
             try:
                 self.object_store.abort_multipart_upload(staging_uri, upload_id=multipart_upload_id)
-            except Exception:  # noqa: BLE001 - best-effort terminal cleanup
-                pass
+            except Exception:  # noqa: BLE001 - terminal state must remain committed
+                logger.warning(
+                    "failed to abort terminal multipart upload",
+                    extra={
+                        "event": "upload_multipart_cleanup_failed",
+                        "upload_session_id": upload.id,
+                    },
+                    exc_info=True,
+                )
         cleanup_uris = {staging_uri, upload.final_uri}
         if staging_uri:
             try:
                 cleanup_uris.add(self._final_uri_for(staging_uri, upload.kind))
             except (ValueError, IndexError):
-                # Legacy/malformed rows can still be cleaned by their persisted keys.
-                pass
+                logger.warning(
+                    "could not derive final object key for terminal upload",
+                    extra={
+                        "event": "upload_final_key_invalid",
+                        "upload_session_id": upload.id,
+                    },
+                    exc_info=True,
+                )
         for uri in cleanup_uris:
             if uri:
                 self._safe_delete(uri)
@@ -629,8 +642,12 @@ class UploadReconciler:
     def _safe_delete(self, uri: str) -> None:
         try:
             self.object_store.delete(uri)
-        except Exception:  # noqa: BLE001 - retry-safe best effort cleanup
-            pass
+        except Exception:  # noqa: BLE001 - terminal state must remain committed
+            logger.warning(
+                "failed to delete terminal upload object",
+                extra={"event": "upload_object_cleanup_failed", "object_uri": uri},
+                exc_info=True,
+            )
 
 
 def _read_prefix(path: Path, length: int) -> bytes:

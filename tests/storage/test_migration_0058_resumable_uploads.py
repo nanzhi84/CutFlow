@@ -60,7 +60,7 @@ def test_migration_revision_is_single_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     migration = script.get_revision(REVISION)
 
-    assert script.get_heads() == ["0059_upload_normalized_state"]
+    assert script.get_heads() == [REVISION]
     assert migration is not None
     assert migration.down_revision == "0057_drop_provider_retry_policy"
     assert len(REVISION) <= 32
@@ -83,6 +83,7 @@ def test_schema_has_upload_idempotency_and_artifact_source_constraints(
     assert {
         "client_upload_id",
         "multipart_upload_id",
+        "normalized",
         "staging_uri",
         "final_uri",
         "client_expected_sha256",

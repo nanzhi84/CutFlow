@@ -56,7 +56,6 @@ prepared -> uploading -> completing -> object_completed -> verified -> ready
 - `packages/media/upload_reconciler.py`
 - `apps/worker/main.py`
 - `packages/core/storage/alembic/versions/0058_resumable_uploads.py`
-- `packages/core/storage/alembic/versions/0059_upload_normalized_state.py`
 
 ## 对象存储与清理
 

@@ -566,7 +566,6 @@ export class UploadManager {
       return result;
     }
     if (["rejected", "failed", "cancelled", "expired"].includes(status)) {
-      await this.cleanup(task);
       throw new TerminalUploadError(
         resume.upload_session.last_error || `上传已终止（${status}）`,
       );
@@ -651,10 +650,7 @@ export class UploadManager {
 }
 
 function createClientUploadId(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `client_upload_${crypto.randomUUID()}`;
-  }
-  return `client_upload_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  return `client_upload_${crypto.randomUUID()}`;
 }
 
 const EXTENSION_CONTENT_TYPES: Record<string, string> = {

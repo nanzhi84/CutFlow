@@ -21,8 +21,8 @@
 
 - 默认存储后端是 `sqlalchemy`。
 - Alembic 迁移只在 `packages/core/storage/alembic/versions/`。
-- 当前单一 migration head 是 `0059_upload_normalized_state`。
-- `memory` 存储后端已移除；测试也使用隔离的真实 Postgres。
+- 当前单一 migration head 是 `0058_resumable_uploads`。
+- `memory` 后端保留给测试和 demo。
 
 ## M3 · 工作流运行时
 

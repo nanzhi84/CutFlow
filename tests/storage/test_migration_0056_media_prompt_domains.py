@@ -46,7 +46,7 @@ def test_migration_revision_preserves_single_head() -> None:
     heads = script.get_heads()
     migration = script.get_revision(REVISION)
 
-    assert heads == ["0059_upload_normalized_state"]
+    assert heads == ["0058_resumable_uploads"]
     assert migration is not None
     assert migration.down_revision == "0055_tts_async_icl2"
     assert len(REVISION) <= 32

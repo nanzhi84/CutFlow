@@ -571,26 +571,6 @@ def test_unified_video_kind_upload_creates_video_media_asset(tmp_path):
     assert artifact.media_info is not None and artifact.media_info.media_type == "video"
 
 
-def test_visual_asset_kind_and_tags_passthrough_for_valid_kinds():
-    """Pure-function guard: the upload helper persists every remaining upload kind
-    unchanged with an ``upload`` tag. Legacy portrait/broll are no longer UploadKind
-    members (#133); the string-level normalizer that guards the non-upload ingestion
-    paths is covered by ``test_normalize_visual_asset_kind_converges_legacy``."""
-    from packages.core.contracts import UploadKind
-    from apps.api.services.uploads import _visual_asset_kind_and_tags
-
-    for passthrough in (
-        UploadKind.video,
-        UploadKind.bgm,
-        UploadKind.font,
-        UploadKind.image,
-        UploadKind.cover_template,
-    ):
-        kind, tags = _visual_asset_kind_and_tags(passthrough)
-        assert kind == passthrough.value
-        assert tags == [passthrough.value, "upload"]
-
-
 @pytest.mark.parametrize("legacy_kind", ["portrait", "broll"])
 def test_normalize_visual_asset_kind_converges_legacy(legacy_kind):
     """Issue #133: the shared normalizer converges a legacy visual asset-kind string

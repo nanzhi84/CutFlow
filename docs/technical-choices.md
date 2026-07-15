@@ -22,13 +22,13 @@ FastAPI 是 API 事实源。OpenAPI 从后端应用导出，再生成前端 Type
 
 ## 数据存储
 
-PostgreSQL + SQLAlchemy 是唯一持久化路径。`postgres` 后端名是 SQLAlchemy 的兼容别名；测试使用独立、可销毁的 PostgreSQL 数据库。
+PostgreSQL + SQLAlchemy 是默认持久化路径。`postgres` 后端名是 SQLAlchemy 的别名，`memory` 后端只用于测试和 demo。
 
 为什么这样选：
 
 - 生产状态必须跨进程重启保留。
 - 幂等、outbox、artifact、provider 用量、预算和审计都需要持久化。
-- 测试与生产使用同一套事务和约束语义，避免内存替身掩盖并发与迁移问题。
+- 测试仍需要快速的内存路径。
 
 关键路径：
 

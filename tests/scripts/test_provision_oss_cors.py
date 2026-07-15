@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from botocore.exceptions import ClientError
 
 from scripts import provision_oss_cors
 
@@ -22,9 +23,9 @@ class FakeLifecycleClient:
         self.put_calls.append(kwargs)
 
 
-class NoLifecycleError(Exception):
+class NoLifecycleError(ClientError):
     def __init__(self, code: str) -> None:
-        self.response = {"Error": {"Code": code}}
+        super().__init__({"Error": {"Code": code}}, "GetBucketLifecycleConfiguration")
 
 
 def _config():
