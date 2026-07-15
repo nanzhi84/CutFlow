@@ -14,7 +14,7 @@ from typing import Any, Callable
 from packages.core.storage.object_store import ObjectStore
 from packages.media.video.ffmpeg import probe_media
 from . import jianying_draft_json as jy_json
-from ._broll_overlays import _placement_or_none
+from ._broll_overlays import _placement_or_none, broll_overlays_from_plan
 
 
 _PORTABLE_PACKAGE_SCHEMA_VERSION = "jianying_draft_portable_v2"
@@ -77,8 +77,11 @@ def build_video_segments_from_plans(
 ) -> list[JianyingVideoSegment]:
     timeline = timeline_plan or {}
     fps = int(timeline.get("fps") or (portrait_plan or {}).get("fps") or 30)
-    portrait_by_id = _segments_by_timeline_id(portrait_plan, "portrait")
-    broll_by_id = _segments_by_timeline_id(broll_plan, "broll")
+    portrait_by_id = _portrait_segments_by_timeline_id(portrait_plan)
+    broll_by_id = {
+        overlay.overlay_id: overlay.model_dump(mode="json")
+        for overlay in broll_overlays_from_plan(broll_plan)
+    }
     segments: list[JianyingVideoSegment] = []
     for raw in timeline.get("tracks") or []:
         if not isinstance(raw, dict):
@@ -548,20 +551,16 @@ def _unique_name(original_name: str, used_names: set[str]) -> str:
     return candidate
 
 
-def _segments_by_timeline_id(plan: dict[str, Any] | None, prefix: str) -> dict[str, dict[str, Any]]:
+def _portrait_segments_by_timeline_id(
+    plan: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
     payload = plan or {}
-    # B-roll plans are keyed by the canonical ``overlays`` (#104); portrait plans
-    # (and pre-#104 persisted B-roll plans) still carry the legacy ``segments``.
-    items = payload.get("overlays") or payload.get("segments") or []
+    items = payload.get("segments") or []
     result: dict[str, dict[str, Any]] = {}
     for index, segment in enumerate(items):
         if not isinstance(segment, dict):
             continue
-        segment_id = (
-            _str_or_none(segment.get("segment_id"))
-            or _str_or_none(segment.get("overlay_id"))
-            or f"{prefix}_{index + 1}"
-        )
+        segment_id = _str_or_none(segment.get("segment_id")) or f"portrait_{index + 1}"
         result[segment_id] = segment
     return result
 

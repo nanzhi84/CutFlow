@@ -404,6 +404,35 @@ def test_build_video_segments_from_plans_reads_legacy_broll_segments():
     ]
 
 
+def test_build_video_segments_does_not_revive_stale_legacy_broll_segments():
+    timeline_plan = {
+        "fps": 30,
+        "tracks": [
+            {
+                "track_id": "broll",
+                "segment_id": "broll_1",
+                "timeline_start_frame": 0,
+                "timeline_end_frame": 30,
+                "source_start_frame": 0,
+                "source_end_frame": 30,
+            }
+        ],
+    }
+    broll_plan = {
+        "overlays": [],
+        "segments": [{"asset_id": "stale_asset", "clip_id": "stale_clip"}],
+    }
+
+    segments = build_video_segments_from_plans(
+        timeline_plan,
+        None,
+        broll_plan,
+        resolve_source_path=lambda asset_id: f"/sources/{asset_id}.mp4",
+    )
+
+    assert segments == []
+
+
 def _assert_portable_resource_paths(
     archive: zipfile.ZipFile, draft_name: str, content: dict[str, object]
 ) -> None:

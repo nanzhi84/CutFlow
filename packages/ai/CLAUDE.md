@@ -16,7 +16,7 @@
 - `providers/__init__.py` — `register_real_provider_plugins`（共注册 11 个：minimax.tts / volcengine.tts / dashscope.{asr,vlm,llm,omni,videoretalk} / runninghub.heygem / volcengine.seedance / volcengine.seedream / openai.image）
 - `providers/seedance.py` — ArkSeedanceProvider（火山方舟 Ark，`video.generate` 文/图生视频）
 - `providers/openai_image.py` — OpenAI-compatible 图片生成（`openai.image` 与火山方舟 `volcengine.seedream` 共用 REST adapter；Seedream 可复用 Ark AK/SK 通过 OpenAPI `GetApiKey` 换临时 Bearer key）
-- `providers/volcengine_tts.py` — VolcengineTTSProvider（火山豆包 TTS，`tts.speech`，data/management 双 auth plane）
+- `providers/volcengine_tts.py` — VolcengineTTSProvider（火山豆包 TTS，`tts.speech`；v3 async `submit/query` ICL 2.0 整篇 MP3 + 句/词级时间戳，data/management 双 auth plane）
 - `providers/volc_openapi.py` — 火山管理面 OpenAPI（speech_saas_prod，AK/SK V4 签名；音色列表/签发 x-api-key，余额账单口径见 ops）
 - `providers/_volc_sigv4.py` — 火山 V4 签名（HMAC-SHA256）集中实现，seedance / volc_openapi / 余额 poller 共用
 - `providers/common.py` — HTTP 封装：`map_http_status`（HTTP 状态→ProviderRuntimeError 映射）、`require_secret`
@@ -30,6 +30,8 @@
 - prompt 生命周期严格 `draft→reviewing→approved→published→deprecated/rolled_back`（见 `packages/core/contracts/state_machines.py` 的 PROMPT_VERSION_TRANSITIONS），转换经 `assert_transition`；prod 只解析 published 版本，binding 钉死某一版本。
 - 节点禁止硬编码 prompt，全部经 registry+bindings；缺变量/输出不合契约必须显式失败（`prompt_render_error`/`prompt_output_invalid`），不得静默降级。
 - 真实路径要求 enabled profile + active secret，否则 fail loudly（`provider_auth_failed`）。
+- 火山异步 ICL 2.0 必须按顺序上线：先把 provider secret 轮换为含应用 Access Token 的复合 JSON，再显式设置 `default_options.async_icl2_ready=true`，最后运行/应用 `0054`；迁移不得把未 armed 的 legacy `AK:SK` profile 自动切到 v3。
+- 异步任务一旦 `mark_polling` 持久化 external_job_id，query/download 的可恢复错误必须保持 durable `polling`，后续只准 `resume_with_context` 原任务，禁止 reopen 后重复 submit/计费；只有厂商明确返回 task failed 才落终态。
 - 改 ProviderResult/usage 字段需同步计费逻辑 `_estimated_cost_from_usage`。
 
 ## 测试

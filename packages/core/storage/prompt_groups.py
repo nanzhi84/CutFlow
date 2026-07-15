@@ -53,6 +53,14 @@ SEEDED_TEMPLATE_NODE_BINDINGS: dict[str, str] = {
     "prompt_window_query": "WindowQueryPlanning",
 }
 
+# A template may retain multiple immutable published versions. New repositories
+# bind to the explicitly selected default while existing custom bindings are
+# never overwritten by the in-memory seed path. Database migrations perform the
+# deliberate binding switch for existing installations.
+SEEDED_TEMPLATE_DEFAULT_VERSIONS: dict[str, str] = {
+    "prompt_media_selection_agent": "prompt_media_selection_agent_v2",
+}
+
 
 def prompt_group_seeds() -> tuple[PromptGroupSeed, ...]:
     return _load_prompt_group_seeds()
@@ -65,29 +73,35 @@ def prompt_variable_hints(template_id: str) -> list[str]:
 
 def seed_prompt_groups(repository: Any) -> None:
     for seed in prompt_group_seeds():
-        if seed.template_id in repository.prompt_templates:
-            continue
         now = utcnow()
-        template = PromptTemplate(
-            id=seed.template_id,
-            name=seed.name,
-            purpose=seed.purpose,
-            variables_schema_ref=PromptSchemaRef(schema_id=seed.variables_schema_id),
-            output_schema_ref=PromptSchemaRef(schema_id=seed.output_schema_id),
-            status="active",
-        )
-        version = PromptVersion(
-            id=seed.version_id,
-            prompt_template_id=seed.template_id,
-            content=seed.content,
-            status="published",
-            approved_at=now,
-            published_at=now,
-        )
-        repository.prompt_templates[template.id] = template
-        repository.prompt_versions[version.id] = version
+        if seed.template_id not in repository.prompt_templates:
+            template = PromptTemplate(
+                id=seed.template_id,
+                name=seed.name,
+                purpose=seed.purpose,
+                variables_schema_ref=PromptSchemaRef(schema_id=seed.variables_schema_id),
+                output_schema_ref=PromptSchemaRef(schema_id=seed.output_schema_id),
+                status="active",
+            )
+            repository.prompt_templates[template.id] = template
+        if seed.version_id not in repository.prompt_versions:
+            version = PromptVersion(
+                id=seed.version_id,
+                prompt_template_id=seed.template_id,
+                content=seed.content,
+                status="published",
+                approved_at=now,
+                published_at=now,
+            )
+            repository.prompt_versions[version.id] = version
         node_id = SEEDED_TEMPLATE_NODE_BINDINGS.get(seed.template_id)
         if node_id is not None:
+            default_version_id = SEEDED_TEMPLATE_DEFAULT_VERSIONS.get(
+                seed.template_id,
+                seed.version_id,
+            )
+            if seed.version_id != default_version_id:
+                continue
             binding_id = f"prompt_binding_{seed.template_id}"
             if binding_id not in repository.prompt_bindings:
                 repository.prompt_bindings[binding_id] = PromptBinding(
@@ -120,4 +134,11 @@ def _load_prompt_group_seeds() -> tuple[PromptGroupSeed, ...]:
 
 @lru_cache(maxsize=1)
 def _prompt_variable_hints_by_id() -> dict[str, tuple[str, ...]]:
-    return {seed.template_id: seed.variable_hints for seed in prompt_group_seeds()}
+    hints_by_template: dict[str, tuple[str, ...]] = {}
+    for seed in prompt_group_seeds():
+        default_version_id = SEEDED_TEMPLATE_DEFAULT_VERSIONS.get(seed.template_id)
+        if default_version_id is None:
+            hints_by_template.setdefault(seed.template_id, seed.variable_hints)
+        elif seed.version_id == default_version_id:
+            hints_by_template[seed.template_id] = seed.variable_hints
+    return hints_by_template

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import time
 from typing import Any
@@ -28,6 +29,9 @@ from packages.core.contracts import (
     SpeechTiming,
     SpeechTokenTiming,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class DashScopeASRProvider:
@@ -607,15 +611,59 @@ def poll_dashscope_task(
         default_max_attempts=120,
         timeout_minutes=timeout_minutes,
     )
+    # Polling is a read-only operation against an already-paid async task. A single
+    # transient TLS reset / 5xx / rate-limit response must not orphan that task and
+    # force an operator resume to submit (and potentially pay for) another one.
+    # Bound consecutive failures so a permanently broken endpoint still fails loudly;
+    # a successful poll resets the budget.
+    max_consecutive_errors = max(
+        1,
+        int(options.get("poll_max_consecutive_errors", 5)),
+    )
+    consecutive_errors = 0
+    last_poll_error: ProviderRuntimeError | None = None
     for attempt in range(1, max_attempts + 1):
-        response = request(
-            client,
-            "GET",
-            f"{base_url}/tasks/{task_id}",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=float(timeout_sec),
-        )
-        payload = response_json(response)
+        try:
+            response = request(
+                client,
+                "GET",
+                f"{base_url}/tasks/{task_id}",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=float(timeout_sec),
+            )
+            payload = response_json(response)
+        except ProviderRuntimeError as exc:
+            if exc.code not in {
+                ErrorCode.provider_remote_failed,
+                ErrorCode.provider_timeout,
+                ErrorCode.provider_quota_exceeded,
+            }:
+                raise
+            consecutive_errors += 1
+            last_poll_error = exc
+            if consecutive_errors >= max_consecutive_errors:
+                raise ProviderRuntimeError(
+                    exc.code,
+                    (
+                        f"DashScope task {task_id} polling failed "
+                        f"{consecutive_errors} consecutive times: {exc.message}"
+                    ),
+                ) from exc
+            logger.warning(
+                "DashScope task polling transient failure; keeping the existing task "
+                "task_id=%s attempt=%s consecutive_errors=%s max_consecutive_errors=%s "
+                "error_code=%s",
+                task_id,
+                attempt,
+                consecutive_errors,
+                max_consecutive_errors,
+                exc.code.value,
+            )
+            if interval > 0:
+                time.sleep(interval)
+            continue
+        consecutive_errors = 0
+        last_poll_error = None
         status = _task_status(payload)
         if status in {"succeeded", "success", "completed", "finish", "finished"}:
             return payload, attempt
@@ -628,6 +676,14 @@ def poll_dashscope_task(
             )
         if interval > 0:
             time.sleep(interval)
+    if last_poll_error is not None:
+        raise ProviderRuntimeError(
+            ErrorCode.provider_timeout,
+            (
+                f"DashScope task {task_id} polling exhausted its attempt budget after "
+                f"a transient error: {last_poll_error.message}"
+            ),
+        ) from last_poll_error
     raise ProviderRuntimeError(ErrorCode.provider_timeout, f"DashScope task {task_id} timed out.")
 
 

@@ -32,12 +32,11 @@ _SYNCABLE_PROMPT_VERSION_IDS = {
     "prompt_window_query_v1",
     "prompt_postprocess_agent_v1",
 }
-# Emphasis floor (issue: caption-timing-huazi-floor): the CreativeIntent prompt must
-# request 8-10 emphasis phrases (2-10 chars), and the PostProcess prompt must force a
-# 5-8 event caption selection when >=5 options exist. These markers re-sync a stored
-# pre-floor prompt row to the current content.
+# CreativeIntent still requests candidate headroom. PostProcess now ranks every
+# candidate and leaves count/timing/hero legality to the local solver; this marker
+# re-syncs a stored pre-solver prompt row to the current content.
 _CREATIVE_INTENT_EMPHASIS_FLOOR_MARKER = "至少给出 6 条"
-_POSTPROCESS_CAPTION_FLOOR_MARKER = "必须选择 5 到 8 个事件的 caption option"
+_POSTPROCESS_LOCAL_SOLVER_MARKER = "本地求解器负责最终数量、时间冲突和 hero 上限"
 _LEGACY_EDITING_AGENT_MARKERS = (
     "{asr_segments}",
     "{portrait_slot_plan}",
@@ -56,9 +55,7 @@ _LEGACY_EDITING_AGENT_FULL_COVERAGE_MARKERS = (
     "同一 slot 可以输出多条不同 candidate_id 以累计覆盖 required_seconds",
     "slot 可用多条不同 candidate_id 顺序拼接",
 )
-_EDITING_AGENT_FULL_COVERAGE_SINGLE_CLIP_MARKER = (
-    "每个 B-roll slot 最多只能输出一条 candidate_id"
-)
+_EDITING_AGENT_FULL_COVERAGE_SINGLE_CLIP_MARKER = "每个 B-roll slot 最多只能输出一条 candidate_id"
 _LEGACY_EDITING_AGENT_FONT_PLANNING_MARKERS = (
     '"font_plan"',
     "font_candidates",
@@ -90,9 +87,7 @@ def seed_rows(
     source_users = list(source.users.values())
     source_registration_codes = list(source.registration_codes.values())
     if not include_local_auth_seed:
-        source_users = [
-            user for user in source_users if user.id not in LOCAL_AUTH_SEED_USER_IDS
-        ]
+        source_users = [user for user in source_users if user.id not in LOCAL_AUTH_SEED_USER_IDS]
         source_registration_codes = [
             code
             for code in source_registration_codes
@@ -204,7 +199,6 @@ def seed_rows(
                 secret_ref=profile.secret_ref,
                 concurrency_key=profile.concurrency_key,
                 timeout_sec=profile.timeout_sec,
-                retry_policy=profile.retry_policy.model_dump(mode="json"),
                 cost_policy_id=profile.cost_policy_id,
                 options_schema_ref=profile.options_schema_ref.model_dump(mode="json"),
                 default_options=profile.default_options,
@@ -427,12 +421,9 @@ def _needs_prompt_version_sync(existing: PromptVersionRow) -> bool:
         )
     if existing.id == "prompt_creative_intent_v1":
         content = existing.content or ""
-        return (
-            "bgm_mood" not in content
-            or _CREATIVE_INTENT_EMPHASIS_FLOOR_MARKER not in content
-        )
+        return "bgm_mood" not in content or _CREATIVE_INTENT_EMPHASIS_FLOOR_MARKER not in content
     if existing.id == "prompt_postprocess_agent_v1":
-        return _POSTPROCESS_CAPTION_FLOOR_MARKER not in (existing.content or "")
+        return _POSTPROCESS_LOCAL_SOLVER_MARKER not in (existing.content or "")
     return False
 
 
@@ -442,5 +433,5 @@ def _prompt_sync_changelog(version_id: str) -> str:
     if version_id == "prompt_window_query_v1":
         return "Synced built-in WindowQueryPlanning prompt contract."
     if version_id == "prompt_postprocess_agent_v1":
-        return "Synced built-in PostProcess prompt emphasis floor contract."
+        return "Synced built-in PostProcess local-solver boundary contract."
     return "Synced built-in EditingAgentPlanning prompt huazi-only style contract."

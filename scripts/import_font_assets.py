@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,7 @@ class FontSpec:
     title: str
     filename: str
     url: str
+    sha256: str
     content_type: str
     family: str
     weight: int
@@ -36,8 +38,10 @@ FONT_PACK: tuple[FontSpec, ...] = (
         asset_id="asset_font_noto_sans_cjk_sc_regular",
         title="Noto Sans CJK SC Regular",
         filename="NotoSansCJKsc-Regular.otf",
-        url="https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/"
+        url="https://raw.githubusercontent.com/notofonts/noto-cjk/"
+        "f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/"
         "SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+        sha256="2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b",
         content_type="font/otf",
         family="Noto Sans CJK SC",
         weight=400,
@@ -50,8 +54,10 @@ FONT_PACK: tuple[FontSpec, ...] = (
         asset_id="asset_font_noto_sans_cjk_sc_bold",
         title="Noto Sans CJK SC Bold",
         filename="NotoSansCJKsc-Bold.otf",
-        url="https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/"
+        url="https://raw.githubusercontent.com/notofonts/noto-cjk/"
+        "f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/"
         "SimplifiedChinese/NotoSansCJKsc-Bold.otf",
+        sha256="b5f0d1a190a7f9b43c310a8850630af12553df32c4c050543f9059732d9b4c0a",
         content_type="font/otf",
         family="Noto Sans CJK SC",
         weight=700,
@@ -64,8 +70,10 @@ FONT_PACK: tuple[FontSpec, ...] = (
         asset_id="asset_font_noto_serif_cjk_sc_regular",
         title="Noto Serif CJK SC Regular",
         filename="NotoSerifCJKsc-Regular.otf",
-        url="https://raw.githubusercontent.com/notofonts/noto-cjk/main/Serif/OTF/"
+        url="https://raw.githubusercontent.com/notofonts/noto-cjk/"
+        "f8d157532fbfaeda587e826d4cd5b21a49186f7c/Serif/OTF/"
         "SimplifiedChinese/NotoSerifCJKsc-Regular.otf",
+        sha256="2a2eae2628df83556c54018c41e20fa532c1b862c5256ae8b3f23feb918d12ca",
         content_type="font/otf",
         family="Noto Serif CJK SC",
         weight=400,
@@ -78,8 +86,10 @@ FONT_PACK: tuple[FontSpec, ...] = (
         asset_id="asset_font_noto_serif_cjk_sc_bold",
         title="Noto Serif CJK SC Bold",
         filename="NotoSerifCJKsc-Bold.otf",
-        url="https://raw.githubusercontent.com/notofonts/noto-cjk/main/Serif/OTF/"
+        url="https://raw.githubusercontent.com/notofonts/noto-cjk/"
+        "f8d157532fbfaeda587e826d4cd5b21a49186f7c/Serif/OTF/"
         "SimplifiedChinese/NotoSerifCJKsc-Bold.otf",
+        sha256="8af07d4b6c2e82bcc72a30e066eaf295f11b9424f4aad2eaa9fe0e9c3b38fc73",
         content_type="font/otf",
         family="Noto Serif CJK SC",
         weight=700,
@@ -92,8 +102,10 @@ FONT_PACK: tuple[FontSpec, ...] = (
         asset_id="asset_font_lxgw_wenkai_regular",
         title="LXGW WenKai Regular",
         filename="LXGWWenKai-Regular.ttf",
-        url="https://raw.githubusercontent.com/lxgw/LxgwWenKai/main/fonts/TTF/"
+        url="https://raw.githubusercontent.com/lxgw/LxgwWenKai/"
+        "ce97ea8371eb6557f881d6dddd94ae7ccdc33d7e/fonts/TTF/"
         "LXGWWenKai-Regular.ttf",
+        sha256="39ad71264b588165b469e35e6afb162a378dacd1f95348160240ba9038ac3009",
         content_type="font/ttf",
         family="LXGW WenKai",
         weight=400,
@@ -123,8 +135,16 @@ def _load_env_file(path: Path) -> None:
             os.environ[key] = value
 
 
-def _download(url: str, target: Path, *, force: bool) -> None:
-    if target.exists() and not force:
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _download(url: str, target: Path, *, expected_sha256: str, force: bool) -> None:
+    if target.exists() and not force and _file_sha256(target) == expected_sha256:
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".part")
@@ -132,6 +152,13 @@ def _download(url: str, target: Path, *, force: bool) -> None:
     with urlopen(request, timeout=120) as response, tmp.open("wb") as handle:
         while chunk := response.read(1024 * 1024):
             handle.write(chunk)
+    actual_sha256 = _file_sha256(tmp)
+    if actual_sha256 != expected_sha256:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"font integrity check failed for {target.name}: "
+            f"expected {expected_sha256}, got {actual_sha256}"
+        )
     tmp.replace(target)
 
 
@@ -231,7 +258,12 @@ def import_fonts(*, download_dir: Path, force_download: bool) -> list[dict[str, 
     with session_factory() as session:
         for spec in FONT_PACK:
             local_path = download_dir / spec.filename
-            _download(spec.url, local_path, force=force_download)
+            _download(
+                spec.url,
+                local_path,
+                expected_sha256=spec.sha256,
+                force=force_download,
+            )
             stored = store_file(
                 store,
                 local_path,

@@ -860,6 +860,40 @@ def test_materialize_broll_overlays_have_frames_and_no_overlap():
     assert ordered[0]["timeline_end_frame"] <= ordered[1]["timeline_start_frame"]
 
 
+def test_materialize_broll_defensively_drops_overlapping_authoritative_window():
+    material = _material()
+    boundary = {
+        "broll_slots": [
+            {"slot_id": "bslot_first", "start_frame": 0, "end_frame": 75},
+            {"slot_id": "bslot_overlap", "start_frame": 70, "end_frame": 145},
+        ]
+    }
+    selection = EditingSelection(
+        broll=[
+            BrollChoice(slot_id="bslot_first", candidate_id="bc_000"),
+            BrollChoice(slot_id="bslot_overlap", candidate_id="bc_001"),
+        ]
+    )
+
+    payload, drops = materialize_broll_from_assignment(
+        windows=_windows(boundary),
+        assignment=_assignment(selection),
+        candidates=index_candidates(material),
+        enabled=True,
+        max_inserts=2,
+    )
+
+    assert [overlay["window_id"] for overlay in payload["overlays"]] == ["bslot_first"]
+    assert drops == [
+        {
+            "slot_id": "bslot_overlap",
+            "candidate_id": "bc_001",
+            "reason": "timeline_overlap",
+            "conflicting_slot_id": "bslot_first",
+        }
+    ]
+
+
 def test_materialize_broll_disabled_returns_empty():
     payload, drops = materialize_broll_from_assignment(
         windows=_windows(_boundary()),

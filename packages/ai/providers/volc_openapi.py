@@ -83,6 +83,32 @@ def _map_state(state: str | None) -> str:
     return "training"
 
 
+def _icl2_preview_url(item: dict) -> str | None:
+    """Return the type-5 preview without exposing an unusable internal voice id.
+
+    The async ``/api/v3/tts/submit`` API selects ICL 2.0 with
+    ``X-Api-Resource-Id=seed-icl-2.0`` and accepts the purchased ``S_`` SpeakerID.
+    The ``IclSpeakerId`` nested under model type 5 is an internal model-specific ID;
+    passing it as ``req_params.speaker`` fails the live API's resource check.
+    """
+
+    details = item.get("ModelTypeDetails")
+    if not isinstance(details, list):
+        return None
+    for detail in details:
+        if not isinstance(detail, dict):
+            continue
+        try:
+            model_type = int(detail.get("ModelType"))
+        except (TypeError, ValueError):
+            continue
+        if model_type != 5:
+            continue
+        preview_url = str(detail.get("DemoAudio") or detail.get("demo_audio") or "").strip()
+        return preview_url or None
+    return None
+
+
 class VolcSpeechOpenAPI:
     """AK/SK-signed client for the ``speech_saas_prod`` management plane."""
 
@@ -153,14 +179,14 @@ class VolcSpeechOpenAPI:
             speaker_id = str(item.get("SpeakerID") or "").strip()
             if not speaker_id:
                 continue
-            voices.append(
-                {
-                    "voice_id": speaker_id,
-                    "display_name": str(item.get("Alias") or speaker_id),
-                    "status": "ready",
-                    "preview_url": item.get("DemoAudio") or None,
-                }
-            )
+            model_preview = _icl2_preview_url(item)
+            voice = {
+                "voice_id": speaker_id,
+                "display_name": str(item.get("Alias") or speaker_id),
+                "status": "ready",
+                "preview_url": model_preview or item.get("DemoAudio") or None,
+            }
+            voices.append(voice)
         return voices
 
     def get_train_status(self, appid: str, speaker_id: str) -> str | None:

@@ -437,7 +437,6 @@ class ProviderProfileRow(TimestampMixin, Base):
     secret_ref: Mapped[str | None] = mapped_column(String)
     concurrency_key: Mapped[str] = mapped_column(String, nullable=False, default="default")
     timeout_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
-    retry_policy: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     cost_policy_id: Mapped[str | None] = mapped_column(String)
     options_schema_ref: Mapped[dict] = mapped_column(JSONB, nullable=False)
     default_options: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

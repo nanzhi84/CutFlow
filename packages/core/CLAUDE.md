@@ -15,7 +15,7 @@
 - `config/settings.py` — `build_settings()`/`Settings`（按域分组，frozen，含 `UploadSettings`/`ObjectStoreSettings`）、`sandbox_fallback_allowed()`；`CUTAGENT_*` env 在调用时读取，无模块级单例。
 - `config/preflight.py` — `validate_startup_settings()` / `format_preflight_report()`，API/worker 生产启动前 fail closed，`scripts/preflight.py`/`scripts/ci_preflight_gate.sh` 复用同一逻辑。
 - `storage/database.py` / `repository.py` / `bootstrap.py` — ORM 后端 / 运行态内存 `Repository`(**仅工作流单次 run 的临时 run-state,非存储后端;已不能当存储后端用**) / 按 `storage.backend`(sqlalchemy|postgres,memory 已移除并显式拒绝) 选型。
-- `storage/alembic/versions/` — 0001..0033（单一 head `0033_converge_visual_kind`），仓库内**唯一**的 Alembic 迁移目录；`0023`/`0024` 清理 `jobs.request` 里已删除的 LipSync/Output/Strictness keys，`0025` 清理 `narration.units` artifact 内已删除的 `broll_overlay_allowed`，`0026` 把 visual asset kind 收敛为 `video`，`0027` 从 `jobs.request`/`user_generation_defaults.settings` 剥离已删的顶层 `portrait` 块（原 PortraitOptions），`0028` 清理 `user_generation_defaults.settings` 里的遗留嵌套选项字段，`0029` 同步 editing agent prompt seed（仅修 pre-#136 legacy 库），`0030` 是 0029 之后的二次同步（标记检测更宽，把"素材不足放松人像唯一性"的新文案推给已过 legacy 的库），`0031` 兼容旧 `0030_sync_editing_agent_slots` revision 并规范化 `publish_records.status`，`0032` 增加 voice↔case 绑定，`0033` 把 0026 之后被 seed 重新造出的残留 `portrait`/`broll` 行再次收敛为 `video`（#133 删枚举前的一次性清理，幂等）。
+- `storage/alembic/versions/` — 0001..0057（单一 head `0057_drop_provider_retry_policy`），仓库内**唯一**的 Alembic 迁移目录；近期 `0045` 剥离字幕 preset 遗留字段，`0046…0048` 建立并同步分离后的 MediaSelection/PostProcess prompts，`0049…0050` 补 provider 调用幂等与可恢复结果，`0051` 同步 B-roll legal candidates，`0052` 给 `finished_videos` 加 `cover_thumb_artifact`（#206 列表页缩略图），`0053` 同步 PostProcess 本地求解器职责边界，`0054` 固定豆包 TTS 整篇单 MP3 中间路径，`0055` 只在 Access Token 已 armed 时切换到 v3 异步 ICL 2.0 整篇 MP3，`0056` 发布 slot-scoped 冲突安全媒体候选域 prompt，`0057` 删除运行时从未消费的 provider profile 重试伪配置。
 - `storage/seed.py` / `seed_media.py` / `provider_seed.py` — 用户/注册码、媒体、provider 配置 seed。
 - `storage/secret_store.py` — `SecretStore` 协议 + `LocalSecretStore`；自 `0017` 起做 **Fernet 信封加密**（`envelope_prefix = "fernet:v1:"`，key 来源 `CUTAGENT_SECRET_ENCRYPTION_KEY`，缺省落盘 `.db_encryption_key`），密钥不入 env/Settings。
 - `storage/` 其余基建：对象存储 `object_store.py` / `tiered_object_store.py`（local/S3/tiered/materials bucket，支持 signed GET、presigned PUT、HEAD、copy、CORS）；SQLAlchemy 后端实现 `sqlalchemy_secrets.py` / `sqlalchemy_uploads.py` / `sqlalchemy_idempotency.py`；`selection_ledger.py`（选材账本，确定性近期降权）、`row_mapper.py`（ORM 行 ↔ 契约映射）。
@@ -32,7 +32,7 @@
 - 上传契约在 `contracts/media.py`：`PrepareUploadResponse.put_url` 是唯一 presigned PUT 地址；`UploadSession.upload_url` 只是 legacy/object-uri mirror，不得作为访问或上传 URL。
 - 状态变更一律走 `assert_transition()`，禁止绕过状态机直接改 status。
 - 密钥只存 `SecretStore`/`ProviderProfile`，**永不**进 env 或 `Settings`（settings 仅放 infra/policy）。
-- 所有 Alembic revision 只能放在 `storage/alembic/versions/`，保持单一 head（当前 `0033`）；链中存在过 merge revision（`0014` 合并两支）。revision id 受 `alembic_version` 列 VARCHAR(32) 限制，命名须 ≤32 字符。
+- 所有 Alembic revision 只能放在 `storage/alembic/versions/`，保持单一 head（当前 `0056`）；链中存在过 merge revision（`0014` 合并两支）。revision id 受 `alembic_version` 列 VARCHAR(32) 限制，命名须 ≤32 字符。
 - 配置经 `build_settings()` 取快照（frozen、调用时读 env），勿引入缓存单例。
 
 ## 测试

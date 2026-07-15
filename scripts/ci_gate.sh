@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
-DATABASE_URL="${CUTAGENT_DATABASE_URL:-postgresql+psycopg://cutagent:cutagent@localhost:55432/cutagent}"
+DATABASE_URL="${CUTAGENT_DATABASE_URL:-postgresql+psycopg://cutagent:cutagent@localhost:55432/cutagent_test}"
 TEMPORAL_ADDRESS="${CUTAGENT_TEMPORAL_ADDRESS:-localhost:7233}"
 TEMPORAL_TASK_QUEUE="${CUTAGENT_TEMPORAL_TASK_QUEUE:-cutagent-ci-$$}"
 
@@ -72,6 +72,49 @@ PY
 run_pytest() {
   run_with_timeout "$PYTHON_BIN" -m pytest -q "$@"
 }
+
+assert_disposable_test_database() {
+  local target host database
+  target="$("$PYTHON_BIN" - "$DATABASE_URL" <<'PY'
+from __future__ import annotations
+
+import sys
+
+from sqlalchemy.engine import make_url
+
+url = make_url(sys.argv[1])
+print(f"{url.host or ''}|{url.database or ''}")
+PY
+)"
+  host="${target%%|*}"
+  database="${target#*|}"
+
+  case "$host" in
+    localhost|127.0.0.1|::1|postgres) ;;
+    *)
+      echo "Refusing CI gate against non-local database host: ${host:-<empty>}" >&2
+      exit 2
+      ;;
+  esac
+  case "$database" in
+    postgres|template0|template1|"")
+      echo "Refusing CI gate against protected database: ${database:-<empty>}" >&2
+      exit 2
+      ;;
+  esac
+  if [ "${CI:-}" != "true" ]; then
+    case "$database" in
+      *_test|test_*|*_ci|ci_*) ;;
+      *)
+        echo "Refusing local CI gate against non-disposable database: $database" >&2
+        echo "Set CUTAGENT_DATABASE_URL to an explicitly disposable *_test or *_ci database." >&2
+        exit 2
+        ;;
+    esac
+  fi
+}
+
+assert_disposable_test_database
 
 # The in-memory storage backend was removed: bootstrap a migrated + seeded
 # database, then run the full default suite against it. tests/conftest.py only

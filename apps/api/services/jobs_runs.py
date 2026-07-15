@@ -564,10 +564,53 @@ def _validate_seedance_reference_assets(
             )
 
 
+def _validate_creative_intent_ref(request: Request, payload: c.DigitalHumanVideoRequest) -> None:
+    ref = payload.creative_intent_ref
+    if ref is None:
+        return
+    if ref.kind != c.ArtifactKind.creative_intent:
+        raise NodeExecutionError(
+            c.ErrorCode.validation_invalid_options,
+            "creative_intent_ref must declare kind creative.intent.",
+        )
+
+    session_factory = getattr(request.app.state, "sqlalchemy_session_factory", None)
+    if session_factory is not None:
+        with session_factory() as session:
+            artifact = session.get(ArtifactRow, ref.artifact_id)
+            actual_kind = artifact.kind if artifact is not None else None
+            actual_case_id = artifact.case_id if artifact is not None else None
+    else:
+        artifact = repository(request).artifacts.get(ref.artifact_id)
+        actual_kind = artifact.kind.value if artifact is not None else None
+        actual_case_id = artifact.case_id if artifact is not None else None
+
+    if artifact is None:
+        raise NodeExecutionError(
+            c.ErrorCode.validation_invalid_options,
+            f"Creative intent artifact is missing: {ref.artifact_id}",
+        )
+    if actual_kind != c.ArtifactKind.creative_intent.value:
+        raise NodeExecutionError(
+            c.ErrorCode.validation_invalid_options,
+            f"Creative intent artifact has the wrong kind: {ref.artifact_id}",
+        )
+    if actual_case_id != payload.case_id:
+        raise NodeExecutionError(
+            c.ErrorCode.validation_invalid_options,
+            f"Creative intent artifact does not belong to this case: {ref.artifact_id}",
+        )
+
+
+def _validate_digital_human_request(request: Request, payload: c.DigitalHumanVideoRequest) -> None:
+    _validate_seedance_reference_assets(request, payload)
+    _validate_creative_intent_ref(request, payload)
+
+
 def _validate_job_request_before_start(request: Request, job_id: str) -> None:
     job = repository(request).jobs[job_id]
     if isinstance(job.request, c.DigitalHumanVideoRequest):
-        _validate_seedance_reference_assets(request, job.request)
+        _validate_digital_human_request(request, job.request)
 
 
 def create_digital_human_job(
@@ -576,7 +619,7 @@ def create_digital_human_job(
     case = get_case(request, payload.case_id)
     if payload.case_id not in repository(request).cases:
         repository(request).cases[payload.case_id] = case
-    _validate_seedance_reference_assets(request, payload)
+    _validate_digital_human_request(request, payload)
     _link_adopted_script(request, payload)
     job = c.Job(
         id=new_id("job"),
@@ -689,7 +732,7 @@ def create_digital_human_batch(
             continue
         try:
             item_request = _batch_item_request(payload, item, my_defaults)
-            _validate_seedance_reference_assets(request, item_request)
+            _validate_digital_human_request(request, item_request)
             _link_adopted_script(request, item_request)
             job = c.Job(
                 id=new_id("job"),
@@ -940,6 +983,17 @@ def cancel_run(run_id: str, payload: c.CancelRunRequest, request: Request) -> c.
     _runtime_run(request, run_id)
     run = workflow_runtime(request).cancel_run(run_id, force=payload.force, reason=payload.reason)
     run = run or repository(request).runs[run_id]
+    repository(request).release_run_reservations(run_id=run_id, only_uncommitted=True)
+    # Worker activities own fresh per-run repositories, so the API process may not
+    # have the reservations created after its last hydration. Release the durable
+    # rows by run id as well; this is idempotent and never touches committed picks.
+    release_reservations = getattr(
+        production_repository(request),
+        "release_run_selection_reservations",
+        None,
+    )
+    if callable(release_reservations):
+        release_reservations(run_id)
     _sync_workflow_snapshot(request, run)
     return c.RunActionResponse(run=run, accepted=True, request_id=request_id())
 

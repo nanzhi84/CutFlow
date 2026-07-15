@@ -136,6 +136,122 @@ def test_execute_node_emits_node_started_and_node_succeeded():
     assert succeeded.dedupe_key.endswith(":node_succeeded")
 
 
+def test_subtitle_disabled_mix_still_emits_node_started():
+    adapter, run, _ = _adapter_with_run(RunStatus.running)
+    request = _request().model_copy(
+        update={"subtitle": _request().subtitle.model_copy(update={"enabled": False})}
+    )
+    state = RunState(request=request)
+
+    def ok(_node_id, _run_arg, _node_run, _state_arg):
+        return NodeOutput(status=NodeStatus.succeeded)
+
+    adapter._run_node = ok  # type: ignore[method-assign]
+
+    assert adapter._execute_node("SubtitleAndBgmMix", run, state) is True
+    assert "node_started" in _event_types(adapter.repository)
+
+
+def test_execute_node_rejects_undeclared_output_kind():
+    adapter, run, _ = _adapter_with_run(RunStatus.running)
+    state = RunState(request=_request())
+
+    def wrong_kind(_node_id, run_arg, node_run, _state_arg):
+        artifact = adapter.repository.create_artifact(
+            kind=ArtifactKind.provider_raw_request,
+            payload_schema="UnexpectedArtifact.v1",
+            payload={"unexpected": True},
+            case_id=run_arg.case_id,
+            run_id=run_arg.id,
+            node_run_id=node_run.id,
+        )
+        return NodeOutput(artifacts=[artifact])
+
+    adapter._run_node = wrong_kind  # type: ignore[method-assign]
+
+    assert adapter._execute_node("ValidateRequest", run, state) is False
+    failed = adapter.repository.node_runs[run.id][-1]
+    assert failed.status == NodeStatus.failed
+    assert failed.error is not None
+    assert failed.error.code == ErrorCode.artifact_schema_mismatch
+    assert failed.error.details["undeclared_kinds"] == ["provider.raw_request"]
+
+
+def test_execute_node_retries_declared_retryable_error(monkeypatch):
+    adapter, run, _ = _adapter_with_run(RunStatus.running)
+    state = RunState(request=_request())
+    attempts = 0
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.time.sleep", lambda _delay: None
+    )
+
+    def conflict_then_ok(_node_id, _run_arg, _node_run, _state_arg):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise NodeExecutionError(
+                ErrorCode.validation_conflict,
+                "reservation race",
+                retryable=True,
+            )
+        return NodeOutput(status=NodeStatus.succeeded)
+
+    adapter._run_node = conflict_then_ok  # type: ignore[method-assign]
+
+    assert adapter._execute_node("MaterialPackPlanning", run, state) is True
+    assert attempts == 3
+    assert adapter.repository.node_runs[run.id][-1].status == NodeStatus.succeeded
+
+
+def test_reuse_prefix_carries_provider_warning_and_degradation_metadata():
+    from packages.core.contracts import DegradationNotice, NodeRun, WarningCode, WorkflowRun
+    from packages.production.pipeline.reuse import ReuseDecision, ReusePlan
+
+    adapter, run, _ = _adapter_with_run(RunStatus.running)
+    source_run = WorkflowRun(
+        id="run_source",
+        job_id=run.job_id,
+        case_id=run.case_id,
+        workflow_template_id=run.workflow_template_id,
+        workflow_version=run.workflow_version,
+        status=RunStatus.failed,
+    )
+    degradation = DegradationNotice(
+        code=WarningCode.cover_frame_fallback,
+        message="fallback",
+        node_id="ValidateRequest",
+    )
+    source_node = NodeRun(
+        id="nr_source",
+        run_id=source_run.id,
+        node_id="ValidateRequest",
+        node_version="v1",
+        status=NodeStatus.succeeded,
+        input_manifest_hash="same",
+        provider_invocation_ids=["pinv_source"],
+        warnings=[WarningCode.cost_unpriced],
+        degradations=[degradation],
+    )
+    adapter.repository.runs[source_run.id] = source_run
+    adapter.repository.node_runs[source_run.id] = [source_node]
+    state = RunState(
+        request=_request(),
+        provider_invocation_ids=["pinv_source"],
+        warnings=[WarningCode.cost_unpriced],
+        degradations=[degradation],
+    )
+    plan = ReusePlan(
+        source_run_id=source_run.id,
+        reused_node_ids=["ValidateRequest"],
+        decisions=[ReuseDecision(node_id="ValidateRequest", reusable=True, reason="reused")],
+    )
+
+    assert adapter._reuse_prefix(run, state, source_run.id, plan) == 1
+    assert state.provider_invocation_ids == ["pinv_source"]
+    assert state.warnings == [WarningCode.cost_unpriced]
+    assert state.degradations == [degradation]
+
+
 def test_execute_node_degraded_counts_as_node_succeeded():
     adapter, run, _ = _adapter_with_run(RunStatus.running)
     state = RunState(request=_request())

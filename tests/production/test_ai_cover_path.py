@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from packages.ai.gateway import ProviderResult
 from packages.ai.gateway.provider_gateway import (
     ProviderCall,
@@ -38,6 +40,7 @@ from packages.core.contracts import (
     WorkflowRun,
 )
 from packages.core.provider_idempotency import is_provider_call_idempotency_key
+from packages.core.workflow import NodeExecutionError
 from packages.core.storage.object_store import LocalObjectStore, parse_object_uri
 from packages.core.storage.repository import Repository
 from packages.core.storage.secret_store import LocalSecretStore
@@ -47,7 +50,7 @@ from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState
 from packages.ai.prompts.registry import PromptRegistry
 from packages.production.pipeline.degradation_policies import COVER_FALLBACK_POLICY
-from packages.production.pipeline.digital_human import LocalRuntimeAdapter
+from packages.production.pipeline.digital_human import LocalRuntimeAdapter, digital_human_template
 
 # A valid 1x1 RGBA PNG — enough for ffprobe to recognise an image stream.
 _PNG_1x1 = bytes.fromhex(
@@ -310,6 +313,18 @@ def test_ai_cover_falls_back_from_image2_to_seedream(
     assert output.status == NodeStatus.succeeded
     assert not output.degradations
     assert len(output.provider_invocation_ids) == 2
+    raw_requests = [
+        artifact
+        for artifact in output.artifacts
+        if artifact.kind == ArtifactKind.provider_raw_request
+    ]
+    assert len(raw_requests) == 2
+    export_spec = next(
+        node for node in digital_human_template().nodes if node.node_id == "ExportFinishedVideo"
+    )
+    assert {artifact.kind for artifact in output.artifacts} <= set(
+        export_spec.output_artifact_kinds
+    )
     invocations = [
         adapter.repository.provider_invocations[invocation_id]
         for invocation_id in output.provider_invocation_ids
@@ -771,6 +786,28 @@ def test_finished_title_uses_llm_publish_copy_headline(
     assert prompt_invocation.provider_invocation_id == output.provider_invocation_ids[0]
 
 
+def test_export_hard_fails_when_armed_publish_copy_is_schema_invalid(
+    tmp_path, media_fixture_factory, monkeypatch
+):
+    adapter, gateway, secret_store, object_store = _adapter(tmp_path)
+    monkeypatch.setattr(
+        "packages.production.pipeline.digital_human.get_object_store", lambda: object_store
+    )
+    _arm_copy_llm(gateway, secret_store, {"title": "缺少其余必填字段"})
+    state = _seed_final_state(
+        adapter.repository, object_store, media_fixture_factory, cover_mode="frame"
+    )
+    ctx = NodeContext(adapter=adapter, run=_run(), node_run=_node_run(), state=state)
+
+    from packages.production.pipeline import nodes
+
+    with pytest.raises(NodeExecutionError) as exc:
+        nodes.export_finished_video.run(ctx)
+
+    assert exc.value.error.code == ErrorCode.prompt_output_invalid
+    assert not adapter.repository.finished_videos
+
+
 def test_ai_cover_prompt_uses_llm_cover_title(tmp_path, media_fixture_factory, monkeypatch):
     adapter, gateway, secret_store, object_store = _adapter(tmp_path)
     monkeypatch.setattr(
@@ -986,5 +1023,5 @@ def test_export_finished_video_declared_as_provider_side_effect_node():
 
     template = digital_human_template()
     node = next(n for n in template.nodes if n.node_id == "ExportFinishedVideo")
-    assert node.side_effects == ["provider_call"]
+    assert node.side_effects == ["provider_call", "domain_write"]
     assert node.idempotency_key is not None

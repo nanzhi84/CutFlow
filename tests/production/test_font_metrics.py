@@ -9,8 +9,10 @@ from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 
 from packages.production.pipeline._font_metrics import (
+    FontMetrics,
     char_advance_px,
     fallback_char_px,
+    font_text_safety_issue,
     load_font_metrics,
     make_text_measurer,
 )
@@ -67,12 +69,49 @@ def test_char_advance_px_uses_cell_height_denominator(font_path: Path) -> None:
     assert char_advance_px(metrics, "一", _FONT_SIZE) == pytest.approx(48.0)  # 1000*48/1000
 
 
-def test_char_advance_px_cmap_miss_falls_back_to_upem(font_path: Path) -> None:
+def test_char_advance_px_cmap_miss_reserves_full_rendered_cell(font_path: Path) -> None:
     metrics = load_font_metrics(font_path)
     assert metrics is not None
-    # 丁 (U+4E01) is not in the cmap -> full-width approximation via upem.
-    assert char_advance_px(metrics, "丁", _FONT_SIZE) == pytest.approx(48.0)  # 1000*48/1000
+    # 丁 (U+4E01) is not in the cmap -> one full rendered cell.
+    assert char_advance_px(metrics, "丁", _FONT_SIZE) == pytest.approx(48.0)
     assert char_advance_px(metrics, "", _FONT_SIZE) == 0.0
+
+    tall_cell_metrics = FontMetrics(
+        upem=1000,
+        ascender=1000,
+        descender=-600,
+        cmap={},
+        advances={},
+    )
+    assert char_advance_px(tall_cell_metrics, "W", _FONT_SIZE) == pytest.approx(48.0)
+
+
+def test_font_text_safety_rejects_missing_glyph(font_path: Path) -> None:
+    assert font_text_safety_issue(font_path, ["丁"]) == "missing_glyph:U+4E01"
+
+
+def test_font_text_safety_rejects_horizontal_ink_overhang(tmp_path: Path) -> None:
+    path = tmp_path / "overhang.ttf"
+    pen = TTGlyphPen(None)
+    pen.moveTo((-100, 0))
+    pen.lineTo((400, 0))
+    pen.lineTo((400, 700))
+    pen.lineTo((-100, 700))
+    pen.closePath()
+    glyph = pen.glyph()
+    empty = TTGlyphPen(None).glyph()
+    fb = FontBuilder(1000, isTTF=True)
+    fb.setupGlyphOrder([".notdef", "f"])
+    fb.setupCharacterMap({ord("f"): "f"})
+    fb.setupGlyf({".notdef": empty, "f": glyph})
+    fb.setupHorizontalMetrics({".notdef": (600, 0), "f": (300, -100)})
+    fb.setupHorizontalHeader(ascent=800, descent=-200)
+    fb.setupNameTable({"familyName": "Overhang Test", "styleName": "Regular"})
+    fb.setupOS2(sTypoAscender=800, sTypoDescender=-200)
+    fb.setupPost()
+    fb.save(str(path))
+
+    assert font_text_safety_issue(path, ["f"]) == "horizontal_ink_overhang:U+0066"
 
 
 def test_load_font_metrics_returns_none_on_corrupt_file(tmp_path: Path) -> None:

@@ -37,7 +37,11 @@ def run(ctx: NodeContext) -> NodeOutput:
             }
         )
     idempotency = ctx.provider_call_idempotency(
-        logical_call_slot="tts", provider_profile_id=provider_profile_id
+        # Delivery semantics changed again from legacy synchronous v1 to an async
+        # provider-authored full MP3 with native timing. Keep a distinct durable
+        # identity so a resumed run cannot replay the superseded paid result.
+        logical_call_slot="tts:full-script-single-file:v2",
+        provider_profile_id=provider_profile_id,
     )
     invocation, result = ctx.provider_gateway.invoke(
         ProviderCall(

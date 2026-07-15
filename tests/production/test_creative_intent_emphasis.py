@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from packages.core.contracts import ArtifactKind
 from packages.core.contracts.artifacts import CreativeIntentArtifact, EmphasisHint
+from packages.core.workflow import NodeExecutionError
 
 
 class _Art:
@@ -48,6 +49,45 @@ def test_resolve_creative_intent_normalizes_bgm_mood():
     )
 
     assert artifact.intent["bgm_mood"] == "高能"
+
+
+def test_resolve_creative_intent_ref_rejects_cross_case_artifact():
+    from types import SimpleNamespace
+
+    import pytest
+
+    from packages.core.contracts import Artifact, ArtifactRef, DigitalHumanVideoRequest, ErrorCode
+    from packages.production.pipeline.nodes import resolve_creative_intent
+
+    artifact = Artifact(
+        id="art_foreign_intent",
+        case_id="case_other",
+        kind=ArtifactKind.creative_intent,
+        uri="artifact://art_foreign_intent",
+        payload_schema="CreativeIntentArtifact.v1",
+        payload={"intent": None, "emphasis": []},
+    )
+    request = DigitalHumanVideoRequest(
+        case_id="case_demo",
+        script="脚本",
+        voice={"voice_id": "voice_sandbox"},
+        creative_intent_ref=ArtifactRef(
+            artifact_id=artifact.id,
+            kind=ArtifactKind.creative_intent,
+            uri=artifact.uri or "artifact://missing",
+        ),
+    )
+    ctx = SimpleNamespace(
+        state=SimpleNamespace(request=request),
+        run=SimpleNamespace(case_id="case_demo"),
+        node_run=SimpleNamespace(),
+        repository=SimpleNamespace(artifacts={artifact.id: artifact}),
+    )
+
+    with pytest.raises(NodeExecutionError) as exc:
+        resolve_creative_intent.run(ctx)
+
+    assert exc.value.error.code == ErrorCode.artifact_schema_mismatch
 
 
 # --- load_creative_intent helper ---

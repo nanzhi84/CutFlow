@@ -147,10 +147,21 @@ class CircuitBreakerGuard(Protocol):
 
 
 class ProviderRuntimeError(Exception):
-    def __init__(self, code: ErrorCode, message: str) -> None:
+    def __init__(
+        self,
+        code: ErrorCode,
+        message: str,
+        *,
+        preserve_polling: bool = False,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        # Once an async provider has accepted and returned a durable task id, a
+        # query/download failure must not retire that id and let operator resume
+        # submit a second paid task. Adapters set this only for failures where the
+        # accepted task is still the authoritative recovery target.
+        self.preserve_polling = preserve_polling
 
 
 SUPPORTED_MULTIMODAL_EMBEDDING_DIMENSIONS = {1024}
@@ -609,10 +620,40 @@ class ProviderGateway:
         return invocation
 
     def _finalize_failure(self, invocation, exc, started, *, store):
+        current_invocation = self.repository.provider_invocations[invocation.id]
+        if (
+            store is not None
+            and current_invocation.status is ProviderStatus.polling
+            and current_invocation.external_job_id
+            and exc.preserve_polling
+        ):
+            # Surface a retryable error to the node, but keep the durable row in
+            # ``polling``. The next activity attempt or operator resume therefore
+            # calls ``resume_with_context`` with the same vendor task id instead of
+            # reopening the idempotency key and paying for another submit.
+            error = ProviderError(code=exc.code, message=exc.message, retryable=True)
+            invocation = current_invocation.model_copy(
+                update={
+                    "duration_ms": int((perf_counter() - started) * 1000),
+                    "error": error,
+                    "finished_at": None,
+                    "updated_at": utcnow(),
+                }
+            )
+            self.repository.provider_invocations[invocation.id] = invocation
+            logger.warning(
+                "provider polling attempt failed; retaining accepted vendor task "
+                "invocation_id=%s capability_id=%s external_job_id=%s error_code=%s",
+                invocation.id,
+                invocation.capability_id,
+                invocation.external_job_id,
+                exc.code.value,
+            )
+            return invocation, None
+
         status = ProviderStatus.failed
         if exc.code == ErrorCode.provider_timeout:
             status = ProviderStatus.timed_out
-        current_invocation = self.repository.provider_invocations[invocation.id]
         assert_transition("provider", current_invocation.status, status)
         error = ProviderError(code=exc.code, message=exc.message, retryable=True)
         invocation = current_invocation.model_copy(

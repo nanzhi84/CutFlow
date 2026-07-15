@@ -189,7 +189,13 @@ pip install -e ".[dev]"
 
 ```bash
 python scripts/bootstrap_database.py
+# 首次环境初始化：导入 OFL 授权的确定性 CJK 字体包（字幕 v2 必需）
+python scripts/import_font_assets.py
 ```
+
+字幕 v2 默认使用 `Noto Serif CJK SC Regular`（普通字幕）与
+`Noto Sans CJK SC Bold`（花字）。默认资产缺失时节点会明确失败，避免
+macOS CoreText 与 Linux fontconfig 各自映射 `serif/sans-serif` 后产出不同成片。
 
 只跑迁移：
 

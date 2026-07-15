@@ -13,7 +13,10 @@ import pytest
 
 from packages.ai.gateway import ProviderResult
 from packages.ai.gateway.provider_gateway import ProviderCall, ProviderGateway, ProviderRuntimeError
-from packages.core.provider_idempotency import is_provider_call_idempotency_key
+from packages.core.provider_idempotency import (
+    build_provider_call_idempotency,
+    is_provider_call_idempotency_key,
+)
 from packages.core.contracts import (
     ArtifactKind,
     DigitalHumanVideoRequest,
@@ -192,8 +195,10 @@ class _SubtitleTTSProvider:
     def __init__(self, audio_file, segments) -> None:
         self.audio_file = audio_file
         self.segments = segments
+        self.calls: list[ProviderCall] = []
 
     def invoke_with_context(self, call: ProviderCall, context) -> ProviderResult:
+        self.calls.append(call)
         assert call.input.get("subtitle") is True  # real path requests subtitles
         artifact = context.store_media_bytes(
             content=self.audio_file.read_bytes(),
@@ -228,9 +233,11 @@ def test_real_tts_subtitle_becomes_primary_narration_source(tmp_path, media_fixt
         {"start": 0.0, "end": 1.0, "text": "第一句。"},
         {"start": 1.0, "end": 2.0, "text": "第二句。"},
     ]
-    gateway.register(
-        _SubtitleTTSProvider(media_fixture_factory.audio(duration_sec=2.0, filename="tts.wav"), segments)
+    provider = _SubtitleTTSProvider(
+        media_fixture_factory.audio(duration_sec=2.0, filename="tts.wav"),
+        segments,
     )
+    gateway.register(provider)
     adapter.repository.provider_profiles["minimax.real"] = ProviderProfile(
         id="minimax.real",
         provider_id="minimax.tts",
@@ -262,6 +269,15 @@ def test_real_tts_subtitle_becomes_primary_narration_source(tmp_path, media_fixt
     )
     tts_ctx = NodeContext(adapter=adapter, run=_run(), node_run=tts_run, state=state)
     tts_output = nodes.tts.run(tts_ctx)
+    expected_idempotency = build_provider_call_idempotency(
+        job_id="job_1",
+        run_id="run_1",
+        canonical_node_id="TTS",
+        logical_call_slot="tts:full-script-single-file:v2",
+        provider_profile_id="minimax.real",
+        input_manifest_hash="sha256:test",
+    )
+    assert provider.calls[0].idempotency_key == expected_idempotency.key
     audio_artifact = tts_output.artifacts[0]
     assert audio_artifact.uri and audio_artifact.uri.startswith("local://")
     assert audio_artifact.media_info and audio_artifact.media_info.media_type == "audio"

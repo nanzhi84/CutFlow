@@ -49,7 +49,6 @@ def test_sqlalchemy_provider_test_profile_uses_recent_invocation_latency() -> No
                 capability="tts.speech",
                 display_name="Sandbox TTS",
                 environment="local",
-                retry_policy={},
                 options_schema_ref={"schema_id": "provider.tts.options", "schema_version": "v1"},
                 default_options={},
                 enabled=True,

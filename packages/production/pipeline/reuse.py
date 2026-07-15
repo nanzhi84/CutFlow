@@ -57,10 +57,6 @@ def _file_digest(artifact: Artifact) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _expected_schema_version(template_node, kind: ArtifactKind) -> str:
-    return template_node.output_artifact_schema_versions.get(kind, "v1")
-
-
 def compute_reuse_plan(
     source_run: ReuseSourceRun,
     template: WorkflowTemplate,
@@ -92,7 +88,12 @@ def compute_reuse_plan(
         )
         if expected_input_hash is not None and expected_input_hash != previous_node.input_manifest_hash:
             return _stop(plan, template_node.node_id, "input_manifest_hash_mismatch")
-        if template_node.side_effects and template_node.idempotency_key is None:
+        non_replayable_side_effects = [
+            effect for effect in template_node.side_effects if effect != "provider_call"
+        ]
+        if non_replayable_side_effects:
+            return _stop(plan, template_node.node_id, "side_effect_not_reusable")
+        if "provider_call" in template_node.side_effects and template_node.idempotency_key is None:
             return _stop(plan, template_node.node_id, "side_effect_not_reusable")
 
         output_artifacts: list[Artifact] = []
@@ -111,13 +112,6 @@ def compute_reuse_plan(
                     # compiler, but the obsolete extra must not cross into the new run.
                     continue
                 return _stop(plan, template_node.node_id, "artifact_kind_mismatch", previous_node.output_artifact_ids)
-            if artifact.schema_version != _expected_schema_version(template_node, artifact.kind):
-                return _stop(
-                    plan,
-                    template_node.node_id,
-                    "artifact_schema_version_mismatch",
-                    previous_node.output_artifact_ids,
-                )
             digest = _file_digest(artifact)
             if digest == "":
                 return _stop(plan, template_node.node_id, "artifact_file_missing", previous_node.output_artifact_ids)

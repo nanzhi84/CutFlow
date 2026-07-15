@@ -22,7 +22,6 @@ def _node(
     return c.NodeSpec(
         node_id=node_id,
         node_version=version,
-        input_schema=f"{node_id}.input.v1",
         output_artifact_kinds=outputs or [c.ArtifactKind.run_report_debug],
         side_effects=side_effects or [],
         idempotency_key=idempotency_key,

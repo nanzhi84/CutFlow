@@ -13,10 +13,13 @@ import os
 import subprocess
 import uuid
 
+from packages.media.video.ffmpeg import ffmpeg_bin
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_LONG_SIDE = 1024
 EXTRACT_TIMEOUT_SEC = 30
+BATCH_EXTRACT_TIMEOUT_SEC = 90
 
 
 def _build_downscale_filter(max_long_side: int) -> str:
@@ -50,7 +53,7 @@ def extract_frame_at_time(
         if parent:
             os.makedirs(parent, exist_ok=True)
         cmd = [
-            "ffmpeg",
+            ffmpeg_bin(),
             "-y",
             "-ss",
             str(time_sec),
@@ -94,3 +97,70 @@ def extract_frames_for_times(
         ):
             frames.append((round(point, 3), frame_path))
     return frames
+
+
+def extract_frames_for_indices(
+    video_path: str,
+    frame_indices: list[int],
+    *,
+    temp_dir: str,
+    max_long_side: int = DEFAULT_MAX_LONG_SIDE,
+) -> list[tuple[int, str]]:
+    """Extract exact decoded frame indices with one ffmpeg process.
+
+    Caption safety needs many sparse frames from the same short-form video. A
+    separate seek process per observation multiplies process startup and decoder
+    setup cost, so this path decodes once, selects all requested frame numbers,
+    and returns them in ascending order. Any missing output fails open here as an
+    empty sensor result; the production caption node is responsible for applying
+    its stricter fail-closed policy.
+    """
+
+    indices = sorted({max(0, int(index)) for index in frame_indices})
+    if not indices:
+        return []
+    os.makedirs(temp_dir, exist_ok=True)
+    prefix = f"batch_{uuid.uuid4().hex[:10]}"
+    output_pattern = os.path.join(temp_dir, f"{prefix}_%06d.jpg")
+    select_expression = "+".join(f"eq(n\\,{index})" for index in indices)
+    cmd = [
+        ffmpeg_bin(),
+        "-y",
+        "-i",
+        video_path,
+        "-vf",
+        f"select='{select_expression}',{_build_downscale_filter(max_long_side)}",
+        "-fps_mode",
+        "passthrough",
+        "-frames:v",
+        str(len(indices)),
+        "-q:v",
+        "2",
+        "-start_number",
+        "0",
+        output_pattern,
+    ]
+    try:
+        completed = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=BATCH_EXTRACT_TIMEOUT_SEC,
+        )
+    except Exception as exc:  # pragma: no cover - depends on local ffmpeg
+        logger.warning("[frames] batch extract failed: %s", exc)
+        return []
+    if completed.returncode != 0:
+        logger.warning("[frames] batch extract failed: %s", completed.stderr[-800:])
+        return []
+    paths = [
+        os.path.join(temp_dir, f"{prefix}_{position:06d}.jpg")
+        for position in range(len(indices))
+    ]
+    if any(not os.path.exists(path) for path in paths):
+        logger.warning(
+            "[frames] batch extract produced fewer frames than requested (%s)",
+            len(indices),
+        )
+        return []
+    return list(zip(indices, paths, strict=True))

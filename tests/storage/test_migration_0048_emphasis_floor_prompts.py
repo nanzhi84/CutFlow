@@ -7,9 +7,7 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import text
 
-MIGRATION_PATH = Path(
-    "packages/core/storage/alembic/versions/0048_emphasis_floor_prompts.py"
-)
+MIGRATION_PATH = Path("packages/core/storage/alembic/versions/0048_emphasis_floor_prompts.py")
 
 
 def _load_migration():
@@ -34,7 +32,9 @@ def test_migration_revision_chains_to_single_head():
     assert len("0048_emphasis_floor_prompts") <= 32
 
 
-def test_upgrade_syncs_emphasis_floor_prompts(db_session_factory):
+def test_upgrade_syncs_emphasis_candidates_and_current_postprocess_prompt(
+    db_session_factory,
+):
     engine = db_session_factory.kw["bind"]
     with engine.begin() as conn:
         conn.execute(
@@ -62,7 +62,10 @@ def test_upgrade_syncs_emphasis_floor_prompts(db_session_factory):
 
     assert "至少给出 6 条" in creative
     assert "2 到 10 个字" in creative
-    assert "必须选择 5 到 8 个事件的 caption option" in postprocess
+    # 0048 intentionally reads the current prompt-group source. After 0052 the
+    # candidate floor remains upstream, while final count legality belongs locally.
+    assert "本地求解器负责最终数量、时间冲突和 hero 上限" in postprocess
+    assert "每个 event_id 都输出且只输出一条 caption_choice" in postprocess
 
 
 def test_upgrade_is_idempotent_and_preserves_migrated_rows(db_session_factory):
@@ -76,7 +79,9 @@ def test_upgrade_is_idempotent_and_preserves_migrated_rows(db_session_factory):
             {"c": sentinel_creative},
         )
         conn.execute(
-            text("update prompt_versions set content = :c where id = 'prompt_postprocess_agent_v1'"),
+            text(
+                "update prompt_versions set content = :c where id = 'prompt_postprocess_agent_v1'"
+            ),
             {"c": sentinel_postprocess},
         )
 

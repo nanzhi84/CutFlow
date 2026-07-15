@@ -153,7 +153,7 @@ def test_topological_order_raises_on_cycle():
 
 
 def _spec(node_id: str) -> NodeSpec:
-    return NodeSpec(node_id=node_id, input_schema=f"{node_id}.input.v1", output_artifact_kinds=[])
+    return NodeSpec(node_id=node_id, output_artifact_kinds=[])
 
 
 def test_shipping_templates_pass_validation():
@@ -198,9 +198,7 @@ def test_all_template_nodes_have_handlers_and_declared_outputs(template_id):
         ("digital_human_editing_agent_v2", "MediaSelectionAgentPlanning"),
     ],
 )
-def test_final_portrait_artifact_has_exactly_one_producer(
-    template_id, expected_portrait_producer
-):
+def test_final_portrait_artifact_has_exactly_one_producer(template_id, expected_portrait_producer):
     template = dh.template_for(template_id)
     producers = [
         spec.node_id
@@ -209,9 +207,7 @@ def test_final_portrait_artifact_has_exactly_one_producer(
     ]
 
     assert producers == [expected_portrait_producer]
-    window_node = next(
-        spec for spec in template.nodes if spec.node_id == "TimelineWindowPlanning"
-    )
+    window_node = next(spec for spec in template.nodes if spec.node_id == "TimelineWindowPlanning")
     assert window_node.output_artifact_kinds == [ArtifactKind.plan_timeline_windows]
 
 
@@ -221,9 +217,7 @@ def test_active_templates_use_timeline_assembly_validation_name():
     assert "TimelineAssemblyValidation" in EDITING_AGENT_V2_SEQUENCE
     assert "TimelinePlanning" not in EDITING_AGENT_V2_SEQUENCE
     assert "TimelinePlanning" in EDITING_AGENT_SEQUENCE
-    assert dh.NODE_HANDLERS["TimelinePlanning"] is dh.NODE_HANDLERS[
-        "TimelineAssemblyValidation"
-    ]
+    assert dh.NODE_HANDLERS["TimelinePlanning"] is dh.NODE_HANDLERS["TimelineAssemblyValidation"]
 
 
 @pytest.mark.parametrize("template_id", REGISTERED_TEMPLATE_IDS)
@@ -271,6 +265,10 @@ def test_editing_agent_v2_separates_media_and_postprocess_planning():
     assert by_id["MediaSelectionAgentPlanning"].reuse_policy == "never"
     assert by_id["CaptionWindowPlanning"].reuse_policy == "strict"
     assert by_id["PostProcessAgentPlanning"].reuse_policy == "strict"
+    assert by_id["TTS"].node_version == "v3"
+    assert by_id["CaptionWindowPlanning"].node_version == "v4"
+    assert by_id["PostProcessAgentPlanning"].node_version == "v2"
+    assert by_id["SubtitleAndBgmMix"].node_version == "v2"
     assert "provider_call" in by_id["MediaSelectionAgentPlanning"].side_effects
     assert "provider_call" in by_id["PostProcessAgentPlanning"].side_effects
 

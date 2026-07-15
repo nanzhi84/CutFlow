@@ -4,7 +4,7 @@ from string import Formatter
 
 from packages.core import contracts as c
 from packages.core.storage.repository import Repository
-from packages.core.storage.prompt_groups import prompt_variable_hints
+from packages.core.storage.prompt_groups import prompt_variable_hints, seed_prompt_groups
 
 
 EXPECTED_PROMPT_GROUPS = {
@@ -70,7 +70,12 @@ def test_prompt_group_seeds_create_four_groups_with_brace_safe_content():
     for expected in EXPECTED_PROMPT_GROUPS.values():
         for template_id, purpose in expected.items():
             template = repository.prompt_templates[template_id]
-            version = repository.prompt_versions[f"{template_id}_v1"]
+            version_id = (
+                "prompt_media_selection_agent_v2"
+                if template_id == "prompt_media_selection_agent"
+                else f"{template_id}_v1"
+            )
+            version = repository.prompt_versions[version_id]
             hints = prompt_variable_hints(template_id)
 
             assert template.purpose == purpose
@@ -117,7 +122,7 @@ def test_caption_display_v2_seed_prompts_bind_to_separate_responsibility_nodes()
         ),
         "prompt_binding_prompt_media_selection_agent": (
             "prompt_media_selection_agent",
-            "prompt_media_selection_agent_v1",
+            "prompt_media_selection_agent_v2",
             "MediaSelectionAgentPlanning",
         ),
         "prompt_binding_prompt_postprocess_agent": (
@@ -129,6 +134,20 @@ def test_caption_display_v2_seed_prompts_bind_to_separate_responsibility_nodes()
     for binding_id, expected in expected_bindings.items():
         binding = repository.prompt_bindings[binding_id]
         assert (binding.prompt_template_id, binding.prompt_version_id, binding.node_id) == expected
+
+
+def test_media_v2_seed_does_not_overwrite_an_existing_binding_choice():
+    repository = Repository()
+    binding_id = "prompt_binding_prompt_media_selection_agent"
+    repository.prompt_bindings[binding_id] = repository.prompt_bindings[binding_id].model_copy(
+        update={"prompt_version_id": "prompt_media_selection_agent_v1"}
+    )
+
+    seed_prompt_groups(repository)
+
+    assert repository.prompt_bindings[binding_id].prompt_version_id == (
+        "prompt_media_selection_agent_v1"
+    )
 
 
 def test_seeded_ai_cover_prompt_targets_9_16():
@@ -168,7 +187,8 @@ def test_editing_agent_seed_prompt_documents_line_candidate_format_and_json_outp
 
 def test_media_selection_agent_prompt_is_media_only():
     repository = Repository()
-    content = repository.prompt_versions["prompt_media_selection_agent_v1"].content
+    content = repository.prompt_versions["prompt_media_selection_agent_v2"].content
+    legacy_content = repository.prompt_versions["prompt_media_selection_agent_v1"].content
     hints = prompt_variable_hints("prompt_media_selection_agent")
     output_example = content.rsplit("只输出如下 JSON：", 1)[1]
 
@@ -178,9 +198,10 @@ def test_media_selection_agent_prompt_is_media_only():
     assert "portrait_plan" in output_example
     assert "broll_plan" in output_example
     assert "analysis" in output_example
-    assert "legal_candidate_ids" in content
-    assert "candidate_id | asset_id | diversity_key | scene_name" in content
-    assert "B-roll 插槽（candidate_id 必须来自对应 legal_candidate_ids" in content
+    assert "legal_candidates" in content
+    assert "不需要再查全局候选表" in content
+    assert "{portrait_candidates}" not in content
+    assert "{broll_candidates}" not in content
     assert "allowed_slot_ids" not in content
     assert "broll_uniqueness_rule" in hints
     assert "diversity_key" in content
@@ -194,6 +215,8 @@ def test_media_selection_agent_prompt_is_media_only():
     assert "bgm_plan" not in output_example
     assert "caption_option_id" not in output_example
     assert "严格职责边界" in content
+    assert "{portrait_candidates}" in legacy_content
+    assert "{broll_candidates}" in legacy_content
 
 
 def test_postprocess_agent_prompt_selects_only_bgm_and_complete_caption_option_ids():
@@ -202,7 +225,13 @@ def test_postprocess_agent_prompt_selects_only_bgm_and_complete_caption_option_i
     hints = prompt_variable_hints("prompt_postprocess_agent")
     output_example = content.rsplit("只输出如下 JSON：", 1)[1]
 
-    assert hints == ["script", "bgm_candidates", "caption_windows", "repair_feedback"]
+    assert hints == [
+        "script",
+        "bgm_candidates",
+        "caption_windows",
+        "caption_constraints",
+        "repair_feedback",
+    ]
     assert _format_fields(content) == set(hints)
     assert '"bgm_id"' in output_example
     assert '"caption_choices"' in output_example
@@ -212,6 +241,8 @@ def test_postprocess_agent_prompt_selects_only_bgm_and_complete_caption_option_i
     assert '"rect"' not in output_example
     assert '"animation_id"' not in output_example
     assert "三个顶层字段 bgm_id、caption_choices、analysis 必须全部显式存在" in content
+    assert "每个 event_id 都输出且只输出一条 caption_choice" in content
+    assert "最终数量、时间冲突、最小间隔和 hero 上限全部由本地求解器负责" in content
 
 
 def test_prompt_template_view_exposes_seed_variable_hints():

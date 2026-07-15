@@ -90,16 +90,77 @@ def char_advance_px(metrics: FontMetrics, char: str, font_size: float) -> float:
     """Pixel advance of ``char`` at ``font_size`` using the libass cell-height rule.
 
     Aligns with libass ``FT_SIZE_REQUEST_TYPE_REAL_DIM`` (cell-height == fontsize);
-    do not "fix" the denominator to ``upem``. Characters absent from the cmap fall
-    back to a full-width approximation (advance == upem).
+    do not "fix" the denominator to ``upem``. Characters absent from the cmap
+    reserve one full rendered cell; using ``upem`` here is not conservative when
+    a font's hhea cell is taller than its em square.
     """
     if not char:
         return 0.0
     glyph = metrics.cmap.get(ord(char))
     advance = metrics.advances.get(glyph) if glyph is not None else None
     if advance is None:
-        advance = metrics.upem
+        return float(font_size)
     return advance * font_size / metrics.cell_height
+
+
+def font_text_safety_issue(font_path: Path, texts: list[str]) -> str | None:
+    """Return why hmtx cannot safely bound the requested rendered text.
+
+    V2 placement treats the sum of horizontal advances as the glyph ink box.
+    That is only sound when every used character exists in this exact face and
+    each glyph's ink stays inside ``[0, advance]`` and the hhea vertical cell.
+    Missing glyphs trigger libass fallback; negative bearings and italic swashes
+    can extend outside the advance. Either condition invalidates pixel safety.
+    """
+
+    characters = sorted({char for text in texts for char in str(text) if char not in "\r\n"})
+    if not characters:
+        return None
+    try:
+        from fontTools.pens.boundsPen import BoundsPen
+        from fontTools.ttLib import TTFont
+
+        font = TTFont(str(font_path), fontNumber=0, lazy=False)
+    except Exception as exc:
+        logger.warning("[font_metrics] could not open %s for ink validation: %s", font_path, exc)
+        return "unreadable_glyph_geometry"
+
+    try:
+        cmap = dict(font["cmap"].getBestCmap() or {})
+        hmtx = font["hmtx"]
+        hhea = font["hhea"]
+        ascender = float(hhea.ascender)
+        descender = float(hhea.descender)
+        glyph_set = font.getGlyphSet()
+        for char in characters:
+            glyph_name = cmap.get(ord(char))
+            if glyph_name is None:
+                return f"missing_glyph:U+{ord(char):04X}"
+            try:
+                advance = float(hmtx[glyph_name][0])
+                pen = BoundsPen(glyph_set)
+                glyph_set[glyph_name].draw(pen)
+            except Exception as exc:
+                logger.warning(
+                    "[font_metrics] could not inspect glyph %s in %s: %s",
+                    glyph_name,
+                    font_path,
+                    exc,
+                )
+                return f"unreadable_glyph:U+{ord(char):04X}"
+            if pen.bounds is None:
+                continue
+            x_min, y_min, x_max, y_max = map(float, pen.bounds)
+            if x_min < -1.0 or x_max > advance + 1.0:
+                return f"horizontal_ink_overhang:U+{ord(char):04X}"
+            if y_min < descender - 1.0 or y_max > ascender + 1.0:
+                return f"vertical_ink_overhang:U+{ord(char):04X}"
+    except Exception as exc:
+        logger.warning("[font_metrics] could not validate glyph geometry in %s: %s", font_path, exc)
+        return "unreadable_glyph_geometry"
+    finally:
+        font.close()
+    return None
 
 
 def fallback_char_px(char: str, font_size: float) -> float:

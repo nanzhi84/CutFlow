@@ -41,6 +41,63 @@ def test_reserve_is_idempotent_for_same_run() -> None:
     assert len(repo.selection_reservations) == 1
 
 
+def test_same_run_renews_an_expired_lease_in_place() -> None:
+    repo = Repository()
+    stale = SelectionReservationRecord(
+        case_id="case_demo",
+        run_id="run_retry",
+        medium="portrait",
+        asset_id="asset_portrait_demo",
+        status="expired",
+        expires_at=utcnow() - timedelta(seconds=1),
+        released_at=utcnow() - timedelta(seconds=1),
+    )
+    repo.selection_reservations[stale.id] = stale
+
+    renewed = repo.reserve_selections(
+        case_id="case_demo",
+        run_id="run_retry",
+        medium="portrait",
+        asset_ids=["asset_portrait_demo"],
+    )
+
+    assert len(repo.selection_reservations) == 1
+    assert renewed[0].id == stale.id
+    assert renewed[0].status == "reserved"
+    assert renewed[0].expires_at > utcnow()
+    assert renewed[0].released_at is None
+
+
+def test_same_run_does_not_renew_stale_lease_over_another_live_run() -> None:
+    repo = Repository()
+    stale = SelectionReservationRecord(
+        case_id="case_demo",
+        run_id="run_retry",
+        medium="portrait",
+        asset_id="asset_portrait_demo",
+        status="expired",
+        expires_at=utcnow() - timedelta(seconds=1),
+    )
+    repo.selection_reservations[stale.id] = stale
+    winner = repo.reserve_selections(
+        case_id="case_demo",
+        run_id="run_winner",
+        medium="portrait",
+        asset_ids=["asset_portrait_demo"],
+    )
+
+    retried = repo.reserve_selections(
+        case_id="case_demo",
+        run_id="run_retry",
+        medium="portrait",
+        asset_ids=["asset_portrait_demo"],
+    )
+
+    assert retried == []
+    assert repo.selection_reservations[stale.id].status == "expired"
+    assert [item.run_id for item in winner] == ["run_winner"]
+
+
 def test_commit_then_release_keeps_committed_audit_without_blocking_new_run() -> None:
     repo = Repository()
     repo.reserve_selections(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import unicodedata
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from packages.production.pipeline._caption_styles import (
 from packages.production.pipeline._caption_effects import (
     CAPTION_V3_EFFECTS,
     normal_soft_in_tags,
+    normal_reference_geometry,
     overlay_effect_tags,
 )
 from packages.production.pipeline._keyword_highlight import highlighted_spans
@@ -50,7 +52,14 @@ def ass_time(seconds: float) -> str:
 
 
 def ass_escape(text: str) -> str:
-    return text.replace("{", "").replace("}", "").replace("\n", r"\N")
+    # User-authored backslashes must not become ASS control sequences such as
+    # ``\N`` (line break), ``\n`` (soft break), or ``\h`` (hard space). An empty
+    # ASS comment block interrupts the sequence without producing a glyph, so
+    # the literal slash keeps the exact width measured by the planner. Strip
+    # user braces first, then add our trusted separator; renderer-owned line
+    # breaks are inserted only after each line has passed through this function.
+    cleaned = text.replace("{", "").replace("}", "")
+    return cleaned.replace("\\", r"\{}").replace("\n", r"\N")
 
 
 def _subtitle_char_units(char: str) -> float:
@@ -485,17 +494,46 @@ def _normal_dialogues(
             start = float(cue.get("start") or 0.0)
             end = float(cue.get("end") or 0.0)
             effect = str(cue.get("effect_id") or "none")
-            prefix = (
-                normal_soft_in_tags(x=width // 2, y=max(0, height - margin_v))
-                if effect == "soft_in"
-                else ""
+            prefix = _normal_caption_tags(
+                cue,
+                width=width,
+                height=height,
+                margin_v=margin_v,
+                effect=effect,
             )
             line_starts = [float(value) for value in (cue.get("line_starts") or [])]
-            if len(lines) == 2 and len(line_starts) == 2 and start < line_starts[1] < end:
-                rows.append((start, line_starts[1], prefix + lines[0]))
-                rows.append((line_starts[1], end, "\\N".join(lines)))
-            else:
+            if not lines:
+                continue
+            if len(line_starts) != len(lines):
+                line_starts = [start for _line in lines]
+            line_starts = [max(start, min(end, value)) for value in line_starts]
+            transition_points = sorted({value for value in line_starts[1:] if start < value < end})
+            if not transition_points:
                 rows.append((start, end, prefix + "\\N".join(lines)))
+                continue
+            segment_starts = [start, *transition_points]
+            segment_ends = [*transition_points, end]
+            for segment_index, (segment_start, segment_end) in enumerate(
+                zip(segment_starts, segment_ends)
+            ):
+                visible = [
+                    line
+                    for line, line_start in zip(lines, line_starts)
+                    if line_start <= segment_start + 1e-9
+                ]
+                if visible and segment_end > segment_start:
+                    segment_prefix = (
+                        prefix
+                        if segment_index == 0
+                        else _normal_caption_tags(
+                            cue,
+                            width=width,
+                            height=height,
+                            margin_v=margin_v,
+                            effect="none",
+                        )
+                    )
+                    rows.append((segment_start, segment_end, segment_prefix + "\\N".join(visible)))
         return rows
     for unit in (narration or {}).get("units", []):
         text = ass_escape(
@@ -509,6 +547,60 @@ def _normal_dialogues(
         )
         rows.append((float(unit.get("start", 0) or 0), float(unit.get("end", 0) or 0), text))
     return rows
+
+
+def _normal_caption_tags(
+    cue: dict,
+    *,
+    width: int,
+    height: int,
+    margin_v: int,
+    effect: str,
+) -> str:
+    rect = cue.get("rect")
+    if not isinstance(rect, dict) or not rect:
+        return (
+            normal_soft_in_tags(x=width // 2, y=max(0, height - margin_v))
+            if effect == "soft_in"
+            else ""
+        )
+    align, x, y = _normal_rect_anchor(str(cue.get("text_align") or "center"), rect, width, height)
+    outline, shadow_x, shadow_y = normal_reference_geometry(height=height)
+    # ``rect`` describes the full measured ink envelope, including outline and
+    # the asymmetric right-hand shadow. ASS anchors, however, sit on the glyph
+    # origin: shift them inward so right-aligned shadow pixels (and left-aligned
+    # outline pixels) do not spill beyond the safety box proved by the planner.
+    outline_pad = math.ceil(outline)
+    shadow_pad = math.ceil(shadow_x)
+    if align == 7:
+        x += outline_pad
+    elif align == 9:
+        x -= outline_pad + shadow_pad
+    else:
+        x -= math.ceil(shadow_x / 2.0)
+    motion = (
+        f"\\move({x},{round(y + 14)},{x},{y},0,140)\\fad(120,0)"
+        if effect == "soft_in"
+        else f"\\pos({x},{y})"
+    )
+    return f"{{\\an{align}\\bord{outline:g}\\shad0\\xshad{shadow_x:g}\\yshad{shadow_y:g}{motion}}}"
+
+
+def _normal_rect_anchor(
+    text_align: str, rect: dict, width: int, height: int
+) -> tuple[int, int, int]:
+    """Top-anchored normal-caption position so progressive lines never jump."""
+
+    x = float(rect.get("x") or 0.0)
+    y = float(rect.get("y") or 0.0)
+    w = float(rect.get("w") or 0.0)
+    top_y = int(round(y * height))
+    align = str(text_align or "center").strip().lower()
+    if align == "left":
+        return 7, int(round(x * width)), top_y
+    if align == "right":
+        return 9, int(round((x + w) * width)), top_y
+    return 8, int(round((x + w / 2.0) * width)), top_y
 
 
 def _overlay_text(event: dict[str, Any], subtitle: dict) -> str:

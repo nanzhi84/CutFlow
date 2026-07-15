@@ -18,13 +18,18 @@ class WorkflowEdge(ContractModel):
 class NodeSpec(ContractModel):
     node_id: str
     node_version: str = "v1"
-    input_schema: str
     output_artifact_kinds: list[ArtifactKind]
-    output_artifact_schema_versions: dict[ArtifactKind, str] = Field(default_factory=dict)
     retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
     reuse_policy: Literal["strict", "never"] = "strict"
     side_effects: list[
-        Literal["provider_call", "ledger_commit", "external_upload", "publish_attempt"]
+        Literal[
+            "provider_call",
+            "selection_reservation",
+            "domain_write",
+            "ledger_commit",
+            "external_upload",
+            "publish_attempt",
+        ]
     ] = Field(default_factory=list)
     idempotency_key: str | None = None
 

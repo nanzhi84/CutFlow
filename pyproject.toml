@@ -29,6 +29,9 @@ dependencies = [
   "pysilero-vad>=2.0,<3",
   "jieba>=0.42",
   "fonttools>=4.50",
+  # Required by fontTools to decode WOFF2 uploads before staging a native sfnt
+  # for libass. WOFF itself uses the standard-library zlib path.
+  "brotli>=1.1",
 ]
 
 [project.optional-dependencies]

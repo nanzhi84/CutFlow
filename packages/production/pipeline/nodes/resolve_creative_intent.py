@@ -59,6 +59,18 @@ def run(ctx: NodeContext) -> NodeOutput:
         existing = ctx.repository.artifacts.get(state.request.creative_intent_ref.artifact_id)
         if existing is None:
             raise NodeExecutionError(ErrorCode.artifact_missing, "Creative intent artifact missing.")
+        if existing.kind != ArtifactKind.creative_intent or existing.case_id != run.case_id:
+            raise NodeExecutionError(
+                ErrorCode.artifact_schema_mismatch,
+                "Creative intent artifact kind or case does not match this run.",
+                details={
+                    "artifact_id": existing.id,
+                    "expected_kind": ArtifactKind.creative_intent.value,
+                    "actual_kind": existing.kind.value,
+                    "expected_case_id": run.case_id,
+                    "actual_case_id": existing.case_id,
+                },
+            )
         return NodeOutput(artifacts=[existing], status=NodeStatus.skipped)
     profile = ctx.first_available_provider_profile("llm.chat", include_sandbox=False)
     if profile is None:

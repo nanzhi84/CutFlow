@@ -25,6 +25,7 @@ from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._provider_recovery import reject_unrecoverable_provider_error
 from packages.production.pipeline._run_state import degradation_notice
 from packages.production.pipeline._speech_timing import (
+    assign_token_ownership,
     estimated_timing_for_script,
     normalize_timing_for_script,
 )
@@ -36,7 +37,9 @@ def run(ctx: NodeContext) -> NodeOutput:
     run = ctx.run
     node_run = ctx.node_run
     tts = state.require(ArtifactKind.audio_tts)
-    duration = float(tts.media_info.duration_sec if tts.media_info and tts.media_info.duration_sec else 1)
+    duration = float(
+        tts.media_info.duration_sec if tts.media_info and tts.media_info.duration_sec else 1
+    )
 
     def estimated_output(
         *,
@@ -59,6 +62,14 @@ def run(ctx: NodeContext) -> NodeOutput:
                     confidence=0.5,
                 )
             ]
+        estimated_tokens = assign_token_ownership(
+            estimated_timing_for_script(
+                state.request.script,
+                duration=duration,
+            ).tokens,
+            script=state.request.script,
+            units=list(units),
+        )
         alignment = AlignmentArtifact(
             audio_artifact_id=tts.id,
             segments=[
@@ -70,10 +81,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                 )
                 for unit in units
             ],
-            tokens=estimated_timing_for_script(
-                state.request.script,
-                duration=duration,
-            ).tokens,
+            tokens=estimated_tokens,
             source="estimated",
             diagnostics={"token_matched": 0, "char_fallback": len(state.request.script)},
         )
@@ -112,6 +120,11 @@ def run(ctx: NodeContext) -> NodeOutput:
         warnings: list[WarningCode] | None = None,
         degradations: list[DegradationNotice] | None = None,
     ) -> NodeOutput:
+        owned_tokens = assign_token_ownership(
+            list(tokens or []),
+            script=state.request.script,
+            units=list(units),
+        )
         alignment = AlignmentArtifact(
             audio_artifact_id=tts.id,
             segments=[
@@ -123,7 +136,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                 )
                 for unit in units
             ],
-            tokens=tokens or [],
+            tokens=owned_tokens,
             source=source,
             diagnostics=diagnostics or {},
         )
@@ -187,10 +200,7 @@ def run(ctx: NodeContext) -> NodeOutput:
         segments, tokens, diagnostics = [], [], {}
     if segments:
         units = ctx.narration_units_from_segments(
-            [
-                {"text": item.text, "start": item.start, "end": item.end}
-                for item in segments
-            ],
+            [{"text": item.text, "start": item.start, "end": item.end} for item in segments],
             duration,
             script=state.request.script,
         )
@@ -231,7 +241,11 @@ def run(ctx: NodeContext) -> NodeOutput:
                 error_code = (
                     invocation.error.code.value
                     if invocation.error and hasattr(invocation.error.code, "value")
-                    else str(invocation.error.code if invocation.error else ErrorCode.provider_remote_failed.value)
+                    else str(
+                        invocation.error.code
+                        if invocation.error
+                        else ErrorCode.provider_remote_failed.value
+                    )
                 )
                 degradation = DegradationNotice(
                     code=WarningCode.timestamp_estimated,
@@ -272,10 +286,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                 degradations=[_estimated_degradation(ctx, "asr_timing_invalid", invocation.id)],
             )
         units = ctx.narration_units_from_segments(
-            [
-                {"text": item.text, "start": item.start, "end": item.end}
-                for item in segments
-            ],
+            [{"text": item.text, "start": item.start, "end": item.end} for item in segments],
             duration,
             script=state.request.script,
         )

@@ -20,7 +20,8 @@ PORTRAIT_UNIQUENESS_RULE = (
 )
 BROLL_INSERT_UNIQUENESS_RULE = (
     "当前是 insert 模式：除 candidate_id 不得重复外，非空 asset_id 与 diversity_key "
-    "也都必须全局唯一；选择前请根据候选表中的 diversity_key 主动避开同类素材。"
+    "也都必须全局唯一；时间重叠的 broll_slot 不能同时选择；选择前请根据候选表中的 "
+    "diversity_key 和 conflicts_with_slot_ids 主动避开冲突。"
 )
 BROLL_FULL_COVERAGE_UNIQUENESS_RULE = (
     "当前是 full_coverage 模式：candidate_id 仍不得重复；为保证逐窗覆盖，"
@@ -217,6 +218,37 @@ def _required_frames(slot: dict) -> int:
     )
 
 
+def _slot_frame_bounds(slot: dict) -> tuple[int, int]:
+    return (
+        int(slot.get("start_frame", 0) or 0),
+        int(slot.get("end_frame", 0) or 0),
+    )
+
+
+def _overlapping_slot_id(
+    slot: dict,
+    occupied: list[tuple[str, int, int]],
+) -> str:
+    start_frame, end_frame = _slot_frame_bounds(slot)
+    for slot_id, occupied_start, occupied_end in occupied:
+        if start_frame < occupied_end and end_frame > occupied_start:
+            return slot_id
+    return ""
+
+
+def _annotate_broll_slot_conflicts(slots: list[dict]) -> None:
+    for slot in slots:
+        slot_id = _as_str(slot.get("slot_id"))
+        start_frame, end_frame = _slot_frame_bounds(slot)
+        slot["conflicts_with_slot_ids"] = [
+            _as_str(other.get("slot_id"))
+            for other in slots
+            if _as_str(other.get("slot_id")) != slot_id
+            and start_frame < _slot_frame_bounds(other)[1]
+            and end_frame > _slot_frame_bounds(other)[0]
+        ]
+
+
 def _topk(slot: dict, retrieval: dict[str, list[str]] | None) -> list[str]:
     if retrieval is None:
         return []
@@ -277,6 +309,7 @@ def build_media_agent_input(
         if _has_retrieval_constraint(slot, retrieval_topk_by_window):
             payload["retrieval_topk_candidate_ids"] = _topk(slot, retrieval_topk_by_window)
         broll_slots.append(payload)
+    _annotate_broll_slot_conflicts(broll_slots)
     full_coverage = request.broll.enabled and request.broll.mode == "full_coverage"
     return {
         "script": request.script,
@@ -290,9 +323,7 @@ def build_media_agent_input(
         else 0,
         "portrait_uniqueness_rule": PORTRAIT_UNIQUENESS_RULE,
         "broll_uniqueness_rule": (
-            BROLL_FULL_COVERAGE_UNIQUENESS_RULE
-            if full_coverage
-            else BROLL_INSERT_UNIQUENESS_RULE
+            BROLL_FULL_COVERAGE_UNIQUENESS_RULE if full_coverage else BROLL_INSERT_UNIQUENESS_RULE
         ),
         "narration_units": [
             {
@@ -347,6 +378,7 @@ def validate_media_selection(
     *,
     boundary: dict,
     candidates: MediaCandidates,
+    max_inserts: int | None = None,
     retrieval_topk_by_window: dict[str, list[str]] | None = None,
     allow_broll_asset_diversity_reuse: bool = False,
     require_broll_coverage: bool = False,
@@ -413,6 +445,11 @@ def validate_media_selection(
     used_candidates: set[str] = set()
     used_broll_assets: set[str] = set()
     used_diversity: set[str] = set()
+    occupied_broll_slots: list[tuple[str, int, int]] = []
+    if max_inserts is not None and len(selection.broll) > max(0, max_inserts):
+        errors.append(
+            f"broll choices exceed max_inserts: {len(selection.broll)} > {max(0, max_inserts)}"
+        )
     for choice in selection.broll:
         slot = broll_slots.get(choice.slot_id)
         if slot is None:
@@ -422,6 +459,16 @@ def validate_media_selection(
             errors.append(f"broll slot '{choice.slot_id}' is assigned more than once")
             continue
         seen_broll_slots.add(choice.slot_id)
+        overlapping_slot_id = _overlapping_slot_id(slot, occupied_broll_slots)
+        if overlapping_slot_id:
+            start_frame, end_frame = _slot_frame_bounds(slot)
+            other = broll_slots[overlapping_slot_id]
+            other_start, other_end = _slot_frame_bounds(other)
+            errors.append(
+                f"broll slots '{overlapping_slot_id}' and '{choice.slot_id}' overlap at frames "
+                f"{max(other_start, start_frame)}-{min(other_end, end_frame)}"
+            )
+        occupied_broll_slots.append((choice.slot_id, *_slot_frame_bounds(slot)))
         candidate = candidates.broll_by_id.get(choice.candidate_id)
         if candidate is None:
             errors.append(f"broll candidate_id '{choice.candidate_id}' is unknown")
@@ -519,9 +566,12 @@ def deterministic_media_selection(
     used_candidates: set[str] = set()
     used_assets: set[str] = set()
     used_diversity: set[str] = set()
+    occupied_broll_slots: list[tuple[str, int, int]] = []
     for slot in boundary.get("broll_slots") or []:
         if len(broll) >= max(0, max_inserts) or not isinstance(slot, dict):
             break
+        if _overlapping_slot_id(slot, occupied_broll_slots):
+            continue
         pool = (
             _topk(slot, retrieval_topk_by_window)
             if _has_retrieval_constraint(slot, retrieval_topk_by_window)
@@ -551,6 +601,7 @@ def deterministic_media_selection(
                     reason="deterministic coverage",
                 )
             )
+            occupied_broll_slots.append((_as_str(slot.get("slot_id")), *_slot_frame_bounds(slot)))
             break
     return MediaSelection(
         portrait=portrait,
@@ -579,6 +630,7 @@ def repair_media_selection_to_constraints(
                 selection,
                 boundary=boundary,
                 candidates=candidates,
+                max_inserts=max_inserts,
                 retrieval_topk_by_window=retrieval_topk_by_window,
                 allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
                 require_broll_coverage=require_broll_coverage,
@@ -614,6 +666,7 @@ def repair_media_selection_to_constraints(
         repaired,
         boundary=boundary,
         candidates=candidates,
+        max_inserts=max_inserts,
         retrieval_topk_by_window=retrieval_topk_by_window,
         allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
         require_broll_coverage=require_broll_coverage,
@@ -726,6 +779,7 @@ def _repair_broll_choices(
     used_candidates: set[str] = set()
     used_assets: set[str] = set()
     used_diversity: set[str] = set()
+    occupied_slots: list[tuple[str, int, int]] = []
     repaired: list[BrollChoice] = []
     actions: list[dict] = []
 
@@ -796,6 +850,19 @@ def _repair_broll_choices(
                 }
             )
             continue
+        overlapping_slot_id = _overlapping_slot_id(slot, occupied_slots)
+        if overlapping_slot_id:
+            used_slots.add(choice.slot_id)
+            actions.append(
+                {
+                    "kind": "broll",
+                    "slot_id": choice.slot_id,
+                    "original_candidate_id": choice.candidate_id,
+                    "action": "dropped",
+                    "reason": f"timeline overlap with slot '{overlapping_slot_id}'",
+                }
+            )
+            continue
         replacement_id = next(
             (
                 candidate_id
@@ -817,6 +884,7 @@ def _repair_broll_choices(
             )
             continue
         _reserve(replacement_id)
+        occupied_slots.append((choice.slot_id, *_slot_frame_bounds(slot)))
         repaired.append(
             BrollChoice(
                 slot_id=choice.slot_id,
@@ -841,6 +909,8 @@ def _repair_broll_choices(
         for slot_id, slot in slots.items():
             if slot_id in used_slots or len(repaired) >= max(0, max_inserts):
                 continue
+            if _overlapping_slot_id(slot, occupied_slots):
+                continue
             candidate_id = next(
                 (candidate_id for candidate_id in _pool(slot) if _usable(candidate_id, slot)),
                 "",
@@ -849,6 +919,7 @@ def _repair_broll_choices(
                 continue
             _reserve(candidate_id)
             used_slots.add(slot_id)
+            occupied_slots.append((slot_id, *_slot_frame_bounds(slot)))
             repaired.append(
                 BrollChoice(
                     slot_id=slot_id,
@@ -896,6 +967,7 @@ def select_media_with_repair(
             selection,
             boundary=boundary,
             candidates=candidates,
+            max_inserts=max_inserts,
             retrieval_topk_by_window=retrieval_topk_by_window,
             allow_broll_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
             require_broll_coverage=require_broll_coverage,

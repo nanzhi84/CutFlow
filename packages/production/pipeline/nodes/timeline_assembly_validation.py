@@ -154,7 +154,11 @@ def run(ctx: NodeContext) -> NodeOutput:
 
     validation = validate_timeline(raw_segments, fps, total_frames)
     if not validation.valid:
-        raise NodeExecutionError(ErrorCode.render_invalid_timeline, "Timeline validation failed.")
+        raise NodeExecutionError(
+            ErrorCode.render_invalid_timeline,
+            "Timeline validation failed.",
+            details={"checks": validation.checks},
+        )
 
     tracks = build_tracks(raw_segments, fps)
     return timeline_output(ctx, fps=fps, total_frames=total_frames, tracks=tracks, validation=validation)

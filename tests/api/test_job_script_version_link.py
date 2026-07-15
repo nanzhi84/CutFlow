@@ -81,6 +81,19 @@ def _source_artifact(artifact_id: str = "art_source") -> c.Artifact:
     )
 
 
+def _creative_intent_artifact(
+    artifact_id: str = "art_creative_intent", *, case_id: str = "case_demo"
+) -> c.Artifact:
+    return c.Artifact(
+        id=artifact_id,
+        case_id=case_id,
+        kind=c.ArtifactKind.creative_intent,
+        uri=f"artifact://{artifact_id}",
+        payload_schema="CreativeIntentArtifact.v1",
+        payload={"intent": {"hook": "开场", "beats": ["卖点"]}, "emphasis": []},
+    )
+
+
 # --- _link_adopted_script (job-creation seam) ---------------------------------
 
 
@@ -207,6 +220,37 @@ def test_validate_job_request_before_start_rejects_stale_seedance_request() -> N
 
     assert exc.value.error.code == c.ErrorCode.validation_invalid_options
     assert "asset_missing" in exc.value.error.message
+
+
+def test_validate_creative_intent_ref_accepts_matching_case_and_kind() -> None:
+    repo = Repository()
+    artifact = _creative_intent_artifact()
+    repo.artifacts[artifact.id] = artifact
+    payload = _request("case_demo", None).model_copy(
+        update={"creative_intent_ref": repo.artifact_ref(artifact.id)}
+    )
+
+    jobs_runs._validate_creative_intent_ref(_fake_request(repo), payload)
+
+
+@pytest.mark.parametrize("failure", ["declared_kind", "actual_kind", "case_id"])
+def test_validate_creative_intent_ref_rejects_invalid_reference(failure: str) -> None:
+    repo = Repository()
+    artifact = _creative_intent_artifact(
+        case_id="case_other" if failure == "case_id" else "case_demo"
+    )
+    if failure == "actual_kind":
+        artifact = artifact.model_copy(update={"kind": c.ArtifactKind.uploaded_file})
+    repo.artifacts[artifact.id] = artifact
+    ref = repo.artifact_ref(artifact.id)
+    if failure == "declared_kind":
+        ref = ref.model_copy(update={"kind": c.ArtifactKind.uploaded_file})
+    payload = _request("case_demo", None).model_copy(update={"creative_intent_ref": ref})
+
+    with pytest.raises(NodeExecutionError) as exc:
+        jobs_runs._validate_creative_intent_ref(_fake_request(repo), payload)
+
+    assert exc.value.error.code == c.ErrorCode.validation_invalid_options
 
 
 # --- _resolve_script_version (run-completion seam) ----------------------------
