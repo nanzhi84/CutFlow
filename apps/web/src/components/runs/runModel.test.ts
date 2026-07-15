@@ -8,6 +8,16 @@ function node(node_id: string, status = "succeeded"): NodeRun {
 }
 
 describe("timeline assembly node naming", () => {
+  it("keeps the two active caption clean-slate sequences at 19 and 20 nodes", () => {
+    const main = buildNodeTimeline("digital_human_v2", [], "failed");
+    const agent = buildNodeTimeline("digital_human_editing_agent_v2", [], "failed");
+
+    expect(main).toHaveLength(19);
+    expect(agent).toHaveLength(20);
+    expect(main.map((item) => item.nodeId)).not.toContain("BgmAgentPlanning");
+    expect(agent.map((item) => item.nodeId)).toContain("BgmAgentPlanning");
+    expect(main.map((item) => item.nodeId)).toContain("CaptionCompositionPlanning");
+  });
   it("uses the assembly-validation name for active templates", () => {
     const items = buildNodeTimeline("digital_human_v2", [], "failed");
 
@@ -16,15 +26,11 @@ describe("timeline assembly node naming", () => {
     expect(nodeLabel("TimelineAssemblyValidation")).toBe("组装并校验时间线");
   });
 
-  it("folds a historical TimelinePlanning run into the renamed active node", () => {
+  it("shows a removed historical node by its stored raw id", () => {
     const historical = node("TimelinePlanning");
     const items = buildNodeTimeline("digital_human_v2", [historical], "failed");
-    const assemblyItems = items.filter(
-      (item) => item.nodeId === "TimelineAssemblyValidation",
-    );
-
-    expect(assemblyItems).toHaveLength(1);
-    expect(assemblyItems[0]?.node).toBe(historical);
-    expect(items.some((item) => item.nodeId === "TimelinePlanning")).toBe(false);
+    expect(items.find((item) => item.nodeId === "TimelineAssemblyValidation")?.node).toBeUndefined();
+    expect(items.find((item) => item.nodeId === "TimelinePlanning")?.node).toBe(historical);
+    expect(nodeLabel("TimelinePlanning")).toBe("TimelinePlanning");
   });
 });

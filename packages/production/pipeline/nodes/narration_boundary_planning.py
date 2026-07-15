@@ -6,7 +6,7 @@ semantic + audio-pause safe-cut boundaries, and emits a frame-quantized
 ``plan.narration_boundary`` artifact.
 
 This is the ONE node that reads ``audio_tts`` for pause detection: TimelineWindowPlanning
-and EditingAgentPlanning consume ``pause_windows`` from this artifact instead of
+and downstream editing planning consumes ``pause_windows`` from this artifact instead of
 re-running ffmpeg. The boundary assembly is the same pure planning function packing
 uses internally, so portrait frame boundaries are unchanged — this node only front-moves
 the "where can we safely cut" responsibility, it does not fill any slot.

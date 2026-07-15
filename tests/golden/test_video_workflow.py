@@ -25,6 +25,7 @@ from packages.core.workflow import NodeExecutionError
 from packages.media.assets import local_object_path
 from packages.media.video.ffmpeg import probe_media, probe_stream_types, probe_video_frame_count
 from packages.production.pipeline import digital_human
+from tests.golden._caption_font_fixture import register_default_caption_fonts
 
 
 def login_admin_for(active_client):
@@ -48,6 +49,7 @@ def fresh_client():
     golden run accumulates live pools and deadlocks against that TRUNCATE.
     """
     app = create_app()
+    register_default_caption_fonts(app)
     # Do NOT enter the TestClient lifespan: app.state is fully configured at build
     # time. Entering would re-run bootstrap_sqlalchemy_storage (a full seed_database
     # merge over users/registration_codes/provider_profiles/media_assets) on every
@@ -434,8 +436,6 @@ def test_spec_20_2_6_lipsync_timeout_can_resume_reusing_valid_prefix():
         }
         if "DeterministicEditingPlanning" in node_ids:
             expected_skipped.add("DeterministicEditingPlanning")
-        if "EditingAgentPlanning" in node_ids:
-            expected_skipped.add("EditingAgentPlanning")
         assert expected_skipped <= set(skipped)
         assert "LipSync" not in skipped
         artifact_by_id = {artifact["artifact_id"]: artifact for artifact in detail["artifacts"]}
@@ -728,8 +728,12 @@ def test_spec_20_2_10_editor_handoff_and_jianying_draft_exports_have_package_art
             draft_name = jianying_body["draft_manifest"]["draft_name"]
             content = json.loads(archive.read(f"{draft_name}/draft_content.json").decode("utf-8"))
         tracks = {track["name"]: track for track in content["tracks"]}
-        assert {"主视频", "旁白", "字幕"} <= set(tracks)
-        assert len(tracks["字幕"]["segments"]) == jianying_body["draft_manifest"]["tracks_summary"]["subtitle_segments"]
+        assert {"主视频", "旁白"} <= set(tracks)
+        subtitle_tracks = [track for name, track in tracks.items() if name.startswith("字幕-")]
+        assert subtitle_tracks
+        assert sum(len(track["segments"]) for track in subtitle_tracks) == (
+            jianying_body["draft_manifest"]["tracks_summary"]["subtitle_segments"]
+        )
 
 
 def test_pipeline_writes_typed_artifact_payloads_with_frame_quantized_timeline():

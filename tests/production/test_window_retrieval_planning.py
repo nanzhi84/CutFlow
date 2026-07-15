@@ -48,11 +48,11 @@ from packages.planning.material import (
     extract_keywords,
 )
 from packages.production.pipeline import nodes
-from packages.production.pipeline._editing_agent import (
+from packages.production.pipeline._media_selection_agent import (
     BrollChoice,
-    EditingSelection,
-    index_candidates,
-    validate_selection,
+    MediaSelection,
+    index_media_candidates,
+    validate_media_selection,
 )
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState
@@ -915,7 +915,7 @@ def test_window_material_retrieval_uses_material_pack_pool_and_sql_hnsw_index(
         for item in query_artifact.payload["window_queries"]
         if item["window_id"] == "bwin_000"
     )
-    indexed = index_candidates(material)
+    indexed = index_media_candidates(material)
     broll_a = indexed.broll_by_id["bc_000"]
     record = build_clip_embedding_record(
         candidate=broll_a,
@@ -962,7 +962,7 @@ def test_window_material_retrieval_uses_material_pack_pool_and_sql_hnsw_index(
 def test_window_material_retrieval_rejects_partial_full_coverage_candidates(tmp_path):
     adapter = _adapter(tmp_path)
     material = _stitched_material()
-    candidates = index_candidates(material)
+    candidates = index_media_candidates(material)
     diagnostics = {"rejected_candidates": []}
 
     eligible = nodes.window_material_retrieval._eligible_candidates(
@@ -1043,7 +1043,7 @@ def test_window_material_retrieval_run_requires_single_full_coverage_candidate(
     query_output = nodes.window_query_planning.run(query_ctx)
     query_artifact = query_output.artifacts[0]
     broll_intent = query_artifact.payload["window_queries"][0]["retrieval_intent"]
-    indexed = index_candidates(material)
+    indexed = index_media_candidates(material)
     for candidate_id in ("bc_002",):
         candidate = indexed.broll_by_id[candidate_id]
         record = build_clip_embedding_record(
@@ -2020,12 +2020,12 @@ def test_timeline_assembly_validation_rejects_full_coverage_stitching_gaps(tmp_p
     ]
 
 
-def test_agent_validator_rejects_broll_choice_outside_window_topk():
-    candidates = index_candidates(_material())
-    selection = EditingSelection(
+def test_media_agent_validator_rejects_broll_choice_outside_window_topk():
+    candidates = index_media_candidates(_material())
+    selection = MediaSelection(
         broll=[BrollChoice(slot_id="bwin_000", candidate_id="bc_001")]
     )
-    errors = validate_selection(
+    errors = validate_media_selection(
         selection,
         boundary={
             "portrait_slots": [],
@@ -2038,14 +2038,13 @@ def test_agent_validator_rejects_broll_choice_outside_window_topk():
             ],
         },
         candidates=candidates,
-        bgm_enabled=False,
         retrieval_topk_by_window={"bwin_000": ["bc_000"]},
     )
 
-    assert any("retrieval_topk_candidate_ids" in error for error in errors)
+    assert any("is not legal for slot" in error for error in errors)
 
 
-def test_editing_agent_fallback_fails_when_retrieval_topk_cannot_cover_portrait_slots(
+def test_media_selection_agent_fallback_fails_when_retrieval_topk_cannot_cover_portrait_slots(
     tmp_path,
 ):
     adapter = _adapter(tmp_path)
@@ -2082,7 +2081,7 @@ def test_editing_agent_fallback_fails_when_retrieval_topk_cannot_cover_portrait_
     }
     ctx = _ctx(
         adapter,
-        "EditingAgentPlanning",
+        "MediaSelectionAgentPlanning",
         {
             ArtifactKind.plan_material_pack: _artifact(ArtifactKind.plan_material_pack, _material()),
             ArtifactKind.plan_narration_boundary: _artifact(
@@ -2103,13 +2102,13 @@ def test_editing_agent_fallback_fails_when_retrieval_topk_cannot_cover_portrait_
     )
 
     with pytest.raises(NodeExecutionError) as exc:
-        nodes.editing_agent_planning.run(ctx)
+        nodes.media_selection_agent_planning.run(ctx)
 
     assert exc.value.error.code == ErrorCode.material_insufficient_portrait
-    assert any(
-        "portrait slots not covered: pwin_001" in error
-        for error in exc.value.error.details["errors"]
-    )
+    assert exc.value.error.details["failed_slot_ids"] == ["pwin_001"]
+    assert exc.value.error.details["prompt_candidate_domains"]["portrait"][
+        "unmatched_slot_ids"
+    ] == ["pwin_001"]
 
 
 class _CountingSandbox:
@@ -2216,7 +2215,7 @@ def _seed_broll_embedding_for_window(db_session_factory, adapter, query_artifact
         if item["window_id"] == window_id
     )
     record = build_clip_embedding_record(
-        candidate=index_candidates(_material()).broll_by_id["bc_000"],
+        candidate=index_media_candidates(_material()).broll_by_id["bc_000"],
         asset=adapter.repository.media_assets["broll_a"],
         namespace="broll",
         provider_profile_id="sandbox.embedding.default",

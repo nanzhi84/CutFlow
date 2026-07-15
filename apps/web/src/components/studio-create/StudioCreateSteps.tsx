@@ -11,7 +11,7 @@ import {
   Volume2,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type MediaAssetRecord } from "../../api/client";
 import { FontFaceStyle } from "../library/FontFaceStyle";
@@ -21,11 +21,11 @@ import {
   SUBTITLE_PREVIEW_OUTPUT_HEIGHT,
   SUBTITLE_PREVIEW_OUTPUT_WIDTH,
   SUBTITLE_PREVIEW_WIDTH,
+  CAPTION_POLICY,
   contentModeLabel,
-  effectiveHuaziEnabled,
+  effectiveEmphasisEnabled,
   emotionOptions,
-  subtitlePreviewCssFontSize,
-  subtitlePreviewCssOutlineWidth,
+  subtitlePreviewSvgFontSize,
   supportsEmphasisCaption,
   visualModeLabel,
   type FormState,
@@ -54,7 +54,7 @@ function shortAssetId(assetId: string) {
 
 type SubtitleFontLabels = {
   normal: string;
-  huazi: string;
+  emphasis: string;
 };
 
 function fontLabelFor(fonts: MediaAssetRecord[], fontId: string, fallback: string) {
@@ -70,42 +70,41 @@ function useSubtitleFontLabels(form: FormState): SubtitleFontLabels {
     enabled:
       form.contentMode !== "seedance" &&
       subtitleLayersEnabled(form) &&
-      (Boolean(form.subtitleFontId) || Boolean(form.huaziFontId)),
+      (Boolean(form.subtitleFontId) || Boolean(form.emphasisFontId)),
   });
   const fonts = (fontsQuery.data?.items ?? []).map((item) => item.asset);
   const normal = fontLabelFor(fonts, form.subtitleFontId, "默认字体");
   return {
     normal,
-    huazi: form.huaziFontId ? fontLabelFor(fonts, form.huaziFontId, "默认字体") : normal,
+    emphasis: form.emphasisFontId ? fontLabelFor(fonts, form.emphasisFontId, "默认字体") : normal,
   };
 }
 
 function subtitleLayersEnabled(form: FormState) {
-  return form.normalSubtitleEnabled || effectiveHuaziEnabled(form);
+  return form.normalSubtitleEnabled || effectiveEmphasisEnabled(form);
 }
 
 function captionConfigSummary(form: FormState, fontLabels: SubtitleFontLabels) {
   const parts = [];
   if (form.normalSubtitleEnabled) parts.push(`正文 ${fontLabels.normal} ${form.subtitleSize}px`);
-  if (effectiveHuaziEnabled(form)) parts.push(`花字 ${fontLabels.huazi} ${form.huaziSize}px`);
+  if (effectiveEmphasisEnabled(form)) parts.push(`字幕内强调 ${fontLabels.emphasis} ${form.emphasisSize}px`);
   return parts.length > 0 ? parts.join(" / ") : "关闭";
 }
 
 const normalCaptionPreviewStyle = {
-  fontWeight: 700,
+  fontWeight: 400,
   color: "#FFFFFF",
   outlineColor: "#000000",
   outline: 4,
 };
 
-const huaziCaptionPreviewStyle = {
-  fontWeight: 700,
+const emphasisCaptionPreviewStyle = {
+  fontWeight: 400,
   outlineColor: "#000000",
   outline: 4,
 };
 
-const huaziColorOptions = ["#FFE84A", "#FF5C5C", "#38D9A9", "#4DABF7", "#FFFFFF"] as const;
-const subtitlePreviewSafeWidthPercent = 85;
+const emphasisColorOptions = ["#FFE84A", "#FF5C5C", "#38D9A9", "#4DABF7", "#FFFFFF"] as const;
 
 export function ScriptStep({
   form,
@@ -146,7 +145,7 @@ export function ScriptStep({
 export function TemplateStep({ form, setField, caseId }: { form: FormState; setField: SetField; caseId: string }) {
   const contentModeOptions: Array<{ value: FormState["contentMode"]; label: string; detail: string }> = [
     { value: "deterministic", label: "确定算法剪辑", detail: "规则算法按脚本、时间线和案例素材稳定规划人像 / B-roll，并完成普通字幕与 BGM。" },
-    { value: "editing_agent", label: "Agent智能剪辑", detail: "媒体 Agent 选择人像 / B-roll；成片后由独立后处理 Agent 选择花字表现与 BGM。" },
+    { value: "editing_agent", label: "Agent智能剪辑", detail: "媒体 Agent 选择人像 / B-roll，独立 BGM Agent 只选择配乐；字幕由固定字幕带确定性编排。" },
     { value: "seedance", label: "seedance文生视频", detail: "一次性生成 15s / 3:4 / 720p 短片，可纯文本出片，也可附参考图。" },
   ];
   const isDeterministic = form.contentMode === "deterministic";
@@ -186,12 +185,12 @@ export function TemplateStep({ form, setField, caseId }: { form: FormState; setF
             onChange={(event) => setField("editInstruction", event.target.value)}
           />
           <span className="text-xs text-text-secondary">
-            剪辑 Agent 会在生成这条视频时参考它，统一规划人像 / B-roll / 花字表现 / BGM；留空则按通用最佳实践。
+            剪辑 Agent 会在生成这条视频时参考它来选择人像 / B-roll；字幕内强调由脚本语义与固定算法编排，BGM 由独立 Agent 选择。
           </span>
         </label>
       ) : isDeterministic ? (
         <div className="stateBox muted">
-          <span>确定算法剪辑会用规则算法稳定选择人像、B-roll、花字和 BGM。</span>
+          <span>确定算法剪辑会用规则稳定选择人像、B-roll、固定字幕带与 BGM。</span>
         </div>
       ) : null}
     </div>
@@ -312,7 +311,7 @@ export function ProductionStep({
 export function PostProcessStep({ form, setField }: { form: FormState; setField: SetField }) {
   const subtitleEnabled = subtitleLayersEnabled(form);
   const emphasisConfigurable = supportsEmphasisCaption(form.contentMode);
-  const huaziVisible = effectiveHuaziEnabled(form);
+  const emphasisVisible = effectiveEmphasisEnabled(form);
   const fontsQuery = useQuery({
     queryKey: ["studio-create", "font-assets"],
     queryFn: () => api.mediaAssets.list({ limit: 200, kind: "font" }),
@@ -323,9 +322,9 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
     [fontsQuery.data?.items],
   );
   const selectedSubtitleFont = fonts.find((font) => font.id === form.subtitleFontId) ?? null;
-  const selectedHuaziFont = form.huaziFontId ? fonts.find((font) => font.id === form.huaziFontId) ?? null : null;
+  const selectedEmphasisFont = form.emphasisFontId ? fonts.find((font) => font.id === form.emphasisFontId) ?? null : null;
   const subtitlePreviewUrl = useFontPreviewUrl(selectedSubtitleFont);
-  const huaziPreviewUrl = useFontPreviewUrl(selectedHuaziFont);
+  const emphasisPreviewUrl = useFontPreviewUrl(selectedEmphasisFont);
 
   if (form.contentMode === "seedance") {
     return (
@@ -348,9 +347,10 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
         />
         {emphasisConfigurable ? (
           <CompactToggle
-            checked={form.huaziEnabled}
-            onChange={(checked) => setField("huaziEnabled", checked)}
-            label="花字"
+            checked={form.emphasisEnabled}
+            onChange={(checked) => setField("emphasisEnabled", checked)}
+            label="字幕内强调"
+            disabled={!form.normalSubtitleEnabled}
           />
         ) : null}
       </div>
@@ -405,15 +405,15 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
                   </label>
                 </section>
               ) : null}
-              {huaziVisible ? (
+              {emphasisVisible ? (
                 <section className="grid gap-2" aria-labelledby="emphasis-caption-style-heading">
                   <h3 id="emphasis-caption-style-heading" className="text-xs font-semibold text-text-tertiary">
-                    花字
+                    强调文字
                   </h3>
                   <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_92px]">
                     <label>
                       <span>字体</span>
-                      <select value={form.huaziFontId} onChange={(event) => setField("huaziFontId", event.target.value)}>
+                      <select value={form.emphasisFontId} onChange={(event) => setField("emphasisFontId", event.target.value)}>
                         <option value="">跟随普通字幕</option>
                         {fonts.map((font) => (
                           <option value={font.id} key={font.id}>
@@ -428,34 +428,34 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
                         type="number"
                         min={12}
                         max={120}
-                        value={form.huaziSize}
-                        onChange={(event) => setField("huaziSize", Number(event.target.value))}
+                        value={form.emphasisSize}
+                        onChange={(event) => setField("emphasisSize", Number(event.target.value))}
                       />
                     </label>
                   </div>
                   <label>
                     <span>颜色</span>
                     <div className="flex flex-wrap items-center gap-2 py-1 pl-1">
-                      {huaziColorOptions.map((color) => (
+                      {emphasisColorOptions.map((color) => (
                         <button
                           type="button"
                           key={color}
-                          aria-label={`花字颜色 ${color}`}
-                          onClick={() => setField("huaziColor", color)}
+                          aria-label={`强调颜色 ${color}`}
+                          onClick={() => setField("emphasisColor", color)}
                           className={`h-8 w-8 rounded-full border shadow-sm transition ${
-                            form.huaziColor.toUpperCase() === color ? "border-accent ring-2 ring-accent/25" : "border-border/70"
+                            form.emphasisColor.toUpperCase() === color ? "border-accent ring-2 ring-accent/25" : "border-border/70"
                           }`}
                           style={{ backgroundColor: color }}
                         />
                       ))}
                       <input
                         type="color"
-                        value={form.huaziColor}
-                        onChange={(event) => setField("huaziColor", event.target.value.toUpperCase())}
+                        value={form.emphasisColor}
+                        onChange={(event) => setField("emphasisColor", event.target.value.toUpperCase())}
                         className="h-8 w-10 cursor-pointer rounded-md border border-border/70 bg-white p-1"
-                        aria-label="自定义花字颜色"
+                        aria-label="自定义强调颜色"
                       />
-                      <span className="font-mono text-xs text-text-secondary">{form.huaziColor.toUpperCase()}</span>
+                      <span className="font-mono text-xs text-text-secondary">{form.emphasisColor.toUpperCase()}</span>
                     </div>
                   </label>
                 </section>
@@ -476,14 +476,14 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
             form={form}
             selectedSubtitleFont={selectedSubtitleFont}
             subtitlePreviewUrl={subtitlePreviewUrl}
-            selectedHuaziFont={selectedHuaziFont}
-            huaziPreviewUrl={huaziPreviewUrl}
+            selectedEmphasisFont={selectedEmphasisFont}
+            emphasisPreviewUrl={emphasisPreviewUrl}
           />
         </div>
       ) : (
         <div className="stateBox muted">
           <Captions className="h-4 w-4" />
-          <span>未启用字幕或花字。</span>
+          <span>未启用字幕。</span>
         </div>
       )}
       <div className="grid gap-3 pt-2 md:grid-cols-2">
@@ -605,27 +605,42 @@ function CaptionPreview({
   form,
   selectedSubtitleFont,
   subtitlePreviewUrl,
-  selectedHuaziFont,
-  huaziPreviewUrl,
+  selectedEmphasisFont,
+  emphasisPreviewUrl,
 }: {
   form: FormState;
   selectedSubtitleFont: MediaAssetRecord | null;
   subtitlePreviewUrl: string | null;
-  selectedHuaziFont: MediaAssetRecord | null;
-  huaziPreviewUrl: string | null;
+  selectedEmphasisFont: MediaAssetRecord | null;
+  emphasisPreviewUrl: string | null;
 }) {
-  const showHuazi = effectiveHuaziEnabled(form);
+  const [previewMode, setPreviewMode] = useState<"inline" | "whole_cue">("inline");
+  const showEmphasis = effectiveEmphasisEnabled(form);
   const normalFamily = selectedSubtitleFont && subtitlePreviewUrl ? fontFamilyName(selectedSubtitleFont.id) : undefined;
-  const huaziFamily = selectedHuaziFont && huaziPreviewUrl ? fontFamilyName(selectedHuaziFont.id) : normalFamily;
+  const emphasisFamily = selectedEmphasisFont && emphasisPreviewUrl ? fontFamilyName(selectedEmphasisFont.id) : normalFamily;
   const normalSize = Math.max(12, Math.min(96, form.subtitleSize));
-  const huaziSize = Math.max(12, Math.min(120, form.huaziSize));
-  const normalPreviewSize = subtitlePreviewCssFontSize(normalSize);
-  const huaziPreviewSize = subtitlePreviewCssFontSize(huaziSize);
+  const emphasisSize = Math.max(12, Math.min(120, form.emphasisSize));
+  const normalPreviewSize = subtitlePreviewSvgFontSize(normalSize);
+  const emphasisPreviewSize = subtitlePreviewSvgFontSize(emphasisSize);
   return (
     <div className="grid gap-2">
       {selectedSubtitleFont && subtitlePreviewUrl ? <FontFaceStyle assetId={selectedSubtitleFont.id} url={subtitlePreviewUrl} /> : null}
-      {selectedHuaziFont && huaziPreviewUrl && selectedHuaziFont.id !== selectedSubtitleFont?.id ? (
-        <FontFaceStyle assetId={selectedHuaziFont.id} url={huaziPreviewUrl} />
+      {selectedEmphasisFont && emphasisPreviewUrl && selectedEmphasisFont.id !== selectedSubtitleFont?.id ? (
+        <FontFaceStyle assetId={selectedEmphasisFont.id} url={emphasisPreviewUrl} />
+      ) : null}
+      {showEmphasis ? (
+        <div className="mx-auto flex rounded-lg bg-surface-hover p-1 text-xs">
+          {(["inline", "whole_cue"] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              className={`rounded-md px-2.5 py-1 ${previewMode === mode ? "bg-white text-text-primary shadow-sm" : "text-text-tertiary"}`}
+              onClick={() => setPreviewMode(mode)}
+            >
+              {mode === "inline" ? "行内强调" : "整句强调"}
+            </button>
+          ))}
+        </div>
       ) : null}
       <div className="mx-auto w-full" style={{ maxWidth: SUBTITLE_PREVIEW_WIDTH }}>
         <div
@@ -633,122 +648,56 @@ function CaptionPreview({
           style={{ aspectRatio: `${SUBTITLE_PREVIEW_OUTPUT_WIDTH} / ${SUBTITLE_PREVIEW_OUTPUT_HEIGHT}` }}
         >
           {form.normalSubtitleEnabled ? (
-            <PreviewText
-              text="这是当前口播字幕预览"
-              style={previewTextStyle({
-                family: normalFamily,
-                color: normalCaptionPreviewStyle.color,
-                outlineColor: normalCaptionPreviewStyle.outlineColor,
-                outline: normalCaptionPreviewStyle.outline,
-                fontWeight: normalCaptionPreviewStyle.fontWeight,
-                fontSize: normalPreviewSize,
-                x: 50,
-                y: form.subtitlePositionY * 100,
-                align: "center",
-                verticalAnchor: "bottom",
-                maxWidth: subtitlePreviewSafeWidthPercent,
-                nowrap: false,
-              })}
-            />
-          ) : null}
-          {showHuazi ? (
-            <PreviewText
-              text="限时五折"
-              style={previewTextStyle({
-                family: huaziFamily,
-                color: form.huaziColor,
-                outlineColor: huaziCaptionPreviewStyle.outlineColor,
-                outline: huaziCaptionPreviewStyle.outline,
-                fontWeight: huaziCaptionPreviewStyle.fontWeight,
-                fontSize: huaziPreviewSize,
-                x: 50,
-                y: 14,
-                align: "center",
-                verticalAnchor: "top",
-                maxWidth: subtitlePreviewSafeWidthPercent,
-                nowrap: true,
-              })}
-            />
+            <svg
+              className="absolute inset-0 h-full w-full"
+              viewBox={`0 0 ${SUBTITLE_PREVIEW_OUTPUT_WIDTH} ${SUBTITLE_PREVIEW_OUTPUT_HEIGHT}`}
+              data-testid="fixed-caption-band-preview"
+              data-anchor-x={CAPTION_POLICY.anchor_x}
+              data-baseline-y={form.subtitlePositionY}
+              data-line-height-ratio={CAPTION_POLICY.line_height_ratio}
+              data-max-width-ratio={CAPTION_POLICY.max_width_ratio}
+            >
+              <text
+                x={CAPTION_POLICY.anchor_x * SUBTITLE_PREVIEW_OUTPUT_WIDTH}
+                y={form.subtitlePositionY * SUBTITLE_PREVIEW_OUTPUT_HEIGHT}
+                textAnchor="middle"
+                data-testid="fixed-caption-band-baseline"
+              >
+                {previewMode === "inline" ? (
+                  <tspan
+                    style={{
+                      fontFamily: normalFamily,
+                      fontSize: normalPreviewSize,
+                      fontWeight: normalCaptionPreviewStyle.fontWeight,
+                      fill: normalCaptionPreviewStyle.color,
+                      stroke: normalCaptionPreviewStyle.outlineColor,
+                      strokeWidth: normalCaptionPreviewStyle.outline,
+                      paintOrder: "stroke fill",
+                    }}
+                  >
+                    高端定制也能
+                  </tspan>
+                ) : null}
+                <tspan
+                  style={showEmphasis ? {
+                    fontFamily: emphasisFamily,
+                    fontSize: emphasisPreviewSize,
+                    fontWeight: emphasisCaptionPreviewStyle.fontWeight,
+                    fill: form.emphasisColor,
+                    stroke: emphasisCaptionPreviewStyle.outlineColor,
+                    strokeWidth: emphasisCaptionPreviewStyle.outline,
+                    paintOrder: "stroke fill",
+                  } : undefined}
+                >
+                  {previewMode === "inline" ? "字幕内强调" : "整句强调仍在固定字幕带"}
+                </tspan>
+              </text>
+            </svg>
           ) : null}
         </div>
       </div>
     </div>
   );
-}
-
-function PreviewText({ text, style }: { text: string; style: CSSProperties }) {
-  return (
-    <span className="absolute block leading-tight" style={style}>
-      {text}
-    </span>
-  );
-}
-
-function previewTextStyle({
-  family,
-  color,
-  outlineColor,
-  outline,
-  fontWeight,
-  fontSize,
-  x,
-  y,
-  align,
-  verticalAnchor,
-  maxWidth,
-  nowrap,
-}: {
-  family?: string;
-  color: string;
-  outlineColor: string;
-  outline: number;
-  fontWeight: number;
-  fontSize: number;
-  x: number;
-  y: number;
-  align: string;
-  verticalAnchor: "top" | "center" | "bottom";
-  maxWidth: number;
-  nowrap: boolean;
-}): CSSProperties {
-  const translateX = align === "left" ? "0" : align === "right" ? "-100%" : "-50%";
-  const translateY =
-    verticalAnchor === "top" ? "0" : verticalAnchor === "bottom" ? "-100%" : "-50%";
-  const renderedFontSize = Math.round(Math.max(4, fontSize) * 10) / 10;
-  const outlineWidth = subtitlePreviewCssOutlineWidth(outline);
-  return {
-    left: `${x}%`,
-    top: `${y}%`,
-    transform: `translate(${translateX}, ${translateY})`,
-    width: `${maxWidth}%`,
-    color,
-    fontFamily: family,
-    fontSize: `${renderedFontSize}px`,
-    fontWeight,
-    textAlign: align as CSSProperties["textAlign"],
-    whiteSpace: nowrap ? "nowrap" : "normal",
-    overflow: "hidden",
-    textOverflow: nowrap ? "ellipsis" : undefined,
-    overflowWrap: "anywhere",
-    wordBreak: "keep-all",
-    textShadow: previewOutlineShadow(outlineColor, outlineWidth),
-    textRendering: "geometricPrecision",
-    WebkitFontSmoothing: "antialiased",
-  };
-}
-
-function previewOutlineShadow(outlineColor: string, outlineWidth: number) {
-  const offset = Math.max(0.3, outlineWidth);
-  return [
-    `${offset}px 0 0 ${outlineColor}`,
-    `-${offset}px 0 0 ${outlineColor}`,
-    `0 ${offset}px 0 ${outlineColor}`,
-    `0 -${offset}px 0 ${outlineColor}`,
-    `${offset}px ${offset}px 0 ${outlineColor}`,
-    `-${offset}px ${offset}px 0 ${outlineColor}`,
-    `${offset}px -${offset}px 0 ${outlineColor}`,
-    `-${offset}px -${offset}px 0 ${outlineColor}`,
-  ].join(", ");
 }
 
 export function SubmitStep({ form, selectedVoiceLabel, scriptCount }: { form: FormState; selectedVoiceLabel: string; scriptCount: number }) {
@@ -885,14 +834,25 @@ function ToggleLine({ checked, onChange, label }: { checked: boolean; onChange: 
   );
 }
 
-function CompactToggle({ checked, onChange, label }: { checked: boolean; onChange: (checked: boolean) => void; label: string }) {
+function CompactToggle({
+  checked,
+  onChange,
+  label,
+  disabled = false,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  label: string;
+  disabled?: boolean;
+}) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
-      className="flex min-h-10 items-center justify-between gap-3 rounded-lg border border-border/60 bg-white/45 px-3 py-2 text-left transition-colors hover:bg-white/75"
+      className="flex min-h-10 items-center justify-between gap-3 rounded-lg border border-border/60 bg-white/45 px-3 py-2 text-left transition-colors hover:bg-white/75 disabled:cursor-not-allowed disabled:opacity-45"
     >
       <span className="text-sm font-medium text-text-primary">{label}</span>
       <MiniSwitch checked={checked} onChange={onChange} label={label} isNested />

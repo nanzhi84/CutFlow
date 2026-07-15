@@ -56,15 +56,13 @@ NODE_LABELS = {
     "PortraitPlanning": "规划数字人镜头",
     "BrollPlanning": "规划 B-roll",
     "StylePlanning": "规划字幕与包装",
-    "EditingAgentPlanning": "剪辑 Agent 规划",
     "MediaSelectionAgentPlanning": "媒体选择 Agent 规划",
     "TimelineAssemblyValidation": "组装并校验时间线",
-    "TimelinePlanning": "组装并校验时间线（历史节点）",
     "PortraitTrackBuild": "生成数字人轨道",
     "LipSync": "口型同步",
     "RenderFinalTimeline": "渲染主时间线",
-    "CaptionWindowPlanning": "规划字幕窗口",
-    "PostProcessAgentPlanning": "后处理 Agent 规划",
+    "CaptionCompositionPlanning": "规划固定字幕带",
+    "BgmAgentPlanning": "规划背景音乐",
     "SubtitleAndBgmMix": "混合字幕与 BGM",
     "ExportFinishedVideo": "导出成片",
     "FinalizeRunReport": "生成 Run 报告",
@@ -78,7 +76,7 @@ DELETABLE_RUN_STATUSES = {c.RunStatus.succeeded, c.RunStatus.failed, c.RunStatus
 # close the connection on idle timeout. Kept well under typical 30–60s proxy
 # idle windows. Module-level so tests can shrink it.
 EVENT_STREAM_HEARTBEAT_INTERVAL_SECONDS = 15.0
-_LEGACY_EDITING_AGENT_TEMPLATE_ID = "digital_human_editing_agent_v1"
+_RETIRED_EDITING_AGENT_TEMPLATE_ID = "digital_human_editing_agent_v1"
 
 
 def _sync_workflow_snapshot(request: Request, run: c.WorkflowRun) -> None:
@@ -99,25 +97,30 @@ def _admit_run(
 ) -> tuple[c.Job, c.WorkflowRun, c.WorkflowTemplate]:
     repo = repository(request)
     job = repo.jobs[job_id]
-    if job.request.workflow_template_id == _LEGACY_EDITING_AGENT_TEMPLATE_ID:
-        source_run = repo.runs.get(from_run_id or "")
-        valid_legacy_lineage = bool(
-            mode in {"retry", "resume"}
-            and source_run is not None
-            and source_run.job_id == job.id
-            and source_run.workflow_template_id == _LEGACY_EDITING_AGENT_TEMPLATE_ID
+    if job.request.workflow_template_id == _RETIRED_EDITING_AGENT_TEMPLATE_ID:
+        raise NodeExecutionError(
+            c.ErrorCode.validation_invalid_options,
+            "digital_human_editing_agent_v1 已退役，不能新建、重试或续跑；"
+            "请使用 digital_human_editing_agent_v2 创建新任务。",
+            details={
+                "workflow_template_id": job.request.workflow_template_id,
+                "replacement_workflow_template_id": "digital_human_editing_agent_v2",
+                "mode": mode,
+                "source_run_id": from_run_id,
+            },
         )
-        if not valid_legacy_lineage:
+    template = template_for(job.request.workflow_template_id)
+    if mode == "resume" and from_run_id is not None:
+        failed_node = _failed_node(repo, from_run_id)
+        active_node_ids = {node.node_id for node in template.nodes}
+        if failed_node is not None and failed_node.node_id not in active_node_ids:
             raise NodeExecutionError(
                 c.ErrorCode.validation_invalid_options,
-                "digital_human_editing_agent_v1 仅用于同一任务历史 v1 run "
-                "的恢复或重试；新任务必须使用 "
-                "digital_human_editing_agent_v2。",
+                "历史 Run 的失败节点已从当前工作流移除，不能续跑；请重新发起任务。",
                 details={
-                    "workflow_template_id": job.request.workflow_template_id,
-                    "replacement_workflow_template_id": "digital_human_editing_agent_v2",
-                    "mode": mode,
                     "source_run_id": from_run_id,
+                    "failed_node_id": failed_node.node_id,
+                    "workflow_template_id": template.workflow_template_id,
                 },
             )
     next_job_status = job.status
@@ -151,7 +154,6 @@ def _admit_run(
     elif next_job_status not in {c.JobStatus.queued, c.JobStatus.running}:
         assert_transition("job", next_job_status, c.JobStatus.running)
 
-    template = template_for(job.request.workflow_template_id)
     attempt = 1 + len([run for run in repo.runs.values() if run.job_id == job_id])
     run = c.WorkflowRun(
         id=new_id("run"),
@@ -204,14 +206,33 @@ def _admit_run(
     return job, run, template
 
 
+def _failed_node(repo, run_id: str) -> c.NodeRun | None:
+    return next(
+        (
+            node
+            for node in reversed(repo.node_runs.get(run_id, []))
+            if node.status == c.NodeStatus.failed
+        ),
+        None,
+    )
+
+
 def _run_has_retryable_failure(repo, run_id: str) -> bool:
     if repo.runs[run_id].status != c.RunStatus.failed:
         return False
-    return any(
-        bool(node.error and node.error.retryable)
-        for node in repo.node_runs.get(run_id, [])
-        if node.status == c.NodeStatus.failed
-    )
+    run = repo.runs[run_id]
+    if run.workflow_template_id == _RETIRED_EDITING_AGENT_TEMPLATE_ID:
+        return False
+    failed_node = _failed_node(repo, run_id)
+    if failed_node is None or not failed_node.error or not failed_node.error.retryable:
+        return False
+    try:
+        active_node_ids = {
+            node.node_id for node in template_for(run.workflow_template_id).nodes
+        }
+    except NodeExecutionError:
+        return False
+    return failed_node.node_id in active_node_ids
 
 
 def _node_label(node_id: str | None) -> str | None:

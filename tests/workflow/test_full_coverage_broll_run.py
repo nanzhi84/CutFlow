@@ -35,6 +35,7 @@ from packages.production.pipeline.digital_human import (
 )
 from packages.production.pipeline.node_sequence import NODE_SEQUENCE
 from packages.production.pipeline.reuse import ReuseSourceRun, compute_reuse_plan
+from tests.golden._caption_font_fixture import register_caption_fonts
 
 
 def _seed_long_broll(repository: Repository, object_store, media_fixture_factory) -> None:
@@ -130,6 +131,7 @@ def test_full_coverage_broll_run_finishes_on_main_chain(
         lambda: object_store,
     )
     repository = Repository()
+    register_caption_fonts(repository, object_store)
     _seed_long_broll(repository, object_store, media_fixture_factory)
     for profile_id, profile in list(repository.provider_profiles.items()):
         if profile.capability == "multimodal.embedding":
@@ -247,6 +249,7 @@ def test_full_coverage_resume_reuses_the_entire_paid_prefix_including_material_p
         lambda: object_store,
     )
     repository = Repository()
+    register_caption_fonts(repository, object_store)
     _seed_long_broll(repository, object_store, media_fixture_factory)
     for profile_id, profile in list(repository.provider_profiles.items()):
         if profile.capability == "multimodal.embedding":

@@ -1,6 +1,6 @@
 """Scene-text sensor: locate burned-in / in-scene text regions in a frame.
 
-Why: emphasis-caption placement must avoid landing a huazi banner on top of text
+Why: scene-text annotations are reusable evidence for video-layout safety checks
 that is already in the shot (shop signs, posters, product labels, burned-in source
 subtitles). The previous morphology heuristic (Sobel + close) fired on any
 repetitive high-gradient texture — workshop ceiling beams, ventilation grilles,
@@ -70,15 +70,13 @@ def reset_detector_cache() -> None:
 def _warn_unavailable_once(reason: str) -> None:
     """Warn once when the detector is unavailable.
 
-    Caption placement fails closed (drops the whole emphasis window) when the
-    scene-text detector is missing, so it must surface in the log rather than
-    hide at debug level.
+    Keep the optional sensor failure visible for any future annotation consumer.
     """
     global _warned_unavailable
     if not _warned_unavailable:
         logger.warning(
-            "[scene_text] scene-text sensor unavailable (%s); emphasis-caption "
-            "placement will fail closed for every window (no huazi rendered). "
+            "[scene_text] scene-text sensor unavailable (%s); "
+            "scene-text annotations will be unavailable. "
             "Ensure opencv>=4.8 and the PP-OCRv3 model exist.",
             reason,
         )

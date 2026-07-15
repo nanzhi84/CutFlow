@@ -1,8 +1,6 @@
-from fastapi import Request
 from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
-from apps.api.services import jobs_runs
 from packages.core import contracts as c
 from packages.core.storage.repository import new_id
 
@@ -243,66 +241,55 @@ def test_legacy_editing_agent_retry_or_resume_requires_real_v1_lineage() -> None
         assert not any(run.job_id == orphan.id for run in app.state.repository.runs.values())
 
 
-def test_legacy_editing_agent_history_can_retry_and_resume() -> None:
-    retry_app = create_app()
-    with TestClient(retry_app) as client:
-        retry_app.state.workflow = _NoopWorkflow()
-        _login_admin(client)
-        failed_job, failed_run = _seed_run(
-            retry_app,
-            status=c.RunStatus.failed,
-            workflow_template_id="digital_human_editing_agent_v1",
-        )
-        retry_app.state.repository.jobs[failed_job.id] = failed_job.model_copy(
-            update={"active_run_id": failed_run.id, "status": c.JobStatus.failed}
-        )
-
-        retried = client.post(f"/api/runs/{failed_run.id}/retry", json={"reason": "history"})
-        assert retried.status_code == 201, retried.text
-        assert retried.json()["run"]["workflow_template_id"] == "digital_human_editing_agent_v1"
-
-    resume_app = create_app()
-    with TestClient(resume_app) as client:
-        resume_app.state.workflow = _NoopWorkflow()
-        _login_admin(client)
-        succeeded_job, succeeded_run = _seed_run(
-            resume_app,
-            status=c.RunStatus.succeeded,
-            workflow_template_id="digital_human_editing_agent_v1",
-        )
-        resume_app.state.repository.jobs[succeeded_job.id] = succeeded_job.model_copy(
-            update={"active_run_id": succeeded_run.id, "status": c.JobStatus.succeeded}
-        )
-        _job, resumed, template = jobs_runs._admit_run(
-            Request({"type": "http", "app": resume_app}),
-            job_id=succeeded_job.id,
-            mode="resume",
-            from_run_id=succeeded_run.id,
-            reason="history",
-        )
-        assert resumed.workflow_template_id == "digital_human_editing_agent_v1"
-        assert resumed.resume_from_run_id == succeeded_run.id
-        assert template.workflow_template_id == "digital_human_editing_agent_v1"
-
-
-def test_legacy_resume_without_artifact_reuse_keeps_source_lineage() -> None:
+def test_legacy_editing_agent_history_cannot_retry_or_resume() -> None:
     app = create_app()
     with TestClient(app) as client:
         app.state.workflow = _NoopWorkflow()
         _login_admin(client)
         job, source = _seed_run(
             app,
-            status=c.RunStatus.succeeded,
+            status=c.RunStatus.failed,
             workflow_template_id="digital_human_editing_agent_v1",
         )
         app.state.repository.jobs[job.id] = job.model_copy(
-            update={"active_run_id": source.id, "status": c.JobStatus.succeeded}
+            update={"active_run_id": source.id, "status": c.JobStatus.failed}
         )
 
-        response = client.post(
-            f"/api/runs/{source.id}/resume",
-            json={"reason": "clean recompute", "reuse_valid_artifacts": False},
+        for endpoint in ("retry", "resume"):
+            response = client.post(f"/api/runs/{source.id}/{endpoint}", json={})
+            assert response.status_code == 400, response.text
+            assert response.json()["error"]["code"] == "validation.invalid_options"
+        assert len([run for run in app.state.repository.runs.values() if run.job_id == job.id]) == 1
+
+
+def test_resume_rejects_historical_failure_at_removed_caption_node() -> None:
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.workflow = _NoopWorkflow()
+        _login_admin(client)
+        job, source = _seed_run(app, status=c.RunStatus.failed)
+        app.state.repository.jobs[job.id] = job.model_copy(
+            update={"active_run_id": source.id, "status": c.JobStatus.failed}
+        )
+        app.state.repository.node_runs[source.id].append(
+            c.NodeRun(
+                id=new_id("node"),
+                run_id=source.id,
+                node_id="CaptionWindowPlanning",
+                node_version="v4",
+                status=c.NodeStatus.failed,
+                input_manifest_hash="hash_removed_caption_node",
+                error=c.NodeError(
+                    code=c.ErrorCode.render_subtitle_failed,
+                    message="historical caption failure",
+                    retryable=True,
+                ),
+            )
         )
 
-        assert response.status_code == 201, response.text
-        assert response.json()["run"]["resume_from_run_id"] == source.id
+        response = client.post(f"/api/runs/{source.id}/resume", json={})
+
+        assert response.status_code == 400, response.text
+        assert response.json()["error"]["code"] == "validation.invalid_options"
+        assert response.json()["error"]["details"]["failed_node_id"] == "CaptionWindowPlanning"
+        assert len([run for run in app.state.repository.runs.values() if run.job_id == job.id]) == 1

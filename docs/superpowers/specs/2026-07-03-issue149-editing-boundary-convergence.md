@@ -1,5 +1,9 @@
 # Issue #149 剪辑窗口职责边界收敛方案
 
+> **历史归档 / Superseded（2026-07-15，issue #209）**：本文仍可作为 issue #149
+> 的演进记录，但其中 `digital_human_editing_agent_v1` / `EditingAgentPlanning`
+> 拓扑已被 Clean-Slate 删除，不得据此恢复 legacy 链。
+
 > 日期：2026-07-03
 > 范围：`digital_human_v2` 与 `digital_human_editing_agent_v1` 两条链路的 planning 层职责收敛
 > 性质：设计方案（不含实现），基于对当前代码的逐行核查，独立评估了 issue 评论区（GPT5.5pro 讨论产物）的六层方案

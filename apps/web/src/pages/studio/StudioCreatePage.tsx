@@ -15,8 +15,9 @@ import {
   TemplateStep,
 } from "../../components/studio-create/StudioCreateSteps";
 import {
+  CAPTION_POLICY,
   STORAGE_KEY,
-  effectiveHuaziEnabled,
+  effectiveEmphasisEnabled,
   loadStoredForm,
   mapDefaultsToForm,
   mapFormToDefaults,
@@ -156,8 +157,7 @@ export default function StudioCreatePage() {
     const isEditingAgent = form.contentMode === "editing_agent";
     const isFullCoverageBroll = !isSeedance && form.visualMode === "broll_full_coverage";
     const subtitleNormalEnabled = !isSeedance && form.normalSubtitleEnabled;
-    // 花字仅 Agent 智能剪辑链会渲染；确定性链 digital_human_v2 与 Seedance 一律不请求花字（D4）。
-    const subtitleEmphasisEnabled = effectiveHuaziEnabled(form);
+    const subtitleEmphasisEnabled = effectiveEmphasisEnabled(form);
     return {
       schema_version: "digital_human_video_request.v1",
       case_id: caseId,
@@ -185,16 +185,16 @@ export default function StudioCreatePage() {
         allow_generic_coverage: true,
       },
       subtitle: {
-        enabled: subtitleNormalEnabled || subtitleEmphasisEnabled,
+        enabled: subtitleNormalEnabled,
         normal_enabled: subtitleNormalEnabled,
         emphasis_enabled: subtitleEmphasisEnabled,
         style_preset: form.subtitleStyle.trim() || "douyin",
         font_id: form.subtitleFontId.trim() || null,
-        emphasis_font_id: form.huaziFontId.trim() || null,
+        emphasis_font_id: form.emphasisFontId.trim() || null,
         font_size: form.subtitleSize,
-        emphasis_font_size: form.huaziSize,
-        emphasis_primary_color: form.huaziColor,
-        position: { x: 0.5, y: form.subtitlePositionY },
+        emphasis_font_size: form.emphasisSize,
+        emphasis_primary_color: form.emphasisColor,
+        position: { x: CAPTION_POLICY.anchor_x, y: form.subtitlePositionY },
       },
       bgm: {
         enabled: isSeedance ? false : form.bgmEnabled,
@@ -243,12 +243,13 @@ export default function StudioCreatePage() {
       // Editing the script text by hand invalidates any adopted script_version_id —
       // the submitted version id must match the submitted text.
       if (key === "script") next.scriptVersionId = null;
-      if (key === "normalSubtitleEnabled" || key === "huaziEnabled") {
-        next.subtitleEnabled = Boolean(next.normalSubtitleEnabled || next.huaziEnabled);
+      if (key === "normalSubtitleEnabled" || key === "emphasisEnabled") {
+        if (key === "normalSubtitleEnabled" && !value) next.emphasisEnabled = false;
+        next.subtitleEnabled = Boolean(next.normalSubtitleEnabled);
       }
       if (key === "subtitleEnabled") {
         next.normalSubtitleEnabled = Boolean(value);
-        next.huaziEnabled = Boolean(value);
+        next.emphasisEnabled = Boolean(value);
       }
       return next;
     });

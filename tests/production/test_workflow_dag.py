@@ -23,7 +23,6 @@ from packages.core.contracts import (
 from packages.production.pipeline import digital_human as dh
 from packages.production.pipeline import node_sequence as ns
 from packages.production.pipeline.node_sequence import (
-    EDITING_AGENT_SEQUENCE,
     EDITING_AGENT_V2_SEQUENCE,
     NODE_SEQUENCE,
     SEEDANCE_T2V_SEQUENCE,
@@ -41,7 +40,7 @@ REGISTERED_TEMPLATE_IDS = tuple(ns.WORKFLOW_GRAPHS.keys())
 
 @pytest.mark.parametrize(
     "sequence",
-    [NODE_SEQUENCE, SEEDANCE_T2V_SEQUENCE, EDITING_AGENT_SEQUENCE, EDITING_AGENT_V2_SEQUENCE],
+    [NODE_SEQUENCE, SEEDANCE_T2V_SEQUENCE, EDITING_AGENT_V2_SEQUENCE],
 )
 def test_linear_template_topological_order_equals_its_sequence(sequence):
     edges = ns._linear_edges(sequence)
@@ -194,7 +193,6 @@ def test_all_template_nodes_have_handlers_and_declared_outputs(template_id):
     ("template_id", "expected_portrait_producer"),
     [
         ("digital_human_v2", "DeterministicEditingPlanning"),
-        ("digital_human_editing_agent_v1", "EditingAgentPlanning"),
         ("digital_human_editing_agent_v2", "MediaSelectionAgentPlanning"),
     ],
 )
@@ -216,8 +214,7 @@ def test_active_templates_use_timeline_assembly_validation_name():
     assert "TimelinePlanning" not in NODE_SEQUENCE
     assert "TimelineAssemblyValidation" in EDITING_AGENT_V2_SEQUENCE
     assert "TimelinePlanning" not in EDITING_AGENT_V2_SEQUENCE
-    assert "TimelinePlanning" in EDITING_AGENT_SEQUENCE
-    assert dh.NODE_HANDLERS["TimelinePlanning"] is dh.NODE_HANDLERS["TimelineAssemblyValidation"]
+    assert "TimelinePlanning" not in dh.NODE_HANDLERS
 
 
 @pytest.mark.parametrize("template_id", REGISTERED_TEMPLATE_IDS)
@@ -237,40 +234,71 @@ def test_timeline_replanning_break_nodes_never_reuse(template_id):
             assert spec.reuse_policy == "never"
 
 
-def test_editing_agent_template_replaces_legacy_planning_nodes():
-    template = dh.template_for("digital_human_editing_agent_v1")
-    node_ids = [spec.node_id for spec in template.nodes]
-    assert node_ids == EDITING_AGENT_SEQUENCE
-    assert "EditingAgentPlanning" in node_ids
-    assert "PortraitPlanning" not in node_ids
-    assert "BrollPlanning" not in node_ids
-    assert "StylePlanning" not in node_ids
+def test_legacy_editing_agent_template_is_removed():
+    with pytest.raises(Exception, match="Unknown workflow template"):
+        dh.template_for("digital_human_editing_agent_v1")
 
 
-def test_editing_agent_v2_separates_media_and_postprocess_planning():
+def test_editing_agent_v2_separates_media_caption_and_bgm_planning():
     template = dh.template_for("digital_human_editing_agent_v2")
     node_ids = [spec.node_id for spec in template.nodes]
 
     assert node_ids == EDITING_AGENT_V2_SEQUENCE
-    assert "EditingAgentPlanning" not in node_ids
     assert node_ids[node_ids.index("WindowMaterialRetrieval") + 1] == (
         "MediaSelectionAgentPlanning"
     )
     assert node_ids[node_ids.index("RenderFinalTimeline") + 1 :][:3] == [
-        "CaptionWindowPlanning",
-        "PostProcessAgentPlanning",
+        "CaptionCompositionPlanning",
+        "BgmAgentPlanning",
         "SubtitleAndBgmMix",
     ]
     by_id = {spec.node_id: spec for spec in template.nodes}
     assert by_id["MediaSelectionAgentPlanning"].reuse_policy == "never"
-    assert by_id["CaptionWindowPlanning"].reuse_policy == "strict"
-    assert by_id["PostProcessAgentPlanning"].reuse_policy == "strict"
+    assert by_id["CaptionCompositionPlanning"].reuse_policy == "strict"
+    assert by_id["BgmAgentPlanning"].reuse_policy == "strict"
     assert by_id["TTS"].node_version == "v3"
-    assert by_id["CaptionWindowPlanning"].node_version == "v4"
-    assert by_id["PostProcessAgentPlanning"].node_version == "v2"
-    assert by_id["SubtitleAndBgmMix"].node_version == "v2"
+    assert by_id["CaptionCompositionPlanning"].node_version == "v1"
+    assert by_id["BgmAgentPlanning"].node_version == "v1"
+    assert by_id["SubtitleAndBgmMix"].node_version == "v3"
     assert "provider_call" in by_id["MediaSelectionAgentPlanning"].side_effects
-    assert "provider_call" in by_id["PostProcessAgentPlanning"].side_effects
+    assert "provider_call" in by_id["BgmAgentPlanning"].side_effects
+
+
+def test_caption_cleanslate_template_counts_and_lipsync_prefix_are_stable():
+    old_paid_prefix = [
+        "ValidateRequest",
+        "LoadCaseContext",
+        "ResolveCreativeIntent",
+        "TTS",
+        "MaterialPackPlanning",
+        "NarrationAlignment",
+        "NarrationBoundaryPlanning",
+        "TimelineWindowPlanning",
+        "WindowQueryPlanning",
+        "WindowMaterialRetrieval",
+    ]
+    main = [spec.node_id for spec in dh.template_for("digital_human_v2").nodes]
+    agent = [
+        spec.node_id for spec in dh.template_for("digital_human_editing_agent_v2").nodes
+    ]
+
+    assert len(main) == 19
+    assert len(agent) == 20
+    assert main[:10] == old_paid_prefix
+    assert agent[:10] == old_paid_prefix
+    assert main[main.index("LipSync") - 3 : main.index("LipSync") + 1] == [
+        "DeterministicEditingPlanning",
+        "TimelineAssemblyValidation",
+        "PortraitTrackBuild",
+        "LipSync",
+    ]
+    assert agent[agent.index("LipSync") - 3 : agent.index("LipSync") + 1] == [
+        "MediaSelectionAgentPlanning",
+        "TimelineAssemblyValidation",
+        "PortraitTrackBuild",
+        "LipSync",
+    ]
+    assert main[main.index("RenderFinalTimeline") + 1] == "CaptionCompositionPlanning"
 
 
 def test_validate_template_rejects_node_without_handler():

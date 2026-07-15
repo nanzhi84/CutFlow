@@ -204,12 +204,11 @@ def run(ctx: NodeContext) -> NodeOutput:
         )
         broll_warnings.append(WarningCode.broll_insertions_dropped_geometry)
 
-    # Caption Display v2 (issue #188): the deterministic chain plans no huazi;
-    # emphasis captions are an EditingAgentPlanning-chain-only capability.
+    # Caption styling is local request/default materialization. Caption Run planning
+    # happens after RenderFinalTimeline in the shared CaptionCompositionPlanning node.
     style_payload, style_warnings, style_degradations = materialize_style_from_selection(
         request=state.request,
         material=material,
-        overlay_events=[],
     )
     style_degradations = [
         notice.model_copy(update={"node_id": node_run.node_id}) for notice in style_degradations

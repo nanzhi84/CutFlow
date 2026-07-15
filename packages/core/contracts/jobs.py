@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Annotated, Literal
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 
 from .base import ArtifactKind, ArtifactRef, ContractModel, DegradationCode, DegradationNotice, EntityMeta, JobStatus, JobType, NodeError, NodeStatus, RetryPolicy, RunStatus, WarningCode
 
@@ -83,6 +83,23 @@ class SubtitleOptions(ContractModel):
     emphasis_primary_color: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
     position: dict[str, float] | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_disabled_caption_shorthand(cls, value):
+        if (
+            isinstance(value, dict)
+            and value.get("enabled") is False
+            and "emphasis_enabled" not in value
+        ):
+            return {**value, "normal_enabled": False, "emphasis_enabled": False}
+        return value
+
+    @model_validator(mode="after")
+    def validate_caption_layers(self) -> "SubtitleOptions":
+        if self.emphasis_enabled and (not self.enabled or not self.normal_enabled):
+            raise ValueError("emphasis subtitles require normal subtitles")
+        return self
+
 
 class BgmOptions(ContractModel):
     enabled: bool = True
@@ -119,7 +136,7 @@ class EditPlanningOptions(ContractModel):
     """Per-video extra editing steering for the LLM editing-agent template.
 
     Consumed by ``digital_human_editing_agent_v2``'s ``MediaSelectionAgentPlanning``
-    node (and the frozen v1 compatibility node); ignored by every other template. ``instruction`` is a free-text hint the
+    node; ignored by every other template. ``instruction`` is a free-text hint the
     editing agent honours for this one video (e.g. "尽量用穿搭相近的人像素材，B-roll
     只在讲施工细节时出现")。``max_repair_attempts`` bounds how many times an invalid
     LLM selection is re-prompted before the node fail-fasts (0 = no repair).

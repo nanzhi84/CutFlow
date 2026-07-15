@@ -102,13 +102,6 @@ def test_warning_code_is_single_spec_enum_and_degradation_notice_shape():
         "bgm.loudness_probe_failed",
         "font.resolution_failed",
         "subtitle.burn_skipped",
-        # Editing-agent (issue #136) falls back to a deterministic selection when no
-        # real llm.chat provider is armed; surfaced visibly, never a silent downgrade.
-        "editing_agent.deterministic_fallback",
-        # Editing-agent repair paths are visible as warnings instead of being hidden
-        # only in debug diagnostics.
-        "editing_agent.llm_repair",
-        "editing_agent.local_constraint_repair",
         "media_selection_agent.deterministic_fallback",
         "media_selection_agent.llm_repair",
         "media_selection_agent.local_constraint_repair",
@@ -118,24 +111,11 @@ def test_warning_code_is_single_spec_enum_and_degradation_notice_shape():
         # WindowQueryPlanning falls back to deterministic template queries when
         # the LLM path is unavailable.
         "window_query.template_fallback",
-        # Caption Display v2 (issue #188): huazi animation downgraded to a safe
-        # fallback, huazi planning subagent failed (run has no huazi), and font
-        # metrics could not be read so widths are EAW-estimated.
-        "huazi.animation_fallback",
-        "huazi.planning_failed",
         "font.metrics_fallback",
-        # Caption Display v2 active workflow: final-frame visual analysis and the
-        # isolated postprocess Agent expose their own explicit degradations.
-        "caption.visual_analysis_failed",
-        "postprocess.planning_failed",
+        "caption.composition_fallback",
+        "bgm.planning_failed",
         "sfx.asset_missing",
         "sfx.mix_failed",
-        # Emphasis floor (issue: run_c6168766640e postmortem): relaxed pixel-safety
-        # tiers and a below-floor huazi count degrade visibly, and the silent
-        # TTS-native-timing -> ASR fallback is now surfaced.
-        "caption.emphasis_relaxed_safety",
-        "caption.emphasis_below_floor",
-        "caption.normal_relaxed_safety",
         "tts.timing_unavailable",
     }
     assert DegradationCode.font_default_used.value == "font.default_used"

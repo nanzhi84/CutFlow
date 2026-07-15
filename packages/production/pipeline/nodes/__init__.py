@@ -9,9 +9,9 @@ work for a node should edit only that node's module.
 from __future__ import annotations
 
 from packages.production.pipeline.nodes import (
-    caption_window_planning,
+    bgm_agent_planning,
+    caption_composition_planning,
     deterministic_editing_planning,
-    editing_agent_planning,
     export_finished_video,
     export_seedance_video,
     finalize_run_report,
@@ -22,7 +22,6 @@ from packages.production.pipeline.nodes import (
     narration_alignment,
     narration_boundary_planning,
     portrait_track_build,
-    postprocess_agent_planning,
     render_final_timeline,
     resolve_creative_intent,
     seedance_generate_video,
@@ -36,9 +35,9 @@ from packages.production.pipeline.nodes import (
 )
 
 __all__ = [
-    "caption_window_planning",
+    "bgm_agent_planning",
+    "caption_composition_planning",
     "deterministic_editing_planning",
-    "editing_agent_planning",
     "export_finished_video",
     "export_seedance_video",
     "finalize_run_report",
@@ -49,7 +48,6 @@ __all__ = [
     "narration_alignment",
     "narration_boundary_planning",
     "portrait_track_build",
-    "postprocess_agent_planning",
     "render_final_timeline",
     "resolve_creative_intent",
     "seedance_generate_video",

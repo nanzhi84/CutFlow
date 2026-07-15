@@ -29,6 +29,35 @@ def test_migration_revision_chains_to_single_head():
 def test_upgrade_syncs_bgm_mood_and_scene_hint_prompts(db_session_factory):
     engine = db_session_factory.kw["bind"]
     with engine.begin() as conn:
+        # The current Clean-Slate seed intentionally removes EditingAgentPlanning.
+        # Reconstruct only the historical version row needed to replay 0041.
+        conn.execute(
+            text(
+                """
+                insert into prompt_templates (
+                    id, name, purpose, variables_schema_ref, output_schema_ref,
+                    status, schema_version, created_at, updated_at
+                ) values (
+                    'prompt_editing_agent', 'Historical Editing Agent',
+                    'prompt.editing.agent', '{}'::jsonb, '{}'::jsonb,
+                    'active', 'v1', now(), now()
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                insert into prompt_versions (
+                    id, prompt_template_id, content, status, schema_version,
+                    created_at, updated_at
+                ) values (
+                    'prompt_editing_agent_v1', 'prompt_editing_agent',
+                    'historical editing prompt', 'published', 'v1', now(), now()
+                )
+                """
+            )
+        )
         conn.execute(
             text(
                 """

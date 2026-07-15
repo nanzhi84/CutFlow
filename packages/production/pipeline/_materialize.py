@@ -24,7 +24,6 @@ from packages.core.contracts.artifacts import (
     BrollOverlay,
     BrollPlanArtifact,
     FontPlan,
-    OverlayEvent,
     PortraitPlanArtifact,
     PortraitSegment,
     StylePlanArtifact,
@@ -476,7 +475,6 @@ def materialize_style_from_selection(
     *,
     request,
     material: dict,
-    overlay_events: list[OverlayEvent],
     bgm_id: str | None = None,
     target_bgm_mood: str | None = None,
     strict_bgm_selection: bool = False,
@@ -568,8 +566,6 @@ def materialize_style_from_selection(
             emphasis_primary_color=subtitle_colors["emphasis_primary_color"],
             emphasis_outline_color=subtitle_colors["emphasis_outline_color"],
             emphasis_outline=subtitle_colors["emphasis_outline"],
-            default_emphasis_position_id="top_center_banner",
-            default_emphasis_animation_id="pop_in",
         ),
         bgm=BgmPlan(
             enabled=bool(
@@ -600,7 +596,6 @@ def materialize_style_from_selection(
         font_asset_id=font_asset_id,
         emphasis_font_asset_id=requested_emphasis_font_id,
         bgm_asset_id=bgm_asset_id,
-        overlay_events=overlay_events,
     ).model_dump(mode="json")
     return payload, warnings, degradations
 

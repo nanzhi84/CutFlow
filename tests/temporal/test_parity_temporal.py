@@ -25,6 +25,7 @@ if RUN_TEMPORAL_TESTS:
         _session_factory,
         _wait_for_status,
     )
+    from tests.golden._caption_font_fixture import register_default_caption_fonts
 
 
 @contextmanager
@@ -42,10 +43,7 @@ def _env(**values: str):
 
 
 def _normalize_run_detail(body: dict[str, Any]) -> dict[str, Any]:
-    node_status_by_id = {
-        node["node_id"]: node["status"]
-        for node in body["node_runs"]
-    }
+    node_status_by_id = {node["node_id"]: node["status"] for node in body["node_runs"]}
     node_status_sequence = [
         (node_id, node_status_by_id[node_id])
         for node_id in NODE_SEQUENCE
@@ -65,7 +63,9 @@ def _run_local_request(payload: dict[str, Any]) -> dict[str, Any]:
     # Both arms run on the real SQLAlchemy backend (the in-memory backend was
     # removed); this still guards local-runtime vs Temporal-runtime parity.
     with _env(CUTAGENT_WORKFLOW_RUNTIME="local", CUTAGENT_STORAGE_BACKEND="sqlalchemy"):
-        with TestClient(create_app()) as client:
+        local_app = create_app()
+        with TestClient(local_app) as client:
+            register_default_caption_fonts(local_app)
             _login(client)
             created = client.post("/api/jobs/digital-human-video", json=payload)
             assert created.status_code == 201, created.text

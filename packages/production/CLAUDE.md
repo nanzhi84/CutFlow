@@ -1,9 +1,9 @@
 # packages/production
 
-数字人视频生产引擎：执行 4 套工作流模板——`digital_human_v2`（18 节点主链）、`digital_human_editing_agent_v2`（20 节点、媒体选择与字幕/BGM 后处理分离的活动 Agent 链）、仅供历史 run 恢复的 `digital_human_editing_agent_v1`（18 节点 legacy 链）、`seedance_t2v_v1`（5 节点文生视频）。纯 B-roll 画外音是主链的 `broll.mode="full_coverage"` 模式；成片侧包含 SQL 仓储、剪映草稿包、剪辑师交接包导出。
+数字人视频生产引擎：执行 3 套工作流模板——`digital_human_v2`（19 节点主链）、`digital_human_editing_agent_v2`（20 节点、媒体选择与 BGM 选择分离的活动 Agent 链）、`seedance_t2v_v1`（5 节点文生视频）。纯 B-roll 画外音是主链的 `broll.mode="full_coverage"` 模式；成片侧包含 SQL 仓储、剪映草稿包、剪辑师交接包导出。
 
 ## 职责
-- 定义并执行四套工作流模板：`node_sequence.py` 给出主链、活动 Agent v2、legacy Agent v1、Seedance 四套序列及 `WORKFLOW_TEMPLATE_NODE_COUNTS`；`digital_human.py` 的 `_TEMPLATE_BUILDERS`/`template_for()` 按 `workflow_template_id` 路由；`NODE_HANDLERS` 分发到 `pipeline/nodes/` 下一文件一节点的 `run(ctx)`。
+- 定义并执行三套工作流模板：`node_sequence.py` 给出主链、活动 Agent v2、Seedance 三套序列及 `WORKFLOW_TEMPLATE_NODE_COUNTS`；`digital_human.py` 的 `_TEMPLATE_BUILDERS`/`template_for()` 按 `workflow_template_id` 路由；`NODE_HANDLERS` 分发到 `pipeline/nodes/` 下一文件一节点的 `run(ctx)`。
 - `LocalRuntimeAdapter` 是 thin engine：跑节点循环、run/node 状态机迁移（`assert_transition`）、事件/漏斗/可观测埋点、写 public+debug run report，并向节点提供共享服务（artifact 创建、media 解析、provider profile 选取、object store）。
 - resume 复用既有有效产物（`reuse.py` 校验 node_status/node_version/input_manifest_hash/schema_version/sha256），retry 则全新跑。
 - 节点产出 TYPED artifacts + provider invocation + warnings + GRADED degradations；选材落 selection ledger（`_selection.py`，驱动下一次 recency 降权）。当前 ledger 只由 `MaterialPackPlanning` 读取并写入候选 metadata，B-roll/Portrait 后续节点不再直接查 ledger。
@@ -19,11 +19,11 @@
 - `pipeline/reuse.py` — resume 复用计划；`pipeline/_run_state.py` — 跨节点 `RunState` + `degradation_notice`
 - `pipeline/degradation_policies.py` — 具名降级策略（lipsync 故障转移 / ASR 估算回退 / 封面回退等版本化策略对象）；`pipeline/ephemeral_gc.py` — 终态 run 的 ephemeral 资产 GC
 - `pipeline/_timeline_grid.py` — 帧网格 helper（fps 由调用方传入，`TIMELINE_FPS=30` 在 `planning/editing/frame_grid.py`）；`pipeline/_subtitles.py` — ASS 字幕；`pipeline/_selection.py` — 选材 ledger 条目；`_broll_overlays.py` — `BrollPlanArtifact` 读边界，`overlays` 为 canonical，legacy `segments` 只在这里兼容。
-- Caption Display v2（issue #188）确定性模块群：`pipeline/_caption_display.py`（cue 合并/DP 中文 1–3 行断行/超长拆 cue；普通字幕与花字永远分层共存，不打洞）、`pipeline/_speech_timing.py`（稳定 token ID/字符区间/文本归属）、`pipeline/_caption_window_planner.py`（spoken/display 双时间、逐行出现、普通字幕 2 帧间隔、动态负空间候选、花字冲突图与最大可行数）、`pipeline/_caption_visual_safety.py`（对最终底片的人脸/场内文字/繁忙区过滤，普通字幕人脸红线不放宽）、`pipeline/_postprocess_agent.py`（本地最大合法子集、hero 上限和逐事件安全 option 回退）。`CaptionWindowPlanning` 对每层一次性批量抽取去重安全帧，检测/抽帧不可用或真实字幕框放不下时 fail-closed；普通字幕与花字独立解析，并把实际 font asset ID 写入 `plan.caption_windows`。无显式选择时固定使用 starter pack 的 Noto Serif CJK SC Regular / Noto Sans CJK SC Bold，缺资产拒绝渲染，不得退回平台相关 generic family。`PostProcessAgentPlanning` 的 LLM 只填 BGM、语义优先级和 caption option ID，本地求解器物化合法 `plan.style`；`SubtitleAndBgmMix` 纯消费并产 `plan.caption_display`。
+- Caption Clean-Slate（issue #209）只有一个字幕事实源：`pipeline/_caption_composition.py` 确定性完成 cue 合并、1–3 行 DP 断行、超长拆 cue、精确短语绑定与 run 级时间；`CaptionCompositionPlanning` 在固定字幕带内发布 `plan.caption_composition`。普通与强调 run 共用一条 cue/line 坐标系，不再读取成片像素、选择矩形或生成独立 overlay。无显式选择时固定使用 starter pack 的 Noto Serif CJK SC Regular / Noto Sans CJK SC Bold，缺资产明确失败，不得退回平台相关 generic family。`BgmAgentPlanning` 只选择 BGM，`SubtitleAndBgmMix` 只消费 composition 并渲染 ASS/混音。
 - `finished_video_numbering.py` — 成片编号（`V-NNN`）
 
 ## 约定与要求
-- **确定性剪辑链路已冻结（issue #188）**：`digital_human_v2` / `DeterministicEditingPlanning` 不生产花字，除阻断性缺陷、安全、依赖兼容和普通字幕/BGM 维护外不再新增剪辑能力。所有新 Agent 能力只在 `digital_human_editing_agent_v2` 演进：`MediaSelectionAgentPlanning` 只选择 portrait/B-roll；`CaptionWindowPlanning` 只用固定算法和最终底片生成时间/空间候选与冲突事实；`PostProcessAgentPlanning` 的 LLM 只做 BGM/语义优先级/样式 option 选择，时间合法性、最终数量、hero 上限、逐事件回退由本地求解器负责。三个节点拥有独立 prompt/provider/repair/diagnostics/reuse 域，严禁互相代做。`digital_human_editing_agent_v1` 与其 HuaziPlanningSubagent 仅为历史 run 恢复冻结保留，不得新增能力。`SubtitleAndBgmMix` 不按 template ID 分支，只按是否存在 `plan.caption_windows` 选择新 artifact 消费或 legacy 读兼容；普通字幕开启时不得被花字压制。
+- **字幕与 Agent 职责已收敛（issue #209）**：主链和活动 Agent 链共享同一个 `CaptionCompositionPlanning`，禁止再引入字幕候选框、空间视觉分析、独立强调 overlay 或模板分支读兼容。`MediaSelectionAgentPlanning` 只选择 portrait/B-roll；`BgmAgentPlanning` 只选择 BGM；字幕提示只来自 `CreativeIntentArtifact.emphasis`，最终 run、行、帧和字体全部由本地确定性编排。`digital_human_editing_agent_v1` 不再注册，新建、重试或恢复都必须返回 4xx；失败节点已退出当前模板的 run 也不得恢复。
 - 节点是纯 `run(ctx)`：输入读 `ctx.state`，输出经 `ctx.artifact(...)` 落库，跨节点服务只走 `NodeContext`，不直接传 adapter。
 - 降级必须显式上报为 `DegradationNotice`，禁止静默降级；节点 succeeded + 有 degradation 自动标 `degraded`。
 - 确定性选材，不得随机；失败/取消时只释放 uncommitted 预留，committed picks 保留作多样性记忆。
@@ -36,8 +36,8 @@
 - `NarrationBoundaryPlanning` 只产出安全切点事实和 base/available windows；`portrait_slots` / `broll_slots` 不是最终帧权威。
 - `TimelineWindowPlanning` 拥有人像主轨最终窗口与资产级容量判定，只发布 `plan_timeline_windows`；编译默认人像计划保存在 `default_assignment.portrait_plan_payload`，由后续确定性/Agent 媒体选择节点发布唯一的最终 `plan_portrait`；素材不足用 `material_insufficient_portrait` hard fail。
 - B-roll 落点的帧几何是单一真源：窗口由 `TimelineWindowPlanning` 经 `packages/planning/material/broll_plan.py` 的 `BROLL_GEOMETRY_POLICY` + `legalize_broll_window_frames`（内含切点吸附与短残片拒绝）合法化后发布；`_materialize.py` 的各编排器只消费已合法化的窗口帧，不得自行重算几何。
-- `MediaSelectionAgentPlanning`（活动 v2）只做 portrait/B-roll 候选指派和本地校验，不读写字幕/BGM；prompt 候选必须按 slot 内嵌，本地须先在完整合法域求覆盖 witness，再裁剪展示候选，并保证跨 slot portrait asset 唯一及 insert-mode B-roll 直接兼容/数量/重叠约束，禁止退回全局候选表 + ID 列表的跨表联结；LLM 不输出最终帧，任何 B-roll 几何丢弃必须进入 diagnostics / degradation。`EditingAgentPlanning` 仅指 legacy v1 恢复节点。
-- `TimelineAssemblyValidation` 保持 assembly + verify-only，只组装、校验上游已经决定的帧边界，不重新规划时间线；`TimelinePlanning` 仅作为历史 v1/in-flight 节点 ID 兼容别名。
+- `MediaSelectionAgentPlanning`（活动 v2）只做 portrait/B-roll 候选指派和本地校验，不读写字幕/BGM；prompt 候选必须按 slot 内嵌，本地须先在完整合法域求覆盖 witness，再裁剪展示候选，并保证跨 slot portrait asset 唯一及 insert-mode B-roll 直接兼容/数量/重叠约束，禁止退回全局候选表 + ID 列表的跨表联结；LLM 不输出最终帧，任何 B-roll 几何丢弃必须进入 diagnostics / degradation。
+- `TimelineAssemblyValidation` 保持 assembly + verify-only，只组装、校验上游已经决定的帧边界，不重新规划时间线；退出当前节点图的历史节点 ID 不再注册别名。
 
 ## 测试
 - `pytest tests/production tests/workflow`。人像唯一性/恢复诊断重点见 `test_timeline_window_planning_node.py`；B-roll canonical overlays 见 `test_broll_overlays_helper.py`。

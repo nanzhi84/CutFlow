@@ -37,6 +37,7 @@ def test_upgrade_syncs_emphasis_candidates_and_current_postprocess_prompt(
 ):
     engine = db_session_factory.kw["bind"]
     with engine.begin() as conn:
+        _insert_historical_postprocess_prompt(conn)
         conn.execute(
             text(
                 "update prompt_versions set content = 'legacy intent 最多 6 条 2 到 30 字' "
@@ -74,6 +75,7 @@ def test_upgrade_is_idempotent_and_preserves_migrated_rows(db_session_factory):
     sentinel_creative = "已迁移内容标记 至少给出 6 条 尾部"
     sentinel_postprocess = "已迁移内容标记 必须选择 5 到 8 个事件的 caption option 尾部"
     with engine.begin() as conn:
+        _insert_historical_postprocess_prompt(conn)
         conn.execute(
             text("update prompt_versions set content = :c where id = 'prompt_creative_intent_v1'"),
             {"c": sentinel_creative},
@@ -97,3 +99,35 @@ def test_upgrade_is_idempotent_and_preserves_migrated_rows(db_session_factory):
 
     assert creative == sentinel_creative
     assert postprocess == sentinel_postprocess
+
+
+def _insert_historical_postprocess_prompt(conn) -> None:
+    """Restore only the rows that existed when 0048 originally ran."""
+
+    conn.execute(
+        text(
+            """
+            insert into prompt_templates (
+                id, name, purpose, variables_schema_ref, output_schema_ref,
+                status, schema_version, created_at, updated_at
+            ) values (
+                'prompt_postprocess_agent', 'Historical PostProcess Agent',
+                'prompt.postprocess.agent', '{}'::jsonb, '{}'::jsonb,
+                'active', 'v1', now(), now()
+            )
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            insert into prompt_versions (
+                id, prompt_template_id, content, status, schema_version,
+                created_at, updated_at
+            ) values (
+                'prompt_postprocess_agent_v1', 'prompt_postprocess_agent',
+                'historical postprocess prompt', 'published', 'v1', now(), now()
+            )
+            """
+        )
+    )

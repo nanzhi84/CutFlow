@@ -72,7 +72,7 @@ def test_tts_node_falls_back_to_sandbox_when_voice_profile_secret_is_missing():
                 "voice": {"voice_id": "voice_secret"},
                 "broll": {"enabled": False},
                 "bgm": {"enabled": False},
-                "subtitle": {"enabled": True},
+                "subtitle": {"enabled": False},
                 "lipsync": {"enabled": False},
                 "strictness": {"strict_timestamps": False},
             },
