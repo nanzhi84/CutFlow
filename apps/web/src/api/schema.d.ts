@@ -4673,7 +4673,6 @@ export interface components {
              * @default 30
              */
             timeout_sec: number;
-            retry_policy?: components["schemas"]["RetryPolicy"];
             /** Cost Policy Id */
             cost_policy_id?: string | null;
             options_schema_ref: components["schemas"]["ProviderOptionsSchemaRef"];
@@ -4884,7 +4883,7 @@ export interface components {
          * DegradationCode
          * @enum {string}
          */
-        DegradationCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "broll.insertions_dropped_geometry" | "editing_agent.deterministic_fallback" | "media_selection_agent.deterministic_fallback" | "window_query.template_fallback" | "timestamp.estimated" | "huazi.animation_fallback" | "huazi.planning_failed" | "font.metrics_fallback" | "caption.visual_analysis_failed" | "caption.emphasis_relaxed_safety" | "caption.emphasis_below_floor" | "tts.timing_unavailable" | "postprocess.planning_failed" | "sfx.asset_missing" | "sfx.mix_failed";
+        DegradationCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "broll.insertions_dropped_geometry" | "editing_agent.deterministic_fallback" | "media_selection_agent.deterministic_fallback" | "window_query.template_fallback" | "timestamp.estimated" | "huazi.animation_fallback" | "huazi.planning_failed" | "font.metrics_fallback" | "caption.visual_analysis_failed" | "caption.normal_relaxed_safety" | "caption.emphasis_relaxed_safety" | "caption.emphasis_below_floor" | "tts.timing_unavailable" | "postprocess.planning_failed" | "sfx.asset_missing" | "sfx.mix_failed";
         /** DegradationNotice */
         DegradationNotice: {
             code: components["schemas"]["WarningCode"];
@@ -6378,7 +6377,6 @@ export interface components {
             concurrency_key?: string | null;
             /** Timeout Sec */
             timeout_sec?: number | null;
-            retry_policy?: components["schemas"]["RetryPolicy"] | null;
             /** Cost Policy Id */
             cost_policy_id?: string | null;
             /** Default Options */
@@ -7371,7 +7369,6 @@ export interface components {
              * @default 30
              */
             timeout_sec: number;
-            retry_policy?: components["schemas"]["RetryPolicy"];
             /** Cost Policy Id */
             cost_policy_id?: string | null;
             options_schema_ref: components["schemas"]["ProviderOptionsSchemaRef"];
@@ -8095,26 +8092,6 @@ export interface components {
              * @default true
              */
             reuse_valid_artifacts: boolean;
-        };
-        /** RetryPolicy */
-        RetryPolicy: {
-            /**
-             * Max Attempts
-             * @default 1
-             */
-            max_attempts: number;
-            /**
-             * Backoff Seconds
-             * @default 0
-             */
-            backoff_seconds: number;
-            /**
-             * Backoff Multiplier
-             * @default 2
-             */
-            backoff_multiplier: number;
-            /** Retryable Error Codes */
-            retryable_error_codes?: components["schemas"]["ErrorCode"][];
         };
         /** RetryRunRequest */
         RetryRunRequest: {
@@ -9112,7 +9089,7 @@ export interface components {
          * WarningCode
          * @enum {string}
          */
-        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced" | "budget.exceeded" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "editing_agent.deterministic_fallback" | "editing_agent.llm_repair" | "editing_agent.local_constraint_repair" | "media_selection_agent.deterministic_fallback" | "media_selection_agent.llm_repair" | "media_selection_agent.local_constraint_repair" | "broll.insertions_dropped_geometry" | "window_query.template_fallback" | "huazi.animation_fallback" | "huazi.planning_failed" | "font.metrics_fallback" | "caption.visual_analysis_failed" | "caption.emphasis_relaxed_safety" | "caption.emphasis_below_floor" | "tts.timing_unavailable" | "postprocess.planning_failed" | "sfx.asset_missing" | "sfx.mix_failed";
+        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced" | "budget.exceeded" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "editing_agent.deterministic_fallback" | "editing_agent.llm_repair" | "editing_agent.local_constraint_repair" | "media_selection_agent.deterministic_fallback" | "media_selection_agent.llm_repair" | "media_selection_agent.local_constraint_repair" | "broll.insertions_dropped_geometry" | "window_query.template_fallback" | "huazi.animation_fallback" | "huazi.planning_failed" | "font.metrics_fallback" | "caption.visual_analysis_failed" | "caption.normal_relaxed_safety" | "caption.emphasis_relaxed_safety" | "caption.emphasis_below_floor" | "tts.timing_unavailable" | "postprocess.planning_failed" | "sfx.asset_missing" | "sfx.mix_failed";
         /** WorkflowRun */
         WorkflowRun: {
             /** Id */

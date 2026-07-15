@@ -2,14 +2,20 @@
 
 Two auth planes behind one ``tts.speech`` capability:
 
-- **data plane** — synthesis ``/api/v1/tts`` (header ``x-api-key``) and clone
-  upload ``/api/v1/mega_tts/audio/upload`` (header ``Authorization: Bearer;<key>``
-  + ``Resource-Id: volc.megatts.voiceclone``, body carries ``appid``);
+- **data plane** — asynchronous full-file synthesis ``/api/v3/tts/submit`` →
+  ``/api/v3/tts/query`` (``X-Api-App-Id`` + application ``Access Token``),
+  legacy synthesis ``/api/v1/tts`` (header ``x-api-key``), and
+  clone upload ``/api/v1/mega_tts/audio/upload`` (header
+  ``Authorization: Bearer;<key>`` + ``Resource-Id: volc.megatts.voiceclone``,
+  body carries ``appid``);
 - **management plane** — sync cloned voices + issue/list the x-api-key, via
   AK/SK V4 signing in :class:`VolcSpeechOpenAPI`.
 
-The profile secret is the account ``AccessKeyId:SecretAccessKey`` pair; the
-data-plane x-api-key is auto-issued from it (path B) and cached per appid.
+The production profile secret is a JSON object containing ``access_key_id``,
+``secret_access_key`` and the speech application's ``access_token``.  The old
+``AccessKeyId:SecretAccessKey`` form remains readable for management and legacy
+v1 calls, but intentionally cannot authorize async v3 because an OpenAPI API key
+is not the application Access Token documented by that endpoint.
 
 Auth shapes verified against the live account (synthesis + management); the clone
 upload auth was probed (Bearer;<key> reaches the business layer asking for appid).
@@ -22,6 +28,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 import uuid
 from decimal import Decimal
 from pathlib import Path
@@ -35,9 +42,9 @@ from packages.ai.gateway.provider_gateway import (
     ProviderRuntimeError,
 )
 from packages.ai.providers.common import (
-    map_http_status,
     money_cny,
     option,
+    poll_budget,
     request,
     require_secret,
     response_json,
@@ -54,14 +61,19 @@ from packages.core.contracts import (
 
 _DEFAULT_DATA_BASE_URL = "https://openspeech.bytedance.com"
 _CLONE_RESOURCE_ID = "volc.megatts.voiceclone"
-# v3 单向流式 (HTTP chunked, 逐行 JSON) 端点与复刻/预设音色的资源 id。v1 的 data
-# 接口对 volcano_icl 复刻音色不回时间戳；v3 支持 ``audio_params.enable_timestamp``。
-_V3_SYNTH_PATH = "/api/v3/tts/unidirectional"
-# 复刻音色（S_ 前缀）用 ``volc.megatts.default`` 才会回字级时间戳；``seed-icl-2.0``
-# 能合成但 ``sentence.words`` 恒空（实测）。预设/官方音色用 ``seed-tts-2.0``。
-_V3_CLONE_RESOURCE_ID = "volc.megatts.default"
-_V3_TTS_RESOURCE_ID = "seed-tts-2.0"
-_V3_STREAM_DONE_CODE = 20000000
+_V3_ASYNC_SUBMIT_PATH = "/api/v3/tts/submit"
+_V3_ASYNC_QUERY_PATH = "/api/v3/tts/query"
+_V3_ASYNC_RESOURCE_ID = "seed-icl-2.0"
+_V3_ASYNC_MAX_TEXT_CHARS = 100_000
+_V3_ASYNC_SAMPLE_RATES = {8000, 16000, 22050, 24000, 32000, 44100, 48000}
+_V3_SUCCESS_CODE = 20_000_000
+_V3_TASK_RUNNING = 1
+_V3_TASK_SUCCEEDED = 2
+_V3_TASK_FAILED = 3
+
+
+class _AcceptedTaskTerminalError(ProviderRuntimeError):
+    """The vendor explicitly marked an accepted async task as failed."""
 
 
 class VolcengineTTSProvider:
@@ -97,6 +109,47 @@ class VolcengineTTSProvider:
             f"Volcengine TTS operation {operation} is not supported.",
         )
 
+    def resume_with_context(
+        self,
+        call: ProviderCall,
+        context: ProviderInvocationContext,
+        external_job_id: str,
+    ) -> ProviderResult:
+        """Resume an accepted async ICL 2.0 task without submitting it again."""
+
+        try:
+            if call.capability_id != "tts.speech":
+                raise ProviderRuntimeError(
+                    ErrorCode.provider_unsupported_option,
+                    f"Volcengine TTS cannot run {call.capability_id}.",
+                )
+            operation = str(call.input.get("operation") or "speech")
+            if operation != "speech" or str(option(context, "api_version", "v1")) != "v3":
+                raise ProviderRuntimeError(
+                    ErrorCode.provider_unsupported_option,
+                    "Only Volcengine async v3 speech tasks can be resumed.",
+                )
+            text = str(call.input.get("text") or "")
+            voice_id = str(call.input.get("voice_id") or option(context, "voice_id") or "")
+            self._validate_v3_input(context, text=text, voice_id=voice_id)
+            return self._collect_v3_result(
+                call,
+                context,
+                text=text,
+                voice_id=voice_id,
+                task_id=external_job_id,
+            )
+        except _AcceptedTaskTerminalError:
+            raise
+        except ProviderRuntimeError as exc:
+            if exc.preserve_polling:
+                raise
+            raise _accepted_task_error(
+                exc,
+                task_id=external_job_id,
+                operation="resume",
+            ) from exc
+
     # --- credentials ---------------------------------------------------------
 
     def _appid(self, context: ProviderInvocationContext) -> str:
@@ -108,14 +161,69 @@ class VolcengineTTSProvider:
         return appid
 
     def _openapi(self, context: ProviderInvocationContext) -> VolcSpeechOpenAPI:
-        secret = require_secret(context)
-        access_key_id, _, secret_access_key = secret.partition(":")
+        credentials = self._credentials(context)
+        access_key_id = credentials.get("access_key_id", "")
+        secret_access_key = credentials.get("secret_access_key", "")
         if not access_key_id or not secret_access_key:
             raise ProviderRuntimeError(
                 ErrorCode.provider_auth_failed,
-                "Volcengine secret must be 'access_key_id:secret_access_key'.",
+                "Volcengine secret must include access_key_id and secret_access_key.",
             )
         return VolcSpeechOpenAPI(self.client, access_key_id, secret_access_key)
+
+    def _credentials(self, context: ProviderInvocationContext) -> dict[str, str]:
+        secret = require_secret(context).strip()
+        if secret.startswith("{"):
+            try:
+                value = json.loads(secret)
+            except json.JSONDecodeError as exc:
+                raise ProviderRuntimeError(
+                    ErrorCode.provider_auth_failed,
+                    "Volcengine secret JSON is invalid.",
+                ) from exc
+            if not isinstance(value, dict):
+                raise ProviderRuntimeError(
+                    ErrorCode.provider_auth_failed,
+                    "Volcengine secret JSON must be an object.",
+                )
+            return {
+                "access_key_id": str(
+                    value.get("access_key_id") or value.get("accessKeyId") or ""
+                ).strip(),
+                "secret_access_key": str(
+                    value.get("secret_access_key")
+                    or value.get("secretAccessKey")
+                    or ""
+                ).strip(),
+                "access_token": str(
+                    value.get("access_token") or value.get("accessToken") or ""
+                ).strip(),
+            }
+        access_key_id, separator, secret_access_key = secret.partition(":")
+        if separator:
+            return {
+                "access_key_id": access_key_id.strip(),
+                "secret_access_key": secret_access_key.strip(),
+                "access_token": "",
+            }
+        return {}
+
+    def _access_token(self, context: ProviderInvocationContext) -> str:
+        if not bool(option(context, "async_icl2_ready", False)):
+            raise ProviderRuntimeError(
+                ErrorCode.provider_auth_failed,
+                "Volcengine async ICL 2.0 is not armed. Rotate the provider secret to "
+                "include the speech application Access Token, then set "
+                "default_options.async_icl2_ready=true before enabling v3.",
+            )
+        token = self._credentials(context).get("access_token", "")
+        if not token:
+            raise ProviderRuntimeError(
+                ErrorCode.provider_auth_failed,
+                "Volcengine async ICL 2.0 requires the speech application Access Token "
+                "in the provider secret; an OpenAPI API key cannot be used here.",
+            )
+        return token
 
     def _x_api_key(self, context: ProviderInvocationContext) -> str:
         appid = self._appid(context)
@@ -223,73 +331,240 @@ class VolcengineTTSProvider:
         text: str,
         voice_id: str,
     ) -> ProviderResult:
-        """v3 单向流式合成：拿回 v1 对复刻音色不返回的字级时间戳。"""
-        x_api_key = self._x_api_key(context)
-        appid = self._appid(context)
-        base_url = str(option(context, "data_base_url_v3", _DEFAULT_DATA_BASE_URL)).rstrip("/")
-        fmt = str(option(context, "format", "mp3"))
-        sample_rate = int(option(context, "sample_rate", 24000))
-        default_resource = (
-            _V3_CLONE_RESOURCE_ID if voice_id.startswith("S_") else _V3_TTS_RESOURCE_ID
-        )
-        resource_id = str(option(context, "resource_id", default_resource))
-        speed = float(call.input.get("speed") or option(context, "speed", 1.0))
+        """Submit one full-text ICL 2.0 task and download its single MP3 result."""
+
+        fmt, sample_rate = self._validate_v3_input(context, text=text, voice_id=voice_id)
+        access_token = self._access_token(context)
+        base_url = self._v3_base_url(context)
+        resource_id = str(option(context, "resource_id", _V3_ASYNC_RESOURCE_ID))
+        request_id = _stable_request_id(call.idempotency_key)
         audio_params: dict = {
             "format": fmt,
             "sample_rate": sample_rate,
             "enable_timestamp": True,
         }
-        # v3 语速是整数 ``speech_rate``（0=常速，[-50,100]，+100≈2x、-50≈0.5x），与 v1
-        # 的 ``speed_ratio`` 量纲不同；把倍率线性映射过去，常速时不下发。
+        speed = float(call.input.get("speed") or option(context, "speed", 1.0))
         if abs(speed - 1.0) > 1e-6:
             audio_params["speech_rate"] = max(-50, min(100, round((speed - 1.0) * 100)))
-        req_params: dict = {
-            "text": text,
-            "speaker": voice_id,
-            "audio_params": audio_params,
-            "additions": json.dumps(
-                {"disable_markdown_filter": True, "enable_timestamp": True},
-                ensure_ascii=False,
-            ),
+        payload = {
+            "user": {"uid": str(option(context, "uid", "cutagent"))},
+            "unique_id": request_id,
+            "req_params": {
+                "text": text,
+                "speaker": voice_id,
+                "audio_params": audio_params,
+            },
         }
-        model = option(context, "v3_model")
-        if model:
-            req_params["model"] = str(model)
-        payload = {"user": {"uid": str(option(context, "uid", "cutagent"))}, "req_params": req_params}
-        # New-console single-key auth (``X-Api-Key`` = the issued x-api-key). The
-        # legacy ``X-Api-App-Id`` + ``X-Api-Access-Key`` pair is rejected for this
-        # account's v3 grants ("requested grant not found in SaaS storage").
-        headers = {
-            "X-Api-Key": x_api_key,
-            "X-Api-App-Id": appid,
-            "X-Api-Resource-Id": resource_id,
-            "X-Api-Request-Id": call.idempotency_key or f"cutagent-{uuid.uuid4().hex}",
-            "Content-Type": "application/json",
-            "Connection": "keep-alive",
-        }
-        audio_bytes, sentences = self._stream_v3(
-            f"{base_url}{_V3_SYNTH_PATH}",
-            headers=headers,
-            payload=payload,
-            timeout=float(context.profile.timeout_sec),
+        result = response_json(
+            request(
+                self.client,
+                "POST",
+                f"{base_url}{_V3_ASYNC_SUBMIT_PATH}",
+                headers=self._v3_headers(
+                    appid=self._appid(context),
+                    access_token=access_token,
+                    resource_id=resource_id,
+                    request_id=request_id,
+                ),
+                json_body=payload,
+                timeout=float(context.profile.timeout_sec),
+            )
         )
+        data = _v3_response_data(result, operation="submit")
+        task_id = str(data.get("task_id") or "").strip()
+        if not task_id:
+            raise ProviderRuntimeError(
+                ErrorCode.provider_remote_failed,
+                "Volcengine TTS v3 submit response missing task_id.",
+            )
+        context.mark_polling(task_id)
+        try:
+            return self._collect_v3_result(
+                call,
+                context,
+                text=text,
+                voice_id=voice_id,
+                task_id=task_id,
+                credentials=(access_token, base_url, resource_id),
+            )
+        except _AcceptedTaskTerminalError:
+            raise
+        except ProviderRuntimeError as exc:
+            if exc.preserve_polling:
+                raise
+            raise _accepted_task_error(exc, task_id=task_id, operation="collect") from exc
+
+    def _validate_v3_input(
+        self,
+        context: ProviderInvocationContext,
+        *,
+        text: str,
+        voice_id: str,
+    ) -> tuple[str, int]:
+        if not text.strip() or not voice_id.strip():
+            raise ProviderRuntimeError(
+                ErrorCode.provider_unsupported_option,
+                "Text and voice_id are required.",
+            )
+        if voice_id.startswith(("ICL_uranus_", "saturn_")):
+            raise ProviderRuntimeError(
+                ErrorCode.provider_unsupported_option,
+                "Volcengine async ICL 2.0 requires the external S_ SpeakerID; "
+                "ModelTypeDetails.IclSpeakerId is internal model metadata.",
+            )
+        if len(text) > _V3_ASYNC_MAX_TEXT_CHARS:
+            raise ProviderRuntimeError(
+                ErrorCode.provider_unsupported_option,
+                "Volcengine async TTS accepts at most 100000 characters; "
+                "the narration will not be split into multiple audio tasks.",
+            )
+        fmt = str(option(context, "format", "mp3")).strip().lower()
+        if fmt != "mp3":
+            raise ProviderRuntimeError(
+                ErrorCode.provider_unsupported_option,
+                "Volcengine async ICL 2.0 is configured to store one complete MP3; "
+                "format must be mp3.",
+            )
+        sample_rate = int(option(context, "sample_rate", 24000))
+        if sample_rate not in _V3_ASYNC_SAMPLE_RATES:
+            raise ProviderRuntimeError(
+                ErrorCode.provider_unsupported_option,
+                f"Volcengine async TTS sample_rate={sample_rate} is not supported.",
+            )
+        resource_id = str(option(context, "resource_id", _V3_ASYNC_RESOURCE_ID))
+        if resource_id != _V3_ASYNC_RESOURCE_ID:
+            raise ProviderRuntimeError(
+                ErrorCode.provider_unsupported_option,
+                "Cloned voices on this path require resource_id=seed-icl-2.0.",
+            )
+        return fmt, sample_rate
+
+    def _v3_base_url(self, context: ProviderInvocationContext) -> str:
+        return str(option(context, "data_base_url_v3", _DEFAULT_DATA_BASE_URL)).rstrip("/")
+
+    @staticmethod
+    def _v3_headers(
+        *,
+        appid: str,
+        access_token: str,
+        resource_id: str,
+        request_id: str,
+    ) -> dict[str, str]:
+        # Despite the header name, the official async long-text API requires the
+        # speech application's Access Token here. ``ListAPIKeys`` returns a different
+        # credential: substituting it reaches the endpoint but fails grant lookup.
+        return {
+            "X-Api-App-Id": appid,
+            "X-Api-Access-Key": access_token,
+            "X-Api-Resource-Id": resource_id,
+            "X-Api-Request-Id": request_id,
+            "Content-Type": "application/json",
+        }
+
+    def _collect_v3_result(
+        self,
+        call: ProviderCall,
+        context: ProviderInvocationContext,
+        *,
+        text: str,
+        voice_id: str,
+        task_id: str,
+        credentials: tuple[str, str, str] | None = None,
+    ) -> ProviderResult:
+        if credentials is None:
+            credentials = (
+                self._access_token(context),
+                self._v3_base_url(context),
+                str(option(context, "resource_id", _V3_ASYNC_RESOURCE_ID)),
+            )
+        access_token, base_url, resource_id = credentials
+        interval, max_attempts = poll_budget(
+            context.profile.default_options,
+            default_interval=1.0,
+            default_max_attempts=600,
+            timeout_minutes=call.input.get("timeout_minutes"),
+        )
+        terminal_data: dict | None = None
+        attempts = 0
+        for attempts in range(1, max_attempts + 1):
+            try:
+                query_result = response_json(
+                    request(
+                        self.client,
+                        "POST",
+                        f"{base_url}{_V3_ASYNC_QUERY_PATH}",
+                        headers=self._v3_headers(
+                            appid=self._appid(context),
+                            access_token=access_token,
+                            resource_id=resource_id,
+                            request_id=str(uuid.uuid4()),
+                        ),
+                        json_body={"task_id": task_id},
+                        timeout=float(context.profile.timeout_sec),
+                    )
+                )
+                data = _v3_response_data(query_result, operation="query")
+            except ProviderRuntimeError as exc:
+                raise _accepted_task_error(exc, task_id=task_id, operation="query") from exc
+            task_status = _int_or_none(data.get("task_status"))
+            if task_status == _V3_TASK_SUCCEEDED:
+                terminal_data = data
+                break
+            if task_status == _V3_TASK_FAILED:
+                message = str(data.get("message") or "task failed")
+                raise _AcceptedTaskTerminalError(
+                    ErrorCode.provider_remote_failed,
+                    f"Volcengine TTS v3 task {task_id} failed: {message}",
+                )
+            if task_status != _V3_TASK_RUNNING:
+                raise ProviderRuntimeError(
+                    ErrorCode.provider_remote_failed,
+                    f"Volcengine TTS v3 query returned unknown task_status={task_status}.",
+                    preserve_polling=True,
+                )
+            if attempts < max_attempts and interval > 0:
+                time.sleep(interval)
+        if terminal_data is None:
+            raise ProviderRuntimeError(
+                ErrorCode.provider_timeout,
+                f"Volcengine TTS v3 task {task_id} did not finish after {attempts} polls.",
+                preserve_polling=True,
+            )
+        audio_url = str(terminal_data.get("audio_url") or "").strip()
+        if not audio_url:
+            raise ProviderRuntimeError(
+                ErrorCode.provider_remote_failed,
+                "Volcengine TTS v3 success response missing audio_url.",
+                preserve_polling=True,
+            )
+        try:
+            audio_bytes = request(
+                self.client,
+                "GET",
+                audio_url,
+                timeout=float(context.profile.timeout_sec),
+            ).content
+        except ProviderRuntimeError as exc:
+            raise _accepted_task_error(exc, task_id=task_id, operation="audio download") from exc
         if not audio_bytes:
             raise ProviderRuntimeError(
-                ErrorCode.provider_remote_failed, "Volcengine TTS v3 response missing audio."
+                ErrorCode.provider_remote_failed,
+                "Volcengine TTS v3 audio download is empty.",
+                preserve_polling=True,
             )
         artifact = context.store_media_bytes(
             content=audio_bytes,
-            filename=f"{call.idempotency_key or 'volcengine-tts'}.{fmt}",
+            filename=f"{call.idempotency_key or task_id}.mp3",
             purpose="generated-audio",
             kind=ArtifactKind.audio_tts,
             call=call,
         )
-        timing = _timing_from_v3_sentences(sentences, text=text)
+        timing = _timing_from_v3_sentences(terminal_data.get("sentences"), text=text)
         duration = 0.0
         if artifact.media_info and artifact.media_info.duration_sec:
             duration = artifact.media_info.duration_sec
-        elif timing and timing.tokens:
-            duration = timing.tokens[-1].end
+        elif timing:
+            duration = max((item.end for item in timing.tokens or timing.segments), default=0.0)
         estimated = (Decimal(len(text)) / Decimal(1000)) * self.cost_per_1k_chars
         output = TtsSpeechOutput(
             audio_artifact_id=artifact.id,
@@ -302,60 +577,16 @@ class VolcengineTTSProvider:
             output=output,
             input_tokens=len(text),
             audio_seconds=duration,
-            raw_usage={"characters": len(text)},
+            raw_usage={
+                "characters": len(text),
+                "model": resource_id,
+                "task_id": task_id,
+                "poll_attempts": attempts,
+                "source_format": "mp3",
+                "stored_format": "mp3",
+            },
             estimated_cost=money_cny(estimated),
         )
-
-    def _stream_v3(
-        self,
-        url: str,
-        *,
-        headers: dict[str, str],
-        payload: dict,
-        timeout: float,
-    ) -> tuple[bytes, list]:
-        """POST 到 v3 端点并把 chunked JSON 流拼成 (音频字节, sentence 事件列表)。"""
-        audio = bytearray()
-        sentences: list = []
-        try:
-            with self.client.stream(
-                "POST", url, headers=headers, json=payload, timeout=timeout
-            ) as response:
-                if response.status_code >= 400:
-                    response.read()
-                    raise map_http_status(response.status_code, response.text)
-                for line in response.iter_lines():
-                    event = _parse_v3_line(line)
-                    if event is None:
-                        continue
-                    code = event.get("code", 0)
-                    if code == _V3_STREAM_DONE_CODE:
-                        break
-                    if code:
-                        message = str(event.get("message") or "Volcengine TTS v3 failed.")
-                        raise ProviderRuntimeError(
-                            ErrorCode.provider_remote_failed,
-                            f"Volcengine TTS v3 code={code}: {message}",
-                        )
-                    chunk = event.get("data")
-                    if chunk:
-                        try:
-                            audio.extend(base64.b64decode(chunk))
-                        except (ValueError, TypeError) as exc:
-                            raise ProviderRuntimeError(
-                                ErrorCode.provider_remote_failed,
-                                "Volcengine TTS v3 audio chunk is invalid.",
-                            ) from exc
-                    sentence = event.get("sentence")
-                    if sentence:
-                        sentences.append(sentence)
-        except httpx.TimeoutException as exc:
-            raise ProviderRuntimeError(
-                ErrorCode.provider_timeout, "Volcengine TTS v3 request timed out."
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise ProviderRuntimeError(ErrorCode.provider_remote_failed, str(exc)) from exc
-        return bytes(audio), sentences
 
     def _voice_list(self, call: ProviderCall, context: ProviderInvocationContext) -> ProviderResult:
         appid = self._appid(context)
@@ -531,70 +762,123 @@ def _timestamp_seconds(value: object) -> float:
     return max(0.0, number)
 
 
-def _parse_v3_line(line: object) -> dict | None:
-    """Decode one line of the v3 chunked/SSE stream into a JSON object (or None)."""
-    if isinstance(line, bytes):
-        line = line.decode("utf-8", "ignore")
-    if not isinstance(line, str):
-        return None
-    text = line.strip()
-    if text.startswith("data:"):  # tolerate the SSE (``.../unidirectional/sse``) framing too
-        text = text[len("data:") :].strip()
-    if not text or text == "[DONE]":
-        return None
+def _int_or_none(value: object) -> int | None:
     try:
-        parsed = json.loads(text)
-    except (TypeError, ValueError, json.JSONDecodeError):
+        return int(value)
+    except (TypeError, ValueError):
         return None
-    return parsed if isinstance(parsed, dict) else None
 
 
-def _v3_word_bounds(item: dict) -> tuple[float, float]:
-    """Read one v3 word's (start, end) in seconds.
+def _stable_request_id(idempotency_key: str | None) -> str:
+    """Return a vendor-safe UUID while keeping retries stable for one logical call."""
 
-    The verified ``volc.megatts.default`` shape is camelCase ``startTime`` /
-    ``endTime`` already in seconds; snake_case ``start_time`` / ``end_time`` (the
-    legacy v1 millisecond shape) is tolerated as a fallback.
+    if idempotency_key:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, idempotency_key))
+    return str(uuid.uuid4())
+
+
+def _accepted_task_error(
+    exc: ProviderRuntimeError,
+    *,
+    task_id: str,
+    operation: str,
+) -> ProviderRuntimeError:
+    """Keep an already-paid async task recoverable after query/download failure."""
+
+    return ProviderRuntimeError(
+        exc.code,
+        f"Volcengine TTS v3 task {task_id} {operation} failed: {exc.message}",
+        preserve_polling=True,
+    )
+
+
+def _v3_response_data(result: dict, *, operation: str) -> dict:
+    code = _int_or_none(result.get("code"))
+    if code != _V3_SUCCESS_CODE:
+        message = str(result.get("message") or "request failed")
+        raise ProviderRuntimeError(
+            ErrorCode.provider_remote_failed,
+            f"Volcengine TTS v3 {operation} code={result.get('code')}: {message}",
+        )
+    data = result.get("data")
+    if isinstance(data, str):
+        data = _json_object(data)
+    if not isinstance(data, dict):
+        raise ProviderRuntimeError(
+            ErrorCode.provider_remote_failed,
+            f"Volcengine TTS v3 {operation} response missing data.",
+        )
+    return data
+
+
+def _v3_timing_bounds(item: dict) -> tuple[float, float]:
+    """Read v3 async timestamp bounds in seconds.
+
+    Current ICL envelopes use camelCase seconds. Snake-case milliseconds remain
+    tolerated for older responses and stored fixtures.
     """
+
     if "startTime" in item or "endTime" in item:
-        return _timestamp_seconds(item.get("startTime")), _timestamp_seconds(item.get("endTime"))
+        return (
+            _timestamp_seconds(item.get("startTime")),
+            _timestamp_seconds(item.get("endTime")),
+        )
     return (
         _timestamp_seconds(item.get("start_time")) / 1000.0,
         _timestamp_seconds(item.get("end_time")) / 1000.0,
     )
 
 
-def _timing_from_v3_sentences(sentences: list, *, text: str) -> SpeechTiming | None:
-    """Build canonical timing from the v3 stream's ``sentence`` events.
+def _timing_from_v3_sentences(sentences: object, *, text: str) -> SpeechTiming | None:
+    """Normalize async query sentence/word timestamps into canonical timing."""
 
-    Each ``sentence`` carries a ``words`` list of ``{word, startTime, endTime}``
-    (seconds). Word order is the stream order; a sentence may also arrive as a JSON
-    string, so it is parsed defensively.
-    """
-
-    tokens: list[SpeechTokenTiming] = []
-    for sentence in sentences:
-        obj = sentence if isinstance(sentence, dict) else _json_object(sentence)
-        raw_words = obj.get("words")
-        if not isinstance(raw_words, list):
-            continue
-        for item in raw_words:
-            if not isinstance(item, dict):
-                continue
-            token = str(item.get("word") or item.get("text") or "")
-            if not token.strip():
-                continue
-            start, end = _v3_word_bounds(item)
-            if end <= start:
-                continue
-            tokens.append(SpeechTokenTiming(text=token.strip(), start=start, end=end))
-    if not tokens:
+    raw_sentences = _json_value(sentences)
+    if not isinstance(raw_sentences, list):
         return None
+
+    segments: list[SpeechSegmentTiming] = []
+    tokens: list[SpeechTokenTiming] = []
+    for sentence in raw_sentences:
+        obj = sentence if isinstance(sentence, dict) else _json_object(sentence)
+        sentence_text = str(obj.get("text") or "").strip()
+        start, end = _v3_timing_bounds(obj)
+        sentence_tokens: list[SpeechTokenTiming] = []
+        raw_words = obj.get("words")
+        if isinstance(raw_words, list):
+            for item in raw_words:
+                if not isinstance(item, dict):
+                    continue
+                token = str(item.get("word") or item.get("text") or "")
+                if not token.strip():
+                    continue
+                token_start, token_end = _v3_timing_bounds(item)
+                if token_end <= token_start:
+                    continue
+                timing = SpeechTokenTiming(
+                    text=token.strip(), start=token_start, end=token_end
+                )
+                tokens.append(timing)
+                sentence_tokens.append(timing)
+        if sentence_text and end > start:
+            segments.append(SpeechSegmentTiming(text=sentence_text, start=start, end=end))
+        elif sentence_text and sentence_tokens:
+            segments.append(
+                SpeechSegmentTiming(
+                    text=sentence_text,
+                    start=sentence_tokens[0].start,
+                    end=sentence_tokens[-1].end,
+                )
+            )
+    if not segments and tokens:
+        segments.append(SpeechSegmentTiming(text=text, start=tokens[0].start, end=tokens[-1].end))
+    if not segments and not tokens:
+        return None
+    granularity = "segment"
+    if tokens:
+        granularity = "character" if all(len(item.text) == 1 for item in tokens) else "token"
     return SpeechTiming(
-        segments=[
-            SpeechSegmentTiming(text=text, start=tokens[0].start, end=tokens[-1].end)
-        ],
+        segments=segments,
         tokens=tokens,
-        granularity="character" if all(len(item.text) == 1 for item in tokens) else "token",
+        granularity=granularity,
         text_basis="original",
     )

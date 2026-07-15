@@ -245,19 +245,22 @@ def test_deterministic_selection_honours_topk_duration_and_diversity() -> None:
 
     assert [choice.candidate_id for choice in selected.portrait] == ["pc0", "pc1"]
     assert [choice.candidate_id for choice in selected.broll] == ["bc0", "bc1", "bc2"]
-    assert validate_media_selection(
-        selected,
-        boundary=_boundary(),
-        candidates=_candidates(),
-        retrieval_topk_by_window={
-            "p0": ["pc_short", "pc0"],
-            "p1": ["pc0", "pc1"],
-            "b0": ["bc_short", "bc0"],
-            "b1": ["bc0", "bc1"],
-            "b2": ["bc1", "bc2"],
-        },
-        require_broll_coverage=True,
-    ) == []
+    assert (
+        validate_media_selection(
+            selected,
+            boundary=_boundary(),
+            candidates=_candidates(),
+            retrieval_topk_by_window={
+                "p0": ["pc_short", "pc0"],
+                "p1": ["pc0", "pc1"],
+                "b0": ["bc_short", "bc0"],
+                "b1": ["bc0", "bc1"],
+                "b2": ["bc1", "bc2"],
+            },
+            require_broll_coverage=True,
+        )
+        == []
+    )
 
 
 def test_local_repair_replaces_invalid_choices_and_fills_full_coverage() -> None:
@@ -304,6 +307,75 @@ def test_local_repair_replaces_invalid_choices_and_fills_full_coverage() -> None
     assert unchanged is overreaching
     assert no_actions == []
     assert any("outside the exact schema" in error for error in overreach_errors)
+
+
+def test_insert_selection_drops_overlapping_slot_and_uses_later_legal_slot() -> None:
+    boundary = _boundary()
+    boundary["broll_slots"] = [
+        {"slot_id": "b0", "start_frame": 0, "end_frame": 45},
+        {"slot_id": "b1", "start_frame": 40, "end_frame": 70},
+        {"slot_id": "b2", "start_frame": 70, "end_frame": 100},
+    ]
+    selection = MediaSelection(
+        portrait=[PortraitChoice("p0", "pc0"), PortraitChoice("p1", "pc1")],
+        broll=[
+            BrollChoice("b0", "bc0", "first"),
+            BrollChoice("b1", "bc1", "overlaps first"),
+            BrollChoice("b2", "bc2", "later legal slot"),
+        ],
+    )
+
+    initial_errors = validate_media_selection(
+        selection,
+        boundary=boundary,
+        candidates=_candidates(),
+    )
+    assert "broll slots 'b0' and 'b1' overlap at frames 40-45" in initial_errors
+
+    repaired, actions, errors = repair_media_selection_to_constraints(
+        selection=selection,
+        boundary=boundary,
+        candidates=_candidates(),
+        max_inserts=2,
+    )
+
+    assert errors == []
+    assert [choice.slot_id for choice in repaired.broll] == ["b0", "b2"]
+    assert {
+        (action["slot_id"], action["reason"]) for action in actions if action["action"] == "dropped"
+    } == {("b1", "timeline overlap with slot 'b0'")}
+
+
+def test_media_agent_input_exposes_overlapping_broll_slot_conflicts() -> None:
+    request = DigitalHumanVideoRequest(
+        case_id="case_demo",
+        script="脚本",
+        voice={"voice_id": "voice_demo"},
+        broll={"enabled": True, "mode": "insert", "max_inserts": 2},
+    )
+    agent_input = build_media_agent_input(
+        request=request,
+        boundary={
+            "portrait_slots": [],
+            "broll_slots": [
+                {"slot_id": "b0", "start_frame": 0, "end_frame": 45, "text": "一"},
+                {"slot_id": "b1", "start_frame": 40, "end_frame": 70, "text": "二"},
+                {"slot_id": "b2", "start_frame": 70, "end_frame": 100, "text": "三"},
+            ],
+        },
+        candidates=_candidates(),
+        narration_units=[],
+        duration=100 / 30,
+    )
+
+    conflicts = {
+        slot["slot_id"]: slot["conflicts_with_slot_ids"] for slot in agent_input["broll_slots"]
+    }
+    assert conflicts == {"b0": ["b1"], "b1": ["b0"], "b2": []}
+    compact, diagnostics = _compact_prompt_input(agent_input)
+    assert compact["broll_slots"][0]["conflicts_with_slot_ids"] == ["b1"]
+    assert diagnostics["broll"]["selected_slot_count"] == 2
+    assert diagnostics["broll"]["construction_safe_timeline_overlap"] is True
 
 
 def test_provider_repair_loop_stops_after_valid_exact_selection() -> None:
@@ -364,9 +436,7 @@ def test_provider_repair_loop_repairs_diversity_locally_before_reprompt() -> Non
     assert errors == []
     assert feedback == [[]]
     assert [choice.candidate_id for choice in selection.broll] == ["bc0", "bc2"]
-    assert trace[0]["errors"] == [
-        "broll diversity_key 'scene_a' is assigned more than once"
-    ]
+    assert trace[0]["errors"] == ["broll diversity_key 'scene_a' is assigned more than once"]
     assert trace[1]["attempt"] == "local_media_constraint_repair"
     assert trace[1]["provider_attempt"] == 0
     assert trace[1]["error_count"] == 0
@@ -388,9 +458,10 @@ def test_media_planning_utilities_keep_retrieval_and_defaults_media_only() -> No
     assert set(filtered.portrait_by_id) == {"pc0"}
     assert set(filtered.broll_by_id) == {"bc0"}
 
-    compact = _compact_prompt_input(
+    compact, diagnostics = _compact_prompt_input(
         {
             "script": "脚本",
+            "max_broll_inserts": 1,
             "portrait_slots": [
                 "bad",
                 {
@@ -410,25 +481,27 @@ def test_media_planning_utilities_keep_retrieval_and_defaults_media_only() -> No
                     "retrieval_topk_candidate_ids": ["bc_short", "bc0"],
                 },
             ],
-            "portrait_candidates": [],
+            "portrait_candidates": [{"candidate_id": "pc1", "asset_id": "portrait_b"}],
             "broll_candidates": [
                 {"candidate_id": "bc0", "asset_id": "broll_a"},
                 {"candidate_id": "bc_short", "asset_id": "broll_short"},
             ],
         }
     )
-    assert compact["portrait_slots"][0]["legal_candidate_ids"] == ["pc1"]
-    assert compact["broll_slots"][0]["legal_candidate_ids"] == ["bc0"]
-    assert "bc0" in compact["broll_candidates"]
-    assert "bc_short" not in compact["broll_candidates"]
-    assert "allowed_slot_ids" not in compact["broll_candidates"]
+    assert [item["candidate_id"] for item in compact["portrait_slots"][0]["legal_candidates"]] == [
+        "pc1"
+    ]
+    assert [item["candidate_id"] for item in compact["broll_slots"][0]["legal_candidates"]] == [
+        "bc0"
+    ]
+    assert "portrait_candidates" not in compact
+    assert "broll_candidates" not in compact
+    assert diagnostics["strategy"] == "slot_scoped_direct_compatibility_v2"
 
     windows = {
         "portrait_windows": [{"window_id": "p0"}],
         "default_assignment": {
-            "portrait": [
-                {"window_id": "pc0", "segment_payload": {"source_mode": "lipsynced"}}
-            ],
+            "portrait": [{"window_id": "pc0", "segment_payload": {"source_mode": "lipsynced"}}],
             "portrait_plan_payload": {"enabled": True, "segments": []},
         },
     }
@@ -465,17 +538,296 @@ def test_broll_prompt_legal_candidates_intersect_capacity_and_retrieval_topk() -
     )
 
     assert agent_input["broll_slots"][0]["legal_candidate_ids"] == ["bc0", "bc1", "bc2"]
-    compact = _compact_prompt_input(agent_input)
+    compact, diagnostics = _compact_prompt_input(agent_input)
     assert compact["broll_slots"] == [
         {
             "slot_id": "b0",
             "required_seconds": 1.0,
             "text": "施工",
-            "legal_candidate_ids": ["bc1"],
+            "conflicts_with_slot_ids": [],
+            "legal_candidates": [
+                {
+                    "candidate_id": "bc1",
+                    "asset_id": "broll_b",
+                    "diversity_key": "scene_b",
+                    "scene_name": "",
+                    "matched_keywords": [],
+                    "available_seconds": 3.0,
+                    "description": "",
+                }
+            ],
         }
     ]
-    assert "bc1" in compact["broll_candidates"]
-    assert "bc_short" not in compact["broll_candidates"]
+    assert "broll_candidates" not in compact
+    assert diagnostics["broll"]["selected_slot_count"] == 1
+
+
+def test_validator_rejects_broll_choices_above_authoritative_max() -> None:
+    selection = MediaSelection(
+        portrait=[PortraitChoice("p0", "pc0"), PortraitChoice("p1", "pc1")],
+        broll=[
+            BrollChoice("b0", "bc0"),
+            BrollChoice("b1", "bc1"),
+            BrollChoice("b2", "bc2"),
+        ],
+    )
+
+    errors = validate_media_selection(
+        selection,
+        boundary=_boundary(),
+        candidates=_candidates(),
+        max_inserts=2,
+    )
+
+    assert "broll choices exceed max_inserts: 3 > 2" in errors
+
+
+def test_prompt_matching_uses_complete_domain_before_display_cutoff() -> None:
+    shared_ids = [f"pc{index:02d}" for index in range(12)]
+    candidates = [
+        {"candidate_id": candidate_id, "asset_id": "shared_asset"} for candidate_id in shared_ids
+    ]
+    candidates.append({"candidate_id": "pc12", "asset_id": "only_escape_asset"})
+    prompt, diagnostics = _compact_prompt_input(
+        {
+            "max_broll_inserts": 0,
+            "portrait_slots": [
+                {
+                    "slot_id": "p0",
+                    "required_seconds": 1.0,
+                    "legal_candidate_ids": shared_ids,
+                    "retrieval_topk_candidate_ids": shared_ids,
+                },
+                {
+                    "slot_id": "p1",
+                    "required_seconds": 1.0,
+                    "legal_candidate_ids": [*shared_ids, "pc12"],
+                    "retrieval_topk_candidate_ids": [*shared_ids, "pc12"],
+                },
+            ],
+            "broll_slots": [],
+            "portrait_candidates": candidates,
+            "broll_candidates": [],
+        }
+    )
+
+    domains = {
+        slot["slot_id"]: [item["candidate_id"] for item in slot["legal_candidates"]]
+        for slot in prompt["portrait_slots"]
+    }
+    assert domains["p0"]
+    assert "pc12" in domains["p1"]
+    assert diagnostics["portrait"]["unmatched_slot_ids"] == []
+    assert diagnostics["portrait"]["beyond_display_cutoff_count"] == 1
+
+
+def test_portrait_prompt_reports_hall_deficit_when_slots_share_only_one_asset() -> None:
+    prompt, diagnostics = _compact_prompt_input(
+        {
+            "max_broll_inserts": 0,
+            "portrait_slots": [
+                {
+                    "slot_id": "p0",
+                    "required_seconds": 1.0,
+                    "legal_candidate_ids": ["pc0"],
+                },
+                {
+                    "slot_id": "p1",
+                    "required_seconds": 1.0,
+                    "legal_candidate_ids": ["pc1"],
+                },
+            ],
+            "broll_slots": [],
+            "portrait_candidates": [
+                {"candidate_id": "pc0", "asset_id": "shared_asset"},
+                {"candidate_id": "pc1", "asset_id": "shared_asset"},
+            ],
+            "broll_candidates": [],
+        }
+    )
+
+    domains = {
+        slot["slot_id"]: [item["candidate_id"] for item in slot["legal_candidates"]]
+        for slot in prompt["portrait_slots"]
+    }
+    assert sum(bool(domain) for domain in domains.values()) == 1
+    assert diagnostics["portrait"]["prompt_candidate_count"] == 1
+    assert len(diagnostics["portrait"]["unmatched_slot_ids"]) == 1
+
+
+def test_insert_prompt_domains_keep_compatible_ends_of_conflict_bridge() -> None:
+    prompt, diagnostics = _compact_prompt_input(
+        {
+            "max_broll_inserts": 2,
+            "portrait_slots": [],
+            "broll_slots": [
+                {
+                    "slot_id": "b0",
+                    "required_seconds": 1.0,
+                    "text": "A",
+                    "legal_candidate_ids": ["a", "bridge"],
+                    "conflicts_with_slot_ids": [],
+                },
+                {
+                    "slot_id": "b1",
+                    "required_seconds": 1.0,
+                    "text": "C",
+                    "legal_candidate_ids": ["bridge", "c"],
+                    "conflicts_with_slot_ids": [],
+                },
+            ],
+            "portrait_candidates": [],
+            "broll_candidates": [
+                {
+                    "candidate_id": "a",
+                    "asset_id": "asset_x",
+                    "diversity_key": "div_a",
+                },
+                {
+                    "candidate_id": "bridge",
+                    "asset_id": "asset_x",
+                    "diversity_key": "div_c",
+                },
+                {
+                    "candidate_id": "c",
+                    "asset_id": "asset_z",
+                    "diversity_key": "div_c",
+                },
+            ],
+        }
+    )
+
+    domains = {
+        slot["slot_id"]: [item["candidate_id"] for item in slot["legal_candidates"]]
+        for slot in prompt["broll_slots"]
+    }
+    assert domains == {"b0": ["a"], "b1": ["c"]}
+    assert diagnostics["broll"]["selected_slot_count"] == 2
+    assert diagnostics["broll"]["direct_conflict_pruned_occurrences"] >= 2
+
+
+def test_insert_prompt_domains_enforce_max_zero_and_overlap_by_construction() -> None:
+    agent_input = {
+        "max_broll_inserts": 1,
+        "portrait_slots": [],
+        "broll_slots": [
+            {
+                "slot_id": "b0",
+                "required_seconds": 1.0,
+                "legal_candidate_ids": ["c0"],
+                "conflicts_with_slot_ids": ["b1"],
+            },
+            {
+                "slot_id": "b1",
+                "required_seconds": 1.0,
+                "legal_candidate_ids": ["c1"],
+                "conflicts_with_slot_ids": ["b0"],
+            },
+            {
+                "slot_id": "b2",
+                "required_seconds": 1.0,
+                "legal_candidate_ids": ["c2"],
+                "conflicts_with_slot_ids": [],
+            },
+        ],
+        "portrait_candidates": [],
+        "broll_candidates": [
+            {"candidate_id": "c0", "asset_id": "a0", "diversity_key": "d0"},
+            {"candidate_id": "c1", "asset_id": "a1", "diversity_key": "d1"},
+            {"candidate_id": "c2", "asset_id": "a2", "diversity_key": "d2"},
+        ],
+    }
+    prompt, diagnostics = _compact_prompt_input(agent_input)
+
+    nonempty = [slot["slot_id"] for slot in prompt["broll_slots"] if slot["legal_candidates"]]
+    assert len(nonempty) == 1
+    assert diagnostics["broll"]["construction_safe_max_inserts"] is True
+    assert diagnostics["broll"]["construction_safe_timeline_overlap"] is True
+
+    agent_input["max_broll_inserts"] = 0
+    zero_prompt, zero_diagnostics = _compact_prompt_input(agent_input)
+    assert all(not slot["legal_candidates"] for slot in zero_prompt["broll_slots"])
+    assert zero_diagnostics["broll"]["selected_slot_count"] == 0
+
+
+def test_full_coverage_prompt_reuses_asset_but_never_candidate_id() -> None:
+    prompt, diagnostics = _compact_prompt_input(
+        {
+            "max_broll_inserts": 2,
+            "portrait_slots": [],
+            "broll_slots": [
+                {
+                    "slot_id": "b0",
+                    "required_seconds": 1.0,
+                    "legal_candidate_ids": ["c0", "c1"],
+                    "conflicts_with_slot_ids": [],
+                },
+                {
+                    "slot_id": "b1",
+                    "required_seconds": 1.0,
+                    "legal_candidate_ids": ["c0", "c1"],
+                    "conflicts_with_slot_ids": [],
+                },
+            ],
+            "portrait_candidates": [],
+            "broll_candidates": [
+                {
+                    "candidate_id": "c0",
+                    "asset_id": "same_asset",
+                    "diversity_key": "same_diversity",
+                },
+                {
+                    "candidate_id": "c1",
+                    "asset_id": "same_asset",
+                    "diversity_key": "same_diversity",
+                },
+            ],
+        },
+        allow_broll_asset_diversity_reuse=True,
+    )
+
+    domains = [
+        {item["candidate_id"] for item in slot["legal_candidates"]}
+        for slot in prompt["broll_slots"]
+    ]
+    assert all(domains)
+    assert domains[0].isdisjoint(domains[1])
+    assert diagnostics["broll"]["coverage_witness_count"] == 2
+    assert diagnostics["broll"]["unmatched_slot_ids"] == []
+
+
+def test_full_coverage_prompt_reports_overlap_and_insufficient_max_as_impossible() -> None:
+    prompt, diagnostics = _compact_prompt_input(
+        {
+            "max_broll_inserts": 1,
+            "portrait_slots": [],
+            "broll_slots": [
+                {
+                    "slot_id": "b0",
+                    "required_seconds": 1.0,
+                    "legal_candidate_ids": ["c0", "c1"],
+                    "conflicts_with_slot_ids": ["b1"],
+                },
+                {
+                    "slot_id": "b1",
+                    "required_seconds": 1.0,
+                    "legal_candidate_ids": ["c0", "c1"],
+                    "conflicts_with_slot_ids": ["b0"],
+                },
+            ],
+            "portrait_candidates": [],
+            "broll_candidates": [
+                {"candidate_id": "c0", "asset_id": "same"},
+                {"candidate_id": "c1", "asset_id": "same"},
+            ],
+        },
+        allow_broll_asset_diversity_reuse=True,
+    )
+
+    assert all(slot["legal_candidates"] for slot in prompt["broll_slots"])
+    assert diagnostics["broll"]["construction_safe_max_inserts"] is False
+    assert diagnostics["broll"]["construction_safe_timeline_overlap"] is False
+    assert diagnostics["broll"]["unmatched_slot_ids"] == ["b0", "b1"]
 
 
 def test_media_planning_feasibility_and_full_coverage_failures_are_explicit() -> None:

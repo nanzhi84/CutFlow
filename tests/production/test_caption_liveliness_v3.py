@@ -4,6 +4,7 @@ from packages.core.contracts import (
     DegradationCode,
     MediaAssetRecord,
     SpeechTiming,
+    SpeechTokenTiming,
     TtsSpeechOutput,
     WarningCode,
 )
@@ -23,8 +24,11 @@ from packages.production.pipeline._ffmpeg import (
     _build_audio_filters,
     render_final_media,
 )
-from packages.production.pipeline._sfx_events import plan_caption_sfx_events
-from packages.production.pipeline._speech_timing import normalize_timing_for_script
+from packages.production.pipeline._sfx_events import plan_huazi_sfx_events
+from packages.production.pipeline._speech_timing import (
+    assign_token_ownership,
+    normalize_timing_for_script,
+)
 from packages.production.pipeline._subtitles import write_ass_subtitles
 
 
@@ -90,6 +94,15 @@ def test_normalized_tts_text_uses_sentence_local_display_fallback_with_diagnosti
     )
     assert segments[0].text == "只要两千元"
     assert "".join(token.text for token in tokens) == "只要2000元"
+    assert [token.token_id for token in tokens] == [
+        f"token_{index:04d}" for index in range(1, len(tokens) + 1)
+    ]
+    assert [token.char_span for token in tokens] == [
+        (0, 1),
+        (1, 2),
+        (2, 6),
+        (6, 7),
+    ]
     assert diagnostics["token_matched"] == 2
     assert diagnostics["char_fallback"] == 2
 
@@ -223,6 +236,141 @@ def test_normal_cue_uses_token_bounds_and_delays_second_line():
     assert diagnostics["token_matched"] == len(tokens)
 
 
+def test_normal_cues_claim_tokens_once_even_when_spoken_times_overlap():
+    script = "第一句内容第二句内容"
+    units = [
+        {"unit_id": "u1", "text": "第一句内容", "start": 0.0, "end": 2.0},
+        {"unit_id": "u2", "text": "第二句内容", "start": 1.4, "end": 3.0},
+    ]
+    timing = SpeechTiming.model_validate(
+        {
+            "segments": [
+                {"text": "第一句内容", "start": 0.0, "end": 2.0},
+                {"text": "第二句内容", "start": 1.4, "end": 3.0},
+            ],
+            "tokens": [
+                {"text": "第一句内容", "start": 0.0, "end": 1.8},
+                {"text": "第二句内容", "start": 1.4, "end": 3.0},
+            ],
+            "granularity": "token",
+            "text_basis": "original",
+        }
+    )
+    _segments, normalized_tokens, _diagnostics = normalize_timing_for_script(
+        timing,
+        script=script,
+        duration=3.0,
+    )
+    owned_tokens = assign_token_ownership(
+        normalized_tokens,
+        script=script,
+        units=units,
+    )
+
+    windows, diagnostics = compile_normal_windows(
+        units=units,
+        resolution=(1080, 1920),
+        fps=30,
+        total_frames=90,
+        margin_l=80,
+        margin_r=80,
+        measure=lambda value: len(value) * 40.0,
+        metrics_source="hmtx",
+        enabled=True,
+        tokens=[token.model_dump(mode="json") for token in owned_tokens],
+        cut_frames=set(),
+    )
+
+    claimed = [token_id for window in windows for token_id in window["token_ids"]]
+    assert len(windows) == 2
+    assert claimed == [token.token_id for token in owned_tokens]
+    assert len(claimed) == len(set(claimed))
+    assert windows[0]["source_unit_ids"] == ["u1"]
+    assert windows[1]["source_unit_ids"] == ["u2"]
+    assert windows[0]["char_span"] == [0, 5]
+    assert windows[1]["char_span"] == [5, 10]
+    assert windows[0]["spoken_span"]["end_frame"] > windows[1]["spoken_span"]["start_frame"]
+    assert windows[1]["display_span"]["start_frame"] - windows[0]["display_span"]["end_frame"] >= 2
+    assert diagnostics["token_claim_failures"] == 0
+    assert diagnostics["token_matched"] == len(owned_tokens)
+
+
+def test_sparse_historical_tokens_keep_monotonic_script_spans_and_caption_ownership():
+    script = "专做‘精准补’：刮伤多大，就补多大，20cm×10cm算一处，"
+    units = [
+        {"unit_id": "u1", "text": "专做‘精准补’：刮伤多大，", "start": 0.0, "end": 2.0},
+        {
+            "unit_id": "u2",
+            "text": "就补多大，20cm×10cm算一处，",
+            "start": 2.0,
+            "end": 4.0,
+        },
+    ]
+    # Historical normalized alignment omitted the quote and colon tokens. Pairing
+    # the remaining stream with script matches by list index used to corrupt every
+    # later char_span and made the first cue impossible to claim.
+    token_texts = [
+        "专",
+        "做",
+        "精",
+        "准",
+        "补",
+        "刮",
+        "伤",
+        "多",
+        "大",
+        "，",
+        "就",
+        "补",
+        "多",
+        "大",
+        "，",
+        "20",
+        "cm",
+        "×",
+        "10",
+        "cm",
+        "算",
+        "一",
+        "处",
+        "，",
+    ]
+    tokens = [
+        SpeechTokenTiming(text=text, start=index * 0.1, end=(index + 1) * 0.1)
+        for index, text in enumerate(token_texts)
+    ]
+    owned_tokens = assign_token_ownership(tokens, script=script, units=units)
+
+    spans = [token.char_span for token in owned_tokens]
+    assert all(span is not None for span in spans)
+    assert all(first[1] <= second[0] for first, second in zip(spans, spans[1:]))
+    assert [token.source_unit_id for token in owned_tokens[:10]] == ["u1"] * 10
+    assert [token.source_unit_id for token in owned_tokens[10:]] == ["u2"] * 14
+    assert len({token.token_id for token in owned_tokens}) == len(owned_tokens)
+
+    windows, diagnostics = compile_normal_windows(
+        units=units,
+        resolution=(1080, 1920),
+        fps=30,
+        total_frames=120,
+        margin_l=80,
+        margin_r=80,
+        measure=lambda value: len(value) * 30.0,
+        metrics_source="hmtx",
+        enabled=True,
+        tokens=[token.model_dump(mode="json") for token in owned_tokens],
+        cut_frames=set(),
+    )
+
+    assert len(windows) == 2
+    assert diagnostics["token_claim_failures"] == 0
+    assert diagnostics["token_matched"] == len(owned_tokens)
+    assert windows[0]["char_span"] == [0, script.index("就")]
+    assert windows[1]["char_span"] == [script.index("就"), len(script)]
+    assert windows[0]["source_unit_ids"] == ["u1"]
+    assert windows[1]["source_unit_ids"] == ["u2"]
+
+
 def test_ass_has_three_sizes_three_effects_and_inline_dual_color(tmp_path):
     output = tmp_path / "caption-v3.ass"
     write_ass_subtitles(
@@ -279,13 +427,8 @@ def test_ass_has_three_sizes_three_effects_and_inline_dual_color(tmp_path):
     assert "限时{\\1c&H0000FFFF}2000元{\\1c&H00FFFFFF}" in ass
 
 
-def test_sfx_events_are_frame_synced_density_limited_and_prioritized():
-    events = plan_caption_sfx_events(
-        normal_cues=[
-            {"window_id": "n1", "start": 0.5, "effect_id": "soft_in"},
-            {"window_id": "n2", "start": 0.6, "effect_id": "soft_in"},
-            {"window_id": "n3", "start": 1.1, "effect_id": "soft_in"},
-        ],
+def test_huazi_sfx_events_are_frame_synced_density_limited_and_prioritized():
+    events = plan_huazi_sfx_events(
         overlay_events=[
             {
                 "event_id": "hero",
@@ -293,7 +436,28 @@ def test_sfx_events_are_frame_synced_density_limited_and_prioritized():
                 "sfx_id": "asset_sfx_impact",
                 "priority": 90,
                 "visual_preset_id": "hero",
-            }
+            },
+            {
+                "event_id": "same-frame-lower-priority",
+                "start": 0.5,
+                "sfx_id": "asset_sfx_ding",
+                "priority": 10,
+                "visual_preset_id": "emphasis",
+            },
+            {
+                "event_id": "inside-cooldown",
+                "start": 0.6,
+                "sfx_id": "asset_sfx_ding",
+                "priority": 10,
+                "visual_preset_id": "emphasis",
+            },
+            {
+                "event_id": "later",
+                "start": 1.1,
+                "sfx_id": "asset_sfx_ding",
+                "priority": 10,
+                "visual_preset_id": "emphasis",
+            },
         ],
         duration=2.0,
     )
@@ -301,6 +465,7 @@ def test_sfx_events_are_frame_synced_density_limited_and_prioritized():
     assert abs(events[0]["start_ms"] - 500) <= 50
     assert [event["start_ms"] for event in events].count(500) == 1
     assert not any(event["start_ms"] == 600 for event in events)
+    assert any(event["start_ms"] == 1100 for event in events)
 
 
 def test_no_sfx_keeps_legacy_mix_shape_except_for_stereo_pinning():

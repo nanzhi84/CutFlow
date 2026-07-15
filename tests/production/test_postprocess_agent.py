@@ -24,6 +24,7 @@ from packages.production.pipeline._postprocess_agent import (
     PostProcessSelection,
     materialize_overlay_events,
     parse_postprocess_selection,
+    solve_postprocess_selection,
     unwrap_postprocess_provider_output,
     validate_postprocess_selection,
 )
@@ -147,25 +148,37 @@ def test_dashscope_envelope_is_exact_and_intent_is_strictly_parsed():
     assert any("intent" in error for error in errors)
 
 
-def test_validator_rejects_dense_or_excess_hero_choices():
+def test_validator_leaves_time_count_and_hero_legality_to_local_solver():
     windows = [
         _window("e1", 0, 30, "slam_scale", "hero"),
         _window("e2", 40, 70, "slam_scale", "hero"),
         _window("e3", 120, 150, "slam_scale", "hero"),
     ]
-    errors = validate_postprocess_selection(
-        PostProcessSelection(
-            bgm_id=None,
-            caption_choices=[_choice("e1"), _choice("e2"), _choice("e3")],
-            analysis="",
-        ),
+    selection = PostProcessSelection(
+        bgm_id=None,
+        caption_choices=[_choice("e1"), _choice("e2"), _choice("e3")],
+        analysis="",
+    )
+    assert (
+        validate_postprocess_selection(
+            selection,
+            caption_windows={"fps": 30, "emphasis_windows": windows},
+            bgm_candidates=[],
+            bgm_enabled=False,
+            emphasis_enabled=True,
+        )
+        == []
+    )
+
+    solved, diagnostics = solve_postprocess_selection(
+        selection,
         caption_windows={"fps": 30, "emphasis_windows": windows},
         bgm_candidates=[],
         bgm_enabled=False,
         emphasis_enabled=True,
     )
-    assert any("hero" in error for error in errors)
-    assert any("0.8s" in error for error in errors)
+    assert [choice.event_id for choice in solved.caption_choices] == ["e1", "e3"]
+    assert diagnostics["pruned_event_ids"] == ["e2"]
 
 
 def _spaced_windows(count: int) -> list[dict]:
@@ -173,11 +186,15 @@ def _spaced_windows(count: int) -> list[dict]:
     return [_window(f"hz_{i:03d}", (i - 1) * 60, (i - 1) * 60 + 30) for i in range(1, count + 1)]
 
 
-def _validate_floor(windows: list[dict], selected_ids: list[str]) -> list[str]:
-    return validate_postprocess_selection(
+def test_solver_caps_maximum_feasible_selection_at_eight():
+    windows = _spaced_windows(10)
+    ids = [f"hz_{i:03d}" for i in range(1, 11)]
+    solved, diagnostics = solve_postprocess_selection(
         PostProcessSelection(
             bgm_id=None,
-            caption_choices=[_choice(event_id) for event_id in selected_ids],
+            caption_choices=[
+                _choice(event_id, priority=100 - index) for index, event_id in enumerate(ids)
+            ],
             analysis="",
         ),
         caption_windows={"fps": 30, "emphasis_windows": windows},
@@ -185,41 +202,145 @@ def _validate_floor(windows: list[dict], selected_ids: list[str]) -> list[str]:
         bgm_enabled=False,
         emphasis_enabled=True,
     )
+    assert len(solved.caption_choices) == 8
+    assert diagnostics["max_feasible_count"] == 10
+    assert diagnostics["target_count"] == 8
+    assert diagnostics["selected_count"] == 8
 
 
-def test_caption_floor_requires_five_to_eight_when_enough_offered():
-    windows = _spaced_windows(6)
-    ids = [f"hz_{i:03d}" for i in range(1, 7)]
-    errors = _validate_floor(windows, ids[:3])  # only 3 of 6 offered
-    assert any("必须选择 5 到 8 个" in error for error in errors)
-    assert _validate_floor(windows, ids[:5]) == []
-
-
-def test_caption_floor_rejects_more_than_eight():
-    windows = _spaced_windows(10)
-    ids = [f"hz_{i:03d}" for i in range(1, 11)]
-    errors = _validate_floor(windows, ids[:9])  # 9 > 8
-    assert any("exceed 8" in error or "5 到 8" in error for error in errors)
-
-
-def test_caption_floor_below_five_requires_all():
+def test_solver_keeps_every_legal_event_when_maximum_feasible_is_below_five():
     windows = _spaced_windows(3)
-    ids = [f"hz_{i:03d}" for i in range(1, 4)]
-    errors = _validate_floor(windows, ids[:2])  # 2 of 3 offered
-    assert any("必须全部选择" in error for error in errors)
-    assert _validate_floor(windows, ids) == []
+    solved, diagnostics = solve_postprocess_selection(
+        PostProcessSelection(bgm_id=None, caption_choices=[], analysis="模型漏选"),
+        caption_windows={"fps": 30, "emphasis_windows": windows},
+        bgm_candidates=[],
+        bgm_enabled=False,
+        emphasis_enabled=True,
+    )
+    assert [choice.event_id for choice in solved.caption_choices] == [
+        "hz_001",
+        "hz_002",
+        "hz_003",
+    ]
+    assert diagnostics["max_feasible_count"] == 3
+    assert diagnostics["defaulted_option_event_ids"] == ["hz_001", "hz_002", "hz_003"]
 
 
-def test_caption_floor_ignores_disabled_emphasis():
+def test_solver_uses_run_conflict_graph_semantics_and_preserves_bgm():
+    spans = [
+        ("hz_001", 42, 71),
+        ("hz_002", 174, 202),
+        ("hz_003", 298, 334),
+        ("hz_004", 465, 509),
+        ("hz_005", 572, 602),
+        ("hz_006", 610, 647),
+    ]
+    windows = [_window(event_id, start, end) for event_id, start, end in spans]
+    choices = [
+        _choice(event_id, priority=(95 if event_id == "hz_006" else 80))
+        for event_id, _start, _end in spans
+    ]
+    choices[-2] = _choice("hz_005", priority=20)
+    bgm_candidates = [{"candidate_id": "bgm_safe"}]
+
+    solved, diagnostics = solve_postprocess_selection(
+        PostProcessSelection(
+            bgm_id="bgm_safe",
+            caption_choices=choices,
+            analysis="全部给出语义排序",
+        ),
+        caption_windows={"fps": 30, "emphasis_windows": windows},
+        bgm_candidates=bgm_candidates,
+        bgm_enabled=True,
+        emphasis_enabled=True,
+    )
+
+    assert solved.bgm_id == "bgm_safe"
+    assert [choice.event_id for choice in solved.caption_choices] == [
+        "hz_001",
+        "hz_002",
+        "hz_003",
+        "hz_004",
+        "hz_006",
+    ]
+    assert diagnostics["max_feasible_count"] == 5
+    assert diagnostics["pruned_event_ids"] == ["hz_005"]
+
+
+def test_invalid_option_falls_back_per_event_without_clearing_others_or_bgm():
+    windows = _spaced_windows(2)
+    solved, diagnostics = solve_postprocess_selection(
+        PostProcessSelection(
+            bgm_id="bgm_safe",
+            caption_choices=[
+                PostProcessCaptionChoice("hz_001", "does_not_exist", 90, "强卖点"),
+                _choice("hz_002", priority=80),
+            ],
+            analysis="",
+        ),
+        caption_windows={"fps": 30, "emphasis_windows": windows},
+        bgm_candidates=[{"candidate_id": "bgm_safe"}],
+        bgm_enabled=True,
+        emphasis_enabled=True,
+    )
+    assert solved.bgm_id == "bgm_safe"
+    assert [(choice.event_id, choice.caption_option_id) for choice in solved.caption_choices] == [
+        ("hz_001", "hz_001__option"),
+        ("hz_002", "hz_002__option"),
+    ]
+    assert diagnostics["defaulted_option_event_ids"] == ["hz_001"]
+
+
+def test_solver_downgrades_only_excess_optional_heroes():
+    windows = _spaced_windows(3)
+    for window in windows:
+        window["caption_options"][0]["visual_preset_id"] = "emphasis"
+        window["caption_options"].append(
+            {
+                **window["caption_options"][0],
+                "caption_option_id": f"{window['event_id']}__hero",
+                "visual_preset_id": "hero",
+            }
+        )
+    solved, diagnostics = solve_postprocess_selection(
+        PostProcessSelection(
+            bgm_id=None,
+            caption_choices=[
+                PostProcessCaptionChoice("hz_001", "hz_001__hero", 90, "第一"),
+                PostProcessCaptionChoice("hz_002", "hz_002__hero", 80, "第二"),
+                PostProcessCaptionChoice("hz_003", "hz_003__hero", 70, "第三"),
+            ],
+            analysis="",
+        ),
+        caption_windows={"fps": 30, "emphasis_windows": windows},
+        bgm_candidates=[],
+        bgm_enabled=False,
+        emphasis_enabled=True,
+    )
+    by_id = {choice.event_id: choice.caption_option_id for choice in solved.caption_choices}
+    assert by_id == {
+        "hz_001": "hz_001__hero",
+        "hz_002": "hz_002__hero",
+        "hz_003": "hz_003__option",
+    }
+    assert diagnostics["hero_downgraded_event_ids"] == ["hz_003"]
+
+
+def test_solver_ignores_candidates_when_emphasis_is_disabled():
     windows = _spaced_windows(6)
-    errors = validate_postprocess_selection(
-        PostProcessSelection(bgm_id=None, caption_choices=[], analysis=""),
+    solved, diagnostics = solve_postprocess_selection(
+        PostProcessSelection(
+            bgm_id=None,
+            caption_choices=[_choice("hz_001")],
+            analysis="",
+        ),
         caption_windows={"fps": 30, "emphasis_windows": windows},
         bgm_candidates=[],
         bgm_enabled=False,
         emphasis_enabled=False,
     )
-    assert not any("必须选择" in error or "必须全部选择" in error for error in errors)
+    assert solved.caption_choices == []
+    assert diagnostics["max_feasible_count"] == 0
 
 
 def test_materializer_uses_only_authoritative_option_geometry_and_frames():
@@ -380,6 +501,7 @@ def test_disabled_bgm_and_emphasis_ignore_stale_candidates_without_provider_call
         "bgm": 0,
         "caption_events": 0,
         "caption_options": 0,
+        "caption_feasible": 0,
     }
 
 
@@ -425,12 +547,99 @@ def test_missing_bgm_candidates_degrades_independently_while_caption_agent_runs(
     assert context.profile_resolutions == 1
     assert WarningCode.bgm_skipped_library_unannotated in output.warnings
     assert WarningCode.postprocess_planning_failed in output.warnings
+    style = next(
+        artifact.payload
+        for artifact in output.artifacts
+        if artifact.kind == ArtifactKind.plan_style
+    )
+    assert [event["event_id"] for event in style["overlay_events"]] == ["e1"]
+    assert style["bgm_asset_id"] is None
     diagnostics = next(
         artifact.payload
         for artifact in output.artifacts
         if artifact.kind == ArtifactKind.plan_postprocess_diagnostics
     )
     assert diagnostics["candidate_counts"]["caption_events"] == 1
+    assert diagnostics["solver"]["selected_count"] == 1
+    assert diagnostics["solver"]["used_deterministic_fallback"] is True
+
+
+def test_unrepairable_caption_response_preserves_valid_bgm_and_safe_caption_subset(
+    monkeypatch,
+):
+    material = {"bgm_candidates": [_bgm_candidate("asset_song", "clip_1", 0.0, 20.0, "energetic")]}
+    selected_id = eligible_bgm_candidates(material)[0]["candidate_id"]
+    request = DigitalHumanVideoRequest(
+        case_id="case_demo",
+        script="脚本",
+        voice={"voice_id": "voice_demo"},
+        subtitle={"normal_enabled": True, "emphasis_enabled": True},
+        bgm={"enabled": True},
+    )
+    state = RunState(
+        request=request,
+        artifacts={
+            ArtifactKind.plan_material_pack: _artifact(
+                ArtifactKind.plan_material_pack,
+                material,
+                "MaterialPackArtifact.v1",
+            ),
+            ArtifactKind.plan_caption_windows: _artifact(
+                ArtifactKind.plan_caption_windows,
+                _caption_plan([_window("e1", 0, 30)]),
+                "CaptionWindowsPlan.v1",
+            ),
+        },
+    )
+
+    def _invoke(**kwargs):
+        kwargs["provider_invocation_ids"].append(f"inv_{kwargs['attempt']}")
+        return {
+            "bgm_id": selected_id,
+            "caption_choices": [
+                {
+                    "event_id": "unknown_event",
+                    "caption_option_id": "unknown_option",
+                    "priority": 90,
+                    "reason": "模型越界",
+                }
+            ],
+            "analysis": "背景音乐合法但字幕选择非法",
+        }
+
+    monkeypatch.setattr(postprocess_agent_planning, "_invoke", _invoke)
+
+    class _Context:
+        node_run = SimpleNamespace(node_id="PostProcessAgentPlanning")
+
+        def __init__(self, run_state):
+            self.state = run_state
+
+        def first_available_provider_profile(self, *_args, **_kwargs):
+            return SimpleNamespace(id="profile_llm")
+
+        def artifact(self, kind, payload, payload_schema):
+            return _artifact(kind, payload, payload_schema)
+
+    output = postprocess_agent_planning.run(_Context(state))
+
+    assert output.provider_invocation_ids == ["inv_0", "inv_1"]
+    assert WarningCode.postprocess_planning_failed in output.warnings
+    style = next(
+        artifact.payload
+        for artifact in output.artifacts
+        if artifact.kind == ArtifactKind.plan_style
+    )
+    assert style["bgm_asset_id"] == "asset_song"
+    assert [event["event_id"] for event in style["overlay_events"]] == ["e1"]
+    diagnostics = next(
+        artifact.payload
+        for artifact in output.artifacts
+        if artifact.kind == ArtifactKind.plan_postprocess_diagnostics
+    )
+    assert diagnostics["reason"] == "unrepairable"
+    assert diagnostics["bgm_id"] == selected_id
+    assert diagnostics["solver"]["selected_count"] == 1
 
 
 def test_invalid_caption_plan_degrades_before_provider_resolution():

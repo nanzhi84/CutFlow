@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from packages.core.contracts import (
@@ -12,6 +13,7 @@ from packages.core.contracts import (
     JobStatus,
     JobType,
     RunStatus,
+    SelectionReservationRecord,
     WorkflowRun,
     utcnow,
 )
@@ -248,6 +250,12 @@ def test_hydrate_loads_all_current_run_selection_reservations(db_session_factory
     assert {item.asset_id for item in owned} == {
         f"asset_current_{index:03d}" for index in range(110)
     }
+    parallel = [
+        item
+        for item in runtime_repository.selection_reservations.values()
+        if item.run_id == "run_parallel"
+    ]
+    assert len(parallel) == 120
 
 
 def test_sync_workflow_snapshot_persists_run_selection_reservations():
@@ -333,3 +341,124 @@ def test_sync_workflow_snapshot_turns_active_slot_conflict_into_retryable_node_e
     assert exc.value.error.code == ErrorCode.validation_conflict
     assert exc.value.error.retryable is True
     assert exc.value.error.details["constraint"] == "uq_selection_reservations_active_slot"
+
+
+def test_atomic_conflict_rollback_preserves_a_concurrent_other_run(monkeypatch) -> None:
+    session = ReservationConflictSyncSession()
+    production_repository = SqlAlchemyProductionRepository(lambda: session)
+    repository = Repository()
+    concurrent = SelectionReservationRecord(
+        case_id="case_other",
+        run_id="run_concurrent",
+        medium="portrait",
+        asset_id="asset_concurrent",
+    )
+    raise_conflict = session.commit
+
+    def concurrent_commit_then_conflict() -> None:
+        repository.selection_reservations[concurrent.id] = concurrent
+        raise_conflict()
+
+    monkeypatch.setattr(session, "commit", concurrent_commit_then_conflict)
+    monkeypatch.setattr(
+        production_repository,
+        "_hydrate_selection_reservations",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(NodeExecutionError):
+        production_repository.reserve_selection_candidates(
+            repository,
+            case_id="case_demo",
+            run_id="run_loser",
+            asset_ids_by_medium={"portrait": ["asset_raced"]},
+            diversity_keys_by_medium={"portrait": {}},
+        )
+
+    assert repository.selection_reservations == {concurrent.id: concurrent}
+
+
+def test_atomic_candidate_reservation_refreshes_the_race_winner_before_retry(
+    db_session_factory,
+):
+    production_repository = SqlAlchemyProductionRepository(db_session_factory)
+    first = Repository()
+    stale_second = Repository()
+    batch = {"portrait": ["asset_atomic_race"]}
+    diversity = {"portrait": {"asset_atomic_race": "scene:atomic"}}
+
+    first_owned = production_repository.reserve_selection_candidates(
+        first,
+        case_id="case_demo",
+        run_id="run_atomic_first",
+        asset_ids_by_medium=batch,
+        diversity_keys_by_medium=diversity,
+    )
+
+    assert [item.asset_id for item in first_owned["portrait"]] == ["asset_atomic_race"]
+    with pytest.raises(NodeExecutionError) as exc:
+        production_repository.reserve_selection_candidates(
+            stale_second,
+            case_id="case_demo",
+            run_id="run_atomic_second",
+            asset_ids_by_medium=batch,
+            diversity_keys_by_medium=diversity,
+        )
+
+    assert exc.value.error.code == ErrorCode.validation_conflict
+    assert exc.value.error.retryable is True
+    refreshed = stale_second.active_selection_reservations(
+        case_id="case_demo",
+        medium="portrait",
+        exclude_run_id="run_atomic_second",
+    )
+    assert [(item.run_id, item.asset_id) for item in refreshed] == [
+        ("run_atomic_first", "asset_atomic_race")
+    ]
+
+
+def test_atomic_candidate_reservation_renews_same_run_expired_row(
+    db_session_factory,
+):
+    production_repository = SqlAlchemyProductionRepository(db_session_factory)
+    repository = Repository()
+    batch = {"portrait": ["asset_atomic_renew"]}
+    diversity = {"portrait": {"asset_atomic_renew": "scene:renew"}}
+    first = production_repository.reserve_selection_candidates(
+        repository,
+        case_id="case_demo",
+        run_id="run_atomic_renew",
+        asset_ids_by_medium=batch,
+        diversity_keys_by_medium=diversity,
+    )["portrait"][0]
+    expired_at = utcnow() - timedelta(seconds=1)
+    with db_session_factory() as session:
+        row = session.get(SelectionReservationRow, first.id)
+        row.expires_at = expired_at
+        session.commit()
+    repository.selection_reservations[first.id] = first.model_copy(
+        update={"expires_at": expired_at}
+    )
+    assert repository.active_selection_reservations(
+        case_id="case_demo", medium="portrait"
+    ) == []
+
+    renewed = production_repository.reserve_selection_candidates(
+        repository,
+        case_id="case_demo",
+        run_id="run_atomic_renew",
+        asset_ids_by_medium=batch,
+        diversity_keys_by_medium=diversity,
+    )["portrait"][0]
+
+    assert renewed.id == first.id
+    assert renewed.status == "reserved"
+    with db_session_factory() as session:
+        rows = list(
+            session.scalars(
+                select(SelectionReservationRow).where(
+                    SelectionReservationRow.run_id == "run_atomic_renew"
+                )
+            )
+        )
+    assert [(row.id, row.status) for row in rows] == [(first.id, "reserved")]

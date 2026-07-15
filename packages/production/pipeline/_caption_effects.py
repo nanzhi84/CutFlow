@@ -6,6 +6,18 @@ from __future__ import annotations
 CAPTION_V3_EFFECTS = ("soft_in", "pop", "slam_scale")
 
 
+def normal_reference_geometry(*, height: int) -> tuple[float, float, float]:
+    """Return ``(outline, x_shadow, y_shadow)`` in ASS PlayRes pixels.
+
+    The 1080x1920 reference frames use a weak outline and a hard shadow offset
+    approximately six pixels right / three pixels down. Scale that envelope for
+    other output heights so planning and rendering share the same geometry.
+    """
+
+    scale = max(0.5, float(max(1, height)) / 1920.0)
+    return round(1.0 * scale, 3), round(6.0 * scale, 3), round(3.0 * scale, 3)
+
+
 def effect_envelope(effect_id: str) -> tuple[float, float]:
     """Return conservative ``(max_scale, max_vertical_shift_px)``."""
 
@@ -35,9 +47,5 @@ def overlay_effect_tags(effect_id: str, *, x: int, y: int) -> list[str]:
     return [f"\\pos({x},{y})"]
 
 
-def normal_soft_in_tags(*, x: int, y: int) -> str:
-    return (
-        "{\\an2"
-        f"\\move({x},{y + 14},{x},{y},0,140)"
-        "\\fad(120,0)}"
-    )
+def normal_soft_in_tags(*, x: int, y: int, align: int = 2) -> str:
+    return f"{{\\an{align}\\move({x},{y + 14},{x},{y},0,140)\\fad(120,0)}}"

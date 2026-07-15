@@ -13065,9 +13065,6 @@
             "title": "Timeout Sec",
             "default": 30
           },
-          "retry_policy": {
-            "$ref": "#/components/schemas/RetryPolicy"
-          },
           "cost_policy_id": {
             "anyOf": [
               {
@@ -13707,6 +13704,7 @@
           "huazi.planning_failed",
           "font.metrics_fallback",
           "caption.visual_analysis_failed",
+          "caption.normal_relaxed_safety",
           "caption.emphasis_relaxed_safety",
           "caption.emphasis_below_floor",
           "tts.timing_unavailable",
@@ -18370,16 +18368,6 @@
             ],
             "title": "Timeout Sec"
           },
-          "retry_policy": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RetryPolicy"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "cost_policy_id": {
             "anyOf": [
               {
@@ -20772,9 +20760,6 @@
             "title": "Timeout Sec",
             "default": 30
           },
-          "retry_policy": {
-            "$ref": "#/components/schemas/RetryPolicy"
-          },
           "cost_policy_id": {
             "anyOf": [
               {
@@ -22572,39 +22557,6 @@
         "additionalProperties": false,
         "type": "object",
         "title": "ResumeRunRequest"
-      },
-      "RetryPolicy": {
-        "properties": {
-          "max_attempts": {
-            "type": "integer",
-            "maximum": 10.0,
-            "minimum": 1.0,
-            "title": "Max Attempts",
-            "default": 1
-          },
-          "backoff_seconds": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "Backoff Seconds",
-            "default": 0
-          },
-          "backoff_multiplier": {
-            "type": "number",
-            "minimum": 1.0,
-            "title": "Backoff Multiplier",
-            "default": 2.0
-          },
-          "retryable_error_codes": {
-            "items": {
-              "$ref": "#/components/schemas/ErrorCode"
-            },
-            "type": "array",
-            "title": "Retryable Error Codes"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "RetryPolicy"
       },
       "RetryRunRequest": {
         "properties": {
@@ -25037,6 +24989,7 @@
           "huazi.planning_failed",
           "font.metrics_fallback",
           "caption.visual_analysis_failed",
+          "caption.normal_relaxed_safety",
           "caption.emphasis_relaxed_safety",
           "caption.emphasis_below_floor",
           "tts.timing_unavailable",

@@ -24,6 +24,7 @@ from packages.core.contracts import (
     DigitalHumanVideoRequest,
     MediaInfo,
     NodeRun,
+    SelectionReservationRecord,
     WorkflowRun,
     WorkflowTemplate,
 )
@@ -81,6 +82,38 @@ class NodeContext:
         """Resolve the object store through the adapter so the
         ``digital_human.get_object_store`` symbol stays monkeypatchable."""
         return self.adapter._object_store()
+
+    def reserve_selection_candidates(
+        self,
+        *,
+        case_id: str,
+        asset_ids_by_medium: dict[str, list[str]],
+        diversity_keys_by_medium: dict[str, dict[str, str | None]],
+    ) -> dict[str, list[SelectionReservationRecord]]:
+        """Reserve one MaterialPack candidate batch at the durable race boundary.
+
+        SQL-backed runs acquire every slot in one transaction so the active-slot
+        uniqueness race is raised inside the node's declared retry loop. Pure
+        in-memory runs keep the same Repository path used by unit tests.
+        """
+        if self.production_repository is not None:
+            return self.production_repository.reserve_selection_candidates(
+                self.repository,
+                case_id=case_id,
+                run_id=self.run.id,
+                asset_ids_by_medium=asset_ids_by_medium,
+                diversity_keys_by_medium=diversity_keys_by_medium,
+            )
+        return {
+            medium: self.repository.reserve_selections(
+                case_id=case_id,
+                run_id=self.run.id,
+                medium=medium,
+                asset_ids=asset_ids,
+                diversity_keys=diversity_keys_by_medium.get(medium),
+            )
+            for medium, asset_ids in asset_ids_by_medium.items()
+        }
 
     def provider_call_idempotency(
         self, *, logical_call_slot: str, provider_profile_id: str

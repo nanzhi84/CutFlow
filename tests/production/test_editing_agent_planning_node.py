@@ -1013,7 +1013,7 @@ def test_v2_media_selection_uses_its_own_media_only_prompt(tmp_path):
                         {"slot_id": "bslot_000", "candidate_id": "bc_000", "reason": "fit"}
                     ],
                     "analysis": "media only",
-                }
+                },
             }
         ]
     )
@@ -1024,6 +1024,24 @@ def test_v2_media_selection_uses_its_own_media_only_prompt(tmp_path):
     assert output.status == NodeStatus.succeeded
     assert len(output.provider_invocation_ids) == 1
     assert "bgm_candidates" not in provider.calls[0].input["prompt"]
+    assert provider.calls[0].prompt_version_id == "prompt_media_selection_agent_v2"
+    assert provider.calls[0].input["response_format"] == {"type": "json_object"}
+    assert provider.calls[0].input["temperature"] == 0.1
+    assert provider.calls[0].input["enable_thinking"] is False
+    raw_request = next(
+        artifact
+        for artifact in adapter.repository.artifacts.values()
+        if artifact.kind == ArtifactKind.provider_raw_request
+    )
+    assert raw_request.payload["generation_options"] == {
+        "response_format": {"type": "json_object"},
+        "temperature": 0.1,
+        "enable_thinking": False,
+    }
+    diagnostics = _payload(output, ArtifactKind.plan_media_selection_diagnostics)
+    assert diagnostics["prompt_candidate_domains"]["strategy"] == (
+        "slot_scoped_direct_compatibility_v2"
+    )
     assert {artifact.kind for artifact in output.artifacts} == {
         ArtifactKind.plan_media_assignment,
         ArtifactKind.plan_portrait,
@@ -1154,7 +1172,7 @@ def test_v2_media_selection_hard_rejects_postprocess_and_geometry_overreach(monk
                     ],
                     "analysis": "overreach",
                     "bgm_id": "bgm_001",
-                }
+                },
             }
         ]
     )
@@ -1235,6 +1253,26 @@ def test_agent_portrait_infeasible_slot_fails_with_material_insufficient(tmp_pat
         "longest_available_source_frames": 60,
         "portrait_candidate_count": 2,
     }
+
+
+def test_media_selection_portrait_hall_deficit_fails_before_provider_call(tmp_path):
+    adapter = _adapter(tmp_path)
+    _seed_fake_llm_profile(adapter)
+    provider = _FakeEditingLlmProvider([{"intent": {}}])
+    adapter.provider_gateway.register(provider)
+    state = _state()
+    material = state.artifacts[ArtifactKind.plan_material_pack].payload
+    for candidate in material["portrait_candidates"]:
+        candidate["asset_id"] = "shared_portrait_asset"
+
+    with pytest.raises(NodeExecutionError) as exc:
+        _run_media_selection_node(adapter, state)
+
+    assert exc.value.error.code == ErrorCode.material_insufficient_portrait
+    assert provider.calls == []
+    details = exc.value.error.details
+    assert len(details["failed_slot_ids"]) == 1
+    assert details["prompt_candidate_domains"]["portrait"]["prompt_candidate_count"] == 1
 
 
 def test_llm_path_records_broll_window_contract_drops(tmp_path):

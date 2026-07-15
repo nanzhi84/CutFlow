@@ -961,31 +961,31 @@ def _reserve_candidate_assets(
     font_candidates: list[MaterialCandidate],
 ) -> tuple[list[str], dict[str, set[str]]]:
     reservation_ids: list[str] = []
-    owned_asset_ids_by_medium: dict[str, set[str]] = {}
+    asset_ids_by_medium: dict[str, list[str]] = {}
+    diversity_keys_by_medium: dict[str, dict[str, str | None]] = {}
     for medium, candidates in (
         ("portrait", portrait_candidates),
         ("broll", broll_candidates),
         ("bgm", bgm_candidates),
         ("font", font_candidates),
     ):
-        owned_asset_ids_by_medium[medium] = set()
         asset_ids = list(dict.fromkeys(c.asset_id for c in candidates if c.asset_id))
-        if not asset_ids:
-            continue
-        diversity_keys = {
+        asset_ids_by_medium[medium] = asset_ids
+        diversity_keys_by_medium[medium] = {
             c.asset_id: (c.metadata or {}).get("diversity_key")
             for c in candidates
             if c.asset_id
         }
-        owned = ctx.repository.reserve_selections(
-            case_id=case_id,
-            run_id=ctx.run.id,
-            medium=medium,
-            asset_ids=asset_ids,
-            diversity_keys=diversity_keys,
-        )
+    owned_by_medium = ctx.reserve_selection_candidates(
+        case_id=case_id,
+        asset_ids_by_medium=asset_ids_by_medium,
+        diversity_keys_by_medium=diversity_keys_by_medium,
+    )
+    owned_asset_ids_by_medium: dict[str, set[str]] = {}
+    for medium in asset_ids_by_medium:
+        owned = owned_by_medium.get(medium, [])
         reservation_ids.extend(reservation.id for reservation in owned)
-        owned_asset_ids_by_medium[medium].update(reservation.asset_id for reservation in owned)
+        owned_asset_ids_by_medium[medium] = {reservation.asset_id for reservation in owned}
     return reservation_ids, owned_asset_ids_by_medium
 
 

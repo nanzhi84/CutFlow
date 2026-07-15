@@ -8,6 +8,7 @@ never invokes the legacy HuaziPlanningSubagent, and never emits ``plan.style``.
 from __future__ import annotations
 
 from packages.core.contracts import ArtifactKind, NodeStatus
+from packages.core.contracts.artifacts import MediaSelectionAgentDiagnosticsArtifact
 from packages.core.workflow import NodeOutput
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._media_selection_planning import (
@@ -41,6 +42,9 @@ def run(ctx: NodeContext) -> NodeOutput:
         agent_context=agent_context,
         selection_result=selection_result,
     )
+    diagnostics = MediaSelectionAgentDiagnosticsArtifact.model_validate(
+        materialized.diagnostics
+    ).model_dump(mode="json")
 
     return NodeOutput(
         status=NodeStatus.degraded if materialized.degradations else NodeStatus.succeeded,
@@ -62,7 +66,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             ),
             ctx.artifact(
                 ArtifactKind.plan_media_selection_diagnostics,
-                materialized.diagnostics,
+                diagnostics,
                 "MediaSelectionAgentDiagnostics.v1",
             ),
         ],

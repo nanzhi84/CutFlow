@@ -38,6 +38,19 @@ _STATUSES = {
                 "Alias": "无忧快喷",
                 "State": "Success",
                 "DemoAudio": "https://x/demo.wav",
+                "ModelTypeDetails": [
+                    {
+                        "ModelType": 1,
+                        "IclSpeakerId": "ICL_legacy_123",
+                        "ResourceID": "seed-icl-1.0",
+                    },
+                    {
+                        "ModelType": 5,
+                        "IclSpeakerId": "ICL_uranus_123",
+                        "ResourceID": "seed-icl-2.0",
+                        "DemoAudio": "https://x/icl2-demo.wav",
+                    },
+                ],
             },
             {"SpeakerID": "S_SLOT", "Alias": "", "State": "Unknown", "DemoAudio": None},
             {"SpeakerID": "S_F", "Alias": "失败", "State": "Failed"},
@@ -57,13 +70,48 @@ def _train_handler(request: httpx.Request) -> httpx.Response:
 def test_list_voices_only_returns_successful() -> None:
     api = VolcSpeechOpenAPI(_client(_train_handler), "ak", "sk")
     voices = api.list_voices("9635790622")
-    # only State=Success with a non-empty SpeakerID; Unknown slot/Failed/empty id skipped
+    # The purchased S_ value is the only persisted async SpeakerID. The internal
+    # ICL_uranus id is not accepted by /api/v3/tts/submit and must not leak into
+    # the normalized voice-sync shape.
     assert voices == [
         {
             "voice_id": "S_UDXV2pG62",
             "display_name": "无忧快喷",
             "status": "ready",
-            "preview_url": "https://x/demo.wav",
+            "preview_url": "https://x/icl2-demo.wav",
+        }
+    ]
+
+
+def test_list_voices_falls_back_to_legacy_id_without_model_type_5() -> None:
+    payload = {
+        "Result": {
+            "Statuses": [
+                {
+                    "SpeakerID": "S_LEGACY",
+                    "Alias": "Legacy",
+                    "State": "Success",
+                    "ModelTypeDetails": [
+                        {
+                            "ModelType": 1,
+                            "IclSpeakerId": "ICL_legacy_only",
+                            "ResourceID": "seed-icl-1.0",
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    api = VolcSpeechOpenAPI(
+        _client(lambda request: httpx.Response(200, json=payload)), "ak", "sk"
+    )
+
+    assert api.list_voices("9635790622") == [
+        {
+            "voice_id": "S_LEGACY",
+            "display_name": "Legacy",
+            "status": "ready",
+            "preview_url": None,
         }
     ]
 

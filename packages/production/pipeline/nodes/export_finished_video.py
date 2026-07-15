@@ -58,7 +58,6 @@ from packages.publishing.copy_llm import build_copy_llm_chat
 from packages.publishing.copy_node import (
     PublishCopy,
     PublishCopyContext,
-    derive_publish_copy,
     generate_publish_copy,
 )
 from packages.core.observability import record_funnel_event
@@ -352,9 +351,9 @@ def _resolve_publish_copy(
 ) -> tuple[PublishCopy, str, str | None]:
     """Generate the publish copy (title + publish_content + cover title/subtitle) for
     this finished video. Uses a real ``llm.chat`` provider when armed, else the
-    deterministic derivation. A provider/schema failure is NON-fatal: the finished
-    video is already produced, so we fall back to the deterministic copy rather than
-    failing the export over a title."""
+    deterministic derivation. Once a real provider is armed, provider/schema errors
+    remain hard failures: silently relabelling them as deterministic success would
+    hide a configured capability outage and violate the publishing-copy contract."""
     request = ctx.state.request
     context = PublishCopyContext(
         script=script.script or "",
@@ -374,10 +373,7 @@ def _resolve_publish_copy(
             provider_profile_id=profile_id,
         ),
     )
-    try:
-        return generate_publish_copy(context, llm_chat=llm_chat)
-    except NodeExecutionError:
-        return derive_publish_copy(context), "deterministic", None
+    return generate_publish_copy(context, llm_chat=llm_chat)
 
 
 def _frame_cover(

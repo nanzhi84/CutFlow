@@ -1313,6 +1313,58 @@ def test_dashscope_task_polling_failure_timeout_and_helper_parsing(monkeypatch):
     assert dashscope_mod._usage({"usage": None}, "prompt_tokens") == 0
 
 
+def test_dashscope_task_polling_retries_transient_transport_failure(monkeypatch):
+    monkeypatch.setattr(dashscope_mod.time, "sleep", lambda _seconds: None)
+    requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        if requests == 1:
+            raise httpx.ConnectError(
+                "[SSL: UNEXPECTED_EOF_WHILE_READING]",
+                request=request,
+            )
+        return httpx.Response(200, json={"output": {"task_status": "SUCCEEDED"}})
+
+    payload, attempts = dashscope_mod.poll_dashscope_task(
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        base_url="https://dashscope.aliyuncs.com/api/v1",
+        api_key="key",
+        task_id="task-transient",
+        options={"poll_interval": 0, "poll_max_attempts": 2},
+        timeout_sec=30,
+    )
+
+    assert attempts == 2
+    assert requests == 2
+    assert dashscope_mod._task_status(payload) == "succeeded"
+
+
+def test_dashscope_task_polling_bounds_consecutive_transport_failures(monkeypatch):
+    monkeypatch.setattr(dashscope_mod.time, "sleep", lambda _seconds: None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("network down", request=request)
+
+    with pytest.raises(ProviderRuntimeError) as exc_info:
+        dashscope_mod.poll_dashscope_task(
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+            base_url="https://dashscope.aliyuncs.com/api/v1",
+            api_key="key",
+            task_id="task-offline",
+            options={
+                "poll_interval": 0,
+                "poll_max_attempts": 10,
+                "poll_max_consecutive_errors": 3,
+            },
+            timeout_sec=30,
+        )
+
+    assert exc_info.value.code == ErrorCode.provider_remote_failed
+    assert "3 consecutive times" in exc_info.value.message
+
+
 def test_dashscope_transcription_payloads_cover_words_and_fallbacks():
     text, segments = dashscope_mod._parse_transcription_payload(
         {

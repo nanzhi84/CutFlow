@@ -18,7 +18,8 @@ from collections.abc import Callable
 from functools import cached_property
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+import time
+from typing import TYPE_CHECKING, TypeVar
 
 from packages.ai.gateway import ProviderGateway
 from packages.ai.prompts import PromptRegistry
@@ -143,6 +144,14 @@ NODE_HANDLERS = {
 }
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
+
+
+def _extend_unique(target: list[_T], values: list[_T]) -> None:
+    for value in values:
+        if value not in target:
+            target.append(value)
+
 
 _PROVIDER_SIDE_EFFECT_NODES = {
     "TTS",
@@ -156,6 +165,23 @@ _PROVIDER_SIDE_EFFECT_NODES = {
     "PostProcessAgentPlanning",
     "WindowQueryPlanning",
     "WindowMaterialRetrieval",
+}
+_NON_REPLAYABLE_SIDE_EFFECTS = {
+    # NOTE: MaterialPackPlanning is deliberately NOT marked non-replayable. It sits
+    # mid-chain, so stopping reuse *before* it forces every downstream node to re-run on
+    # resume — including the paid PortraitTrackBuild/LipSync. That re-run mints a fresh
+    # portrait-track artifact id, so LipSync's input_manifest_hash changes, its
+    # idempotency key changes, and the already-paid lipsync is billed a SECOND time
+    # (issue #202 money-safety; the golden resume tests enforce this). Re-establishing a
+    # resumed run's run-scoped selection reservations must be a separate idempotent step
+    # keyed off the reused plan_material_pack artifact, NOT re-execution of the node.
+    #
+    # These nodes create run-owned domain rows; copying their artifacts cannot recreate
+    # FinishedVideo/VideoVersion/PublishPackage/selection-ledger state. They are terminal,
+    # so re-running them on resume does not cascade into paid upstream re-runs.
+    "ExportFinishedVideo": ["domain_write"],
+    "ExportSeedanceVideo": ["domain_write"],
+    "FinalizeRunReport": ["ledger_commit"],
 }
 _TIMELINE_REUSE_BREAK_NODES = {
     "NarrationBoundaryPlanning",
@@ -235,6 +261,7 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
         ArtifactKind.cover_image,
         ArtifactKind.cover_thumbnail,
         ArtifactKind.publish_package,
+        ArtifactKind.provider_raw_request,
     ],
     "SeedanceGenerateVideo": [ArtifactKind.video_rendered],
     "ExportSeedanceVideo": [
@@ -244,6 +271,20 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
         ArtifactKind.publish_package,
     ],
     "FinalizeRunReport": [ArtifactKind.run_report_public, ArtifactKind.run_report_debug],
+}
+
+# Bump only nodes whose persisted semantics changed. The runtime writes these exact
+# versions into NodeRun so a resume of an older run reuses its valid prefix but must
+# re-enter the caption chain at the first incompatible node.
+_NODE_VERSIONS = {
+    # v3 invalidates streamed/synchronous narration so a resume re-enters at TTS after
+    # production switched to durable async ICL 2.0 single-file MP3 + native timing.
+    "TTS": "v3",
+    # v3 repairs sparse historical token streams by script position and enforces
+    # globally unique claims/monotonic char spans at the artifact boundary.
+    "CaptionWindowPlanning": "v4",
+    "PostProcessAgentPlanning": "v2",
+    "SubtitleAndBgmMix": "v2",
 }
 
 
@@ -277,10 +318,13 @@ def _build_template(template_id: str, version: str, sequence: list[str]) -> Work
     node_specs = [
         NodeSpec(
             node_id=node_id,
-            input_schema=f"{node_id}.input.v1",
+            node_version=_NODE_VERSIONS.get(node_id, "v1"),
             output_artifact_kinds=list(_NODE_OUTPUT_KINDS[node_id]),
             retry_policy=_node_retry_policy(node_id),
-            side_effects=["provider_call"] if node_id in _PROVIDER_SIDE_EFFECT_NODES else [],
+            side_effects=(
+                (["provider_call"] if node_id in _PROVIDER_SIDE_EFFECT_NODES else [])
+                + list(_NON_REPLAYABLE_SIDE_EFFECTS.get(node_id, []))
+            ),
             idempotency_key=(
                 f"{template_id}:{node_id}:{{input_manifest_hash}}"
                 if node_id in _PROVIDER_SIDE_EFFECT_NODES
@@ -360,9 +404,7 @@ def template_for(workflow_template_id: str) -> WorkflowTemplate:
         ) from exc
 
 
-def input_manifest_hash(
-    node_id: str, request: DigitalHumanVideoRequest, state: _RunState
-) -> str:
+def input_manifest_hash(node_id: str, request: DigitalHumanVideoRequest, state: _RunState) -> str:
     """The identity of one node execution's inputs, and a coordinate of its provider key.
 
     ``artifact_refs`` MUST stay artifact IDS, never a content digest or any other stable
@@ -670,6 +712,13 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         edges = [(edge.from_node_id, edge.to_node_id) for edge in template.edges]
         return topological_node_order(node_ids, edges)
 
+    def _node_version_for_run(self, run: WorkflowRun, node_id: str) -> str:
+        return self._node_spec_for_run(run, node_id).node_version
+
+    def _node_spec_for_run(self, run: WorkflowRun, node_id: str) -> NodeSpec:
+        template = self._template_for_run(run)
+        return next(spec for spec in template.nodes if spec.node_id == node_id)
+
     def _node_already_terminal(self, run_id: str, node_id: str) -> bool:
         """True when this canonical node already has a terminal NodeRun in this run.
 
@@ -760,7 +809,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                     id=new_id("nr"),
                     run_id=run_id,
                     node_id=next_node_id,
-                    node_version="v1",
+                    node_version=self._node_version_for_run(run, next_node_id),
                     status=NodeStatus.failed,
                     input_manifest_hash="",
                     error=NodeError(
@@ -915,7 +964,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             id=new_id("nr"),
             run_id=run.id,
             node_id=node_id,
-            node_version="v1",
+            node_version=self._node_version_for_run(run, node_id),
             status=NodeStatus.pending,
             input_manifest_hash=input_manifest_hash(node_id, request, state),
             started_at=utcnow(),
@@ -948,7 +997,27 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                     dedupe_key=f"{node_run.id}:node_started",
                     event_time=node_run.updated_at,
                 )
-            output = self._run_node(node_id, run, node_run, state)
+            output = self._run_node_with_declared_retries(node_id, run, node_run, state)
+            declared_kinds = set(self._node_spec_for_run(run, node_id).output_artifact_kinds)
+            undeclared_kinds = sorted(
+                {
+                    artifact.kind
+                    for artifact in output.artifacts
+                    if artifact.kind not in declared_kinds
+                },
+                key=lambda kind: kind.value,
+            )
+            if undeclared_kinds:
+                raise NodeExecutionError(
+                    ErrorCode.artifact_schema_mismatch,
+                    f"Node {node_id} returned undeclared artifact kinds: "
+                    + ", ".join(kind.value for kind in undeclared_kinds),
+                    details={
+                        "node_id": node_id,
+                        "undeclared_kinds": [kind.value for kind in undeclared_kinds],
+                        "declared_kinds": sorted(kind.value for kind in declared_kinds),
+                    },
+                )
             # No silent fallback: any provider call this node made that the gateway
             # could not price (billing_status="unpriced") surfaces as a node-level
             # cost.unpriced warning instead of staying buried in usage metering.
@@ -1260,6 +1329,9 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                 }
             )
             self.repository.node_runs[run.id].append(copied)
+            _extend_unique(state.provider_invocation_ids, copied.provider_invocation_ids)
+            _extend_unique(state.warnings, copied.warnings)
+            _extend_unique(state.degradations, copied.degradations)
         return reuse_plan.reused_count
 
     def _may_skip_without_running(self, node_id: str, state: _RunState) -> bool:
@@ -1271,8 +1343,6 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             and state.request.broll.mode == "full_coverage"
             or node_id == "LipSync"
             and not state.request.lipsync.enabled
-            or node_id == "SubtitleAndBgmMix"
-            and not state.request.subtitle.enabled
         )
 
     def _request(self, job: Job) -> DigitalHumanVideoRequest:
@@ -1290,6 +1360,27 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
     ) -> NodeOutput:
         ctx = NodeContext(adapter=self, run=run, node_run=node_run, state=state)
         return NODE_HANDLERS[node_id](ctx)
+
+    def _run_node_with_declared_retries(
+        self, node_id: str, run: WorkflowRun, node_run: NodeRun, state: _RunState
+    ) -> NodeOutput:
+        policy = self._node_spec_for_run(run, node_id).retry_policy
+        retryable_codes = set(policy.retryable_error_codes)
+        delay = policy.backoff_seconds
+        for attempt in range(1, policy.max_attempts + 1):
+            try:
+                return self._run_node(node_id, run, node_run, state)
+            except NodeExecutionError as exc:
+                if (
+                    attempt >= policy.max_attempts
+                    or exc.error.code not in retryable_codes
+                    or not exc.error.retryable
+                ):
+                    raise
+                if delay > 0:
+                    time.sleep(delay)
+                delay *= policy.backoff_multiplier
+        raise AssertionError("declared node retry loop exhausted without returning or raising")
 
     # ----------------------------------------------- shared node-facing services
     def _object_store(self):

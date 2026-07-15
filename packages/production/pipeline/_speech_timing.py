@@ -68,19 +68,86 @@ def estimated_timing_for_script(script: str, *, duration: float) -> SpeechTiming
 
 
 def proportional_tokens(text: str, *, start: float, end: float) -> list[SpeechTokenTiming]:
-    values = [match.group(0) for match in _DISPLAY_TOKEN.finditer(str(text or ""))]
+    matches = list(_DISPLAY_TOKEN.finditer(str(text or "")))
+    values = [match.group(0) for match in matches]
     if not values or end <= start:
         return []
     weights = [max(1, len(normalize_speech_text(value))) for value in values]
     total = sum(weights)
     cursor = float(start)
     result: list[SpeechTokenTiming] = []
-    for index, (value, weight) in enumerate(zip(values, weights, strict=True)):
-        token_end = float(end) if index == len(values) - 1 else cursor + (end - start) * weight / total
+    for index, (match, value, weight) in enumerate(zip(matches, values, weights, strict=True)):
+        token_end = (
+            float(end) if index == len(values) - 1 else cursor + (end - start) * weight / total
+        )
         if token_end > cursor:
-            result.append(SpeechTokenTiming(text=value, start=cursor, end=token_end))
+            result.append(
+                SpeechTokenTiming(
+                    text=value,
+                    start=cursor,
+                    end=token_end,
+                    token_id=f"token_{index + 1:04d}",
+                    char_span=(match.start(), match.end()),
+                )
+            )
         cursor = token_end
     return result
+
+
+def assign_token_ownership(
+    tokens: list[SpeechTokenTiming],
+    *,
+    script: str,
+    units: list[object],
+) -> list[SpeechTokenTiming]:
+    """Attach stable script/token ownership without consulting token timestamps.
+
+    The normalized token stream is already in script order.  This pass gives every
+    token a deterministic identity and character range, then walks narration-unit
+    text in the same order and claims each token exactly once.  A unit that cannot
+    be matched leaves its tokens unowned instead of guessing from temporal overlap;
+    CaptionWindowPlanning has an explicit cue-level fallback for that case.
+    """
+
+    matches = list(_DISPLAY_TOKEN.finditer(str(script or "")))
+    enriched: list[SpeechTokenTiming] = []
+    match_cursor = 0
+    used_token_ids: set[str] = set()
+    for index, token in enumerate(tokens):
+        match_index = _next_script_token_match(matches, match_cursor, token.text)
+        update: dict[str, object] = {}
+        if match_index is not None:
+            match = matches[match_index]
+            update["char_span"] = (match.start(), match.end())
+            match_cursor = match_index + 1
+        preferred_id = token.token_id or (
+            f"token_{match_index + 1:04d}"
+            if match_index is not None
+            else f"token_unmapped_{index + 1:04d}"
+        )
+        token_id = preferred_id
+        if token_id in used_token_ids:
+            token_id = f"{preferred_id}__{index + 1:04d}"
+        used_token_ids.add(token_id)
+        update["token_id"] = token_id
+        enriched.append(token.model_copy(update=update))
+
+    cursor = 0
+    for unit in units:
+        unit_id = _unit_value(unit, "unit_id")
+        needle = normalize_speech_text(_unit_value(unit, "text"))
+        if not unit_id or not needle:
+            continue
+        claim = _claim_token_text(enriched, cursor, needle)
+        if claim is None:
+            continue
+        start_index, end_index = claim
+        for token_index in range(start_index, end_index):
+            enriched[token_index] = enriched[token_index].model_copy(
+                update={"source_unit_id": unit_id}
+            )
+        cursor = end_index
+    return enriched
 
 
 def normalize_speech_text(value: str) -> str:
@@ -88,23 +155,85 @@ def normalize_speech_text(value: str) -> str:
     return "".join(char.lower() for char in normalized if char.isalnum())
 
 
+def _normalize_display_text(value: object) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    return "".join(char.lower() for char in normalized if not char.isspace())
+
+
+def _unit_value(unit: object, key: str) -> str:
+    if isinstance(unit, dict):
+        return str(unit.get(key) or "")
+    return str(getattr(unit, key, "") or "")
+
+
+def _claim_token_text(
+    tokens: list[SpeechTokenTiming], start_index: int, needle: str
+) -> tuple[int, int] | None:
+    value = ""
+    matched_end: int | None = None
+    for end_index in range(start_index, len(tokens)):
+        piece = normalize_speech_text(tokens[end_index].text)
+        if matched_end is not None:
+            if piece:
+                return start_index, matched_end
+            matched_end = end_index + 1
+            continue
+        value += piece
+        if value == needle:
+            matched_end = end_index + 1
+            continue
+        if len(value) >= len(needle) or not needle.startswith(value):
+            break
+    return (start_index, matched_end) if matched_end is not None else None
+
+
+def _next_script_token_match(
+    matches: list[re.Match[str]], start_index: int, token_text: str
+) -> int | None:
+    """Align a possibly sparse historical token stream back to script positions.
+
+    Older normalized alignment artifacts can omit zero-duration punctuation tokens.
+    Searching forward by token text, instead of pairing by list index, preserves
+    monotonic character spans after any omission.
+    """
+
+    needle = _normalize_display_text(token_text)
+    if not needle:
+        return None
+    for index in range(start_index, len(matches)):
+        if _normalize_display_text(matches[index].group(0)) == needle:
+            return index
+    return None
+
+
 def _anchor_display_tokens(
     script: str, tokens: list[SpeechTokenTiming], limit: float
 ) -> tuple[list[SpeechTokenTiming], int, int]:
-    values = [match.group(0) for match in _DISPLAY_TOKEN.finditer(str(script or ""))]
+    matches = list(_DISPLAY_TOKEN.finditer(str(script or "")))
+    values = [match.group(0) for match in matches]
     if not values:
         return [], 0, 0
     weights = [max(1, len(normalize_speech_text(value))) for value in values]
     anchors = _match_anchors(values, weights, tokens)
     times = _interpolate_token_times(weights, anchors, limit)
     result: list[SpeechTokenTiming] = []
-    cursor = 0.0
-    for value, (start, end) in zip(values, times, strict=True):
-        start = max(cursor, min(limit, start))
+    for index, (match, value, (start, end)) in enumerate(zip(matches, values, times, strict=True)):
+        # Provider token times are spoken truth and may legitimately overlap at a
+        # sentence boundary. Never force them onto a single global cursor: doing
+        # so can collapse the first token of the next sentence to zero duration.
+        # Display non-overlap is a CaptionWindowPlanning concern.
+        start = max(0.0, min(limit, start))
         end = max(start, min(limit, end))
         if end > start:
-            result.append(SpeechTokenTiming(text=value, start=start, end=end))
-            cursor = end
+            result.append(
+                SpeechTokenTiming(
+                    text=value,
+                    start=start,
+                    end=end,
+                    token_id=f"token_{index + 1:04d}",
+                    char_span=(match.start(), match.end()),
+                )
+            )
     matched = sum(1 for span in anchors if span is not None)
     return result, matched, len(values) - matched
 
@@ -232,7 +361,11 @@ def _interpolate_token_times(
         total = sum(span_weights)
         cursor = left
         for offset, target in enumerate(range(index, run_end)):
-            token_end = right if offset == len(span_weights) - 1 else cursor + (right - left) * span_weights[offset] / total
+            token_end = (
+                right
+                if offset == len(span_weights) - 1
+                else cursor + (right - left) * span_weights[offset] / total
+            )
             times[target] = (cursor, token_end)
             cursor = token_end
         previous_end = right

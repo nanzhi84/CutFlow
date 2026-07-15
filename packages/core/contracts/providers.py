@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any, Literal
 from pydantic import Field, JsonValue, model_validator
 
-from .base import ContractModel, EntityMeta, ErrorCode, Money, ProviderStatus, RetryPolicy, utcnow
+from .base import ContractModel, EntityMeta, ErrorCode, Money, ProviderStatus, utcnow
 
 
 class SpeechTokenTiming(ContractModel):
@@ -16,11 +16,22 @@ class SpeechTokenTiming(ContractModel):
     text: str
     start: float = Field(ge=0)
     end: float = Field(ge=0)
+    # Provider adapters are not required to know script ownership. The
+    # NarrationAlignment boundary enriches the normalized display-token stream with
+    # these fields so downstream caption planning never has to infer ownership from
+    # overlapping time windows.
+    token_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    char_span: tuple[int, int] | None = Field(default=None, exclude_if=lambda value: value is None)
+    source_unit_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def validate_range(self) -> "SpeechTokenTiming":
         if self.end <= self.start:
             raise ValueError("speech token end must be greater than start")
+        if self.char_span is not None:
+            start, end = self.char_span
+            if start < 0 or end <= start:
+                raise ValueError("speech token char_span must be a positive half-open range")
         return self
 
 
@@ -143,7 +154,6 @@ class ProviderProfile(EntityMeta):
     enabled: bool = True
     concurrency_key: str = "default"
     timeout_sec: int = 30
-    retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
     cost_policy_id: str | None = None
     options_schema_ref: ProviderOptionsSchemaRef
     default_options: dict[str, JsonValue] = Field(default_factory=dict)
@@ -159,7 +169,6 @@ class CreateProviderProfileRequest(ContractModel):
     secret_ref: str | None = None
     concurrency_key: str = "default"
     timeout_sec: int = 30
-    retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
     cost_policy_id: str | None = None
     options_schema_ref: ProviderOptionsSchemaRef
     default_options: dict[str, JsonValue] = Field(default_factory=dict)
@@ -172,7 +181,6 @@ class PatchProviderProfileRequest(ContractModel):
     secret_ref: str | None = None
     concurrency_key: str | None = None
     timeout_sec: int | None = None
-    retry_policy: RetryPolicy | None = None
     cost_policy_id: str | None = None
     default_options: dict[str, JsonValue] | None = None
 

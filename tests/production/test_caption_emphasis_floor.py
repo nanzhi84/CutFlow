@@ -40,9 +40,7 @@ def test_tier2_relaxes_scene_text_and_busy_but_never_face():
             ("faced", 0.50, 0.00, 0.00),  # face-blocked at every tier
         ]
     )
-    tier1, rejected_face, rejected_text, rejected_busy = visual.select_options_at_thresholds(
-        result
-    )
+    tier1, rejected_face, rejected_text, rejected_busy = visual.select_options_at_thresholds(result)
     assert {opt["caption_option_id"] for opt in tier1} == {"clean"}
     assert (rejected_face, rejected_text, rejected_busy) == (1, 1, 1)
 
@@ -78,8 +76,11 @@ def test_invalid_envelope_never_selected():
     result = visual.OptionMeasurementResult(
         measurements=[
             visual.OptionMeasurement(
-                option=_opt("bad"), face_overlap=0.0, scene_text_overlap=0.0,
-                busy_score=0.0, valid=False,
+                option=_opt("bad"),
+                face_overlap=0.0,
+                scene_text_overlap=0.0,
+                busy_score=0.0,
+                valid=False,
             )
         ],
         sample_frames=[1, 2, 3],
@@ -191,6 +192,24 @@ def test_floor_met_at_tier1_needs_no_relaxation(monkeypatch, tmp_path):
     assert summary.relaxed_tier2_events == 0
     assert summary.relaxed_tier3_events == 0
     assert all(window["caption_options"] for window in windows)
+
+
+def test_floor_uses_maximum_feasible_subset_not_raw_option_event_count(monkeypatch, tmp_path):
+    ids = [f"hz_{i:03d}" for i in range(1, 6)]
+    # All five windows conflict, so the maximum feasible count is one. Once one
+    # clean option exists, relaxing four more mutually exclusive events is useless.
+    windows = [_window(event_id, start=0, end=30) for event_id in ids]
+    metrics = {
+        event_id: ((0.0, 0.0, 0.0) if index == 0 else (0.0, 0.08, 0.0))
+        for index, event_id in enumerate(ids)
+    }
+    summary, _diagnostics = _analyze(windows, metrics, monkeypatch, tmp_path)
+
+    assert summary.floor == 1
+    assert summary.tier1_events == 1
+    assert summary.relaxed_tier2_events == 0
+    assert summary.relaxed_tier3_events == 0
+    assert summary.events_with_options == 1
 
 
 def test_below_floor_triggers_tier2_relaxation(monkeypatch, tmp_path):

@@ -232,6 +232,24 @@ def materialize_broll_from_assignment(
         if source_required_frames > timeline_frames:
             drop_diagnostics.append({**drop_base, "reason": "source_length_mismatch"})
             continue
+        conflicting_window_id = next(
+            (
+                accepted_window_id
+                for accepted_window_id, accepted_insert in accepted
+                if start_frame < int(accepted_insert.timeline_end_frame or 0)
+                and end_frame > int(accepted_insert.timeline_start_frame or 0)
+            ),
+            "",
+        )
+        if conflicting_window_id:
+            drop_diagnostics.append(
+                {
+                    **drop_base,
+                    "reason": "timeline_overlap",
+                    "conflicting_slot_id": conflicting_window_id,
+                }
+            )
+            continue
 
         source_start = _as_float(meta.get("source_start"))
         source_end = _as_float(meta.get("source_end"))

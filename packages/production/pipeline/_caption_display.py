@@ -1,8 +1,9 @@
 """Deterministic caption display compiler (Caption Display v2, issue #188).
 
 Pure, IO-free planner that turns raw narration units into display-ready caption
-cues (already line-broken) plus, in mixed mode, a time-deduplicated normal track
-that yields to the huazi (emphasis) events.
+cues (already line-broken). Normal captions and huazi (emphasis) events are
+independent layers: when normal captions are enabled, emphasis never removes,
+splits, shortens, or otherwise suppresses them.
 
 The module is intentionally self-contained: it holds its own dataclasses instead
 of importing ``packages.core.contracts`` so the render/planning integration layer
@@ -10,9 +11,9 @@ owns the conversion to the persisted ``CaptionDisplayPlan.v1`` artifact.
 
 Pipeline (fixed order):
     C1  normalize + merge   -- fold pure-punctuation / tiny cues into neighbours
-    C3  per-cue DP wrap      -- pick the min-penalty legal 1/2-line split
-    C4  over-long time split -- split cues that cannot fit two lines
-    E   pure-time dedup       -- punch huazi windows out of the normal track
+    C3  per-cue DP wrap      -- pick the min-penalty legal 1/2/3-line split
+    C4  over-long time split -- split cues that cannot fit the configured line cap
+    E   layer coexistence     -- retain every normal cue alongside huazi
 
 Width measurement is injected (``measure(text) -> px``) so the compiler stays
 deterministic and testable without font IO.
@@ -75,6 +76,9 @@ class CaptionCueData:
     end: float
     lines: list[str]
     source_unit_ids: list[int | str]
+    rect: dict | None = None
+    text_align: str = "center"
+    # Legacy serialization compatibility. No-punch compilation always leaves it null.
     suppressed_by: str | None = None
 
 
@@ -88,6 +92,7 @@ class CaptionDisplayDiagnostics:
 
     merged_units: int = 0
     split_cues: int = 0
+    # Historical counters retained in CaptionDisplayPlan.v1; always zero now.
     suppressed_duplicates: int = 0
     dropped_fragments: int = 0
     animation_fallbacks: int = 0
@@ -97,6 +102,7 @@ class CaptionDisplayDiagnostics:
 @dataclass
 class CaptionDisplayResult:
     normal_cues: list[CaptionCueData]
+    # Historical field retained in CaptionDisplayPlan.v1; always empty now.
     suppressed_cues: list[CaptionCueData]
     emphasis_events: list[dict]
     diagnostics: CaptionDisplayDiagnostics
@@ -120,6 +126,7 @@ class _Ctx:
     measure: Callable[[str], float]
     avail: float
     diag: CaptionDisplayDiagnostics
+    max_lines: int = 2
 
 
 # --- character helpers ----------------------------------------------------------
@@ -233,12 +240,12 @@ def _legal_break(text: str, index: int, spans: list[tuple[int, int]]) -> bool:
 
 
 def _dp_break(text: str, ctx: _Ctx, *, relax_width: bool = False) -> list[str] | None:
-    """Return 1 or 2 display lines, or None when the text cannot fit two lines.
+    """Return up to ``ctx.max_lines`` display lines, or ``None`` when none fit.
 
-    Enumerates every legal break and keeps the minimum-penalty split. Penalty =
-    ``_IMBALANCE_WEIGHT * width_imbalance + break_penalty``; ties resolve by the
-    earliest break index for determinism. ``relax_width`` drops the per-line
-    width veto (last-resort path so C4 recursion always terminates).
+    Fewer lines always win when they fit. Within the same line count, the compiler
+    minimizes width imbalance plus punctuation-break cost and uses the earliest
+    break tuple as the deterministic tie-breaker. ``relax_width`` is the bounded
+    last-resort path used after the time-split recursion guard.
     """
     text = text.strip()
     if not text:
@@ -247,24 +254,48 @@ def _dp_break(text: str, ctx: _Ctx, *, relax_width: bool = False) -> list[str] |
         return [text]  # single line wins whenever it fits
 
     spans = _protected_spans(text)
-    best_key: tuple[float, int] | None = None
-    best_lines: list[str] | None = None
-    for index in range(1, len(text)):
-        if not _legal_break(text, index, spans):
-            continue
-        left = text[:index].strip()
-        right = text[index:].strip()
-        w1 = ctx.measure(left)
-        w2 = ctx.measure(right)
-        if not relax_width and (w1 > ctx.avail or w2 > ctx.avail):
-            continue
-        imbalance = abs(w1 - w2) / max(w1, w2, 1e-9)
-        penalty = _IMBALANCE_WEIGHT * imbalance + _break_penalty(left[-1])
-        key = (penalty, index)
-        if best_key is None or key < best_key:
-            best_key = key
-            best_lines = [left, right]
-    return best_lines
+    legal_breaks = [index for index in range(1, len(text)) if _legal_break(text, index, spans)]
+    max_lines = max(1, min(3, int(ctx.max_lines)))
+    for line_count in range(2, max_lines + 1):
+        best_key: tuple[float, tuple[int, ...]] | None = None
+        best_lines: list[str] | None = None
+        for breaks in _break_combinations(legal_breaks, line_count - 1):
+            boundaries = (0, *breaks, len(text))
+            lines = [
+                text[boundaries[index] : boundaries[index + 1]].strip()
+                for index in range(line_count)
+            ]
+            if any(not line or _count_meaningful(line) < 1 for line in lines):
+                continue
+            if _count_meaningful(lines[-1]) < 2:
+                continue
+            widths = [ctx.measure(line) for line in lines]
+            if not relax_width and any(width > ctx.avail for width in widths):
+                continue
+            widest = max(widths, default=1.0)
+            imbalance = sum(abs(width - (sum(widths) / len(widths))) for width in widths)
+            imbalance /= max(widest * len(widths), 1e-9)
+            punctuation_cost = sum(
+                _break_penalty(lines[index][-1]) for index in range(len(lines) - 1)
+            )
+            key = (_IMBALANCE_WEIGHT * imbalance + punctuation_cost, breaks)
+            if best_key is None or key < best_key:
+                best_key = key
+                best_lines = lines
+        if best_lines is not None:
+            return best_lines
+    return None
+
+
+def _break_combinations(values: list[int], choose: int):
+    if choose == 1:
+        for value in values:
+            yield (value,)
+        return
+    if choose == 2:
+        for first_index, first in enumerate(values):
+            for second in values[first_index + 1 :]:
+                yield first, second
 
 
 # --- C4: over-long time split ---------------------------------------------------
@@ -331,120 +362,6 @@ def _layout_cue(cue: _WorkCue, ctx: _Ctx, depth: int = 0) -> list[CaptionCueData
     return _layout_cue(left, ctx, depth + 1) + _layout_cue(right, ctx, depth + 1)
 
 
-# --- E: pure-time dedup ---------------------------------------------------------
-
-
-def _dedup(
-    normal_cues: list[CaptionCueData],
-    events: list[dict],
-    diag: CaptionDisplayDiagnostics,
-    event_source_ids: dict[str, set[str]] | None = None,
-) -> tuple[list[CaptionCueData], list[CaptionCueData]]:
-    """Punch each huazi window out of the overlapping normal cues.
-
-    Text/lines are never touched -- only time. A fully-covered cue is suppressed
-    whole (``suppressed_by`` = event id); a partially-covered cue is trimmed to
-    its uncovered fragment(s). Trimmed fragments shorter than 0.6s are dropped
-    (counted, not suppressed). Events apply in (start, end, id) order so a cue
-    already split by one event is further trimmed by the next. Deterministic.
-
-    Scope (issue #197, plan A). ``event_source_ids`` maps an event id to the
-    narration unit ids the huazi phrase was lifted from. When provided (planned
-    v2 path), an event only punches cues that share a source unit with it: the
-    on-screen text duplication is confined to that same sentence, so a stretched
-    dwell window now coexists with the *next* sentence's normal caption (huazi
-    mid-screen, normal caption at the bottom) instead of erasing it. Unit ids are
-    matched as strings, so int/str forms interoperate. An event id absent from the
-    mapping falls back to punching every overlapping cue (fail-safe). ``None``
-    (legacy v1 path) keeps the original whole-track punch-out byte-for-byte.
-    ``suppressed_duplicates`` therefore counts the cues a same-source (or
-    fail-safe) window actually affected.
-    """
-    working = [
-        {
-            "start": cue.start,
-            "end": cue.end,
-            "lines": cue.lines,
-            "sids": cue.source_unit_ids,
-            "nsids": frozenset(str(sid) for sid in cue.source_unit_ids),
-            "origin": i,
-        }
-        for i, cue in enumerate(normal_cues)
-    ]
-    suppressed: list[CaptionCueData] = []
-    affected: set[int] = set()
-
-    ordered = sorted(
-        events,
-        key=lambda ev: (
-            float(ev.get("start") or 0.0),
-            float(ev.get("end") or 0.0),
-            str(ev.get("event_id") or ""),
-        ),
-    )
-    for ev in ordered:
-        e_start = float(ev.get("start") or 0.0)
-        e_end = float(ev.get("end") or 0.0)
-        event_id = ev.get("event_id")
-        if e_end <= e_start:
-            continue
-        # None target => punch every overlapping cue (legacy, or fail-safe when a
-        # planned event id is missing from the source mapping).
-        if event_source_ids is None or str(event_id) not in event_source_ids:
-            target_ids: frozenset[str] | None = None
-        else:
-            target_ids = frozenset(event_source_ids[str(event_id)])
-        remaining: list[dict] = []
-        for cue in working:
-            c_start = cue["start"]
-            c_end = cue["end"]
-            if c_end <= e_start or c_start >= e_end:
-                remaining.append(cue)
-                continue
-            if target_ids is not None and cue["nsids"].isdisjoint(target_ids):
-                # Time-overlapping but a different sentence: coexist untouched.
-                remaining.append(cue)
-                continue
-            affected.add(cue["origin"])
-            if c_start >= e_start and c_end <= e_end:
-                suppressed.append(
-                    CaptionCueData(
-                        c_start, c_end, list(cue["lines"]), list(cue["sids"]),
-                        suppressed_by=event_id,
-                    )
-                )
-                continue
-            fragments: list[tuple[float, float]] = []
-            if c_start < e_start:
-                fragments.append((c_start, e_start))
-            if c_end > e_end:
-                fragments.append((e_end, c_end))
-            for f_start, f_end in fragments:
-                if f_end - f_start < _MIN_DISPLAY_SEC:
-                    diag.dropped_fragments += 1
-                    continue
-                remaining.append(
-                    {
-                        "start": f_start,
-                        "end": f_end,
-                        "lines": cue["lines"],
-                        "sids": cue["sids"],
-                        "nsids": cue["nsids"],
-                        "origin": cue["origin"],
-                    }
-                )
-        working = remaining
-
-    diag.suppressed_duplicates += len(affected)
-    kept = [
-        CaptionCueData(c["start"], c["end"], list(c["lines"]), list(c["sids"]))
-        for c in working
-    ]
-    kept.sort(key=lambda c: (c.start, c.end))
-    suppressed.sort(key=lambda c: (c.start, c.end))
-    return kept, suppressed
-
-
 # --- entry point ----------------------------------------------------------------
 
 
@@ -472,12 +389,16 @@ def compile_caption_display(
     normal_enabled: bool,
     emphasis_enabled: bool,
     overlay_events: list[dict],
+    max_lines: int = 2,
+    max_line_width_px: float | None = None,
 ) -> CaptionDisplayResult:
     """Compile display-ready caption cues. ``units``/``overlay_events`` are read-only."""
     diag = CaptionDisplayDiagnostics(font_metrics_source=metrics_source)
     width = int(resolution[0]) if resolution else 0
     avail = max(1.0, (width - margin_l - margin_r) * _WIDTH_SAFETY)
-    ctx = _Ctx(measure=measure, avail=avail, diag=diag)
+    if max_line_width_px is not None:
+        avail = min(avail, max(1.0, float(max_line_width_px)) * _WIDTH_SAFETY)
+    ctx = _Ctx(measure=measure, avail=avail, diag=diag, max_lines=max_lines)
 
     normal_cues: list[CaptionCueData] = []
     if normal_enabled:
@@ -487,14 +408,10 @@ def compile_caption_display(
 
     emphasis_events = list(overlay_events) if emphasis_enabled else []
 
-    suppressed_cues: list[CaptionCueData] = []
-    if normal_enabled and emphasis_enabled and emphasis_events:
-        normal_cues, suppressed_cues = _dedup(normal_cues, emphasis_events, diag)
-
     normal_cues.sort(key=lambda c: (c.start, c.end))
     return CaptionDisplayResult(
         normal_cues=normal_cues,
-        suppressed_cues=suppressed_cues,
+        suppressed_cues=[],
         emphasis_events=emphasis_events,
         diagnostics=diag,
     )
@@ -510,9 +427,8 @@ def compile_planned_caption_display(
     """Materialize an already-planned caption track for the renderer.
 
     ``CaptionWindowPlanning`` owns cue merge/split/wrap and publishes authoritative
-    frame windows.  This function deliberately performs no text layout and no font
-    IO: it only converts the persisted frame windows to seconds and, in mixed mode,
-    applies the existing deterministic pure-time suppression policy.
+    frame windows. This function deliberately performs no text layout, font IO, or
+    normal-caption suppression. When both layers are enabled they always coexist.
     """
 
     fps = max(1, int(caption_windows.get("fps") or 30))
@@ -524,9 +440,7 @@ def compile_planned_caption_display(
     diag = CaptionDisplayDiagnostics(
         merged_units=int(diagnostics_payload.get("merged_units") or 0),
         split_cues=int(diagnostics_payload.get("split_cues") or 0),
-        font_metrics_source=str(
-            diagnostics_payload.get("font_metrics_source") or "eaw_fallback"
-        ),
+        font_metrics_source=str(diagnostics_payload.get("font_metrics_source") or "eaw_fallback"),
     )
 
     normal_cues: list[CaptionCueData] = []
@@ -534,8 +448,17 @@ def compile_planned_caption_display(
         for window in caption_windows.get("normal_windows") or []:
             if not isinstance(window, dict):
                 continue
-            start_frame = max(0, int(window.get("start_frame") or 0))
-            end_frame = max(start_frame, int(window.get("end_frame") or 0))
+            display_span = (
+                window.get("display_span") if isinstance(window.get("display_span"), dict) else {}
+            )
+            start_frame = max(
+                0,
+                int(display_span.get("start_frame") or window.get("start_frame") or 0),
+            )
+            end_frame = max(
+                start_frame,
+                int(display_span.get("end_frame") or window.get("end_frame") or 0),
+            )
             if end_frame <= start_frame:
                 continue
             lines = [str(line) for line in (window.get("lines") or []) if str(line)]
@@ -550,34 +473,17 @@ def compile_planned_caption_display(
                     end=end_frame / fps,
                     lines=lines,
                     source_unit_ids=source_ids,
+                    rect=dict(window["rect"]) if isinstance(window.get("rect"), dict) else None,
+                    text_align=str(window.get("text_align") or "center"),
                 )
             )
 
     emphasis_events = list(overlay_events) if emphasis_enabled else []
-    suppressed_cues: list[CaptionCueData] = []
-    if normal_enabled and emphasis_enabled and emphasis_events:
-        # Plan A (issue #197): confine suppression to the huazi's own sentence so a
-        # stretched dwell window coexists with the next sentence's normal caption.
-        event_source_ids: dict[str, set[str]] = {}
-        for window in caption_windows.get("emphasis_windows") or []:
-            if not isinstance(window, dict):
-                continue
-            event_id = str(window.get("event_id") or "")
-            if not event_id:
-                continue
-            event_source_ids.setdefault(event_id, set()).update(
-                str(item)
-                for item in (window.get("source_unit_ids") or [])
-                if item is not None
-            )
-        normal_cues, suppressed_cues = _dedup(
-            normal_cues, emphasis_events, diag, event_source_ids=event_source_ids
-        )
 
     normal_cues.sort(key=lambda cue: (cue.start, cue.end, tuple(map(str, cue.source_unit_ids))))
     return CaptionDisplayResult(
         normal_cues=normal_cues,
-        suppressed_cues=suppressed_cues,
+        suppressed_cues=[],
         emphasis_events=emphasis_events,
         diagnostics=diag,
     )

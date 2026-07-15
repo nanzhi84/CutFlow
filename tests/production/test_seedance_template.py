@@ -69,8 +69,9 @@ def test_seedance_node_outputs_and_provider_side_effect():
     # idempotency_key so resume never silently re-bills a generation.
     assert specs["SeedanceGenerateVideo"].side_effects == ["provider_call"]
     assert specs["SeedanceGenerateVideo"].idempotency_key is not None
-    # The export node is pure assembly.
-    assert specs["ExportSeedanceVideo"].side_effects == []
+    # Export creates run-owned FinishedVideo/PublishPackage rows, so its artifacts
+    # alone cannot be reused as a replay of the domain write.
+    assert specs["ExportSeedanceVideo"].side_effects == ["domain_write"]
 
 
 def _validate_ctx(request: DigitalHumanVideoRequest) -> NodeContext:

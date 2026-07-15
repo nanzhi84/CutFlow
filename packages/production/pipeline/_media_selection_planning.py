@@ -43,11 +43,13 @@ from packages.production.pipeline._run_state import degradation_notice
 from packages.production.pipeline.nodes._broll_policy import broll_full_coverage_enabled
 
 _JSON_VARS = frozenset({"narration_units", "safe_cut_boundaries", "portrait_slots", "broll_slots"})
-_PORTRAIT_CANDIDATE_HEADER = "candidate_id | asset_id | available_seconds | description | reason"
-_BROLL_CANDIDATE_HEADER = (
-    "candidate_id | asset_id | diversity_key | scene_name | matched_keywords | available_seconds | "
-    "description"
-)
+_PROMPT_MAX_RETRIEVAL_CANDIDATES = 12
+_PROMPT_MAX_OPTIONS_PER_SLOT = 6
+_MEDIA_SELECTION_GENERATION_OPTIONS = {
+    "response_format": {"type": "json_object"},
+    "temperature": 0.1,
+    "enable_thinking": False,
+}
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,8 @@ class MediaSelectionContext:
     candidates: MediaCandidates
     retrieval_topk_by_window: dict[str, list[str]]
     agent_input: dict
+    prompt_input: dict
+    prompt_domain_diagnostics: dict
 
 
 @dataclass(frozen=True)
@@ -134,6 +138,31 @@ def build_media_selection_context(
             "人像素材不足：portrait slot 没有可覆盖的源窗口。",
             details=failure,
         )
+    full_coverage = broll_full_coverage_enabled(request)
+    prompt_input, prompt_domain_diagnostics = _compact_prompt_input(
+        agent_input,
+        allow_broll_asset_diversity_reuse=full_coverage,
+    )
+    unmatched_portrait = prompt_domain_diagnostics["portrait"]["unmatched_slot_ids"]
+    if unmatched_portrait:
+        raise NodeExecutionError(
+            ErrorCode.material_insufficient_portrait,
+            "人像素材不足：portrait slot 无法形成 asset_id 全局唯一的完整指派。",
+            details={
+                "failed_slot_ids": unmatched_portrait,
+                "prompt_candidate_domains": prompt_domain_diagnostics,
+            },
+        )
+    unmatched_broll = prompt_domain_diagnostics["broll"]["unmatched_slot_ids"]
+    if full_coverage and unmatched_broll:
+        raise NodeExecutionError(
+            ErrorCode.material_insufficient_broll,
+            "B-roll 素材不足：full_coverage slot 无法形成 candidate_id 全局唯一的完整指派。",
+            details={
+                "failed_slot_ids": unmatched_broll,
+                "prompt_candidate_domains": prompt_domain_diagnostics,
+            },
+        )
     return MediaSelectionContext(
         windows=windows,
         raw_units=raw_units,
@@ -143,6 +172,8 @@ def build_media_selection_context(
         candidates=candidates,
         retrieval_topk_by_window=retrieval_topk,
         agent_input=agent_input,
+        prompt_input=prompt_input,
+        prompt_domain_diagnostics=prompt_domain_diagnostics,
     )
 
 
@@ -174,6 +205,7 @@ def select_media_assignment(
             fallback,
             boundary=agent_context.media_boundary,
             candidates=agent_context.candidates,
+            max_inserts=broll_limit,
             retrieval_topk_by_window=agent_context.retrieval_topk_by_window,
             allow_broll_asset_diversity_reuse=full_coverage,
             require_broll_coverage=full_coverage,
@@ -215,7 +247,7 @@ def select_media_assignment(
         )
     else:
         engine = "media_selection_agent_llm"
-        prompt_input = _compact_prompt_input(agent_context.agent_input)
+        prompt_input = agent_context.prompt_input
 
         def _invoke(previous_errors: list[str]):
             attempt = len(invocation_ids)
@@ -242,7 +274,10 @@ def select_media_assignment(
                     provider_profile_id=profile.id,
                     capability_id="llm.chat",
                     prompt_version_id=prompt_invocation.prompt_version_id,
-                    input={"prompt": rendered, "response_format": {"type": "json_object"}},
+                    input={
+                        "prompt": rendered,
+                        **_MEDIA_SELECTION_GENERATION_OPTIONS,
+                    },
                     idempotency_key=idempotency.key,
                     fallback_idempotency_keys=idempotency.fallback_keys,
                 )
@@ -414,6 +449,7 @@ def materialize_media_selection_outputs(
         "fallback_used": selection_result.fallback_used,
         "fallback_reason": selection_result.fallback_reason,
         "broll_drops": broll_drops,
+        "prompt_candidate_domains": agent_context.prompt_domain_diagnostics,
     }
     assignment_payload = MediaSelectionAssignmentPlan(
         engine=selection_result.engine,
@@ -447,6 +483,7 @@ def materialize_media_selection_outputs(
         "retrieval_topk_by_window": agent_context.retrieval_topk_by_window,
         "fallback_used": selection_result.fallback_used,
         "fallback_reason": selection_result.fallback_reason,
+        "prompt_candidate_domains": agent_context.prompt_domain_diagnostics,
         "candidate_counts": {
             "portrait": len(candidates.portrait_by_id),
             "broll": len(candidates.broll_by_id),
@@ -562,83 +599,530 @@ def _raw_portrait_candidate_diagnostics(material: dict) -> dict:
     }
 
 
-def _compact_prompt_input(agent_input: dict) -> dict:
-    portrait_slots = []
-    for slot in agent_input.get("portrait_slots") or []:
-        if not isinstance(slot, dict):
-            continue
-        legal = list(slot.get("legal_candidate_ids") or [])
-        if "retrieval_topk_candidate_ids" in slot:
-            topk = list(slot.get("retrieval_topk_candidate_ids") or [])
-            legal = [candidate_id for candidate_id in topk if candidate_id in set(legal)]
-        portrait_slots.append(
-            {
-                "slot_id": str(slot.get("slot_id") or ""),
-                "required_seconds": slot.get("required_seconds"),
-                "legal_candidate_ids": legal[:12],
-            }
-        )
-    broll_slots = []
-    prompt_broll_ids: set[str] = set()
-    for slot in agent_input.get("broll_slots") or []:
-        if not isinstance(slot, dict):
-            continue
-        slot_id = str(slot.get("slot_id") or "")
-        legal = list(slot.get("legal_candidate_ids") or [])
-        if "retrieval_topk_candidate_ids" in slot:
-            topk = list(slot.get("retrieval_topk_candidate_ids") or [])
-            legal = [candidate_id for candidate_id in topk if candidate_id in set(legal)]
-        legal = legal[:12]
-        prompt_broll_ids.update(str(candidate_id) for candidate_id in legal)
-        broll_slots.append(
-            {
-                "slot_id": slot_id,
-                "required_seconds": slot.get("required_seconds"),
-                "text": str(slot.get("text") or ""),
-                "legal_candidate_ids": legal,
-            }
-        )
-    portrait_rows = [
-        [
-            item.get("candidate_id"),
-            item.get("asset_id"),
-            item.get("available_seconds"),
-            item.get("description"),
-            item.get("reason"),
-        ]
-        for item in agent_input.get("portrait_candidates") or []
-        if isinstance(item, dict)
+def _compact_prompt_input(
+    agent_input: dict,
+    *,
+    allow_broll_asset_diversity_reuse: bool = False,
+) -> tuple[dict, dict]:
+    """Compile slot-scoped candidate domains that are safe by construction.
+
+    The provider previously had to join global candidate tables against per-slot ID
+    arrays and then solve global asset/diversity conflicts itself. Real runs showed
+    that this cross-table task was the dominant source of invalid first responses.
+    Here every prompt candidate is embedded in its slot. Coverage witnesses are
+    computed from each complete legal domain before prompt-size pruning, and every
+    cross-slot choice is compatible by construction.
+    """
+
+    portrait_candidates = _candidate_input_by_id(agent_input, "portrait_candidates")
+    broll_candidates = _candidate_input_by_id(agent_input, "broll_candidates")
+    raw_portrait_slots = _prompt_slot_candidates(agent_input.get("portrait_slots") or [])
+    raw_broll_slots = _prompt_slot_candidates(agent_input.get("broll_slots") or [])
+    portrait_domains, unmatched_portrait = _partition_portrait_prompt_domains(
+        raw_portrait_slots,
+        portrait_candidates,
+    )
+    broll_domains, unmatched_broll, broll_partition_diagnostics = _partition_broll_prompt_domains(
+        raw_broll_slots,
+        broll_candidates,
+        max_inserts=max(0, int(agent_input.get("max_broll_inserts", 0) or 0)),
+        allow_asset_diversity_reuse=allow_broll_asset_diversity_reuse,
+    )
+
+    portrait_slots = [
+        {
+            "slot_id": slot_id,
+            "required_seconds": slot["required_seconds"],
+            "legal_candidates": [
+                _portrait_prompt_candidate(portrait_candidates[candidate_id])
+                for candidate_id in portrait_domains.get(slot_id, [])
+            ],
+        }
+        for slot_id, slot in raw_portrait_slots.items()
     ]
-    broll_rows = [
-        [
-            item.get("candidate_id"),
-            item.get("asset_id"),
-            item.get("diversity_key"),
-            item.get("scene_name"),
-            list(item.get("matched_keywords") or [])[:6],
-            item.get("available_seconds"),
-            item.get("description"),
-        ]
-        for item in agent_input.get("broll_candidates") or []
-        if isinstance(item, dict)
-        and str(item.get("candidate_id") or "") in prompt_broll_ids
+    broll_slots = [
+        {
+            "slot_id": slot_id,
+            "required_seconds": slot["required_seconds"],
+            "text": slot["text"],
+            "conflicts_with_slot_ids": slot["conflicts_with_slot_ids"],
+            "legal_candidates": [
+                _broll_prompt_candidate(broll_candidates[candidate_id])
+                for candidate_id in broll_domains.get(slot_id, [])
+            ],
+        }
+        for slot_id, slot in raw_broll_slots.items()
     ]
+    prompt_input = {
+        key: value
+        for key, value in agent_input.items()
+        if key not in {"portrait_candidates", "broll_candidates"}
+    }
+    prompt_input.update({"portrait_slots": portrait_slots, "broll_slots": broll_slots})
+    diagnostics = {
+        "strategy": "slot_scoped_direct_compatibility_v2",
+        "portrait": _prompt_domain_diagnostics(
+            raw_portrait_slots,
+            portrait_domains,
+            unmatched_portrait,
+        ),
+        "broll": {
+            **_prompt_domain_diagnostics(raw_broll_slots, broll_domains, unmatched_broll),
+            **broll_partition_diagnostics,
+            "asset_diversity_reuse_allowed": allow_broll_asset_diversity_reuse,
+        },
+    }
+    diagnostics["prompt_json_chars"] = len(json.dumps(prompt_input, ensure_ascii=False))
+    return prompt_input, diagnostics
+
+
+def _candidate_input_by_id(agent_input: dict, key: str) -> dict[str, dict]:
     return {
-        **agent_input,
-        "portrait_slots": portrait_slots,
-        "broll_slots": broll_slots,
-        "portrait_candidates": _prompt_candidate_lines(_PORTRAIT_CANDIDATE_HEADER, portrait_rows),
-        "broll_candidates": _prompt_candidate_lines(_BROLL_CANDIDATE_HEADER, broll_rows),
+        str(item.get("candidate_id") or ""): item
+        for item in agent_input.get(key) or []
+        if isinstance(item, dict) and str(item.get("candidate_id") or "")
     }
 
 
-def _prompt_candidate_lines(header: str, rows: list[list[object]]) -> str:
-    def _cell(value) -> str:
-        if isinstance(value, list | tuple):
-            return ",".join(_cell(item) for item in value if _cell(item))
-        return " ".join(("" if value is None else str(value)).replace("|", "/").split())
+def _prompt_slot_candidates(raw_slots) -> dict[str, dict]:
+    slots: dict[str, dict] = {}
+    for slot in raw_slots:
+        if not isinstance(slot, dict):
+            continue
+        slot_id = str(slot.get("slot_id") or "")
+        if not slot_id:
+            continue
+        legal = [
+            value
+            for raw_value in slot.get("legal_candidate_ids") or []
+            if (value := str(raw_value).strip())
+        ]
+        retrieval_constrained = "retrieval_topk_candidate_ids" in slot
+        if "retrieval_topk_candidate_ids" in slot:
+            legal_set = set(legal)
+            legal = [
+                value
+                for raw_value in slot.get("retrieval_topk_candidate_ids") or []
+                if (value := str(raw_value).strip()) and value in legal_set
+            ]
+        slots[slot_id] = {
+            "required_seconds": slot.get("required_seconds"),
+            "text": str(slot.get("text") or ""),
+            "conflicts_with_slot_ids": list(slot.get("conflicts_with_slot_ids") or []),
+            "candidate_ids": list(dict.fromkeys(legal)),
+            "retrieval_constrained": retrieval_constrained,
+        }
+    return slots
 
-    return "\n".join([header, *(" | ".join(_cell(value) for value in row) for row in rows)])
+
+def _partition_portrait_prompt_domains(
+    slots: dict[str, dict],
+    candidates: dict[str, dict],
+) -> tuple[dict[str, list[str]], list[str]]:
+    best_by_slot_asset: dict[str, dict[str, tuple[int, str]]] = {}
+    for slot_id, slot in slots.items():
+        options: dict[str, tuple[int, str]] = {}
+        for rank, candidate_id in enumerate(slot["candidate_ids"]):
+            candidate = candidates.get(candidate_id)
+            if candidate is None:
+                continue
+            asset_id = str(candidate.get("asset_id") or candidate_id)
+            options.setdefault(asset_id, (rank, candidate_id))
+        best_by_slot_asset[slot_id] = options
+
+    assignment = _maximum_slot_matching(
+        {
+            slot_id: [
+                asset_id
+                for asset_id, _ in sorted(
+                    options.items(),
+                    key=lambda item: (item[1][0], item[0]),
+                )
+            ]
+            for slot_id, options in best_by_slot_asset.items()
+        }
+    )
+    domains: dict[str, list[tuple[int, str]]] = {slot_id: [] for slot_id in slots}
+    assigned_assets = set(assignment.values())
+    for slot_id, asset_id in assignment.items():
+        domains[slot_id].append(best_by_slot_asset[slot_id][asset_id])
+
+    all_assets = sorted(
+        {asset_id for options in best_by_slot_asset.values() for asset_id in options},
+        key=lambda asset_id: (
+            sum(asset_id in options for options in best_by_slot_asset.values()),
+            min(
+                options[asset_id][0]
+                for options in best_by_slot_asset.values()
+                if asset_id in options
+            ),
+            asset_id,
+        ),
+    )
+    for asset_id in all_assets:
+        if asset_id in assigned_assets:
+            continue
+        options = [
+            (len(domains[slot_id]), rank, slot_id, candidate_id)
+            for slot_id, values in best_by_slot_asset.items()
+            if asset_id in values
+            for rank, candidate_id in [values[asset_id]]
+            if len(domains[slot_id]) < _PROMPT_MAX_OPTIONS_PER_SLOT
+            and rank < _PROMPT_MAX_RETRIEVAL_CANDIDATES
+        ]
+        if not options:
+            continue
+        _, rank, slot_id, candidate_id = min(options)
+        domains[slot_id].append((rank, candidate_id))
+        assigned_assets.add(asset_id)
+
+    return (
+        {
+            slot_id: [candidate_id for _, candidate_id in sorted(values)]
+            for slot_id, values in domains.items()
+        },
+        sorted(set(slots) - set(assignment)),
+    )
+
+
+def _partition_broll_prompt_domains(
+    slots: dict[str, dict],
+    candidates: dict[str, dict],
+    *,
+    max_inserts: int,
+    allow_asset_diversity_reuse: bool,
+) -> tuple[dict[str, list[str]], list[str], dict]:
+    if allow_asset_diversity_reuse:
+        return _partition_full_coverage_broll_domains(
+            slots,
+            candidates,
+            max_inserts=max_inserts,
+        )
+    return _partition_insert_broll_domains(
+        slots,
+        candidates,
+        max_inserts=max_inserts,
+    )
+
+
+def _partition_full_coverage_broll_domains(
+    slots: dict[str, dict],
+    candidates: dict[str, dict],
+    *,
+    max_inserts: int,
+) -> tuple[dict[str, list[str]], list[str], dict]:
+    options_by_slot = {
+        slot_id: [
+            candidate_id for candidate_id in slot["candidate_ids"] if candidate_id in candidates
+        ]
+        for slot_id, slot in slots.items()
+    }
+    assignment = _maximum_slot_matching(options_by_slot)
+    ranked_domains: dict[str, list[tuple[int, str]]] = {slot_id: [] for slot_id in slots}
+    assigned_candidate_ids = set(assignment.values())
+    rank_by_slot = {
+        slot_id: {candidate_id: rank for rank, candidate_id in enumerate(candidate_ids)}
+        for slot_id, candidate_ids in options_by_slot.items()
+    }
+    for slot_id, candidate_id in assignment.items():
+        ranked_domains[slot_id].append((rank_by_slot[slot_id][candidate_id], candidate_id))
+
+    candidate_ids = sorted(
+        {candidate_id for values in options_by_slot.values() for candidate_id in values},
+        key=lambda candidate_id: (
+            sum(candidate_id in values for values in options_by_slot.values()),
+            min(
+                rank_by_slot[slot_id][candidate_id]
+                for slot_id, values in options_by_slot.items()
+                if candidate_id in values
+            ),
+            candidate_id,
+        ),
+    )
+    for candidate_id in candidate_ids:
+        if candidate_id in assigned_candidate_ids:
+            continue
+        destinations = [
+            (len(ranked_domains[slot_id]), rank_by_slot[slot_id][candidate_id], slot_id)
+            for slot_id, values in options_by_slot.items()
+            if candidate_id in values
+            and rank_by_slot[slot_id][candidate_id] < _PROMPT_MAX_RETRIEVAL_CANDIDATES
+            and len(ranked_domains[slot_id]) < _PROMPT_MAX_OPTIONS_PER_SLOT
+        ]
+        if not destinations:
+            continue
+        _, rank, slot_id = min(destinations)
+        ranked_domains[slot_id].append((rank, candidate_id))
+        assigned_candidate_ids.add(candidate_id)
+
+    overlapping_slot_ids = sorted(
+        {
+            slot_id
+            for slot_id, slot in slots.items()
+            if any(conflict_id in slots for conflict_id in slot["conflicts_with_slot_ids"])
+        }
+    )
+    max_inserts_insufficient = max_inserts < len(slots)
+    unmatched = sorted(
+        (set(slots) - set(assignment))
+        | set(overlapping_slot_ids)
+        | (set(slots) if max_inserts_insufficient else set())
+    )
+    domains = {
+        slot_id: [candidate_id for _, candidate_id in sorted(values)]
+        for slot_id, values in ranked_domains.items()
+    }
+    return (
+        domains,
+        unmatched,
+        {
+            "mode": "full_coverage",
+            "construction_safe_max_inserts": not max_inserts_insufficient,
+            "construction_safe_timeline_overlap": not overlapping_slot_ids,
+            "max_inserts": max_inserts,
+            "max_inserts_insufficient": max_inserts_insufficient,
+            "coverage_witness_count": len(assignment),
+            "witness_beyond_display_cutoff": sum(
+                rank_by_slot[slot_id][candidate_id] >= _PROMPT_MAX_RETRIEVAL_CANDIDATES
+                for slot_id, candidate_id in assignment.items()
+            ),
+            "overlapping_slot_ids": overlapping_slot_ids,
+        },
+    )
+
+
+def _partition_insert_broll_domains(
+    slots: dict[str, dict],
+    candidates: dict[str, dict],
+    *,
+    max_inserts: int,
+) -> tuple[dict[str, list[str]], list[str], dict]:
+    domains: dict[str, list[str]] = {slot_id: [] for slot_id in slots}
+    selected, witness_diagnostics = _find_insert_broll_witness(
+        slots,
+        candidates,
+        max_inserts=max_inserts,
+    )
+    direct_conflict_pruned = 0
+    for slot_id, candidate_id in selected.items():
+        domains[slot_id].append(candidate_id)
+
+    for slot_id in selected:
+        for rank, candidate_id in enumerate(slots[slot_id]["candidate_ids"]):
+            if rank >= _PROMPT_MAX_RETRIEVAL_CANDIDATES:
+                break
+            candidate = candidates.get(candidate_id)
+            if (
+                candidate is None
+                or candidate_id in domains[slot_id]
+                or len(domains[slot_id]) >= _PROMPT_MAX_OPTIONS_PER_SLOT
+            ):
+                continue
+            compatible = all(
+                not _broll_candidates_conflict(candidate, candidates[other_id])
+                for other_slot_id, other_domain in domains.items()
+                if other_slot_id != slot_id
+                for other_id in other_domain
+            )
+            if compatible:
+                domains[slot_id].append(candidate_id)
+            else:
+                direct_conflict_pruned += 1
+
+    unmatched = sorted(slot_id for slot_id, values in domains.items() if not values)
+    input_occurrences = sum(len(slot["candidate_ids"]) for slot in slots.values())
+    prompt_occurrences = sum(len(values) for values in domains.values())
+    overlap_pruned_slots = {
+        slot_id
+        for slot_id, slot in slots.items()
+        if not domains[slot_id] and set(slot["conflicts_with_slot_ids"]) & set(selected)
+    }
+    return (
+        domains,
+        unmatched,
+        {
+            "mode": "insert",
+            "construction_safe_max_inserts": len(selected) <= max_inserts,
+            "construction_safe_timeline_overlap": not any(
+                set(slots[slot_id]["conflicts_with_slot_ids"]) & set(selected)
+                for slot_id in selected
+            ),
+            "selected_slot_count": len(selected),
+            "max_inserts": max_inserts,
+            "overlap_pruned_slot_ids": sorted(overlap_pruned_slots),
+            "direct_conflict_pruned_occurrences": direct_conflict_pruned,
+            "pruned_candidate_occurrences": max(0, input_occurrences - prompt_occurrences),
+            **witness_diagnostics,
+        },
+    )
+
+
+def _find_insert_broll_witness(
+    slots: dict[str, dict],
+    candidates: dict[str, dict],
+    *,
+    max_inserts: int,
+) -> tuple[dict[str, str], dict]:
+    """Find the largest compatible slot/candidate witness within a fixed budget."""
+
+    ordered_slot_ids = sorted(
+        slots,
+        key=lambda slot_id: (
+            len(
+                [
+                    candidate_id
+                    for candidate_id in slots[slot_id]["candidate_ids"]
+                    if candidate_id in candidates
+                ]
+            ),
+            len(slots[slot_id]["conflicts_with_slot_ids"]),
+            slot_id,
+        ),
+    )
+    target = min(
+        max(0, max_inserts),
+        sum(
+            any(candidate_id in candidates for candidate_id in slots[slot_id]["candidate_ids"])
+            for slot_id in ordered_slot_ids
+        ),
+    )
+    search_budget = 100_000
+    search_nodes = 0
+    direct_conflict_rejections = 0
+    exhausted = False
+    best: dict[str, str] = {}
+    solution: dict[str, str] = {}
+
+    def _search(start: int, desired_count: int, current: dict[str, str]) -> bool:
+        nonlocal search_nodes, direct_conflict_rejections, exhausted, best, solution
+        if len(current) > len(best):
+            best = dict(current)
+        if len(current) == desired_count:
+            solution = dict(current)
+            return True
+        if len(current) + len(ordered_slot_ids) - start < desired_count:
+            return False
+        for position in range(start, len(ordered_slot_ids)):
+            if exhausted:
+                return False
+            slot_id = ordered_slot_ids[position]
+            if set(slots[slot_id]["conflicts_with_slot_ids"]) & set(current):
+                continue
+            for candidate_id in slots[slot_id]["candidate_ids"]:
+                candidate = candidates.get(candidate_id)
+                if candidate is None:
+                    continue
+                search_nodes += 1
+                if search_nodes > search_budget:
+                    exhausted = True
+                    return False
+                if any(
+                    _broll_candidates_conflict(candidate, candidates[other_id])
+                    for other_id in current.values()
+                ):
+                    direct_conflict_rejections += 1
+                    continue
+                current[slot_id] = candidate_id
+                if _search(position + 1, desired_count, current):
+                    return True
+                current.pop(slot_id)
+        return False
+
+    for desired_count in range(target, 0, -1):
+        if _search(0, desired_count, {}):
+            break
+        if exhausted:
+            break
+    selected = solution or best
+    return selected, {
+        "witness_search_nodes": search_nodes,
+        "witness_search_budget": search_budget,
+        "witness_search_exhausted": exhausted,
+        "witness_direct_conflict_rejections": direct_conflict_rejections,
+    }
+
+
+def _broll_candidates_conflict(left: dict, right: dict) -> bool:
+    left_id = str(left.get("candidate_id") or "")
+    right_id = str(right.get("candidate_id") or "")
+    if left_id and left_id == right_id:
+        return True
+    left_asset = str(left.get("asset_id") or "")
+    right_asset = str(right.get("asset_id") or "")
+    if left_asset and left_asset == right_asset:
+        return True
+    left_diversity = str(left.get("diversity_key") or "")
+    right_diversity = str(right.get("diversity_key") or "")
+    return bool(left_diversity and left_diversity == right_diversity)
+
+
+def _maximum_slot_matching(options_by_slot: dict[str, list[str]]) -> dict[str, str]:
+    owner_by_option: dict[str, str] = {}
+    option_by_slot: dict[str, str] = {}
+
+    def _assign(slot_id: str, seen: set[str]) -> bool:
+        for option_id in options_by_slot.get(slot_id, []):
+            if option_id in seen:
+                continue
+            seen.add(option_id)
+            owner = owner_by_option.get(option_id)
+            if owner is None or _assign(owner, seen):
+                owner_by_option[option_id] = slot_id
+                option_by_slot[slot_id] = option_id
+                return True
+        return False
+
+    for slot_id in sorted(options_by_slot, key=lambda value: (len(options_by_slot[value]), value)):
+        _assign(slot_id, set())
+    return option_by_slot
+
+
+def _portrait_prompt_candidate(candidate: dict) -> dict:
+    return {
+        "candidate_id": candidate.get("candidate_id"),
+        "asset_id": candidate.get("asset_id"),
+        "available_seconds": candidate.get("available_seconds"),
+        "description": candidate.get("description"),
+        "reason": candidate.get("reason"),
+    }
+
+
+def _broll_prompt_candidate(candidate: dict) -> dict:
+    return {
+        "candidate_id": candidate.get("candidate_id"),
+        "asset_id": candidate.get("asset_id"),
+        "diversity_key": candidate.get("diversity_key"),
+        "scene_name": candidate.get("scene_name"),
+        "matched_keywords": list(candidate.get("matched_keywords") or [])[:6],
+        "available_seconds": candidate.get("available_seconds"),
+        "description": candidate.get("description"),
+    }
+
+
+def _prompt_domain_diagnostics(
+    raw_slots: dict[str, dict],
+    domains: dict[str, list[str]],
+    unmatched_slot_ids: list[str],
+) -> dict:
+    input_occurrences = sum(len(slot["candidate_ids"]) for slot in raw_slots.values())
+    prompt_occurrences = sum(len(values) for values in domains.values())
+    rank_by_slot = {
+        slot_id: {candidate_id: rank for rank, candidate_id in enumerate(slot["candidate_ids"])}
+        for slot_id, slot in raw_slots.items()
+    }
+    return {
+        "slot_count": len(raw_slots),
+        "input_candidate_occurrences": input_occurrences,
+        "prompt_candidate_count": prompt_occurrences,
+        "pruned_candidate_occurrences": max(0, input_occurrences - prompt_occurrences),
+        "beyond_display_cutoff_count": sum(
+            rank_by_slot.get(slot_id, {}).get(candidate_id, -1) >= _PROMPT_MAX_RETRIEVAL_CANDIDATES
+            for slot_id, candidate_ids in domains.items()
+            for candidate_id in candidate_ids
+        ),
+        "options_by_slot": {slot_id: len(domains.get(slot_id, [])) for slot_id in raw_slots},
+        "unmatched_slot_ids": unmatched_slot_ids,
+    }
 
 
 def _prompt_variables(agent_input: dict, errors: list[str]) -> dict:
@@ -659,9 +1143,7 @@ def _unwrap_provider_selection(output):
 
     if not isinstance(output, dict) or set(output) != {"content", "intent"}:
         return output
-    if not isinstance(output.get("content"), str) or not isinstance(
-        output.get("intent"), dict
-    ):
+    if not isinstance(output.get("content"), str) or not isinstance(output.get("intent"), dict):
         return output
     return output["intent"]
 
@@ -678,6 +1160,7 @@ def _record_request(ctx, profile, prompt_invocation, prompt, attempt, errors) ->
             "prompt_invocation_id": prompt_invocation.id,
             "attempt": attempt,
             "repair_errors": list(errors),
+            "generation_options": _MEDIA_SELECTION_GENERATION_OPTIONS,
             "prompt": prompt,
         },
         "MediaSelectionAgentLlmRequestSnapshot.v1",

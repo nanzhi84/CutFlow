@@ -413,7 +413,13 @@ class Repository:
                 input_schema_id=f"{profile.capability}.input",
                 output_schema_id=f"{profile.capability}.output",
                 options_schema_id=profile.options_schema_ref.schema_id,
-                supports_async_job=profile.capability in {"lipsync.video", "video.generate"},
+                supports_async_job=(
+                    profile.capability in {"lipsync.video", "video.generate"}
+                    or (
+                        profile.provider_id == "volcengine.tts"
+                        and profile.capability == "tts.speech"
+                    )
+                ),
                 supports_cancel=profile.capability in {"lipsync.video"},
                 default_timeout_sec=profile.timeout_sec,
             )
@@ -625,19 +631,34 @@ class Repository:
         for asset_id in asset_ids:
             if not isinstance(asset_id, str) or not asset_id:
                 continue
-            existing = next(
+            same_run = next(
                 (
                     reservation
                     for reservation in self.selection_reservations.values()
                     if reservation.run_id == run_id
                     and reservation.medium == medium
                     and reservation.asset_id == asset_id
-                    and reservation.status in {"reserved", "committed"}
                 ),
                 None,
             )
-            if existing is not None:
-                owned.append(existing)
+            if same_run is not None:
+                if same_run.status not in {"reserved", "committed"}:
+                    if asset_id in blocked:
+                        continue
+                    # The durable table is unique per (run, medium, asset) across ALL
+                    # statuses. A same-run retry after TTL/release must renew that row
+                    # in place instead of minting a new id that can never be inserted.
+                    renewed = SelectionReservationRecord(
+                        id=same_run.id,
+                        case_id=case_id,
+                        run_id=run_id,
+                        medium=medium,
+                        asset_id=asset_id,
+                        diversity_key=keys.get(asset_id),
+                    )
+                    self.selection_reservations[renewed.id] = renewed
+                    same_run = renewed
+                owned.append(same_run)
                 continue
             if asset_id in blocked:
                 continue

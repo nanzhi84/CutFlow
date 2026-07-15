@@ -24,11 +24,13 @@ from packages.production.pipeline._materialize import (
     eligible_bgm_candidates,
     materialize_style_from_selection,
 )
+from packages.production.pipeline._caption_window_planner import max_feasible_emphasis_count
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._postprocess_agent import (
     PostProcessSelection,
     materialize_overlay_events,
     parse_postprocess_selection,
+    solve_postprocess_selection,
     unwrap_postprocess_provider_output,
     validate_postprocess_selection,
 )
@@ -56,9 +58,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             provider_invocation_ids=[],
             errors=[f"invalid caption windows: {exc}"],
         )
-    bgm_candidates = (
-        eligible_bgm_candidates(material) if state.request.bgm.enabled else []
-    )
+    bgm_candidates = eligible_bgm_candidates(material) if state.request.bgm.enabled else []
     emphasis_enabled = bool(
         state.request.subtitle.enabled and state.request.subtitle.emphasis_enabled
     )
@@ -71,12 +71,16 @@ def run(ctx: NodeContext) -> NodeOutput:
         if emphasis_enabled
         else []
     )
+    feasible_count = max_feasible_emphasis_count(
+        selectable_windows, fps=int(caption_windows["fps"])
+    )
     candidate_counts = {
         "bgm": len(bgm_candidates),
         "caption_events": len(selectable_windows),
         "caption_options": sum(
             len(window.get("caption_options") or []) for window in selectable_windows
         ),
+        "caption_feasible": feasible_count,
     }
 
     if not bgm_candidates and not selectable_windows:
@@ -127,12 +131,21 @@ def run(ctx: NodeContext) -> NodeOutput:
             repair_trace=[],
             candidate_counts=candidate_counts,
             provider_invocation_ids=[],
+            caption_windows=caption_windows,
+            bgm_candidates=bgm_candidates,
+            emphasis_enabled=emphasis_enabled,
         )
 
     agent_input = {
         "script": state.request.script,
         "bgm_candidates": [_compact_bgm(candidate) for candidate in bgm_candidates],
         "caption_windows": [_compact_caption_window(window) for window in selectable_windows],
+        "caption_constraints": {
+            "max_feasible_count": feasible_count,
+            "max_selected_count": 8,
+            "conflicts": list(caption_windows.get("emphasis_conflicts") or []),
+            "owner": "local_solver",
+        },
     }
     provider_invocation_ids: list[str] = []
     repair_trace: list[dict] = []
@@ -150,12 +163,16 @@ def run(ctx: NodeContext) -> NodeOutput:
             )
             output, envelope_errors = unwrap_postprocess_provider_output(provider_output)
             selection, parse_errors = parse_postprocess_selection(output)
-            errors = envelope_errors + parse_errors + validate_postprocess_selection(
-                selection,
-                caption_windows=caption_windows,
-                bgm_candidates=bgm_candidates,
-                bgm_enabled=bool(state.request.bgm.enabled),
-                emphasis_enabled=emphasis_enabled,
+            errors = (
+                envelope_errors
+                + parse_errors
+                + validate_postprocess_selection(
+                    selection,
+                    caption_windows=caption_windows,
+                    bgm_candidates=bgm_candidates,
+                    bgm_enabled=bool(state.request.bgm.enabled),
+                    emphasis_enabled=emphasis_enabled,
+                )
             )
             repair_trace.append(
                 {"attempt": attempt, "error_count": len(errors), "errors": list(errors)}
@@ -173,6 +190,10 @@ def run(ctx: NodeContext) -> NodeOutput:
             candidate_counts=candidate_counts,
             provider_invocation_ids=provider_invocation_ids,
             provider_error=str(exc.error.message if exc.error else exc),
+            caption_windows=caption_windows,
+            bgm_candidates=bgm_candidates,
+            selection=selection,
+            emphasis_enabled=emphasis_enabled,
         )
 
     if errors:
@@ -184,26 +205,37 @@ def run(ctx: NodeContext) -> NodeOutput:
             candidate_counts=candidate_counts,
             provider_invocation_ids=provider_invocation_ids,
             errors=errors,
+            caption_windows=caption_windows,
+            bgm_candidates=bgm_candidates,
+            selection=selection,
+            emphasis_enabled=emphasis_enabled,
         )
 
+    solved_selection, solver_diagnostics = solve_postprocess_selection(
+        selection,
+        caption_windows=caption_windows,
+        bgm_candidates=bgm_candidates,
+        bgm_enabled=bool(state.request.bgm.enabled),
+        emphasis_enabled=emphasis_enabled,
+    )
     selected_bgm_candidate = next(
         (
             candidate
             for candidate in bgm_candidates
-            if candidate.get("candidate_id") == selection.bgm_id
+            if candidate.get("candidate_id") == solved_selection.bgm_id
         ),
         None,
     )
     try:
         overlay_events, caption_choices = materialize_overlay_events(
-            selection,
+            solved_selection,
             caption_windows=caption_windows,
         )
         style_payload, warnings, degradations = materialize_style_from_selection(
             request=state.request,
             material=material,
             overlay_events=overlay_events,
-            bgm_id=selection.bgm_id,
+            bgm_id=solved_selection.bgm_id,
             strict_bgm_selection=True,
         )
     except Exception as exc:
@@ -215,18 +247,23 @@ def run(ctx: NodeContext) -> NodeOutput:
             candidate_counts=candidate_counts,
             provider_invocation_ids=provider_invocation_ids,
             errors=[f"postprocess materialization failed: {exc}"],
+            caption_windows=caption_windows,
+            bgm_candidates=bgm_candidates,
+            selection=solved_selection,
+            emphasis_enabled=emphasis_enabled,
         )
     if state.request.bgm.enabled and not bgm_candidates:
         _append_bgm_unavailable(ctx, warnings, degradations)
     diagnostics = _diagnostics_payload(
         planned=True,
         reason="selected",
-        bgm_id=selection.bgm_id,
+        bgm_id=solved_selection.bgm_id,
         caption_choices=caption_choices,
         repair_trace=repair_trace,
         candidate_counts=candidate_counts,
         provider_invocation_ids=provider_invocation_ids,
         bgm_candidate=selected_bgm_candidate,
+        solver=solver_diagnostics,
     )
     return _output(
         ctx,
@@ -251,6 +288,9 @@ def _invoke(
         "script": str(agent_input["script"]),
         "bgm_candidates": json.dumps(agent_input["bgm_candidates"], ensure_ascii=False),
         "caption_windows": json.dumps(agent_input["caption_windows"], ensure_ascii=False),
+        "caption_constraints": json.dumps(
+            agent_input.get("caption_constraints") or {}, ensure_ascii=False
+        ),
         "repair_feedback": (
             "上一轮后处理选择存在以下问题，请只修正后重新输出完整 JSON：\n- "
             + "\n- ".join(previous_errors)
@@ -328,16 +368,53 @@ def _degraded_output(
     provider_invocation_ids: list[str],
     errors: list[str] | None = None,
     provider_error: str | None = None,
+    caption_windows: dict | None = None,
+    bgm_candidates: list[dict] | None = None,
+    selection: PostProcessSelection | None = None,
+    emphasis_enabled: bool | None = None,
 ) -> NodeOutput:
+    bgm_candidates = (
+        list(bgm_candidates)
+        if bgm_candidates is not None
+        else (eligible_bgm_candidates(material) if ctx.state.request.bgm.enabled else [])
+    )
+    solved_selection = PostProcessSelection(bgm_id=None)
+    solver_diagnostics: dict = {}
+    if caption_windows is not None:
+        solved_selection, solver_diagnostics = solve_postprocess_selection(
+            selection or PostProcessSelection(bgm_id=None),
+            caption_windows=caption_windows,
+            bgm_candidates=bgm_candidates,
+            bgm_enabled=bool(ctx.state.request.bgm.enabled),
+            emphasis_enabled=(
+                bool(emphasis_enabled)
+                if emphasis_enabled is not None
+                else bool(
+                    ctx.state.request.subtitle.enabled
+                    and ctx.state.request.subtitle.emphasis_enabled
+                )
+            ),
+            deterministic_fallback=True,
+        )
+    overlay_events = []
+    caption_choices: list[dict] = []
+    if caption_windows is not None:
+        overlay_events, caption_choices = materialize_overlay_events(
+            solved_selection,
+            caption_windows=caption_windows,
+        )
     try:
         style_payload, warnings, degradations = materialize_style_from_selection(
             request=ctx.state.request,
             material=material,
-            overlay_events=[],
-            bgm_id=None,
+            overlay_events=overlay_events,
+            bgm_id=solved_selection.bgm_id,
             strict_bgm_selection=True,
         )
-    except Exception:
+    except Exception as exc:
+        if errors is None:
+            errors = []
+        errors.append(f"fallback materialization failed: {exc}")
         style_payload, warnings, degradations = materialize_style_from_selection(
             request=ctx.state.request,
             material={},
@@ -345,30 +422,49 @@ def _degraded_output(
             bgm_id=None,
             strict_bgm_selection=True,
         )
-    if ctx.state.request.bgm.enabled and not eligible_bgm_candidates(material):
+        solved_selection = PostProcessSelection(bgm_id=None)
+        caption_choices = []
+        solver_diagnostics = {
+            **solver_diagnostics,
+            "selected_count": 0,
+            "used_deterministic_fallback": True,
+        }
+    if ctx.state.request.bgm.enabled and not bgm_candidates:
         _append_bgm_unavailable(ctx, warnings, degradations)
     details: dict = {"reason": reason, "repair_trace": repair_trace}
     if errors:
         details["errors"] = errors[:5]
     if provider_error:
         details["provider_error"] = provider_error
+    details["preserved_caption_event_ids"] = [choice["event_id"] for choice in caption_choices]
+    details["preserved_bgm_id"] = solved_selection.bgm_id
     warnings.append(WarningCode.postprocess_planning_failed)
     degradations.append(
         degradation_notice(
             WarningCode.postprocess_planning_failed,
-            "后处理 Agent 未能生成有效选择；普通字幕保留，本次不加花字或 BGM。",
+            "后处理 Agent 未完整成功；普通字幕保留，并已独立保留可由本地规则证明合法的花字/BGM选择。",
             node_id=ctx.node_run.node_id,
             affects_true_yield=False,
         ).model_copy(update={"details": details})
     )
+    selected_bgm_candidate = next(
+        (
+            candidate
+            for candidate in bgm_candidates
+            if candidate.get("candidate_id") == solved_selection.bgm_id
+        ),
+        None,
+    )
     diagnostics = _diagnostics_payload(
         planned=False,
         reason=reason,
-        bgm_id=None,
-        caption_choices=[],
+        bgm_id=solved_selection.bgm_id,
+        caption_choices=caption_choices,
         repair_trace=repair_trace,
         candidate_counts=candidate_counts,
         provider_invocation_ids=provider_invocation_ids,
+        bgm_candidate=selected_bgm_candidate,
+        solver=solver_diagnostics,
     )
     return _output(
         ctx,
@@ -418,6 +514,7 @@ def _diagnostics_payload(
     candidate_counts: dict,
     provider_invocation_ids: list[str],
     bgm_candidate: dict | None = None,
+    solver: dict | None = None,
 ) -> dict:
     metadata = (
         bgm_candidate.get("metadata")
@@ -435,6 +532,7 @@ def _diagnostics_payload(
         "caption_choices": caption_choices,
         "repair_trace": repair_trace,
         "candidate_counts": candidate_counts,
+        "solver": solver or {},
         "provider_invocation_ids": provider_invocation_ids,
     }
 
@@ -524,9 +622,7 @@ def _record_provider_request(
     )
 
 
-def _record_provider_response(
-    *, ctx: NodeContext, invocation, result, attempt: int
-) -> Artifact:
+def _record_provider_response(*, ctx: NodeContext, invocation, result, attempt: int) -> Artifact:
     return ctx.artifact(
         ArtifactKind.provider_raw_response,
         {

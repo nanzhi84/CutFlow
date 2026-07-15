@@ -42,10 +42,15 @@ from packages.production.pipeline._ffmpeg import (
     AUTO_MIX_MAX_BGM_VOLUME,
     resolve_adaptive_bgm_volume,
 )
-from packages.production.pipeline._fonts import resolve_subtitle_font
+from packages.production.pipeline._fonts import (
+    _read_family_builtin,
+    caption_font_asset_ids,
+    resolve_font_asset,
+    resolve_subtitle_font,
+)
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import RunState
-from packages.production.pipeline._subtitles import write_ass_subtitles
+from packages.production.pipeline._subtitles import ass_escape, write_ass_subtitles
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
 from packages.media.assets import store_file
 from packages.media.video.ffmpeg import (
@@ -72,34 +77,171 @@ def _build_min_font(family: str) -> bytes:
     return sfnt_header + entry + name_table
 
 
+def _build_renderable_font(path, family="Web Font Test") -> None:
+    """Build a real tiny TTF suitable for WOFF/WOFF2 round-trip tests."""
+
+    from fontTools.fontBuilder import FontBuilder
+    from fontTools.pens.ttGlyphPen import TTGlyphPen
+
+    glyph_order = [".notdef", "A"]
+    empty = TTGlyphPen(None).glyph()
+    font = FontBuilder(1000, isTTF=True)
+    font.setupGlyphOrder(glyph_order)
+    font.setupCharacterMap({0x41: "A"})
+    font.setupGlyf({name: empty for name in glyph_order})
+    font.setupHorizontalMetrics({".notdef": (600, 0), "A": (500, 0)})
+    font.setupHorizontalHeader(ascent=800, descent=-200)
+    font.setupNameTable({"familyName": family, "styleName": "Regular"})
+    font.setupOS2(sTypoAscender=800, sTypoDescender=-200)
+    font.setupPost()
+    font.save(str(path))
+
+
 # --- gap 3: font resolution -----------------------------------------------------
 def test_resolve_subtitle_font_reads_family_and_stages_file(tmp_path):
     font_file = tmp_path / "brand.ttf"
     font_file.write_bytes(_build_min_font("My Brand Sans"))
     runtime = tmp_path / "runtime_fonts"
 
-    resolved = resolve_subtitle_font(
-        font_path=font_file, runtime_dir=runtime, fallback_name="ignored"
-    )
+    resolved = resolve_subtitle_font(font_path=font_file, runtime_dir=runtime)
 
     assert resolved is not None
     assert resolved.family_name == "My Brand Sans"
-    assert (runtime / "brand.ttf").exists()  # staged for libass fontsdir
+    assert resolved.source_path.exists()  # content-addressed file staged for libass
     assert resolved.fonts_dir == runtime
 
 
-def test_resolve_subtitle_font_uses_fallback_when_unparseable(tmp_path):
-    # A .ttf whose bytes are not a parseable sfnt -> family name falls back to title.
+def test_resolve_subtitle_font_keeps_same_named_assets_distinct(tmp_path):
+    normal_source = tmp_path / "normal" / "font.otf"
+    emphasis_source = tmp_path / "emphasis" / "font.otf"
+    normal_source.parent.mkdir()
+    emphasis_source.parent.mkdir()
+    normal_source.write_bytes(_build_min_font("Reference Serif"))
+    emphasis_source.write_bytes(_build_min_font("Reference Sans"))
+    runtime = tmp_path / "runtime_fonts"
+
+    normal = resolve_subtitle_font(font_path=normal_source, runtime_dir=runtime)
+    emphasis = resolve_subtitle_font(font_path=emphasis_source, runtime_dir=runtime)
+
+    assert normal is not None
+    assert emphasis is not None
+    assert normal.family_name == "Reference Serif"
+    assert emphasis.family_name == "Reference Sans"
+    assert normal.source_path != emphasis.source_path
+    assert {path.name for path in runtime.iterdir()} == {
+        normal.source_path.name,
+        emphasis.source_path.name,
+    }
+
+
+def test_caption_font_pair_is_cross_platform_and_preserves_explicit_selection():
+    assert caption_font_asset_ids(None, None) == (
+        "asset_font_noto_serif_cjk_sc_regular",
+        "asset_font_noto_sans_cjk_sc_bold",
+    )
+    assert caption_font_asset_ids("font_brand", None) == ("font_brand", "font_brand")
+    assert caption_font_asset_ids("font_body", "font_display") == (
+        "font_body",
+        "font_display",
+    )
+
+
+def test_resolve_subtitle_font_rejects_corrupt_font(tmp_path):
     font_file = tmp_path / "weird.ttf"
     font_file.write_bytes(b"not a real font")
     runtime = tmp_path / "rt"
 
+    resolved = resolve_subtitle_font(font_path=font_file, runtime_dir=runtime)
+
+    assert resolved is None
+
+
+def test_resolve_subtitle_font_rejects_font_without_real_family(tmp_path):
+    from fontTools.ttLib import TTFont
+
+    font_file = tmp_path / "nameless.ttf"
+    _build_renderable_font(font_file, "Temporary Family")
+    font = TTFont(str(font_file))
+    try:
+        del font["name"]
+        font.save(str(font_file))
+    finally:
+        font.close()
+
+    assert resolve_subtitle_font(font_path=font_file, runtime_dir=tmp_path / "runtime") is None
+
+
+def test_resolve_subtitle_font_uses_legacy_family_id_that_libass_matches(tmp_path):
+    from fontTools.ttLib import TTFont
+
+    font_file = tmp_path / "dual-family.ttf"
+    _build_renderable_font(font_file, "Initial Family")
+    font = TTFont(str(font_file))
+    try:
+        name_table = font["name"]
+        name_table.names = [
+            record for record in name_table.names if record.nameID not in {1, 16}
+        ]
+        name_table.setName("Legacy Family XYZ", 1, 3, 1, 0x409)
+        name_table.setName("Typographic Family XYZ", 16, 3, 1, 0x409)
+        font.save(str(font_file))
+    finally:
+        font.close()
+
+    resolved = resolve_subtitle_font(font_path=font_file, runtime_dir=tmp_path / "runtime")
+    assert resolved is not None
+    assert resolved.family_name == "Legacy Family XYZ"
+    assert _read_family_builtin(resolved.source_path) == "Legacy Family XYZ"
+
+
+def test_resolve_subtitle_font_rejects_ass_unsafe_comma_family(tmp_path):
+    font_file = tmp_path / "comma-family.ttf"
+    _build_renderable_font(font_file, "Comma, Family XYZ")
+
+    assert resolve_subtitle_font(font_path=font_file, runtime_dir=tmp_path / "runtime") is None
+
+
+@pytest.mark.parametrize("flavor", ["woff", "woff2"])
+def test_resolve_subtitle_font_converts_web_font_to_native_sfnt(tmp_path, flavor):
+    if flavor == "woff2":
+        pytest.importorskip("brotli")
+    from fontTools.ttLib import TTFont
+
+    ttf_path = tmp_path / "source.ttf"
+    web_path = tmp_path / f"brand.{flavor}"
+    _build_renderable_font(ttf_path)
+    font = TTFont(str(ttf_path))
+    try:
+        font.flavor = flavor
+        font.save(str(web_path))
+    finally:
+        font.close()
+
     resolved = resolve_subtitle_font(
-        font_path=font_file, runtime_dir=runtime, fallback_name="案例字体"
+        font_path=web_path,
+        runtime_dir=tmp_path / "runtime",
     )
 
     assert resolved is not None
-    assert resolved.family_name == "案例字体"
+    assert resolved.family_name == "Web Font Test"
+    assert resolved.source_path.name.startswith("font-")
+    assert resolved.source_path.suffix == ".ttf"
+    assert resolved.source_path.read_bytes()[:4] not in {b"wOFF", b"wOF2"}
+
+
+def test_resolve_font_asset_reports_known_but_unstageable_font(tmp_path):
+    bad_font = tmp_path / "brand.woff"
+    bad_font.write_bytes(b"not a web font")
+
+    resolved, unresolved_id = resolve_font_asset(
+        font_asset_id="font_bad",
+        runtime_dir=tmp_path / "runtime",
+        source_artifact_for_asset=lambda _asset_id: object(),
+        artifact_path=lambda _artifact: bad_font,
+    )
+
+    assert resolved is None
+    assert unresolved_id == "font_bad"
 
 
 def test_resolve_subtitle_font_none_for_missing_or_non_font(tmp_path):
@@ -179,6 +321,30 @@ def test_write_ass_subtitles_wraps_long_portrait_text_inside_safe_width(tmp_path
         if line.startswith("Dialogue:")
     )
     assert r"\N" in dialogue
+
+
+def test_ass_escape_neutralizes_user_backslash_commands_before_renderer_breaks(tmp_path):
+    assert ass_escape("A{\\N} B\\n C\\h D\nE") == r"A\{}N B\{}n C\{}h D\NE"
+
+    out = tmp_path / "escaped.ass"
+    write_ass_subtitles(
+        out,
+        style={"subtitle": {"normal_enabled": True, "emphasis_enabled": True}},
+        width=1080,
+        height=1080,
+        caption_cues=[
+            {"start": 0.0, "end": 1.0, "lines": [r"AAAA\NAAAA", "第二行"]}
+        ],
+        overlay_events=[
+            {"start": 0.0, "end": 1.0, "text": r"SALE\hNOW", "style": "emphasis"}
+        ],
+    )
+    text = out.read_text(encoding="utf-8")
+
+    # Empty ASS comments interrupt user-authored control-looking sequences; the
+    # one renderer-owned line join remains a real ``\N`` command.
+    assert r"AAAA\{}NAAAA\N第二行" in text
+    assert r"SALE\{}hNOW" in text
 
 
 def test_write_ass_subtitles_defaults_to_arial_without_font(tmp_path):
@@ -270,6 +436,52 @@ def test_write_ass_uses_compiled_caption_cues(tmp_path):
     assert "WrapStyle: 2" in text and "WrapStyle: 0" not in text
     # Normal Dialogue is the compiler's pre-broken lines joined by \N (no re-wrap).
     assert r"Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,第一行文字\N第二行文字" in text
+
+
+def test_write_ass_progressively_reveals_three_lines_in_dynamic_rect_with_dual_fonts(tmp_path):
+    out = tmp_path / "sub.ass"
+    write_ass_subtitles(
+        out,
+        style={"subtitle": {"font_size": 48}},
+        width=1080,
+        height=1920,
+        caption_cues=[
+            {
+                "start": 0.0,
+                "end": 3.0,
+                "lines": ["你拿着", "这张图纸", "去做交付"],
+                "line_starts": [0.0, 1.0, 2.0],
+                "rect": {"x": 0.1, "y": 0.34, "w": 0.5, "h": 0.15},
+                "text_align": "left",
+                "effect_id": "soft_in",
+            }
+        ],
+        overlay_events=[
+            {
+                "event_id": "e1",
+                "start": 0.5,
+                "end": 1.5,
+                "text": "真正的",
+                "rect": {"x": 0.2, "y": 0.1, "w": 0.6, "h": 0.12},
+                "text_align": "center",
+                "animation_id": "pop",
+                "visual_preset_id": "emphasis",
+            }
+        ],
+        font_name="Reference Serif",
+        emphasis_font_name="Reference Sans",
+    )
+
+    text = out.read_text(encoding="utf-8")
+    enter_prefix = r"{\an7\bord1\shad0\xshad6\yshad3\move(109,667,109,653,0,140)\fad(120,0)}"
+    settled_prefix = r"{\an7\bord1\shad0\xshad6\yshad3\pos(109,653)}"
+    assert "Style: Default,Reference Serif," in text
+    assert "Style: Emphasis,Reference Sans," in text
+    assert f"0:00:00.00,0:00:01.00,Default,,0,0,0,,{enter_prefix}你拿着" in text
+    assert (f"0:00:01.00,0:00:02.00,Default,,0,0,0,,{settled_prefix}你拿着\\N这张图纸") in text
+    assert (
+        f"0:00:02.00,0:00:03.00,Default,,0,0,0,,{settled_prefix}你拿着\\N这张图纸\\N去做交付"
+    ) in text
 
 
 def test_write_ass_rect_overlay_alignment_and_anchor(tmp_path):
@@ -406,10 +618,22 @@ def test_write_ass_rectless_overlay_uses_legacy_placement_path(tmp_path):
 
 
 # --- Caption Display v2: node integration (compiler + artifact + degradations) ---
-def _min_font_asset(repository, object_store, tmp_path, *, filename="brand.ttf"):
-    """Stage a name-table-only font (parseable family, unreadable metrics)."""
+def _min_font_asset(
+    repository,
+    object_store,
+    tmp_path,
+    *,
+    filename="brand.ttf",
+    asset_id="asset_font_demo",
+    family="Brand Sans",
+    readable_metrics=False,
+):
+    """Stage either a name-only fixture or a fully measurable test font."""
     font_file = tmp_path / filename
-    font_file.write_bytes(_build_min_font("Brand Sans"))
+    if readable_metrics:
+        _build_renderable_font(font_file, family)
+    else:
+        font_file.write_bytes(_build_min_font(family))
     stored = store_file(object_store, font_file, purpose=ArtifactKind.uploaded_file.value)
     artifact = repository.create_artifact(
         kind=ArtifactKind.uploaded_file,
@@ -419,15 +643,15 @@ def _min_font_asset(repository, object_store, tmp_path, *, filename="brand.ttf")
         uri=stored.ref.uri,
         sha256=stored.sha256,
     )
-    repository.media_assets["asset_font_demo"] = MediaAssetRecord(
-        id="asset_font_demo",
+    repository.media_assets[asset_id] = MediaAssetRecord(
+        id=asset_id,
         case_id="case_demo",
-        title="Brand Sans",
+        title=family,
         kind="font",
         source_artifact_id=artifact.id,
         usable=True,
     )
-    return "asset_font_demo"
+    return asset_id
 
 
 def _run_mix_node(
@@ -444,11 +668,42 @@ def _run_mix_node(
     render_fail_sfx_once=False,
     render_mix_result=None,
     audio_channels=2,
+    seed_default_fonts=True,
+    default_normal_readable=True,
+    default_emphasis_readable=True,
+    default_normal_filename="NotoSerifCJKsc-Regular.otf",
+    default_emphasis_filename="NotoSansCJKsc-Bold.otf",
+    default_normal_family="Noto Serif CJK SC",
+    default_emphasis_family="Noto Sans CJK SC",
+    font_safety_issue=None,
 ):
     repository = Repository()
     object_store = LocalObjectStore(tmp_path / "objects")
+    if caption_windows_payload is not None and seed_default_fonts:
+        _min_font_asset(
+            repository,
+            object_store,
+            tmp_path,
+            filename=default_normal_filename,
+            asset_id="asset_font_noto_serif_cjk_sc_regular",
+            family=default_normal_family,
+            readable_metrics=default_normal_readable,
+        )
+        _min_font_asset(
+            repository,
+            object_store,
+            tmp_path,
+            filename=default_emphasis_filename,
+            asset_id="asset_font_noto_sans_cjk_sc_bold",
+            family=default_emphasis_family,
+            readable_metrics=default_emphasis_readable,
+        )
     monkeypatch.setattr(
         "packages.production.pipeline.digital_human.get_object_store", lambda: object_store
+    )
+    monkeypatch.setattr(
+        "packages.production.pipeline.nodes.subtitle_and_bgm_mix.font_text_safety_issue",
+        lambda *_args: font_safety_issue,
     )
 
     def stored_artifact(kind, filename, *, media_type):
@@ -609,9 +864,17 @@ def _run_mix_node(
     return output, captured, repository
 
 
-def _planned_normal_caption(*, effect_id="soft_in"):
+def _planned_normal_caption(
+    *,
+    effect_id="soft_in",
+    normal_font_asset_id="asset_font_noto_serif_cjk_sc_regular",
+    emphasis_font_asset_id="asset_font_noto_sans_cjk_sc_bold",
+):
     return {
+        "policy_version": "caption_windows_v2",
         "fps": 30,
+        "normal_font_asset_id": normal_font_asset_id,
+        "emphasis_font_asset_id": emphasis_font_asset_id,
         "normal_windows": [
             {
                 "window_id": "caption_001",
@@ -621,15 +884,54 @@ def _planned_normal_caption(*, effect_id="soft_in"):
                 "line_start_frames": [0],
                 "source_unit_ids": ["u1"],
                 "effect_id": effect_id,
+                "rect": {"x": 0.2, "y": 0.6, "w": 0.6, "h": 0.08},
+                "safety_envelope": {"x": 0.2, "y": 0.6, "w": 0.6, "h": 0.09},
+                "text_align": "center",
             }
         ],
         "diagnostics": {},
     }
 
 
-def _rect_event(event_id, animation_id):
-    # Timed over the *second* unit so the long first unit survives dedup and keeps
-    # its two-line wrap (the compiler punches huazi windows out of normal cues).
+def test_v1_caption_plan_keeps_legacy_arial_fallback(tmp_path, monkeypatch):
+    _output, captured, _repository = _run_mix_node(
+        tmp_path,
+        monkeypatch,
+        style_payload={
+            "subtitle": {"normal_enabled": True, "emphasis_enabled": True},
+            "overlay_events": [_rect_event("legacy_emphasis", "none")],
+        },
+        narration_payload={
+            "source": "tts",
+            "strict": True,
+            "units": [{"unit_id": "u1", "text": "历史字幕", "start": 0.0, "end": 2.0}],
+        },
+        subtitle_request={"enabled": True, "normal_enabled": True, "emphasis_enabled": True},
+        caption_windows_payload={
+            "policy_version": "caption_windows_v1",
+            "fps": 30,
+            "normal_windows": [
+                {
+                    "window_id": "caption_legacy",
+                    "start_frame": 0,
+                    "end_frame": 60,
+                    "lines": ["历史字幕"],
+                    "source_unit_ids": ["u1"],
+                    "effect_id": "none",
+                }
+            ],
+            "diagnostics": {},
+        },
+        seed_default_fonts=False,
+    )
+
+    assert "Style: Default,Arial," in captured["subtitle_text"]
+    assert "Style: Emphasis,Arial," in captured["subtitle_text"]
+
+
+def _rect_event(event_id, animation_id, *, sfx_id="none"):
+    # Timed over the second unit; normal captions and huazi stay on independent
+    # layers, so the long first cue keeps its two-line wrap unchanged.
     return {
         "start": 3.2,
         "end": 4.0,
@@ -637,6 +939,7 @@ def _rect_event(event_id, animation_id):
         "event_id": event_id,
         "style": "emphasis",
         "animation_id": animation_id,
+        "sfx_id": sfx_id,
         "rect": {"x": 0.2, "y": 0.08, "w": 0.6, "h": 0.12},
         "text_align": "center",
     }
@@ -725,7 +1028,7 @@ def test_node_probes_missing_subtitle_filter_before_single_render(tmp_path, monk
     assert any(artifact.kind == ArtifactKind.subtitle_ass for artifact in output.artifacts)
 
 
-def test_planned_caption_missing_sfx_asset_degrades_explicitly(tmp_path, monkeypatch):
+def test_planned_normal_caption_never_requests_sfx(tmp_path, monkeypatch):
     output, captured, _repository = _run_mix_node(
         tmp_path,
         monkeypatch,
@@ -743,11 +1046,61 @@ def test_planned_caption_missing_sfx_asset_degrades_explicitly(tmp_path, monkeyp
     )
 
     assert captured["render_sfx_counts"] == [0]
+    assert WarningCode.sfx_asset_missing not in output.warnings
+    assert WarningCode.sfx_mix_failed not in output.warnings
+
+
+def test_planned_caption_fails_closed_when_default_font_pack_is_missing(
+    tmp_path, monkeypatch
+):
+    with pytest.raises(NodeExecutionError, match="默认普通字幕字体资产缺失"):
+        _run_mix_node(
+            tmp_path,
+            monkeypatch,
+            style_payload={
+                "subtitle": {"normal_enabled": True, "emphasis_enabled": False},
+                "overlay_events": [],
+            },
+            narration_payload={
+                "source": "tts",
+                "strict": True,
+                "units": [{"unit_id": "u1", "text": "固定字体", "start": 0.0, "end": 2.0}],
+            },
+            subtitle_request={
+                "enabled": True,
+                "normal_enabled": True,
+                "emphasis_enabled": False,
+            },
+            caption_windows_payload=_planned_normal_caption(),
+            seed_default_fonts=False,
+        )
+
+
+def test_planned_huazi_missing_sfx_asset_degrades_explicitly(tmp_path, monkeypatch):
+    output, captured, _repository = _run_mix_node(
+        tmp_path,
+        monkeypatch,
+        style_payload={
+            "subtitle": {"normal_enabled": True, "emphasis_enabled": True},
+            "overlay_events": [_rect_event("e1", "pop", sfx_id="asset_sfx_ding")],
+        },
+        narration_payload={
+            "source": "tts",
+            "strict": True,
+            "units": [{"unit_id": "u1", "text": "花字音效", "start": 0.0, "end": 2.0}],
+        },
+        subtitle_request={"enabled": True, "normal_enabled": True, "emphasis_enabled": True},
+        caption_windows_payload=_planned_normal_caption(),
+    )
+
+    assert captured["render_sfx_counts"] == [0]
     assert WarningCode.sfx_asset_missing in output.warnings
     notice = next(
         item for item in output.degradations if item.code == WarningCode.sfx_asset_missing
     )
-    assert notice.details == {"asset_ids": ["asset_sfx_click"], "event_count": 1}
+    assert notice.details == {"asset_ids": ["asset_sfx_ding"], "event_count": 1}
+    assert "Style: Default,Noto Serif CJK SC," in captured["subtitle_text"]
+    assert "Style: Emphasis,Noto Sans CJK SC," in captured["subtitle_text"]
 
 
 def test_planned_caption_sfx_mix_failure_retries_without_sfx_and_degrades(
@@ -758,17 +1111,17 @@ def test_planned_caption_sfx_mix_failure_retries_without_sfx_and_degrades(
         tmp_path,
         monkeypatch,
         style_payload={
-            "subtitle": {"normal_enabled": True, "emphasis_enabled": False},
-            "overlay_events": [],
+            "subtitle": {"normal_enabled": True, "emphasis_enabled": True},
+            "overlay_events": [_rect_event("e1", "pop", sfx_id="asset_sfx_ding")],
         },
         narration_payload={
             "source": "tts",
             "strict": True,
             "units": [{"unit_id": "u1", "text": "字幕音效", "start": 0.0, "end": 2.0}],
         },
-        subtitle_request={"enabled": True, "normal_enabled": True, "emphasis_enabled": False},
+        subtitle_request={"enabled": True, "normal_enabled": True, "emphasis_enabled": True},
         caption_windows_payload=_planned_normal_caption(),
-        sfx_asset_ids=("asset_sfx_click",),
+        sfx_asset_ids=("asset_sfx_ding",),
         render_fail_sfx_once=True,
     )
 
@@ -784,31 +1137,57 @@ def test_planned_caption_broken_sfx_source_is_reported_missing(tmp_path, monkeyp
         tmp_path,
         monkeypatch,
         style_payload={
-            "subtitle": {"normal_enabled": True, "emphasis_enabled": False},
-            "overlay_events": [],
+            "subtitle": {"normal_enabled": True, "emphasis_enabled": True},
+            "overlay_events": [_rect_event("e1", "pop", sfx_id="asset_sfx_ding")],
         },
         narration_payload={
             "source": "tts",
             "strict": True,
             "units": [{"unit_id": "u1", "text": "字幕音效", "start": 0.0, "end": 2.0}],
         },
-        subtitle_request={"enabled": True, "normal_enabled": True, "emphasis_enabled": False},
+        subtitle_request={"enabled": True, "normal_enabled": True, "emphasis_enabled": True},
         caption_windows_payload=_planned_normal_caption(),
-        broken_sfx_asset_ids=("asset_sfx_click",),
+        broken_sfx_asset_ids=("asset_sfx_ding",),
     )
 
     assert WarningCode.sfx_asset_missing in output.warnings
 
 
-def test_planned_caption_invalid_font_and_loudness_fallback_are_visible(
+def test_planned_caption_invalid_font_fails_closed(
     tmp_path,
     monkeypatch,
 ):
+    with pytest.raises(NodeExecutionError, match="避免字幕越出安全区"):
+        _run_mix_node(
+            tmp_path,
+            monkeypatch,
+            style_payload={
+                "font_asset_id": "asset_missing_font",
+                "subtitle": {"normal_enabled": True, "emphasis_enabled": False},
+                "overlay_events": [],
+            },
+            narration_payload={
+                "source": "tts",
+                "strict": True,
+                "units": [{"unit_id": "u1", "text": "字幕音效", "start": 0.0, "end": 2.0}],
+            },
+            subtitle_request={
+                "enabled": True,
+                "normal_enabled": True,
+                "emphasis_enabled": False,
+            },
+            caption_windows_payload=_planned_normal_caption(
+                effect_id="none",
+                normal_font_asset_id="asset_missing_font",
+            ),
+        )
+
+
+def test_planned_caption_loudness_fallback_is_visible(tmp_path, monkeypatch):
     output, _captured, _repository = _run_mix_node(
         tmp_path,
         monkeypatch,
         style_payload={
-            "font_asset_id": "asset_missing_font",
             "subtitle": {"normal_enabled": True, "emphasis_enabled": False},
             "overlay_events": [],
         },
@@ -825,8 +1204,157 @@ def test_planned_caption_invalid_font_and_loudness_fallback_are_visible(
         ),
     )
 
-    assert WarningCode.font_resolution_failed in output.warnings
     assert WarningCode.bgm_loudness_probe_failed in output.warnings
+
+
+def test_planned_missing_emphasis_font_fails_closed(tmp_path, monkeypatch):
+    with pytest.raises(NodeExecutionError, match="避免花字越出安全区"):
+        _run_mix_node(
+            tmp_path,
+            monkeypatch,
+            style_payload={
+                "emphasis_font_asset_id": "asset_missing_emphasis_font",
+                "subtitle": {"normal_enabled": True, "emphasis_enabled": True},
+                "overlay_events": [_rect_event("e1", "pop")],
+            },
+            narration_payload={
+                "source": "tts",
+                "strict": True,
+                "units": [{"unit_id": "u1", "text": "字体回退", "start": 0.0, "end": 2.0}],
+            },
+            subtitle_request={
+                "enabled": True,
+                "normal_enabled": True,
+                "emphasis_enabled": True,
+            },
+            caption_windows_payload=_planned_normal_caption(
+                emphasis_font_asset_id="asset_missing_emphasis_font"
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("normal_readable", "emphasis_readable", "message"),
+    [
+        (False, True, "字幕计划使用的字体资产"),
+        (True, False, "字幕计划使用的花字字体资产"),
+    ],
+)
+def test_planned_unreadable_font_metrics_fail_closed(
+    tmp_path,
+    monkeypatch,
+    normal_readable,
+    emphasis_readable,
+    message,
+):
+    with pytest.raises(NodeExecutionError, match=message):
+        _run_mix_node(
+            tmp_path,
+            monkeypatch,
+            style_payload={
+                "subtitle": {"normal_enabled": True, "emphasis_enabled": True},
+                "overlay_events": [_rect_event("e1", "none")],
+            },
+            narration_payload={
+                "source": "tts",
+                "strict": True,
+                "units": [{"unit_id": "u1", "text": "字体度量", "start": 0.0, "end": 2.0}],
+            },
+            subtitle_request={
+                "enabled": True,
+                "normal_enabled": True,
+                "emphasis_enabled": True,
+            },
+            caption_windows_payload=_planned_normal_caption(),
+            default_normal_readable=normal_readable,
+            default_emphasis_readable=emphasis_readable,
+        )
+
+
+def test_planned_distinct_assets_with_same_family_fail_closed(tmp_path, monkeypatch):
+    with pytest.raises(NodeExecutionError, match="同一字体家族"):
+        _run_mix_node(
+            tmp_path,
+            monkeypatch,
+            style_payload={
+                "subtitle": {"normal_enabled": True, "emphasis_enabled": True},
+                "overlay_events": [_rect_event("e1", "none")],
+            },
+            narration_payload={
+                "source": "tts",
+                "strict": True,
+                "units": [{"unit_id": "u1", "text": "字体冲突", "start": 0.0, "end": 2.0}],
+            },
+            subtitle_request={
+                "enabled": True,
+                "normal_enabled": True,
+                "emphasis_enabled": True,
+            },
+            caption_windows_payload=_planned_normal_caption(),
+            default_normal_family="Shared Family",
+            default_emphasis_family="Shared Family",
+        )
+
+
+@pytest.mark.parametrize(
+    ("normal_filename", "emphasis_filename"),
+    [
+        ("NotoSerifCJKsc.ttc", "NotoSansCJKsc-Bold.otf"),
+        ("NotoSerifCJKsc-Regular.otf", "NotoSansCJKsc.ttc"),
+    ],
+)
+def test_planned_ttc_font_collection_fails_closed(
+    tmp_path,
+    monkeypatch,
+    normal_filename,
+    emphasis_filename,
+):
+    with pytest.raises(NodeExecutionError, match="TTC"):
+        _run_mix_node(
+            tmp_path,
+            monkeypatch,
+            style_payload={
+                "subtitle": {"normal_enabled": True, "emphasis_enabled": True},
+                "overlay_events": [_rect_event("e1", "none")],
+            },
+            narration_payload={
+                "source": "tts",
+                "strict": True,
+                "units": [{"unit_id": "u1", "text": "字体集合", "start": 0.0, "end": 2.0}],
+            },
+            subtitle_request={
+                "enabled": True,
+                "normal_enabled": True,
+                "emphasis_enabled": True,
+            },
+            caption_windows_payload=_planned_normal_caption(),
+            default_normal_filename=normal_filename,
+            default_emphasis_filename=emphasis_filename,
+        )
+
+
+def test_planned_unsafe_glyph_geometry_fails_closed(tmp_path, monkeypatch):
+    with pytest.raises(NodeExecutionError, match="horizontal_ink_overhang"):
+        _run_mix_node(
+            tmp_path,
+            monkeypatch,
+            style_payload={
+                "subtitle": {"normal_enabled": True, "emphasis_enabled": False},
+                "overlay_events": [],
+            },
+            narration_payload={
+                "source": "tts",
+                "strict": True,
+                "units": [{"unit_id": "u1", "text": "斜体字形", "start": 0.0, "end": 2.0}],
+            },
+            subtitle_request={
+                "enabled": True,
+                "normal_enabled": True,
+                "emphasis_enabled": False,
+            },
+            caption_windows_payload=_planned_normal_caption(),
+            font_safety_issue="horizontal_ink_overhang:U+0066",
+        )
 
 
 def test_legacy_missing_emphasis_font_is_reported_separately(tmp_path, monkeypatch):
@@ -1269,7 +1797,7 @@ def test_render_final_media_auto_mix_and_fontsdir_real_ffmpeg(tmp_path):
     fonts_dir = tmp_path / "fonts"
     font_file = tmp_path / "brand.ttf"
     font_file.write_bytes(_build_min_font("My Brand Sans"))
-    resolved = resolve_subtitle_font(font_path=font_file, runtime_dir=fonts_dir, fallback_name="x")
+    resolved = resolve_subtitle_font(font_path=font_file, runtime_dir=fonts_dir)
     assert resolved is not None
     sub = tmp_path / "sub.ass"
     write_ass_subtitles(

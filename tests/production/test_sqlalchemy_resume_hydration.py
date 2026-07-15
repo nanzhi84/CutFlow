@@ -126,3 +126,61 @@ def test_hydrate_chained_resume_loads_artifacts_owned_by_ancestor_run(
 
     assert runtime_repository.node_runs[source_run_id][0].output_artifact_ids == [artifact_id]
     assert runtime_repository.artifacts[artifact_id].run_id == origin_run_id
+
+
+def test_hydrate_loads_explicit_creative_intent_reference(db_session_factory) -> None:
+    job_id = "job_creative_intent_ref"
+    run_id = "run_creative_intent_ref"
+    artifact_id = "art_creative_intent_ref"
+    with db_session_factory() as session:
+        session.add(
+            JobRow(
+                id=job_id,
+                type=JobType.digital_human_video.value,
+                status=JobStatus.running.value,
+                case_id="case_demo",
+                created_by="usr_admin",
+                request_schema="DigitalHumanVideoRequest.v1",
+                request={
+                    "case_id": "case_demo",
+                    "script": "使用已有创作意图。",
+                    "voice": {"voice_id": "voice_demo_cn"},
+                    "creative_intent_ref": {
+                        "artifact_id": artifact_id,
+                        "kind": ArtifactKind.creative_intent.value,
+                        "uri": f"artifact://{artifact_id}",
+                        "schema_version": "v1",
+                    },
+                },
+                active_run_id=run_id,
+            )
+        )
+        session.add(
+            WorkflowRunRow(
+                id=run_id,
+                job_id=job_id,
+                case_id="case_demo",
+                workflow_template_id="digital_human_v2",
+                workflow_version="v1",
+                status=RunStatus.admitted.value,
+                run_attempt=1,
+                requested_by="usr_admin",
+            )
+        )
+        session.add(
+            ArtifactRow(
+                id=artifact_id,
+                case_id="case_demo",
+                kind=ArtifactKind.creative_intent.value,
+                payload_schema="CreativeIntentArtifact.v1",
+                payload={"intent": {"hook": "开场", "beats": ["卖点"]}, "emphasis": []},
+            )
+        )
+        session.commit()
+
+    runtime_repository = Repository()
+    SqlAlchemyProductionRepository(db_session_factory).hydrate_workflow_runtime_snapshot(
+        runtime_repository, run_id
+    )
+
+    assert runtime_repository.artifacts[artifact_id].kind == ArtifactKind.creative_intent

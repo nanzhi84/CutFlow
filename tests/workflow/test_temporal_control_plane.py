@@ -28,7 +28,6 @@ def _adapter() -> ta.TemporalRuntimeAdapter:
 def _node(node_id: str, *, attempts: int = 1) -> c.NodeSpec:
     return c.NodeSpec(
         node_id=node_id,
-        input_schema=f"{node_id}.input.v1",
         output_artifact_kinds=[c.ArtifactKind.run_report_debug],
         retry_policy=c.RetryPolicy(
             max_attempts=attempts,

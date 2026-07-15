@@ -7,12 +7,11 @@ import math
 from typing import Any
 
 from packages.core.contracts.artifacts import OverlayEvent, OverlayRect
-from packages.production.pipeline._caption_visual_safety import EMPHASIS_MIN_EVENTS
-from packages.production.pipeline._caption_window_planner import EMPHASIS_EVENT_GAP_SEC
+from packages.production.pipeline._caption_window_planner import (
+    EMPHASIS_EVENT_GAP_SEC,
+    max_feasible_emphasis_count,
+)
 
-# Once at least the floor of selectable events is offered, PostProcess must commit to
-# a 5-8 event band (below the floor it must take them all); this is the selection-side
-# guard that pairs with the >=5 emphasis floor enforced upstream.
 _CAPTION_MAX_EVENTS = 8
 
 
@@ -206,16 +205,7 @@ def validate_postprocess_selection(
         for window in (caption_windows.get("emphasis_windows") or [])
         if isinstance(window, dict) and _as_str(window.get("event_id"))
     }
-    selectable_count = sum(
-        1
-        for window in (caption_windows.get("emphasis_windows") or [])
-        if isinstance(window, dict) and window.get("caption_options")
-    )
     seen: set[str] = set()
-    if len(selection.caption_choices) > _CAPTION_MAX_EVENTS:
-        errors.append(f"caption_choices must not exceed {_CAPTION_MAX_EVENTS} events")
-    selected_windows: list[tuple[int, int, str, str]] = []
-    hero_count = 0
     for choice in selection.caption_choices:
         if not emphasis_enabled:
             errors.append("caption_choices must be empty when emphasis captions are disabled")
@@ -228,59 +218,264 @@ def validate_postprocess_selection(
             errors.append(f"caption event '{choice.event_id}' is selected more than once")
             continue
         seen.add(choice.event_id)
-        option_ids = {
-            _as_str(option.get("caption_option_id"))
-            for option in (window.get("caption_options") or [])
-            if isinstance(option, dict)
-        }
-        if choice.caption_option_id not in option_ids:
-            errors.append(
-                f"caption_option_id '{choice.caption_option_id}' is not valid for "
-                f"event '{choice.event_id}'"
-            )
-            continue
-        option = next(
-            item
-            for item in (window.get("caption_options") or [])
-            if _as_str(item.get("caption_option_id")) == choice.caption_option_id
-        )
-        if _as_str(option.get("visual_preset_id")) == "hero":
-            hero_count += 1
-        selected_windows.append(
-            (
-                int(window.get("start_frame") or 0),
-                int(window.get("end_frame") or 0),
-                choice.event_id,
-                choice.caption_option_id,
-            )
-        )
-    if hero_count > 2:
-        errors.append("caption choices may use hero at most 2 times")
-    min_gap_frames = int(
-        math.ceil(EMPHASIS_EVENT_GAP_SEC * max(1, int(caption_windows.get("fps") or 30)))
-    )
-    selected_windows.sort(key=lambda item: (item[0], item[1], item[2]))
-    for previous, current in zip(selected_windows, selected_windows[1:]):
-        gap = current[0] - previous[1]
-        if gap < min_gap_frames:
-            errors.append(
-                f"caption events '{previous[2]}' and '{current[2]}' must be non-overlapping "
-                f"with at least {EMPHASIS_EVENT_GAP_SEC}s gap"
-            )
-    if emphasis_enabled and selectable_count > 0:
-        chosen = len(seen)
-        if selectable_count >= EMPHASIS_MIN_EVENTS:
-            if not (EMPHASIS_MIN_EVENTS <= chosen <= _CAPTION_MAX_EVENTS):
-                errors.append(
-                    f"当前有 {selectable_count} 个可选花字事件，必须选择 "
-                    f"{EMPHASIS_MIN_EVENTS} 到 {_CAPTION_MAX_EVENTS} 个（现选 {chosen} 个）"
-                )
-        elif chosen != selectable_count:
-            errors.append(
-                f"当前有 {selectable_count} 个可选花字事件（不足 {EMPHASIS_MIN_EVENTS} 个），"
-                f"必须全部选择（现选 {chosen} 个）"
-            )
     return errors
+
+
+@dataclass(frozen=True)
+class _SolverCandidate:
+    window: dict
+    choice: PostProcessCaptionChoice
+    option: dict
+    nonhero_fallback: dict | None
+    requested_hero: bool
+    forced_hero: bool
+
+
+def solve_postprocess_selection(
+    selection: PostProcessSelection,
+    *,
+    caption_windows: dict,
+    bgm_candidates: list[dict],
+    bgm_enabled: bool,
+    emphasis_enabled: bool,
+    deterministic_fallback: bool = False,
+) -> tuple[PostProcessSelection, dict]:
+    """Turn semantic ranks/options into the maximum locally legal selection.
+
+    The LLM never owns time legality, event count, or the hero cap. Invalid or
+    missing option IDs fall back only for that event; conflicts prune the lower
+    ranked event while preserving every other legal choice. A valid BGM ID is
+    carried independently from all caption repair.
+    """
+
+    bgm_ids = {
+        _as_str(candidate.get("candidate_id"))
+        for candidate in bgm_candidates
+        if _as_str(candidate.get("candidate_id"))
+    }
+    invalid_bgm_id = None
+    if not bgm_enabled:
+        bgm_id = None
+    elif selection.bgm_id is None or selection.bgm_id in bgm_ids:
+        bgm_id = selection.bgm_id
+    else:
+        invalid_bgm_id = selection.bgm_id
+        bgm_id = None
+
+    selectable_windows = (
+        [
+            window
+            for window in (caption_windows.get("emphasis_windows") or [])
+            if isinstance(window, dict) and window.get("caption_options")
+        ]
+        if emphasis_enabled
+        else []
+    )
+    windows_by_id = {
+        _as_str(window.get("event_id")): window
+        for window in selectable_windows
+        if _as_str(window.get("event_id"))
+    }
+    requested_by_id: dict[str, PostProcessCaptionChoice] = {}
+    unknown_event_ids: list[str] = []
+    for choice in selection.caption_choices:
+        if choice.event_id not in windows_by_id:
+            unknown_event_ids.append(choice.event_id)
+            continue
+        current = requested_by_id.get(choice.event_id)
+        if current is None or choice.priority > current.priority:
+            requested_by_id[choice.event_id] = choice
+
+    defaulted_option_event_ids: list[str] = []
+    candidates: list[_SolverCandidate] = []
+    for window in selectable_windows:
+        event_id = _as_str(window.get("event_id"))
+        options = sorted(
+            [item for item in (window.get("caption_options") or []) if isinstance(item, dict)],
+            key=lambda item: (
+                _as_str(item.get("visual_preset_id")) == "hero",
+                _as_str(item.get("caption_option_id")),
+            ),
+        )
+        if not options:
+            continue
+        option_by_id = {
+            _as_str(option.get("caption_option_id")): option
+            for option in options
+            if _as_str(option.get("caption_option_id"))
+        }
+        nonhero_fallback = next(
+            (option for option in options if _as_str(option.get("visual_preset_id")) != "hero"),
+            None,
+        )
+        requested = requested_by_id.get(event_id)
+        option = option_by_id.get(requested.caption_option_id) if requested else None
+        if option is None:
+            option = nonhero_fallback or options[0]
+            defaulted_option_event_ids.append(event_id)
+        priority = min(100, max(0, requested.priority if requested else 0))
+        reason = requested.reason if requested else "本地安全默认选项"
+        if requested is not None and requested.caption_option_id not in option_by_id:
+            reason = (reason + "；无效选项已回退本地安全默认").strip("；")
+        chosen = PostProcessCaptionChoice(
+            event_id=event_id,
+            caption_option_id=_as_str(option.get("caption_option_id")),
+            priority=priority,
+            reason=reason,
+        )
+        requested_hero = _as_str(option.get("visual_preset_id")) == "hero"
+        candidates.append(
+            _SolverCandidate(
+                window=window,
+                choice=chosen,
+                option=option,
+                nonhero_fallback=nonhero_fallback,
+                requested_hero=requested_hero,
+                forced_hero=requested_hero and nonhero_fallback is None,
+            )
+        )
+
+    fps = max(1, int(caption_windows.get("fps") or 30))
+    selected = _select_feasible_candidates(candidates, fps=fps)
+    forced_heroes = sum(1 for candidate in selected if candidate.forced_hero)
+    optional_heroes = sorted(
+        [
+            candidate
+            for candidate in selected
+            if candidate.requested_hero and not candidate.forced_hero
+        ],
+        key=lambda candidate: (-candidate.choice.priority, candidate.choice.event_id),
+    )
+    keep_optional_hero_ids = {
+        candidate.choice.event_id for candidate in optional_heroes[: max(0, 2 - forced_heroes)]
+    }
+    hero_downgraded_event_ids: list[str] = []
+    final_choices: list[PostProcessCaptionChoice] = []
+    for candidate in selected:
+        choice = candidate.choice
+        if (
+            candidate.requested_hero
+            and not candidate.forced_hero
+            and choice.event_id not in keep_optional_hero_ids
+            and candidate.nonhero_fallback is not None
+        ):
+            choice = PostProcessCaptionChoice(
+                event_id=choice.event_id,
+                caption_option_id=_as_str(candidate.nonhero_fallback.get("caption_option_id")),
+                priority=choice.priority,
+                reason=(choice.reason + "；hero 超限已回退 emphasis").strip("；"),
+            )
+            hero_downgraded_event_ids.append(choice.event_id)
+        final_choices.append(choice)
+
+    final_choices.sort(
+        key=lambda choice: (
+            int(windows_by_id[choice.event_id].get("start_frame") or 0),
+            int(windows_by_id[choice.event_id].get("end_frame") or 0),
+            choice.event_id,
+        )
+    )
+    selected_ids = {choice.event_id for choice in final_choices}
+    pruned_event_ids = [
+        _as_str(window.get("event_id"))
+        for window in sorted(
+            selectable_windows,
+            key=lambda item: (
+                int(item.get("start_frame") or 0),
+                int(item.get("end_frame") or 0),
+                _as_str(item.get("event_id")),
+            ),
+        )
+        if _as_str(window.get("event_id")) not in selected_ids
+    ]
+    max_feasible_count = max_feasible_emphasis_count(selectable_windows, fps=fps)
+    diagnostics = {
+        "max_feasible_count": max_feasible_count,
+        "target_count": min(_CAPTION_MAX_EVENTS, max_feasible_count),
+        "selected_count": len(final_choices),
+        "pruned_event_ids": pruned_event_ids,
+        "defaulted_option_event_ids": sorted(set(defaulted_option_event_ids)),
+        "hero_downgraded_event_ids": sorted(hero_downgraded_event_ids),
+        "unknown_event_ids": sorted(set(unknown_event_ids)),
+        "invalid_bgm_id": invalid_bgm_id,
+        "used_deterministic_fallback": bool(
+            deterministic_fallback
+            or defaulted_option_event_ids
+            or hero_downgraded_event_ids
+            or unknown_event_ids
+            or invalid_bgm_id
+        ),
+    }
+    return (
+        PostProcessSelection(
+            bgm_id=bgm_id,
+            caption_choices=final_choices,
+            analysis=selection.analysis,
+        ),
+        diagnostics,
+    )
+
+
+def _select_feasible_candidates(
+    candidates: list[_SolverCandidate], *, fps: int
+) -> tuple[_SolverCandidate, ...]:
+    """Weighted interval DP: cardinality first, semantic priority second."""
+
+    ordered = sorted(
+        candidates,
+        key=lambda candidate: (
+            int(candidate.window.get("end_frame") or 0),
+            int(candidate.window.get("start_frame") or 0),
+            candidate.choice.event_id,
+        ),
+    )
+    gap_frames = int(math.ceil(EMPHASIS_EVENT_GAP_SEC * max(1, fps)))
+    previous_indices: list[int] = []
+    for index, candidate in enumerate(ordered):
+        start = int(candidate.window.get("start_frame") or 0)
+        previous = -1
+        for other_index in range(index - 1, -1, -1):
+            other_end = int(ordered[other_index].window.get("end_frame") or 0)
+            if start - other_end >= gap_frames:
+                previous = other_index
+                break
+        previous_indices.append(previous)
+
+    # dp[i] contains the best subsets using the first i ordered candidates, keyed
+    # by (event_count, forced_hero_count). Optional heroes can be downgraded later.
+    dp: list[dict[tuple[int, int], tuple[_SolverCandidate, ...]]] = [{(0, 0): ()}]
+    for index, candidate in enumerate(ordered):
+        current = dict(dp[index])
+        for (count, hero_count), subset in dp[previous_indices[index] + 1].items():
+            next_count = count + 1
+            next_hero_count = hero_count + int(candidate.forced_hero)
+            if next_count > _CAPTION_MAX_EVENTS or next_hero_count > 2:
+                continue
+            key = (next_count, next_hero_count)
+            proposed = (*subset, candidate)
+            if key not in current or _prefer_candidate_subset(proposed, current[key]):
+                current[key] = proposed
+        dp.append(current)
+
+    max_count = max((key[0] for key in dp[-1]), default=0)
+    finalists = [subset for key, subset in dp[-1].items() if key[0] == max_count]
+    best: tuple[_SolverCandidate, ...] = ()
+    for subset in finalists:
+        if not best or _prefer_candidate_subset(subset, best):
+            best = subset
+    return best
+
+
+def _prefer_candidate_subset(
+    proposed: tuple[_SolverCandidate, ...], current: tuple[_SolverCandidate, ...]
+) -> bool:
+    proposed_priority = sum(item.choice.priority for item in proposed)
+    current_priority = sum(item.choice.priority for item in current)
+    if proposed_priority != current_priority:
+        return proposed_priority > current_priority
+    proposed_ids = tuple(sorted(item.choice.event_id for item in proposed))
+    current_ids = tuple(sorted(item.choice.event_id for item in current))
+    return proposed_ids < current_ids
 
 
 def materialize_overlay_events(

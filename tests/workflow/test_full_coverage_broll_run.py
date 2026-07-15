@@ -224,17 +224,22 @@ class _CountingSandbox(SandboxProvider):
         return super().invoke(call)
 
 
-def test_full_coverage_resume_reuses_the_paid_prefix_instead_of_re_running_tts(
+def test_full_coverage_resume_reuses_the_entire_paid_prefix_including_material_pack(
     tmp_path,
     media_fixture_factory,
     monkeypatch,
 ):
-    """issue #202 / A4: the zero-output skips of full coverage must not stop reuse.
+    """Resume reuses the whole paid prefix — TTS AND MaterialPackPlanning — and only
+    re-runs from the failed node.
 
-    On this chain PortraitTrackBuild and LipSync legitimately publish nothing. Reuse read
-    that as artifact corruption and stopped there, so a resume re-ran — and re-paid for —
-    every node behind them, TTS included. The whole point of a resume is to keep the money
-    already spent.
+    Full-coverage PortraitTrackBuild/LipSync legitimately publish nothing, so that cannot
+    invalidate the prefix. Run A dies at RenderFinalTimeline, well after both TTS and
+    MaterialPackPlanning succeeded, so both are reused rather than re-billed/re-planned.
+    Marking MaterialPackPlanning non-replayable (to re-establish released candidate leases)
+    would instead re-run it and every paid node behind it, re-billing the lipsync on
+    lipsync-enabled runs (issue #202 — enforced by the golden resume tests). A resumed run's
+    run-scoped selection reservations must be re-established as a separate idempotent step
+    keyed off the reused plan_material_pack artifact, not by re-executing the node.
     """
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr(
@@ -333,10 +338,12 @@ def test_full_coverage_resume_reuses_the_paid_prefix_instead_of_re_running_tts(
         template,
         repository.artifacts,
     )
-    assert plan.rerun_from_node_id == "RenderFinalTimeline", (
-        f"reuse stopped early at {plan.rerun_from_node_id} instead of the node that failed"
-    )
-    assert {"TTS", "PortraitTrackBuild", "LipSync"} <= set(plan.reused_node_ids)
+    # Reuse the entire paid prefix; only the failed render node and its successors re-run.
+    # MaterialPackPlanning MUST be reused — re-running it re-bills paid downstream nodes on
+    # lipsync-enabled runs (issue #202).
+    assert plan.rerun_from_node_id == "RenderFinalTimeline"
+    assert "TTS" in plan.reused_node_ids
+    assert "MaterialPackPlanning" in plan.reused_node_ids
 
     resumed = _admit("run_full_coverage_b", resume_from=failed_run.id)
     runtime.resume_run(source_run_id=failed_run.id, new_run=resumed, reuse_plan=plan.model_dump())
@@ -351,3 +358,5 @@ def test_full_coverage_resume_reuses_the_paid_prefix_instead_of_re_running_tts(
         if node.skipped_reason == "resume.reused_artifact_prefix"
     }
     assert "TTS" in reused
+    # MaterialPackPlanning is reused (part of the paid prefix), NOT re-run.
+    assert "MaterialPackPlanning" in reused

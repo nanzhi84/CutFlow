@@ -4,6 +4,7 @@ import cv2  # type: ignore
 
 from packages.media.annotation import extract_frame_at_time, extract_frames_for_times
 from packages.media.annotation.sensors.frames import _build_downscale_filter
+from packages.media.annotation.sensors.frames import extract_frames_for_indices
 from tests.media.annotation.fixtures import make_multi_cut_video
 
 
@@ -33,6 +34,20 @@ def test_extract_frames_for_times_returns_existing_frames(tmp_path):
     for t, path in frames:
         assert isinstance(t, float)
         assert cv2.imread(path) is not None
+
+
+def test_extract_frames_for_indices_deduplicates_and_preserves_exact_order(tmp_path):
+    video = make_multi_cut_video(tmp_path, seg_dur=2.0)
+
+    frames = extract_frames_for_indices(
+        video,
+        [90, 0, 30, 30],
+        temp_dir=str(tmp_path / "batch-frames"),
+        max_long_side=256,
+    )
+
+    assert [index for index, _path in frames] == [0, 30, 90]
+    assert all(cv2.imread(path) is not None for _index, path in frames)
 
 
 def test_downscale_filter_is_aspect_preserving_even():

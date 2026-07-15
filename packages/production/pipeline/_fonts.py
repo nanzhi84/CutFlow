@@ -4,28 +4,26 @@ The style plan carries the user/agent-selected ``font_id`` (a media asset
 of kind ``font``) all the way to the burn step, but burning only honours it if two
 things happen at render time:
 
-1. the uploaded ``.ttf/.otf/.ttc`` is placed where libass can find it -- libass
-   only consults fonts in its ``fontsdir`` (plus system fonts), so the upload must
-   be copied into a flat runtime directory passed to the ``subtitles`` filter via
-   ``:fontsdir=``;
+1. the uploaded font is materialized as ``.ttf/.otf/.ttc`` where libass can find
+   it -- web-font containers (``.woff/.woff2``) are first converted back to an
+   sfnt file because libass support for those containers is platform-dependent;
+   libass only consults fonts in its ``fontsdir`` (plus system fonts), so the
+   upload must be copied into a flat runtime directory passed to the ``subtitles``
+   filter via ``:fontsdir=``;
 2. the ASS ``Fontname`` is set to the font's *family name* (not the asset id /
    filename) -- libass matches by family, so a wrong/absent family silently falls
    back to the default (Arial).
 
 This module performs both: given the font asset + its local file it builds the
 runtime fontsdir and returns the family name to stamp into the ASS style. The
-family name is read from the font's ``name`` table (preferring fontTools when it
-is installed; otherwise a minimal dependency-free ``name``-table parser that
-handles the common TTF/OTF case). When neither yields a name we fall back to the
-asset title so the burn still uses a deterministic, human-meaningful family
-rather than silently reverting to Arial.
-
-No optional dependency is required: fontTools is used opportunistically and the
-module degrades to the built-in parser / asset title when it is absent.
+family name is read from the font's ``name`` table. A missing family, corrupt
+font, or unconvertible file is rejected and reported by the caller instead of
+inventing a name that would make libass silently select a system fallback.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import shutil
 import struct
@@ -34,12 +32,15 @@ from pathlib import Path
 
 logger = logging.getLogger("packages.production.pipeline._fonts")
 
-_FONT_EXTENSIONS = {".ttf", ".otf", ".ttc"}
+_SFNT_EXTENSIONS = {".ttf", ".otf", ".ttc"}
+_WEB_FONT_EXTENSIONS = {".woff", ".woff2"}
+_FONT_EXTENSIONS = _SFNT_EXTENSIONS | _WEB_FONT_EXTENSIONS
 DEFAULT_FONT_SENTINEL = "case_default_font"
+DEFAULT_NORMAL_FONT_ASSET_ID = "asset_font_noto_serif_cjk_sc_regular"
+DEFAULT_EMPHASIS_FONT_ASSET_ID = "asset_font_noto_sans_cjk_sc_bold"
 
 # OpenType ``name`` table identifiers we care about (family-name records).
 _NAME_ID_FAMILY = 1
-_NAME_ID_TYPOGRAPHIC_FAMILY = 16  # preferred family (overrides 1 when present)
 
 
 @dataclass(frozen=True)
@@ -55,13 +56,70 @@ class ResolvedFont:
     source_path: Path
 
 
+def caption_font_asset_ids(
+    normal_font_asset_id: str | None,
+    emphasis_font_asset_id: str | None,
+) -> tuple[str, str]:
+    """Return the deterministic normal/emphasis font pair for a v2 plan.
+
+    A user-selected normal family remains the emphasis fallback unless they
+    selected a second family explicitly. With no selection, the versioned
+    starter-pack identities reproduce the reference's serif body + bold sans
+    emphasis split on every platform.
+    """
+
+    explicit_normal = (
+        str(normal_font_asset_id).strip()
+        if normal_font_asset_id and normal_font_asset_id != DEFAULT_FONT_SENTINEL
+        else ""
+    )
+    explicit_emphasis = (
+        str(emphasis_font_asset_id).strip()
+        if emphasis_font_asset_id and emphasis_font_asset_id != DEFAULT_FONT_SENTINEL
+        else ""
+    )
+    normal = explicit_normal or DEFAULT_NORMAL_FONT_ASSET_ID
+    emphasis = explicit_emphasis or (normal if explicit_normal else DEFAULT_EMPHASIS_FONT_ASSET_ID)
+    return normal, emphasis
+
+
+def distinct_font_assets_share_family(
+    normal_asset_id: str | None,
+    normal_font: ResolvedFont | None,
+    emphasis_asset_id: str | None,
+    emphasis_font: ResolvedFont | None,
+) -> bool:
+    """Whether two distinct files would be ambiguous to libass by family.
+
+    ASS selects a face by family plus style flags, not by our asset id. Exposing
+    two distinct assets with the same family in one fontsdir can therefore make
+    libass render a different face from the file whose hmtx table the planner
+    measured. V2 captions fail closed on this condition.
+    """
+
+    return bool(
+        normal_asset_id
+        and emphasis_asset_id
+        and normal_asset_id != emphasis_asset_id
+        and normal_font is not None
+        and emphasis_font is not None
+        and normal_font.family_name.strip().casefold()
+        == emphasis_font.family_name.strip().casefold()
+    )
+
+
+def is_font_collection(font: ResolvedFont | None) -> bool:
+    """Whether libass may select a different face than planner fontNumber=0."""
+
+    return bool(font is not None and font.source_path.suffix.lower() == ".ttc")
+
+
 def resolve_font_asset(
     *,
     font_asset_id: str | None,
     runtime_dir: Path,
     source_artifact_for_asset,
     artifact_path,
-    media_assets,
 ) -> tuple[ResolvedFont | None, str | None]:
     """Resolve and stage a selected font asset for planning or rendering.
 
@@ -77,23 +135,17 @@ def resolve_font_asset(
         font_path = artifact_path(font_artifact)
     except Exception:
         return None, font_asset_id
-    asset = media_assets.get(font_asset_id)
-    fallback_name = getattr(asset, "title", None) if asset is not None else None
-    return (
-        resolve_subtitle_font(
-            font_path=font_path,
-            runtime_dir=runtime_dir,
-            fallback_name=fallback_name,
-        ),
-        None,
+    resolved = resolve_subtitle_font(
+        font_path=font_path,
+        runtime_dir=runtime_dir,
     )
+    return resolved, None if resolved is not None else font_asset_id
 
 
 def resolve_subtitle_font(
     *,
     font_path: Path,
     runtime_dir: Path,
-    fallback_name: str | None = None,
 ) -> ResolvedFont | None:
     """Stage ``font_path`` into ``runtime_dir`` and return its family name.
 
@@ -110,18 +162,100 @@ def resolve_subtitle_font(
         return None
 
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    target = runtime_dir / source.name
+    target = (
+        _convert_web_font(source, runtime_dir)
+        if source.suffix.lower() in _WEB_FONT_EXTENSIONS
+        else _stage_sfnt_font(source, runtime_dir)
+    )
+    if target is None:
+        return None
+
+    family = _read_family_name(target)
+    if not family:
+        logger.warning("[fonts] selected font %s has no readable family name; ignoring", source)
+        return None
+    if "," in family or "\n" in family or "\r" in family:
+        logger.warning("[fonts] selected font %s has an ASS-unsafe family name; ignoring", source)
+        return None
+    return ResolvedFont(family_name=family, fonts_dir=runtime_dir, source_path=target)
+
+
+def _stage_sfnt_font(source: Path, runtime_dir: Path) -> Path | None:
+    fingerprint = _font_content_fingerprint(source)
+    if fingerprint is None:
+        return None
+    target = runtime_dir / f"font-{fingerprint}{source.suffix.lower()}"
     try:
-        if not target.exists() or source.stat().st_mtime > target.stat().st_mtime:
+        if not target.exists():
             shutil.copy2(source, target)
     except OSError as exc:  # pragma: no cover - filesystem edge
         logger.warning("[fonts] failed to stage font %s -> %s: %s", source, target, exc)
         return None
-
-    family = _read_family_name(target) or (fallback_name or "").strip() or None
-    if not family:
+    if not _fonttools_can_open(target):
+        logger.warning("[fonts] selected font %s is corrupt or unreadable; ignoring", source)
         return None
-    return ResolvedFont(family_name=family, fonts_dir=runtime_dir, source_path=target)
+    return target
+
+
+def _convert_web_font(source: Path, runtime_dir: Path) -> Path | None:
+    """Convert WOFF/WOFF2 to a native sfnt file that libass can load reliably."""
+
+    try:
+        from fontTools.ttLib import TTFont
+    except Exception:
+        logger.warning("[fonts] fontTools is unavailable; cannot convert %s", source)
+        return None
+    font = None
+    temp_target: Path | None = None
+    try:
+        fingerprint = _font_content_fingerprint(source)
+        if fingerprint is None:
+            return None
+        font = TTFont(str(source), fontNumber=0)
+        extension = ".otf" if font.sfntVersion == "OTTO" else ".ttf"
+        # Content-address the native file: distinct font assets routinely share
+        # generic upload names such as ``font.otf`` and must coexist in one flat
+        # libass fontsdir without overwriting one another.
+        target = runtime_dir / f"font-{fingerprint}{extension}"
+        temp_target = target.with_suffix(f"{target.suffix}.tmp")
+        font.flavor = None
+        font.save(str(temp_target))
+        temp_target.replace(target)
+        return target if _fonttools_can_open(target) else None
+    except Exception as exc:
+        logger.warning("[fonts] failed to convert web font %s: %s", source, exc)
+        return None
+    finally:
+        if font is not None:
+            font.close()
+        if temp_target is not None and temp_target.exists():
+            try:
+                temp_target.unlink()
+            except OSError:  # pragma: no cover - best-effort temporary cleanup
+                pass
+
+
+def _font_content_fingerprint(source: Path) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        with source.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        logger.warning("[fonts] failed to fingerprint font %s: %s", source, exc)
+        return None
+    return digest.hexdigest()[:20]
+
+
+def _fonttools_can_open(path: Path) -> bool:
+    try:
+        from fontTools.ttLib import TTFont
+
+        font = TTFont(str(path), fontNumber=0, lazy=True)
+        font.close()
+        return True
+    except Exception:
+        return False
 
 
 def _read_family_name(path: Path) -> str | None:
@@ -146,10 +280,9 @@ def _read_family_with_fonttools(path: Path) -> str | None:
         font = TTFont(str(path), fontNumber=0, lazy=True)
         try:
             name_table = font["name"]
-            for name_id in (_NAME_ID_TYPOGRAPHIC_FAMILY, _NAME_ID_FAMILY):
-                record = name_table.getDebugName(name_id)
-                if record and record.strip():
-                    return record.strip()
+            record = name_table.getDebugName(_NAME_ID_FAMILY)
+            if record and record.strip():
+                return record.strip()
         finally:
             font.close()
     except Exception as exc:  # pragma: no cover - corrupt font edge
@@ -196,14 +329,14 @@ def _read_family_builtin(path: Path) -> str | None:
             platform_id, _encoding_id, _lang, name_id, length, offset = struct.unpack(
                 ">HHHHHH", table[rec : rec + 12]
             )
-            if name_id not in (_NAME_ID_FAMILY, _NAME_ID_TYPOGRAPHIC_FAMILY):
+            if name_id != _NAME_ID_FAMILY:
                 continue
             start = string_offset + offset
             raw = table[start : start + length]
             decoded = _decode_name_record(platform_id, raw)
             if decoded:
                 candidates[name_id] = decoded
-        return candidates.get(_NAME_ID_TYPOGRAPHIC_FAMILY) or candidates.get(_NAME_ID_FAMILY)
+        return candidates.get(_NAME_ID_FAMILY)
     except (struct.error, IndexError) as exc:  # pragma: no cover - corrupt font edge
         logger.warning("[fonts] builtin parser could not read %s: %s", path, exc)
         return None

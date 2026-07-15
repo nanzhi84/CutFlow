@@ -52,12 +52,25 @@ def seed_real_provider_configuration(repository) -> None:
             concurrency_key="volcengine:tts.speech",
             timeout_sec=120,
             options_schema_ref=ProviderOptionsSchemaRef(schema_id="provider.tts.options"),
-            # appid is the per-account public id (operator fills it in, e.g. 9635790622);
-            # secret is the account AccessKeyId:SecretAccessKey, armed out of band.
+            # appid is the per-account public id (operator fills it in, e.g. 9635790622).
+            # The out-of-band secret is JSON with access_key_id + secret_access_key
+            # for management calls and the speech application access_token for v3.
             default_options={
                 "appid": "",
                 "cluster": "volcano_icl",
                 "format": "mp3",
+                "sample_rate": 24000,
+                # Async ICL 2.0 returns one provider-authored MP3 URL for the whole
+                # narration plus sentence/word timestamps. It must never be replaced
+                # with the chunked /unidirectional delivery path.
+                "api_version": "v3",
+                "resource_id": "seed-icl-2.0",
+                # Fail closed until an operator has rotated the composite secret to
+                # include the speech application's Access Token. Existing deployments
+                # set this true before running the 0054 activation migration.
+                "async_icl2_ready": False,
+                "poll_interval": 1.0,
+                "poll_max_attempts": 600,
                 "api_key_name": "cutagent-tts",
             },
         ),

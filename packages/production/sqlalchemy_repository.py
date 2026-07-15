@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -677,6 +677,113 @@ class SqlAlchemyProductionRepository(BaseRepository):
             .values(status="expired", released_at=now)
         )
 
+    @staticmethod
+    def _hydrate_selection_reservations(
+        session: Session,
+        repository: Repository,
+        *,
+        case_id: str,
+        run_id: str,
+    ) -> None:
+        active_statement = (
+            select(SelectionReservationRow)
+            .where(SelectionReservationRow.case_id == case_id)
+            .where(SelectionReservationRow.status == "reserved")
+            .where(SelectionReservationRow.expires_at > utcnow())
+            .order_by(SelectionReservationRow.created_at.desc())
+        )
+        current_run_statement = (
+            select(SelectionReservationRow)
+            .where(SelectionReservationRow.run_id == run_id)
+            .where(SelectionReservationRow.status.in_(("reserved", "committed")))
+        )
+        for statement in (active_statement, current_run_statement):
+            for row in session.scalars(statement):
+                reservation = _selection_reservation_from_row(row)
+                repository.selection_reservations[reservation.id] = reservation
+
+    def reserve_selection_candidates(
+        self,
+        repository: Repository,
+        *,
+        case_id: str,
+        run_id: str,
+        asset_ids_by_medium: Mapping[str, Sequence[str]],
+        diversity_keys_by_medium: Mapping[str, Mapping[str, str | None]],
+    ) -> dict[str, list[SelectionReservationRecord]]:
+        """Atomically acquire a MaterialPack candidate batch in Postgres.
+
+        Hydration is necessarily a snapshot: two runs can both plan against an
+        apparently-free slot. Persisting the leases here moves the partial unique
+        constraint into MaterialPackPlanning's declared retry boundary. On a race,
+        restore the caller's in-memory leases, refresh the winner from SQL, and raise
+        a retryable conflict so the next attempt replans without that asset.
+        """
+        previous_for_run = {
+            reservation_id: reservation
+            for reservation_id, reservation in repository.selection_reservations.items()
+            if reservation.run_id == run_id
+        }
+        owned_by_medium: dict[str, list[SelectionReservationRecord]] = {}
+        for medium, asset_ids in asset_ids_by_medium.items():
+            owned_by_medium[medium] = repository.reserve_selections(
+                case_id=case_id,
+                run_id=run_id,
+                medium=medium,
+                asset_ids=asset_ids,
+                diversity_keys=dict(diversity_keys_by_medium.get(medium, {})),
+            )
+        owned = [reservation for values in owned_by_medium.values() for reservation in values]
+        if not owned:
+            return owned_by_medium
+        try:
+            with self.session_factory() as session:
+                self._expire_stale_selection_reservations(session)
+                for reservation in owned:
+                    session.merge(self._selection_reservation_row(reservation))
+                session.commit()
+        except IntegrityError as exc:
+            for reservation_id, reservation in list(repository.selection_reservations.items()):
+                if reservation.run_id == run_id:
+                    del repository.selection_reservations[reservation_id]
+            repository.selection_reservations.update(previous_for_run)
+            if not self._is_selection_reservation_active_slot_conflict(exc):
+                raise
+            with self.session_factory() as session:
+                self._hydrate_selection_reservations(
+                    session,
+                    repository,
+                    case_id=case_id,
+                    run_id=run_id,
+                )
+            raise NodeExecutionError(
+                ErrorCode.validation_conflict,
+                "Active selection reservation conflict; retry material planning.",
+                retryable=True,
+                details={"constraint": _SELECTION_RESERVATION_ACTIVE_SLOT_CONSTRAINT},
+            ) from exc
+        return owned_by_medium
+
+    def release_run_selection_reservations(self, run_id: str) -> int:
+        """Persist cancellation cleanup even when the API runtime cache is stale.
+
+        Temporal activities create reservations in independently hydrated repositories.
+        The API process that later receives a cancel request may therefore know the run
+        but not those newly-created reservation objects. Releasing directly by run id
+        keeps the durable active-slot constraint from blocking the next run.
+        """
+
+        now = utcnow()
+        with self.session_factory() as session:
+            result = session.execute(
+                update(SelectionReservationRow)
+                .where(SelectionReservationRow.run_id == run_id)
+                .where(SelectionReservationRow.status == "reserved")
+                .values(status="released", released_at=now)
+            )
+            session.commit()
+            return max(0, int(result.rowcount or 0))
+
     def case_run_cards(
         self,
         *,
@@ -1098,6 +1205,12 @@ class SqlAlchemyProductionRepository(BaseRepository):
             run = workflow_run_row_to_contract(run_row)
             repository.jobs[job.id] = job
             repository.runs[run.id] = run
+            creative_intent_ref = getattr(job.request, "creative_intent_ref", None)
+            if creative_intent_ref is not None:
+                creative_intent_row = session.get(ArtifactRow, creative_intent_ref.artifact_id)
+                if creative_intent_row is not None:
+                    creative_intent = artifact_row_to_contract(creative_intent_row)
+                    repository.artifacts[creative_intent.id] = creative_intent
             # Hydrate the adopted ScriptVersion into the run-scoped runtime repo so the
             # adopted-script provenance survives under the Temporal runtime too. Each
             # run_node activity builds a FRESH Repository, so unless we load it here the
@@ -1177,25 +1290,12 @@ class SqlAlchemyProductionRepository(BaseRepository):
                 for ledger_row in session.scalars(ledger_statement):
                     entry = _selection_ledger_entry_from_row(ledger_row)
                     repository.selection_ledger[entry.id] = entry
-                reservation_statement = (
-                    select(SelectionReservationRow)
-                    .where(SelectionReservationRow.case_id == run.case_id)
-                    .where(SelectionReservationRow.status == "reserved")
-                    .where(SelectionReservationRow.expires_at > utcnow())
-                    .order_by(SelectionReservationRow.created_at.desc())
-                    .limit(100)
+                self._hydrate_selection_reservations(
+                    session,
+                    repository,
+                    case_id=run.case_id,
+                    run_id=run.id,
                 )
-                for reservation_row in session.scalars(reservation_statement):
-                    reservation = _selection_reservation_from_row(reservation_row)
-                    repository.selection_reservations[reservation.id] = reservation
-                run_reservation_statement = (
-                    select(SelectionReservationRow)
-                    .where(SelectionReservationRow.run_id == run.id)
-                    .where(SelectionReservationRow.status.in_(("reserved", "committed")))
-                )
-                for reservation_row in session.scalars(run_reservation_statement):
-                    reservation = _selection_reservation_from_row(reservation_row)
-                    repository.selection_reservations[reservation.id] = reservation
             run_ids = {run_id}
             if run.resume_from_run_id:
                 source_row = session.get(WorkflowRunRow, run.resume_from_run_id)

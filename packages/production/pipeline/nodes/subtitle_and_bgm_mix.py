@@ -26,11 +26,23 @@ from packages.production.pipeline._ffmpeg import (
     ffmpeg_filter_available,
     render_final_media,
 )
-from packages.production.pipeline._font_metrics import load_font_metrics, make_text_measurer
-from packages.production.pipeline._fonts import ResolvedFont, resolve_font_asset
+from packages.production.pipeline._font_metrics import (
+    font_text_safety_issue,
+    load_font_metrics,
+    make_text_measurer,
+)
+from packages.production.pipeline._fonts import (
+    DEFAULT_EMPHASIS_FONT_ASSET_ID,
+    DEFAULT_NORMAL_FONT_ASSET_ID,
+    ResolvedFont,
+    caption_font_asset_ids,
+    distinct_font_assets_share_family,
+    is_font_collection,
+    resolve_font_asset,
+)
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
-from packages.production.pipeline._sfx_events import plan_caption_sfx_events
+from packages.production.pipeline._sfx_events import plan_huazi_sfx_events
 from packages.production.pipeline._subtitles import (
     _ASS_MARGIN_L,
     _ASS_MARGIN_R,
@@ -38,6 +50,10 @@ from packages.production.pipeline._subtitles import (
     ass_font_size,
     write_ass_subtitles,
 )
+
+_DEFAULT_PLANNED_NORMAL_FONT_FAMILY = "serif"
+_DEFAULT_PLANNED_EMPHASIS_FONT_FAMILY = "sans-serif"
+
 
 def _font_asset_id(style: dict, *, emphasis: bool = False) -> str | None:
     subtitle = style.get("subtitle") if isinstance(style.get("subtitle"), dict) else {}
@@ -50,9 +66,7 @@ def _font_asset_id(style: dict, *, emphasis: bool = False) -> str | None:
             or _font_asset_id(style)
         )
     return (
-        style.get("font_asset_id")
-        or (font or {}).get("font_id")
-        or (subtitle or {}).get("font_id")
+        style.get("font_asset_id") or (font or {}).get("font_id") or (subtitle or {}).get("font_id")
     )
 
 
@@ -79,39 +93,78 @@ def run(ctx: NodeContext) -> NodeOutput:
             temp_dir = Path(directory)
             subtitle_layers_enabled = bool(
                 state.request.subtitle.enabled
-                and (state.request.subtitle.normal_enabled or state.request.subtitle.emphasis_enabled)
+                and (
+                    state.request.subtitle.normal_enabled or state.request.subtitle.emphasis_enabled
+                )
             )
             subtitle_path = temp_dir / "subtitle.ass" if subtitle_layers_enabled else None
             fonts_dir = temp_dir / "fonts"
             resolved_font: ResolvedFont | None = None
             resolved_emphasis_font: ResolvedFont | None = None
             if subtitle_path is not None:
-                normal_font_asset_id = _font_asset_id(style)
-                emphasis_font_asset_id = _font_asset_id(style, emphasis=True)
-                if caption_windows is not None:
-                    # Caption v3 uses one resolved font across normal/emphasis/hero.
-                    emphasis_font_asset_id = normal_font_asset_id
+                subtitle_style = (
+                    style.get("subtitle") if isinstance(style.get("subtitle"), dict) else {}
+                ) or {}
+                normal_enabled = _subtitle_layer_enabled(subtitle_style, "normal_enabled")
+                emphasis_enabled = _subtitle_layer_enabled(subtitle_style, "emphasis_enabled")
+                style_normal_font_id = _font_asset_id(style)
+                style_emphasis_font_id = _font_asset_id(style, emphasis=True)
+                is_v2_caption_plan = bool(
+                    caption_windows is not None
+                    and caption_windows.get("policy_version") == "caption_windows_v2"
+                )
+                if is_v2_caption_plan:
+                    default_normal_id, default_emphasis_id = caption_font_asset_ids(
+                        style_normal_font_id,
+                        style_emphasis_font_id,
+                    )
+                    normal_font_asset_id = (
+                        caption_windows.get("normal_font_asset_id") or default_normal_id
+                    )
+                    emphasis_font_asset_id = (
+                        caption_windows.get("emphasis_font_asset_id") or default_emphasis_id
+                        if emphasis_enabled
+                        else normal_font_asset_id
+                    )
+                else:
+                    normal_font_asset_id = style_normal_font_id
+                    emphasis_font_asset_id = style_emphasis_font_id
                 resolved_font, unresolved_font_id = resolve_font_asset(
                     font_asset_id=normal_font_asset_id,
                     runtime_dir=fonts_dir,
                     source_artifact_for_asset=ctx.source_artifact_for_asset,
                     artifact_path=ctx.artifact_path,
-                    media_assets=ctx.repository.media_assets,
                 )
                 unresolved_emphasis_font_id: str | None = None
-                if emphasis_font_asset_id and emphasis_font_asset_id != normal_font_asset_id:
+                if (
+                    emphasis_enabled
+                    and emphasis_font_asset_id
+                    and emphasis_font_asset_id != normal_font_asset_id
+                ):
                     resolved_emphasis_font, unresolved_emphasis_font_id = resolve_font_asset(
                         font_asset_id=emphasis_font_asset_id,
                         runtime_dir=fonts_dir,
                         source_artifact_for_asset=ctx.source_artifact_for_asset,
                         artifact_path=ctx.artifact_path,
-                        media_assets=ctx.repository.media_assets,
                     )
                 else:
                     resolved_emphasis_font = resolved_font
                 # No silent fallback: a selected font whose file can't be staged
                 # must surface, not quietly burn the default Arial.
                 if unresolved_font_id:
+                    if is_v2_caption_plan:
+                        detail = (
+                            "默认普通字幕字体资产缺失；请先执行 "
+                            "python scripts/import_font_assets.py 再生成视频。"
+                            if unresolved_font_id == DEFAULT_NORMAL_FONT_ASSET_ID
+                            else f"字幕计划使用的字体资产（{unresolved_font_id}）无法加载；"
+                            "已停止渲染以避免字幕越出安全区。"
+                        )
+                        raise NodeExecutionError(
+                            ErrorCode.render_subtitle_failed,
+                            detail,
+                            retryable=False,
+                        )
                     degradations.append(
                         degradation_notice(
                             WarningCode.font_resolution_failed,
@@ -121,6 +174,19 @@ def run(ctx: NodeContext) -> NodeOutput:
                     )
                     warnings.append(WarningCode.font_resolution_failed)
                 if unresolved_emphasis_font_id:
+                    if is_v2_caption_plan:
+                        detail = (
+                            "默认花字字体资产缺失；请先执行 "
+                            "python scripts/import_font_assets.py 再生成视频。"
+                            if unresolved_emphasis_font_id == DEFAULT_EMPHASIS_FONT_ASSET_ID
+                            else f"字幕计划使用的花字字体资产（{unresolved_emphasis_font_id}）"
+                            "无法加载；已停止渲染以避免花字越出安全区。"
+                        )
+                        raise NodeExecutionError(
+                            ErrorCode.render_subtitle_failed,
+                            detail,
+                            retryable=False,
+                        )
                     degradations.append(
                         degradation_notice(
                             WarningCode.font_resolution_failed,
@@ -129,13 +195,92 @@ def run(ctx: NodeContext) -> NodeOutput:
                         )
                     )
                     warnings.append(WarningCode.font_resolution_failed)
+                    # CaptionWindowPlanning uses the normal font metrics when an
+                    # explicit emphasis font cannot be staged. Keep libass on
+                    # that same fallback family so the proven envelope matches
+                    # the rendered glyphs.
+                    resolved_emphasis_font = resolved_font
+                if is_v2_caption_plan:
+                    if is_font_collection(resolved_font):
+                        raise NodeExecutionError(
+                            ErrorCode.render_subtitle_failed,
+                            f"字幕计划使用的字体资产（{normal_font_asset_id}）是 TTC 集合；"
+                            "libass 无法保证使用规划时量测的 face。",
+                            retryable=False,
+                        )
+                    if emphasis_enabled and is_font_collection(resolved_emphasis_font):
+                        raise NodeExecutionError(
+                            ErrorCode.render_subtitle_failed,
+                            f"字幕计划使用的花字字体资产（{emphasis_font_asset_id}）是 TTC 集合；"
+                            "libass 无法保证使用规划时量测的 face。",
+                            retryable=False,
+                        )
+                    if resolved_font is None or load_font_metrics(resolved_font.source_path) is None:
+                        raise NodeExecutionError(
+                            ErrorCode.render_subtitle_failed,
+                            f"字幕计划使用的字体资产（{normal_font_asset_id}）缺少可读字形度量；"
+                            "已停止渲染以避免字幕越出安全区。",
+                            retryable=False,
+                        )
+                    if (
+                        emphasis_enabled
+                        and (
+                            resolved_emphasis_font is None
+                            or load_font_metrics(resolved_emphasis_font.source_path) is None
+                        )
+                    ):
+                        raise NodeExecutionError(
+                            ErrorCode.render_subtitle_failed,
+                            f"字幕计划使用的花字字体资产（{emphasis_font_asset_id}）"
+                            "缺少可读字形度量；已停止渲染以避免花字越出安全区。",
+                            retryable=False,
+                        )
+                    if emphasis_enabled and distinct_font_assets_share_family(
+                        normal_font_asset_id,
+                        resolved_font,
+                        emphasis_font_asset_id,
+                        resolved_emphasis_font,
+                    ):
+                        raise NodeExecutionError(
+                            ErrorCode.render_subtitle_failed,
+                            "普通字幕与花字计划引用了同一字体家族的不同文件；"
+                            "libass 无法保证使用规划时量测的字形。",
+                            retryable=False,
+                        )
+                    normal_texts = [
+                        str(line)
+                        for window in (caption_windows.get("normal_windows") or [])
+                        if isinstance(window, dict)
+                        for line in (window.get("lines") or [])
+                    ]
+                    if normal_enabled and resolved_font is not None:
+                        issue = font_text_safety_issue(resolved_font.source_path, normal_texts)
+                        if issue:
+                            raise NodeExecutionError(
+                                ErrorCode.render_subtitle_failed,
+                                f"字幕计划字体无法安全覆盖当前文本（{issue}）；"
+                                "已停止渲染以避免字形越出安全区。",
+                                retryable=False,
+                            )
+                    emphasis_texts = [
+                        str(event.get("text") or "")
+                        for event in (style.get("overlay_events") or [])
+                        if isinstance(event, dict)
+                    ]
+                    if emphasis_enabled and resolved_emphasis_font is not None:
+                        issue = font_text_safety_issue(
+                            resolved_emphasis_font.source_path,
+                            emphasis_texts,
+                        )
+                        if issue:
+                            raise NodeExecutionError(
+                                ErrorCode.render_subtitle_failed,
+                                f"花字计划字体无法安全覆盖当前文本（{issue}）；"
+                                "已停止渲染以避免字形越出安全区。",
+                                retryable=False,
+                            )
                 width = state.request.output.width
                 height = state.request.output.height
-                subtitle_style = (
-                    style.get("subtitle") if isinstance(style.get("subtitle"), dict) else {}
-                ) or {}
-                normal_enabled = _subtitle_layer_enabled(subtitle_style, "normal_enabled")
-                emphasis_enabled = _subtitle_layer_enabled(subtitle_style, "emphasis_enabled")
                 caption_font_size = ass_font_size(subtitle_style.get("font_size"), height=height)
                 if caption_windows is not None:
                     # The v2 post-process chain consumes frame-authoritative windows.
@@ -149,7 +294,9 @@ def run(ctx: NodeContext) -> NodeOutput:
                 else:
                     # Historical runs have no plan.caption_windows artifact. Keep the
                     # old compiler only at this explicit read boundary.
-                    metrics = load_font_metrics(resolved_font.source_path) if resolved_font else None
+                    metrics = (
+                        load_font_metrics(resolved_font.source_path) if resolved_font else None
+                    )
                     if resolved_font is not None and metrics is None:
                         degradations.append(
                             degradation_notice(
@@ -159,9 +306,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                             )
                         )
                         warnings.append(WarningCode.font_metrics_fallback)
-                    measure, metrics_source = make_text_measurer(
-                        metrics, float(caption_font_size)
-                    )
+                    measure, metrics_source = make_text_measurer(metrics, float(caption_font_size))
                     display = compile_caption_display(
                         units=list(narration.get("units") or []),
                         resolution=(width, height),
@@ -196,6 +341,10 @@ def run(ctx: NodeContext) -> NodeOutput:
                                     for frame in (planned.get("line_start_frames") or [])
                                 ],
                                 "effect_id": planned.get("effect_id") or "none",
+                                "rect": dict(planned["rect"])
+                                if isinstance(planned.get("rect"), dict)
+                                else None,
+                                "text_align": planned.get("text_align") or "center",
                             }
                         )
                 else:
@@ -210,9 +359,27 @@ def run(ctx: NodeContext) -> NodeOutput:
                     height=height,
                     caption_cues=caption_cues,
                     overlay_events=display.emphasis_events,
-                    font_name=resolved_font.family_name if resolved_font else None,
+                    font_name=(
+                        resolved_font.family_name
+                        if resolved_font
+                        else (
+                            _DEFAULT_PLANNED_NORMAL_FONT_FAMILY
+                            if is_v2_caption_plan
+                            else None
+                        )
+                    ),
                     emphasis_font_name=(
-                        resolved_emphasis_font.family_name if resolved_emphasis_font else None
+                        resolved_emphasis_font.family_name
+                        if resolved_emphasis_font
+                        else (
+                            (
+                                _DEFAULT_PLANNED_NORMAL_FONT_FAMILY
+                                if unresolved_emphasis_font_id
+                                else _DEFAULT_PLANNED_EMPHASIS_FONT_FAMILY
+                            )
+                            if is_v2_caption_plan
+                            else None
+                        )
                     ),
                 )
                 if animation_fallbacks:
@@ -235,8 +402,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             sfx_mix_events: list[SfxMixEvent] = []
             missing_sfx_assets: list[str] = []
             if caption_windows is not None and caption_display_payload is not None:
-                sfx_requests = plan_caption_sfx_events(
-                    normal_cues=caption_cues,
+                sfx_requests = plan_huazi_sfx_events(
                     overlay_events=list(display.emphasis_events),
                     duration=duration,
                 )
@@ -266,7 +432,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                 degradations.append(
                     degradation_notice(
                         WarningCode.sfx_asset_missing,
-                        "部分字幕音效资产缺失；对应字幕已无声继续。",
+                        "部分花字音效资产缺失；对应花字已无声继续。",
                         node_id=ctx.node_run.node_id,
                         affects_true_yield=False,
                     ).model_copy(
@@ -320,12 +486,10 @@ def run(ctx: NodeContext) -> NodeOutput:
                 degradations.append(
                     degradation_notice(
                         WarningCode.sfx_mix_failed,
-                        "字幕音效混音失败；已显式降级为无音效成片。",
+                        "花字音效混音失败；已显式降级为无花字音效成片。",
                         node_id=ctx.node_run.node_id,
                         affects_true_yield=False,
-                    ).model_copy(
-                        update={"details": {"event_count": len(sfx_mix_events)}}
-                    )
+                    ).model_copy(update={"details": {"event_count": len(sfx_mix_events)}})
                 )
                 render_kwargs["sfx_events"] = []
                 mix_result = render_final_media(**render_kwargs)
@@ -407,6 +571,8 @@ def _caption_display_payload(display: CaptionDisplayResult) -> dict:
             "end": item.end,
             "lines": list(item.lines),
             "source_unit_ids": list(item.source_unit_ids),
+            "rect": dict(item.rect) if isinstance(item.rect, dict) else None,
+            "text_align": item.text_align,
             "suppressed_by": item.suppressed_by,
         }
 

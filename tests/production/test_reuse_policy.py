@@ -20,7 +20,6 @@ def _node(
     kwargs = {"reuse_policy": reuse_policy} if reuse_policy is not None else {}
     return c.NodeSpec(
         node_id=node_id,
-        input_schema=f"{node_id}.input.v1",
         output_artifact_kinds=outputs or [c.ArtifactKind.run_report_debug],
         **kwargs,
     )
@@ -223,6 +222,56 @@ def test_default_strict_reuses_completed_nodes(tmp_path):
     assert plan.rerun_from_node_id is None
 
 
+def test_async_icl2_tts_invalidates_synchronous_v2_node_run():
+    from packages.production.pipeline.digital_human import digital_human_template
+
+    tts_spec = next(node for node in digital_human_template().nodes if node.node_id == "TTS")
+    assert tts_spec.node_version == "v3"
+    source_tts = _node_run("TTS", "art_old_sync_tts").model_copy(update={"node_version": "v2"})
+
+    plan = compute_reuse_plan(_run([source_tts]), _template(tts_spec), {})
+
+    assert plan.reused_node_ids == []
+    assert plan.rerun_from_node_id == "TTS"
+    assert plan.decisions[0].reason == "node_version_mismatch"
+
+
+def test_resume_stops_before_non_replayable_run_owned_side_effects():
+    from packages.production.pipeline.digital_human import (
+        digital_human_template,
+        seedance_t2v_template,
+    )
+
+    specs = {
+        spec.node_id: spec
+        for template in (digital_human_template(), seedance_t2v_template())
+        for spec in template.nodes
+    }
+    # MaterialPackPlanning is intentionally NOT in this list. It sits mid-chain, so marking
+    # it non-replayable would stop reuse before it and force paid downstream nodes to re-run
+    # on resume, re-billing the already-paid lipsync (issue #202). That money-safety contract
+    # is enforced by the golden test test_resume_answers_from_the_lipsync_the_failed_run_already_paid_for.
+    # Only TERMINAL run-owned-write nodes belong here — re-running them cannot cascade into
+    # paid upstream re-runs. Guard against re-introducing the mid-chain money bug:
+    assert "selection_reservation" not in specs["MaterialPackPlanning"].side_effects
+
+    for node_id in (
+        "ExportFinishedVideo",
+        "ExportSeedanceVideo",
+        "FinalizeRunReport",
+    ):
+        spec = specs[node_id]
+        source_node = _node_run(node_id, f"art_{node_id}").model_copy(
+            update={"node_version": spec.node_version}
+        )
+
+        plan = compute_reuse_plan(_run([source_node]), _template(spec), {})
+
+        assert plan.reused_node_ids == []
+        assert plan.rerun_from_node_id == node_id
+        assert plan.decisions[0].reason == "side_effect_not_reusable"
+
+
 def _skipped_without_output(node_id: str) -> c.NodeRun:
     """What ``_may_skip_without_running`` leaves behind: skipped, and empty-handed.
 
@@ -300,11 +349,13 @@ def test_a_node_whose_recorded_artifacts_vanished_still_stops_reuse(tmp_path):
 def test_node_spec_exposes_only_the_consumed_reuse_shape():
     """Guard: the live reuse contract is reuse_policy/side_effects/idempotency_key.
 
-    The dead ``resume_policy``/``ResumePolicy`` shape was never consumed and was
-    removed; this asserts it stays gone and the consumed fields stay present.
+    Dead resume and payload-schema declarations were never consumed by Temporal or
+    the reuse planner. Keep only the fields that change live replay behaviour.
     """
     fields = c.NodeSpec.model_fields
     assert "resume_policy" not in fields
+    assert "input_schema" not in fields
+    assert "output_artifact_schema_versions" not in fields
     assert "reuse_policy" in fields
     assert "side_effects" in fields
     assert "idempotency_key" in fields

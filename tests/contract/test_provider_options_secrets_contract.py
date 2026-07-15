@@ -7,7 +7,6 @@ from packages.core.contracts import (
     CoverOptions,
     DegradationCode,
     DigitalHumanVideoRequest,
-    ErrorCode,
     LipSyncOptions,
     OutputOptions,
     ProviderCapability,
@@ -40,7 +39,6 @@ def test_provider_profile_capability_and_policy_contracts_match_spec():
         environment="local",
         concurrency_key="sandbox:tts.speech",
         timeout_sec=30,
-        retry_policy=RetryPolicy(retryable_error_codes=[ErrorCode.provider_timeout]),
         cost_policy_id=None,
         options_schema_ref=schema_ref,
         version="v1",
@@ -60,7 +58,7 @@ def test_provider_profile_capability_and_policy_contracts_match_spec():
     )
 
     assert profile.capability == "tts.speech"
-    assert profile.retry_policy.retryable_error_codes == [ErrorCode.provider_timeout]
+    assert "retry_policy" not in ProviderProfile.model_fields
     assert capability.capability == "tts.speech"
     with pytest.raises(ValidationError):
         RetryPolicy(max_attempts=0)
@@ -137,6 +135,7 @@ def test_warning_code_is_single_spec_enum_and_degradation_notice_shape():
         # TTS-native-timing -> ASR fallback is now surfaced.
         "caption.emphasis_relaxed_safety",
         "caption.emphasis_below_floor",
+        "caption.normal_relaxed_safety",
         "tts.timing_unavailable",
     }
     assert DegradationCode.font_default_used.value == "font.default_used"
