@@ -54,13 +54,16 @@ def _get_artifact(artifact_id: str) -> Artifact:
 def upload_settings_override():
     """Temporarily override settings.upload on the live app state, then restore."""
     original = app.state.settings
+    original_reconciler_settings = app.state.upload_reconciler.settings
 
     def apply(**upload_overrides):
         new_upload = original.upload.model_copy(update=upload_overrides)
         app.state.settings = original.model_copy(update={"upload": new_upload})
+        app.state.upload_reconciler.settings = new_upload
 
     yield apply
     app.state.settings = original
+    app.state.upload_reconciler.settings = original_reconciler_settings
 
 
 def test_direct_upload_round_trips_large_payload_byte_for_byte():
@@ -152,6 +155,7 @@ def test_complete_upload_normalizes_portrait_when_enabled(upload_settings_overri
     assert completed.status_code == 200, completed.text
     body = completed.json()
     assert "normalized" in body["media_asset"]["tags"]
+    assert body["upload_session"]["normalized"] is True
     artifact = _get_artifact(body["artifact"]["artifact_id"])
     # The admitted asset is the normalized one (sha changed) and conforms to profile.
     assert artifact.sha256 != digest
@@ -214,6 +218,7 @@ def test_complete_upload_normalizes_hdr_portrait_to_bt709_when_enabled(
     assert completed.status_code == 200, completed.text
     body = completed.json()
     assert "normalized" in body["media_asset"]["tags"]
+    assert body["upload_session"]["normalized"] is True
     artifact = _get_artifact(body["artifact"]["artifact_id"])
     info = probe_media(local_object_path(client.app.state.object_store, artifact.uri))
     # HDR source admitted as BT.709 SDR — no silent color degrade downstream.

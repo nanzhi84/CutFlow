@@ -15,7 +15,7 @@
 - `config/settings.py` — `build_settings()`/`Settings`（按域分组，frozen，含 `UploadSettings`/`ObjectStoreSettings`）、`sandbox_fallback_allowed()`；`CUTAGENT_*` env 在调用时读取，无模块级单例。
 - `config/preflight.py` — `validate_startup_settings()` / `format_preflight_report()`，API/worker 生产启动前 fail closed，`scripts/preflight.py`/`scripts/ci_preflight_gate.sh` 复用同一逻辑。
 - `storage/database.py` / `repository.py` / `bootstrap.py` — ORM 后端 / 运行态内存 `Repository`(**仅工作流单次 run 的临时 run-state,非存储后端;已不能当存储后端用**) / 按 `storage.backend`(sqlalchemy|postgres,memory 已移除并显式拒绝) 选型。
-- `storage/alembic/versions/` — 0001..0058（单一 head `0058_resumable_uploads`），仓库内**唯一**的 Alembic 迁移目录；近期 `0049…0050` 补 provider 调用幂等与可恢复结果，`0052` 增加列表缩略图，`0053…0057` 收束生产 prompt/配置，`0058` 增加可恢复上传状态、租约与 Artifact 来源唯一约束。
+- `storage/alembic/versions/` — 0001..0059（单一 head `0059_upload_normalized_state`），仓库内**唯一**的 Alembic 迁移目录；近期 `0049…0050` 补 provider 调用幂等与可恢复结果，`0052` 增加列表缩略图，`0053…0057` 收束生产 prompt/配置，`0058…0059` 增加可恢复上传状态、租约、规范化状态与 Artifact 来源唯一约束。
 - `storage/seed.py` / `seed_media.py` / `provider_seed.py` — 用户/注册码、媒体、provider 配置 seed。
 - `storage/secret_store.py` — `SecretStore` 协议 + `LocalSecretStore`；自 `0017` 起做 **Fernet 信封加密**（`envelope_prefix = "fernet:v1:"`，key 来源 `CUTAGENT_SECRET_ENCRYPTION_KEY`，缺省落盘 `.db_encryption_key`），密钥不入 env/Settings。
 - `storage/` 其余基建：对象存储 `object_store.py` / `tiered_object_store.py`（local/S3/tiered/materials bucket，支持 signed GET、presigned PUT、HEAD、copy、CORS）；SQLAlchemy 后端实现 `sqlalchemy_secrets.py` / `sqlalchemy_uploads.py` / `sqlalchemy_idempotency.py`；`selection_ledger.py`（选材账本，确定性近期降权）、`row_mapper.py`（ORM 行 ↔ 契约映射）。

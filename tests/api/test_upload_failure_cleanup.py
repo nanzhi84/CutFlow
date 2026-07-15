@@ -9,10 +9,13 @@ asserts the derived object is gone after the failure.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
+from packages.core.contracts import UploadKind
 from packages.core.storage.database import CaseRow
 from packages.media.assets import local_object_path
 from packages.media.video.ffmpeg import FfmpegCommandError
@@ -43,13 +46,16 @@ def _seed_case(case_id: str) -> None:
 def upload_settings_override():
     """Temporarily override settings.upload on the live app state, then restore."""
     original = app.state.settings
+    original_reconciler_settings = app.state.upload_reconciler.settings
 
     def apply(**upload_overrides):
         new_upload = original.upload.model_copy(update=upload_overrides)
         app.state.settings = original.model_copy(update={"upload": new_upload})
+        app.state.upload_reconciler.settings = new_upload
 
     yield apply
     app.state.settings = original
+    app.state.upload_reconciler.settings = original_reconciler_settings
 
 
 def test_failed_upload_cleans_up_normalized_derived_object(
@@ -62,10 +68,15 @@ def test_failed_upload_cleans_up_normalized_derived_object(
 
     # Stabilize runs AFTER normalize has already written a media-normalized object,
     # so forcing it to fail leaves a server-written derivative on disk mid-flight.
-    def boom(*args, **kwargs):
+    normalized_path: Path | None = None
+
+    def boom(video_path, *_args, **_kwargs):
+        nonlocal normalized_path
+        normalized_path = Path(video_path)
+        assert normalized_path.exists()
         raise FfmpegCommandError("stabilize boom")
 
-    monkeypatch.setattr("apps.api.services.uploads.stabilize_video", boom)
+    monkeypatch.setattr("packages.media.upload_reconciler.stabilize_video", boom)
 
     video = generate_test_video(tmp_path, duration_sec=1, width=320, height=568, fps=15)
     content = video.read_bytes()
@@ -82,16 +93,23 @@ def test_failed_upload_cleans_up_normalized_derived_object(
     assert prepared.status_code == 201, prepared.text
     assert completed.status_code == 400, completed.text
 
-    # object_uri still points at the normalized derivative (the last successful
-    # patch before stabilize failed); _fail_upload must have deleted that object.
+    # Rejection is persisted before cleanup. Both the browser staging key and the
+    # deterministic final key must be absent, and processing intermediates live in
+    # an auto-cleaned temporary directory rather than beside the object-store path.
     session = client.get(
         f"/api/uploads/{prepared.json()['upload_session']['id']}"
     ).json()
-    assert session["status"] == "failed"
-    derived_uri = session["object_uri"]
-    assert "media-normalized" in derived_uri, derived_uri
+    assert session["status"] == "rejected"
+    staging_uri = session["staging_uri"]
+    final_uri = app.state.upload_reconciler._final_uri_for(
+        staging_uri,
+        UploadKind(session["kind"]),
+    )
     store = app.state.object_store
-    assert not local_object_path(store, derived_uri).exists()
+    assert not local_object_path(store, staging_uri).exists()
+    assert not local_object_path(store, final_uri).exists()
+    assert normalized_path is not None
+    assert not normalized_path.exists()
 
 
 def test_fail_upload_best_effort_deletes_staging_and_all_derived_objects(monkeypatch):

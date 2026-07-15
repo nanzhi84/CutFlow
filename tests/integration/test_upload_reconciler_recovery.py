@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from math import ceil
+from pathlib import Path
 from threading import Lock
 
 import pytest
@@ -15,6 +16,7 @@ from packages.core.storage.object_store import LocalObjectStore, parse_object_ur
 from packages.core.storage.repository import new_id
 from packages.core.storage.sqlalchemy_uploads import SqlAlchemyUploadRepository
 from packages.media.upload_reconciler import UploadReconciler
+from packages.media.video.ffmpeg import FfmpegCommandError, NormalizationResult
 from tests.api._upload_helpers import minimal_ttf_bytes
 
 
@@ -76,6 +78,51 @@ def _create_upload(
         size_bytes=len(content),
         expected_sha256=None,
         metadata={"title": "Crash-safe font"},
+    )
+
+
+def _create_video_upload(
+    repository: SqlAlchemyUploadRepository,
+    store: LocalObjectStore,
+    *,
+    stabilize: bool = False,
+) -> c.UploadSession:
+    upload_id = new_id("upl")
+    content = b"deterministic fake video payload"
+    staging = store.prepare_upload(f"{upload_id}.mp4", "incoming/uploads", content_key=upload_id)
+    store.put_bytes(staging, content)
+    upload = repository.create_upload(
+        c.UploadSession(
+            id=upload_id,
+            client_upload_id=f"client_{upload_id}",
+            owner_user_id="usr_admin",
+            kind=c.UploadKind.video,
+            filename=f"{upload_id}.mp4",
+            content_type="video/mp4",
+            size_bytes=len(content),
+            upload_strategy=c.UploadStrategy.single,
+            object_uri=staging.uri,
+            staging_uri=staging.uri,
+            stabilize=stabilize,
+            expires_at=c.utcnow() + timedelta(days=1),
+        )
+    )
+    return repository.mark_completing(
+        upload.id,
+        size_bytes=len(content),
+        expected_sha256=None,
+        metadata={"title": "Deterministic normalized video"},
+    )
+
+
+def _fake_normalization(source: Path, output: Path, media_info: c.MediaInfo) -> NormalizationResult:
+    output.write_bytes(source.read_bytes() + b"-normalized")
+    return NormalizationResult(
+        output_path=output,
+        target_width=1080,
+        target_height=1920,
+        is_hdr=False,
+        media_info=media_info,
     )
 
 
@@ -145,6 +192,83 @@ def test_recovers_when_process_exits_after_complete_multipart(
     recovered = reconciler.process(upload.id)
     assert recovered.status == c.UploadStatus.ready
     _assert_single_registration(db_session_factory, upload.id)
+
+
+def test_normalization_state_and_asset_tag_are_persisted_without_platform_ffmpeg_tags(
+    db_session_factory, tmp_path, monkeypatch
+) -> None:
+    repository = _repository(db_session_factory)
+    store = LocalObjectStore(tmp_path / "objects")
+    upload = _create_video_upload(repository, store)
+    reconciler = UploadReconciler(
+        repository,
+        store,
+        UploadSettings(normalize_video=True),
+    )
+    media_info = c.MediaInfo(
+        media_type="video",
+        codec="h264",
+        format="mp4",
+        mime_type="video/mp4",
+        width=1080,
+        height=1920,
+    )
+    monkeypatch.setattr(reconciler, "_validate_file", lambda _upload, _path: media_info)
+    monkeypatch.setattr(
+        "packages.media.upload_reconciler.normalize_for_upload",
+        lambda source, output: _fake_normalization(Path(source), Path(output), media_info),
+    )
+    monkeypatch.setattr(reconciler, "_derive_ready_artifacts", lambda _upload: None)
+
+    ready = reconciler.process(upload.id)
+    _, _, asset, _ = repository.ready_resources(upload.id)
+
+    assert ready.status == c.UploadStatus.ready
+    assert ready.normalized is True
+    assert ready.completion_metadata["normalized"] == "1"
+    assert asset is not None and "normalized" in asset.tags
+
+
+def test_rejected_stabilization_removes_temporary_normalized_output(
+    db_session_factory, tmp_path, monkeypatch
+) -> None:
+    repository = _repository(db_session_factory)
+    store = LocalObjectStore(tmp_path / "objects")
+    upload = _create_video_upload(repository, store, stabilize=True)
+    reconciler = UploadReconciler(
+        repository,
+        store,
+        UploadSettings(normalize_video=True),
+    )
+    media_info = c.MediaInfo(
+        media_type="video",
+        codec="h264",
+        format="mp4",
+        mime_type="video/mp4",
+    )
+    normalized_paths: list[Path] = []
+
+    def normalize(source, output):
+        result = _fake_normalization(Path(source), Path(output), media_info)
+        normalized_paths.append(result.output_path)
+        return result
+
+    def reject_stabilization(video_path, _output_path):
+        assert Path(video_path).exists()
+        raise FfmpegCommandError("injected stabilization rejection")
+
+    monkeypatch.setattr(reconciler, "_validate_file", lambda _upload, _path: media_info)
+    monkeypatch.setattr("packages.media.upload_reconciler.normalize_for_upload", normalize)
+    monkeypatch.setattr("packages.media.upload_reconciler.stabilize_video", reject_stabilization)
+
+    rejected = reconciler.process(upload.id)
+
+    assert rejected.status == c.UploadStatus.rejected
+    assert normalized_paths and all(not path.exists() for path in normalized_paths)
+    assert upload.staging_uri is not None
+    assert not store.exists(parse_object_uri(upload.staging_uri))
+    final_uri = reconciler._final_uri_for(upload.staging_uri, upload.kind)
+    assert not store.exists(parse_object_uri(final_uri))
 
 
 def test_recovers_when_process_exits_after_verified_copy(

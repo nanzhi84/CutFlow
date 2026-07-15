@@ -367,36 +367,49 @@ class UploadReconciler:
 
         processed_path = source_path
         stabilized = upload.stabilized
+        was_normalized = upload.normalized
         metadata = dict(upload.completion_metadata)
-        if upload.kind == c.UploadKind.video and self.settings.normalize_video:
-            try:
-                normalized = normalize_for_upload(processed_path)
-            except FfmpegCommandError as exc:
-                raise UploadRejectedError("上传视频规范化失败，文件无法安全解析。") from exc
-            processed_path = normalized.output_path
-            media_info = normalized.media_info
-            metadata["normalized"] = "1"
-        if upload.kind == c.UploadKind.video and upload.stabilize:
-            try:
-                processed_path = stabilize_video(processed_path)
-                media_info = probe_media(processed_path)
-            except FfmpegCommandError as exc:
-                raise UploadRejectedError("上传视频增稳失败，文件无法安全解析。") from exc
-            stabilized = True
+        # Never write normalization/stabilization intermediates beside an object
+        # store cache path. A rejected upload or process crash must not leak local
+        # derivatives that are invisible to terminal object cleanup.
+        with TemporaryDirectory(prefix=f"cutagent-upload-process-{upload.id}-") as directory:
+            work_dir = Path(directory)
+            if upload.kind == c.UploadKind.video and self.settings.normalize_video:
+                try:
+                    normalization = normalize_for_upload(
+                        processed_path,
+                        work_dir / "normalized.mp4",
+                    )
+                except FfmpegCommandError as exc:
+                    raise UploadRejectedError("上传视频规范化失败，文件无法安全解析。") from exc
+                processed_path = normalization.output_path
+                media_info = normalization.media_info
+                metadata["normalized"] = "1"
+                was_normalized = True
+            if upload.kind == c.UploadKind.video and upload.stabilize:
+                try:
+                    processed_path = stabilize_video(
+                        processed_path,
+                        work_dir / "stabilized.mp4",
+                    )
+                    media_info = probe_media(processed_path)
+                except FfmpegCommandError as exc:
+                    raise UploadRejectedError("上传视频增稳失败，文件无法安全解析。") from exc
+                stabilized = True
 
-        final_uri = self._final_uri_for(staging_uri, upload.kind)
-        if processed_path == source_path:
-            self.object_store.copy(staging_uri, final_uri)
-            final_sha256 = canonical_sha256
-        else:
-            final_ref = parse_object_uri(final_uri)
-            stored = self.object_store.upload_file(
-                processed_path,
-                final_ref,
-                content_type=upload.content_type,
-            )
-            final_sha256 = stored.sha256
-        final_head = self.object_store.head(final_uri)
+            final_uri = self._final_uri_for(staging_uri, upload.kind)
+            if processed_path == source_path:
+                self.object_store.copy(staging_uri, final_uri)
+                final_sha256 = canonical_sha256
+            else:
+                final_ref = parse_object_uri(final_uri)
+                stored = self.object_store.upload_file(
+                    processed_path,
+                    final_ref,
+                    content_type=upload.content_type,
+                )
+                final_sha256 = stored.sha256
+            final_head = self.object_store.head(final_uri)
 
         # Persist verified before deleting staging. If the process exits after the
         # commit, the next pass registers resources and cleanup is safely repeatable.
@@ -411,6 +424,7 @@ class UploadReconciler:
                 "object_uri": final_uri,
                 "verified_media_info": media_info,
                 "stabilized": stabilized,
+                "normalized": was_normalized,
                 "completion_metadata": metadata,
                 "last_error": None,
                 "retry_count": 0,

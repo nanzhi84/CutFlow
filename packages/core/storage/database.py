@@ -202,6 +202,9 @@ class UploadSessionRow(TimestampMixin, Base):
     local_temp_path: Mapped[str | None] = mapped_column(Text)
     stabilize: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     stabilized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    normalized: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     completion_metadata: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )

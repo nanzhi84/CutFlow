@@ -77,6 +77,7 @@ def upload_row_to_contract(row: UploadSessionRow) -> UploadSession:
         final_uri=row.final_uri,
         stabilize=row.stabilize,
         stabilized=row.stabilized,
+        normalized=row.normalized,
         completion_metadata=dict(row.completion_metadata or {}),
         verified_media_info=media_info,
         last_error=row.last_error,
@@ -217,6 +218,7 @@ class SqlAlchemyUploadRepository(BaseRepository):
                 local_temp_path=upload.local_temp_path,
                 stabilize=upload.stabilize,
                 stabilized=upload.stabilized,
+                normalized=upload.normalized,
                 completion_metadata=upload.completion_metadata,
                 verified_media_info=(
                     upload.verified_media_info.model_dump(mode="json")
@@ -734,7 +736,7 @@ class SqlAlchemyUploadRepository(BaseRepository):
         if upload.stabilized:
             tags.append("stabilized")
         metadata = dict(upload.completion_metadata or {})
-        if metadata.get("normalized") == "1":
+        if upload.normalized or metadata.get("normalized") == "1":
             tags.append("normalized")
         if metadata.get("ai_material") == "1":
             tags.append("ai_material")

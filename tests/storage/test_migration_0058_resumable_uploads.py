@@ -60,7 +60,7 @@ def test_migration_revision_is_single_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     migration = script.get_revision(REVISION)
 
-    assert script.get_heads() == [REVISION]
+    assert script.get_heads() == ["0059_upload_normalized_state"]
     assert migration is not None
     assert migration.down_revision == "0057_drop_provider_retry_policy"
     assert len(REVISION) <= 32
