@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
 from tests.api._upload_helpers import direct_upload, minimal_ttf_bytes
+from tests.golden._caption_font_fixture import register_default_caption_fonts
 
 
 @contextmanager
@@ -15,6 +16,7 @@ def fresh_client():
     TRUNCATEs the database, so a long golden run never deadlocks against it.
     """
     app = create_app()
+    register_default_caption_fonts(app)
     # Do NOT enter the TestClient lifespan: app.state is fully configured at build
     # time. Entering would re-run bootstrap_sqlalchemy_storage (a full seed_database
     # merge over users/registration_codes/provider_profiles/media_assets) on every

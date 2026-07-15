@@ -56,11 +56,9 @@ from packages.core.workflow import (
     manifest_hash,
 )
 from packages.production.pipeline.node_sequence import (
-    EDITING_AGENT_SEQUENCE,
     EDITING_AGENT_V2_SEQUENCE,
     NODE_SEQUENCE,
     SEEDANCE_T2V_SEQUENCE,
-    canonical_node_id,
     _linear_edges,
     topological_node_order,
     validate_graph_structure,
@@ -100,7 +98,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = [
     "NODE_SEQUENCE",
     "SEEDANCE_T2V_SEQUENCE",
-    "EDITING_AGENT_SEQUENCE",
     "EDITING_AGENT_V2_SEQUENCE",
     "digital_human_template",
     "editing_agent_v2_template",
@@ -126,16 +123,13 @@ NODE_HANDLERS = {
     "WindowQueryPlanning": nodes.window_query_planning.run,
     "WindowMaterialRetrieval": nodes.window_material_retrieval.run,
     "DeterministicEditingPlanning": nodes.deterministic_editing_planning.run,
-    "EditingAgentPlanning": nodes.editing_agent_planning.run,
     "MediaSelectionAgentPlanning": nodes.media_selection_agent_planning.run,
     "TimelineAssemblyValidation": nodes.timeline_assembly_validation.run,
-    # In-flight / historical v1 Temporal payloads still carry the old node id.
-    "TimelinePlanning": nodes.timeline_assembly_validation.run,
     "PortraitTrackBuild": nodes.portrait_track_build.run,
     "LipSync": nodes.lipsync.run,
     "RenderFinalTimeline": nodes.render_final_timeline.run,
-    "CaptionWindowPlanning": nodes.caption_window_planning.run,
-    "PostProcessAgentPlanning": nodes.postprocess_agent_planning.run,
+    "CaptionCompositionPlanning": nodes.caption_composition_planning.run,
+    "BgmAgentPlanning": nodes.bgm_agent_planning.run,
     "SubtitleAndBgmMix": nodes.subtitle_and_bgm_mix.run,
     "ExportFinishedVideo": nodes.export_finished_video.run,
     "SeedanceGenerateVideo": nodes.seedance_generate_video.run,
@@ -160,9 +154,8 @@ _PROVIDER_SIDE_EFFECT_NODES = {
     "LipSync",
     "ExportFinishedVideo",
     "SeedanceGenerateVideo",
-    "EditingAgentPlanning",
     "MediaSelectionAgentPlanning",
-    "PostProcessAgentPlanning",
+    "BgmAgentPlanning",
     "WindowQueryPlanning",
     "WindowMaterialRetrieval",
 }
@@ -190,8 +183,6 @@ _TIMELINE_REUSE_BREAK_NODES = {
     "WindowMaterialRetrieval",
     "DeterministicEditingPlanning",
     "TimelineAssemblyValidation",
-    "TimelinePlanning",
-    "EditingAgentPlanning",
     "MediaSelectionAgentPlanning",
 }
 _MATERIAL_PACK_RETRY_POLICY = RetryPolicy(
@@ -228,13 +219,6 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
         ArtifactKind.plan_broll,
         ArtifactKind.plan_style,
     ],
-    "EditingAgentPlanning": [
-        ArtifactKind.plan_media_assignment,
-        ArtifactKind.plan_portrait,
-        ArtifactKind.plan_broll,
-        ArtifactKind.plan_style,
-        ArtifactKind.plan_editing_diagnostics,
-    ],
     "MediaSelectionAgentPlanning": [
         ArtifactKind.plan_media_assignment,
         ArtifactKind.plan_portrait,
@@ -242,19 +226,17 @@ _NODE_OUTPUT_KINDS: dict[str, list[ArtifactKind]] = {
         ArtifactKind.plan_media_selection_diagnostics,
     ],
     "TimelineAssemblyValidation": [ArtifactKind.plan_timeline, ArtifactKind.plan_render],
-    "TimelinePlanning": [ArtifactKind.plan_timeline, ArtifactKind.plan_render],
     "PortraitTrackBuild": [ArtifactKind.video_portrait_track],
     "LipSync": [ArtifactKind.video_lipsync, ArtifactKind.lipsync_report],
     "RenderFinalTimeline": [ArtifactKind.video_rendered],
-    "CaptionWindowPlanning": [ArtifactKind.plan_caption_windows],
-    "PostProcessAgentPlanning": [
+    "CaptionCompositionPlanning": [ArtifactKind.plan_caption_composition],
+    "BgmAgentPlanning": [
         ArtifactKind.plan_style,
-        ArtifactKind.plan_postprocess_diagnostics,
+        ArtifactKind.plan_bgm_diagnostics,
     ],
     "SubtitleAndBgmMix": [
         ArtifactKind.video_final,
         ArtifactKind.subtitle_ass,
-        ArtifactKind.plan_caption_display,
     ],
     "ExportFinishedVideo": [
         ArtifactKind.video_finished,
@@ -280,11 +262,9 @@ _NODE_VERSIONS = {
     # v3 invalidates streamed/synchronous narration so a resume re-enters at TTS after
     # production switched to durable async ICL 2.0 single-file MP3 + native timing.
     "TTS": "v3",
-    # v3 repairs sparse historical token streams by script position and enforces
-    # globally unique claims/monotonic char spans at the artifact boundary.
-    "CaptionWindowPlanning": "v4",
-    "PostProcessAgentPlanning": "v2",
-    "SubtitleAndBgmMix": "v2",
+    "CaptionCompositionPlanning": "v1",
+    "BgmAgentPlanning": "v1",
+    "SubtitleAndBgmMix": "v3",
 }
 
 
@@ -375,10 +355,6 @@ def seedance_t2v_template() -> WorkflowTemplate:
     return _build_template("seedance_t2v_v1", "v1", SEEDANCE_T2V_SEQUENCE)
 
 
-def editing_agent_template() -> WorkflowTemplate:
-    return _build_template("digital_human_editing_agent_v1", "v1", EDITING_AGENT_SEQUENCE)
-
-
 def editing_agent_v2_template() -> WorkflowTemplate:
     return _build_template("digital_human_editing_agent_v2", "v1", EDITING_AGENT_V2_SEQUENCE)
 
@@ -386,7 +362,6 @@ def editing_agent_v2_template() -> WorkflowTemplate:
 _TEMPLATE_BUILDERS = {
     "digital_human_v2": digital_human_template,
     "seedance_t2v_v1": seedance_t2v_template,
-    "digital_human_editing_agent_v1": editing_agent_template,
     "digital_human_editing_agent_v2": editing_agent_v2_template,
 }
 
@@ -725,9 +700,8 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         Existence over "latest row": a re-invoked activity appends new NodeRuns and the
         hydrated list has no reliable order, so match the done-set semantics of
         _next_unfinished_node_id (canonical id + terminal status set)."""
-        target = canonical_node_id(node_id)
         return any(
-            canonical_node_id(node_run.node_id) == target
+            node_run.node_id == node_id
             and node_run.status in {NodeStatus.succeeded, NodeStatus.skipped, NodeStatus.degraded}
             for node_run in self.repository.node_runs.get(run_id, [])
         )
@@ -735,7 +709,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
     def _next_unfinished_node_id(self, run: WorkflowRun, node_runs: list[NodeRun]) -> str | None:
         """First template node not yet completed — the node that was due to run."""
         done = {
-            canonical_node_id(node_run.node_id)
+            node_run.node_id
             for node_run in node_runs
             if node_run.status in {NodeStatus.succeeded, NodeStatus.skipped, NodeStatus.degraded}
         }
@@ -743,7 +717,7 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             (
                 node_id
                 for node_id in self._sequence_for_run(run)
-                if canonical_node_id(node_id) not in done
+                if node_id not in done
             ),
             None,
         )
@@ -1289,13 +1263,11 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                 template_for(run.workflow_template_id),
                 self.repository.artifacts,
             )
-        previous_by_node = {canonical_node_id(node.node_id): node for node in previous}
-        decisions_by_node = {
-            canonical_node_id(decision.node_id): decision for decision in reuse_plan.decisions
-        }
+        previous_by_node = {node.node_id: node for node in previous}
+        decisions_by_node = {decision.node_id: decision for decision in reuse_plan.decisions}
         for node_id in reuse_plan.reused_node_ids:
-            previous_node_run = previous_by_node[canonical_node_id(node_id)]
-            decision = decisions_by_node.get(canonical_node_id(node_id))
+            previous_node_run = previous_by_node[node_id]
+            decision = decisions_by_node.get(node_id)
             reusable_artifact_ids = (
                 list(decision.artifact_ids)
                 if decision is not None

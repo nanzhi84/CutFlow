@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from packages.core.contracts.artifacts import CaptionCompositionPlanArtifact
 from packages.core.storage.object_store import ObjectStore
 from packages.media.video.ffmpeg import probe_media
 from . import jianying_draft_json as jy_json
@@ -60,13 +61,15 @@ class JianyingTextSegment:
     text: str
     start_us: int
     duration_us: int
+    transform_x: float = 0.0
     transform_y: float = -0.8
-    placement_id: str | None = None
-    animation_id: str | None = None
-    sfx_id: str | None = None
-    visual_preset_id: str | None = None
+    role: str = "normal"
+    hint_id: str | None = None
+    line_index: int = 0
     effect_id: str | None = None
-    rect: dict[str, float] | None = None
+    advance_px: float = 0.0
+    baseline_offset_px: float = 0.0
+    font_size_px: float = 0.0
 
 
 def build_video_segments_from_plans(
@@ -168,9 +171,62 @@ def build_audio_segments_from_sources(
 
 def build_text_segments_from_narration(
     narration_units: list[dict[str, Any]],
-    style_plan: dict[str, Any] | None = None,
+    caption_composition: CaptionCompositionPlanArtifact | None = None,
 ) -> list[JianyingTextSegment]:
+    """Export fixed-band caption Runs; use narration only for captionless history."""
+
     segments: list[JianyingTextSegment] = []
+    if caption_composition is not None:
+        fps = caption_composition.fps
+        width = caption_composition.width
+        height = caption_composition.height
+        band = caption_composition.band
+        anchor_x = band.anchor_x * width
+        line_height = max(
+            caption_composition.normal_font_size,
+            caption_composition.emphasis_font_size,
+        ) * band.line_height_ratio
+        for cue in caption_composition.cues:
+            cue_lines = cue.lines
+            for line_index, line in enumerate(cue_lines):
+                line_advance = line.advance_px
+                cursor_x = anchor_x - line_advance / 2.0
+                baseline = (
+                    band.baseline_y * height
+                    - (len(cue_lines) - line_index - 1) * line_height
+                )
+                for run in line.runs:
+                    font_size = (
+                        caption_composition.emphasis_font_size
+                        if run.role == "emphasis"
+                        else caption_composition.normal_font_size
+                    )
+                    transform_x = max(
+                        -1.0,
+                        min(1.0, 2.0 * (cursor_x + run.advance_px / 2.0) / width - 1.0),
+                    )
+                    center_y = baseline - run.baseline_offset_px + font_size / 2.0
+                    transform_y = max(-1.0, min(1.0, 1.0 - 2.0 * center_y / height))
+                    segments.append(
+                        JianyingTextSegment(
+                            track_name="字幕-强调" if run.role == "emphasis" else "字幕-普通",
+                            text=run.text,
+                            start_us=_sec_to_us(run.enter_frame / fps),
+                            duration_us=_sec_to_us((run.exit_frame - run.enter_frame) / fps),
+                            transform_x=transform_x,
+                            transform_y=transform_y,
+                            role=run.role,
+                            hint_id=run.hint_id,
+                            line_index=line_index,
+                            effect_id=run.effect_id,
+                            advance_px=run.advance_px,
+                            baseline_offset_px=run.baseline_offset_px,
+                            font_size_px=font_size,
+                        )
+                    )
+                    cursor_x += run.advance_px
+    if segments:
+        return segments
     for unit in narration_units:
         if not isinstance(unit, dict):
             continue
@@ -183,32 +239,6 @@ def build_text_segments_from_narration(
             segments.append(
                 JianyingTextSegment(
                     track_name="字幕", text=text, start_us=start_us, duration_us=end_us - start_us
-                )
-            )
-    style = style_plan or {}
-    overlay_events = style.get("overlay_events") if isinstance(style.get("overlay_events"), list) else []
-    for event in overlay_events:
-        if not isinstance(event, dict):
-            continue
-        text = str(event.get("text") or "").strip()
-        if not text:
-            continue
-        start_us = _sec_to_us(event.get("start") or 0)
-        end_us = _sec_to_us(event.get("end") or 0)
-        if end_us > start_us:
-            segments.append(
-                JianyingTextSegment(
-                    track_name="花字",
-                    text=text,
-                    start_us=start_us,
-                    duration_us=end_us - start_us,
-                    transform_y=-0.48,
-                    placement_id=_str_or_none(event.get("placement_id")),
-                    animation_id=_str_or_none(event.get("animation_id")),
-                    sfx_id=_str_or_none(event.get("sfx_id")) or "none",
-                    visual_preset_id=_str_or_none(event.get("visual_preset_id")),
-                    effect_id=_str_or_none(event.get("animation_id")),
-                    rect=(dict(event.get("rect")) if isinstance(event.get("rect"), dict) else None),
                 )
             )
     return segments
@@ -357,9 +387,10 @@ class JianyingDraftBuilder:
                 )
 
             subtitle_segments: list[dict[str, Any]] = []
-            huazi_segments: list[dict[str, Any]] = []
+            emphasis_segments: list[dict[str, Any]] = []
             if source.text_segments:
                 text_tracks: dict[str, list[dict[str, Any]]] = {}
+                text_track_ends: dict[str, int] = {}
                 for text_segment in source.text_segments:
                     material_id = uuid.uuid4().hex
                     materials["texts"].append(_text_material(material_id, text_segment.text))
@@ -367,12 +398,21 @@ class JianyingDraftBuilder:
                         material_id,
                         text_segment.start_us,
                         max(1, text_segment.duration_us),
+                        transform_x=text_segment.transform_x,
                         transform_y=text_segment.transform_y,
                         effects=_text_segment_effects(text_segment),
                     )
-                    text_tracks.setdefault(text_segment.track_name, []).append(segment)
-                    if _is_huazi_track(text_segment.track_name):
-                        huazi_segments.append(segment)
+                    track_name = _available_text_track_name(
+                        text_segment.track_name,
+                        text_segment.start_us,
+                        text_track_ends,
+                    )
+                    text_tracks.setdefault(track_name, []).append(segment)
+                    text_track_ends[track_name] = (
+                        text_segment.start_us + max(1, text_segment.duration_us)
+                    )
+                    if _is_emphasis_track(text_segment.track_name):
+                        emphasis_segments.append(segment)
                     else:
                         subtitle_segments.append(segment)
                 for index, (track_name, segments) in enumerate(text_tracks.items()):
@@ -432,7 +472,7 @@ class JianyingDraftBuilder:
                 "broll_segments": len(broll_segments),
                 "overlay_tracks": 0,
                 "cover_tracks": 0,
-                "huazi_segments": len(huazi_segments),
+                "emphasis_segments": len(emphasis_segments),
             }
             bgm_audio = _bgm_audio_count(source.audio_segments)
             if bgm_audio:
@@ -452,7 +492,9 @@ class JianyingDraftBuilder:
                     "audio": _material_names(materials["audios"], "name"),
                     "subtitle": Path(source.subtitle_path).name if source.subtitle_path else None,
                 },
-                "effects": _draft_effects_manifest(source, huazi_segments=len(huazi_segments)),
+                "effects": _draft_effects_manifest(
+                    source, emphasis_segments=len(emphasis_segments)
+                ),
                 "warnings": [],
             }
             return JianyingDraftBuild(
@@ -794,6 +836,7 @@ def _text_segment(
     start: int,
     duration: int,
     *,
+    transform_x: float = 0.0,
     transform_y: float = -0.8,
     effects: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -805,7 +848,7 @@ def _text_segment(
             "volume": 1.0,
             "extra_material_refs": [uuid.uuid4().hex],
             "is_tone_modify": False,
-            "clip": _clip(transform_y=transform_y),
+            "clip": _clip(transform_x=transform_x, transform_y=transform_y),
             "uniform_scale": {"on": True, "value": 1.0},
         }
     )
@@ -815,23 +858,32 @@ def _text_segment(
 
 
 def _text_segment_effects(segment: JianyingTextSegment) -> dict[str, Any] | None:
-    if not _is_huazi_track(segment.track_name):
-        return None
-    effects: dict[str, Any] = {}
-    for key in (
-        "placement_id",
-        "animation_id",
-        "visual_preset_id",
-        "effect_id",
-        "sfx_id",
-    ):
-        value = getattr(segment, key)
-        if value:
-            effects[key] = value
-    if segment.rect:
-        effects["rect"] = dict(segment.rect)
-    effects["manual_acceptance_required"] = True
-    return effects
+    payload = {
+        "role": segment.role,
+        "hint_id": segment.hint_id,
+        "line_index": segment.line_index,
+        "effect_id": segment.effect_id,
+    }
+    if segment.advance_px > 0:
+        payload["advance_px"] = segment.advance_px
+    if segment.baseline_offset_px > 0:
+        payload["baseline_offset_px"] = segment.baseline_offset_px
+    if segment.font_size_px > 0:
+        payload["font_size_px"] = segment.font_size_px
+    return payload
+
+
+def _available_text_track_name(
+    base_name: str,
+    start_us: int,
+    track_ends: dict[str, int],
+) -> str:
+    lane = 1
+    while True:
+        candidate = base_name if lane == 1 else f"{base_name}-{lane}"
+        if track_ends.get(candidate, -1) <= start_us:
+            return candidate
+        lane += 1
 
 
 def _voice_audio_count(source: JianyingDraftInput, audio_path: str | None) -> int:
@@ -845,7 +897,7 @@ def _bgm_audio_count(audio_segments: list[JianyingAudioSegment]) -> int:
 
 
 def _draft_effects_manifest(
-    source: JianyingDraftInput, *, huazi_segments: int
+    source: JianyingDraftInput, *, emphasis_segments: int
 ) -> dict[str, Any]:
     video_effects = []
     for segment in source.video_segments:
@@ -859,22 +911,22 @@ def _draft_effects_manifest(
                     **effects,
                 }
             )
-    huazi_effects = [
+    caption_run_effects = [
         {
             "track_name": segment.track_name,
             "text": segment.text,
             **effects,
         }
         for segment in source.text_segments
-        if _is_huazi_track(segment.track_name)
+        if _is_emphasis_track(segment.track_name)
         for effects in [_text_segment_effects(segment)]
         if effects
     ]
     return {
         "video_segments": video_effects,
-        "huazi_segments": huazi_segments,
-        "huazi_segment_effects": huazi_effects,
-        "manual_acceptance_required": bool(video_effects or huazi_segments),
+        "emphasis_segments": emphasis_segments,
+        "caption_run_effects": caption_run_effects,
+        "manual_acceptance_required": bool(video_effects),
         "effect_id_policy": "cutflow_effects metadata is authoritative when Jianying native effect_id drifts.",
     }
 
@@ -894,9 +946,9 @@ def _is_bgm_track(track_name: str) -> bool:
     return "bgm" in normalized or "background" in normalized or "配乐" in track_name
 
 
-def _is_huazi_track(track_name: str) -> bool:
+def _is_emphasis_track(track_name: str) -> bool:
     normalized = track_name.lower()
-    return "huazi" in normalized or "花字" in track_name
+    return "emphasis" in normalized or "强调" in track_name
 
 
 def _material_names(materials: list[dict[str, Any]], key: str) -> list[str]:
@@ -979,11 +1031,11 @@ def _text_material(material_id: str, text: str) -> dict[str, Any]:
     return {"id": material_id, "content": json.dumps(content, ensure_ascii=False), "typesetting": 0, "alignment": 1, "letter_spacing": 0.0, "line_spacing": 0.02, "line_feed": 1, "line_max_width": 0.86, "force_apply_line_max_width": False, "check_flag": 15, "type": "subtitle", "global_alpha": 1.0}
 
 
-def _clip(transform_y: float = 0.0) -> dict[str, Any]:
+def _clip(transform_x: float = 0.0, transform_y: float = 0.0) -> dict[str, Any]:
     return {
         "alpha": 1.0,
         "flip": {"horizontal": False, "vertical": False},
         "rotation": 0.0,
         "scale": {"x": 1.0, "y": 1.0},
-        "transform": {"x": 0.0, "y": transform_y},
+        "transform": {"x": transform_x, "y": transform_y},
     }

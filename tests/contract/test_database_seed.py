@@ -106,41 +106,39 @@ class _FakeSeedSession:
         self.committed = True
 
 
-def test_seed_database_syncs_legacy_editing_agent_prompt_contract():
+def test_seed_database_syncs_bgm_agent_boundary_contract():
     current = next(
         row
         for row in seed_rows()
-        if isinstance(row, PromptVersionRow) and row.id == "prompt_editing_agent_v1"
+        if isinstance(row, PromptVersionRow) and row.id == "prompt_bgm_agent_v1"
     )
-    legacy = PromptVersionRow(
-        id="prompt_editing_agent_v1",
-        prompt_template_id="prompt_editing_agent",
-        content="{script}\n{asr_segments}\n{portrait_draft_plan}\n\"broll_overrides\"",
+    stale = PromptVersionRow(
+        id="prompt_bgm_agent_v1",
+        prompt_template_id="prompt_bgm_agent",
+        content="{script}\n{bgm_candidates}\n可以顺便输出字幕建议",
         status="published",
     )
-    session = _FakeSeedSession([legacy])
+    session = _FakeSeedSession([stale])
 
     inserted = seed_database(session, rows=[current])
 
     assert inserted == 0
     assert session.committed is True
-    assert legacy.content == current.content
-    assert "{asr_segments}" not in legacy.content
-    assert "{narration_units}" in legacy.content
+    assert stale.content == current.content
+    assert "只能输出 bgm_id 和 analysis" in stale.content
+    assert "字幕、强调、字体、颜色、坐标、时间线和音效不属于你的职责" in stale.content
 
 
-def test_seed_database_syncs_editing_agent_prompt_missing_slot_constraints():
+def test_seed_database_syncs_creative_intent_caption_run_contract():
     current = next(
         row
         for row in seed_rows()
-        if isinstance(row, PromptVersionRow) and row.id == "prompt_editing_agent_v1"
+        if isinstance(row, PromptVersionRow) and row.id == "prompt_creative_intent_v1"
     )
     stale = PromptVersionRow(
-        id="prompt_editing_agent_v1",
-        prompt_template_id="prompt_editing_agent",
-        content=current.content.replace("legal_window_ids", "candidate_ids")
-        .replace("available_seconds | description", "duration | description")
-        .replace("同一个 asset_id 最多只能", "允许重复使用同一素材，同一个 asset_id 可以"),
+        id="prompt_creative_intent_v1",
+        prompt_template_id="prompt_creative_intent",
+        content=current.content.replace("display_mode", "legacy_mode"),
         status="published",
     )
     session = _FakeSeedSession([stale])
@@ -149,6 +147,5 @@ def test_seed_database_syncs_editing_agent_prompt_missing_slot_constraints():
 
     assert inserted == 0
     assert stale.content == current.content
-    assert "legal_window_ids" in stale.content
-    assert "candidate_id | asset_id | available_seconds | description | reason" in stale.content
-    assert "允许重复使用同一素材" not in stale.content
+    assert "display_mode" in stale.content
+    assert "emphasis：对象数组，可为空 []" in stale.content

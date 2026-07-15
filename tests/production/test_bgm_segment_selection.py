@@ -365,7 +365,6 @@ def test_style_planning_carries_selected_bgm_segment_into_style_plan():
             ],
             "font_candidates": [],
         },
-        overlay_events=[],
         target_bgm_mood="",
     )
 
@@ -390,7 +389,6 @@ def test_style_planning_consumes_subtitle_preset_defaults():
     payload, _warnings, _degradations = materialize_style_from_selection(
         request=_request(subtitle={"enabled": True, "style_preset": "movie"}),
         material={"bgm_candidates": [], "font_candidates": []},
-        overlay_events=[],
         target_bgm_mood="",
     )
 
@@ -409,7 +407,6 @@ def test_style_planning_preserves_explicit_subtitle_overrides():
             }
         ),
         material={"bgm_candidates": [], "font_candidates": []},
-        overlay_events=[],
         target_bgm_mood="",
     )
 
@@ -434,7 +431,6 @@ def test_style_planning_requires_segmented_bgm_candidate():
             ],
             "font_candidates": [],
         },
-        overlay_events=[],
         target_bgm_mood="",
     )
 
@@ -482,7 +478,6 @@ def test_style_planning_chooses_bgm_clip_by_script_fit_over_raw_rank():
             ],
             "font_candidates": [],
         },
-        overlay_events=[],
         target_bgm_mood="",
     )
 
@@ -528,7 +523,6 @@ def test_style_planning_demotes_short_non_loopable_bgm_for_single_clip_video():
             ],
             "font_candidates": [],
         },
-        overlay_events=[],
         target_bgm_mood="",
     )
 
@@ -572,7 +566,6 @@ def test_style_planning_exact_bgm_mood_match_flips_duration_penalty():
             ],
             "font_candidates": [],
         },
-        overlay_events=[],
         target_bgm_mood=normalize_bgm_mood("高能"),
     )
 
@@ -616,7 +609,6 @@ def test_style_planning_does_not_match_bgm_mood_by_script_substring():
             ],
             "font_candidates": [],
         },
-        overlay_events=[],
         target_bgm_mood="",
     )
 
@@ -658,7 +650,6 @@ def test_style_planning_respects_requested_bgm_asset_even_when_not_top_scored():
             ],
             "font_candidates": [],
         },
-        overlay_events=[],
         target_bgm_mood="",
     )
 
@@ -690,7 +681,6 @@ def test_style_planning_does_not_select_bgm_when_disabled():
             ],
             "font_candidates": [],
         },
-        overlay_events=[],
         target_bgm_mood="",
     )
 

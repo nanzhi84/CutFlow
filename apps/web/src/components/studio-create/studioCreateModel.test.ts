@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  CAPTION_POLICY,
   STORAGE_KEY,
   contentModeLabel,
-  effectiveHuaziEnabled,
+  effectiveEmphasisEnabled,
   loadStoredForm,
   mapDefaultsToForm,
   mapFormToDefaults,
@@ -44,6 +45,30 @@ describe("studioCreateModel", () => {
     expect(form.lipsyncTimeoutMinutes).toBe(90);
   });
 
+  it("migrates but never retains removed huazi or unknown localStorage keys", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        huaziEnabled: true,
+        huaziFontId: "font_legacy",
+        huaziSize: 72,
+        huaziColor: "#FF5C5C",
+        unknownLegacyOption: "remove-me",
+      }),
+    );
+
+    const form = loadStoredForm();
+    expect(form.emphasisEnabled).toBe(true);
+    expect(form.emphasisFontId).toBe("font_legacy");
+    expect(form.emphasisSize).toBe(72);
+    expect(form.emphasisColor).toBe("#FF5C5C");
+    expect(form).not.toHaveProperty("huaziEnabled");
+    expect(form).not.toHaveProperty("huaziFontId");
+    expect(form).not.toHaveProperty("huaziSize");
+    expect(form).not.toHaveProperty("huaziColor");
+    expect(form).not.toHaveProperty("unknownLegacyOption");
+  });
+
   it("migrates removed legacy content modes to deterministic mode", () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ contentMode: "digital_human" }));
     expect(loadStoredForm().contentMode).toBe("deterministic");
@@ -69,13 +94,13 @@ describe("studioCreateModel", () => {
       maxInserts: 6,
       subtitleEnabled: true,
       normalSubtitleEnabled: true,
-      huaziEnabled: false,
+      emphasisEnabled: false,
       subtitleFontId: "font_yst",
-      huaziFontId: "font_hz",
+      emphasisFontId: "font_hz",
       subtitleStyle: "movie",
       subtitleSize: 42,
-      huaziSize: 58,
-      huaziColor: "#FF5C5C",
+      emphasisSize: 58,
+      emphasisColor: "#FF5C5C",
       subtitlePositionY: 0.82,
       bgmEnabled: true,
       bgmVolume: 0.4,
@@ -96,7 +121,10 @@ describe("studioCreateModel", () => {
     expect(defaults.subtitle?.emphasis_font_id).toBe("font_hz");
     expect(defaults.subtitle?.emphasis_font_size).toBe(58);
     expect(defaults.subtitle?.emphasis_primary_color).toBe("#FF5C5C");
-    expect(defaults.subtitle?.position).toEqual({ x: 0.5, y: 0.82 });
+    expect(defaults.subtitle?.position).toEqual({
+      x: CAPTION_POLICY.anchor_x,
+      y: 0.82,
+    });
     expect(defaults.bgm?.auto_mix).toBe(false);
     expect(defaults.cover?.mode).toBe("ai");
     expect(defaults.lipsync?.timeout_minutes).toBe(45);
@@ -139,13 +167,13 @@ describe("studioCreateModel", () => {
     expect(form.voiceId).toBe("voice_2");
     expect(form.speed).toBe(2);
     expect(form.subtitleStyle).toBe("news");
-    expect(form.subtitleEnabled).toBe(true);
+    expect(form.subtitleEnabled).toBe(false);
     expect(form.normalSubtitleEnabled).toBe(false);
-    expect(form.huaziEnabled).toBe(true);
+    expect(form.emphasisEnabled).toBe(false);
     expect(form.subtitleSize).toBe(12);
-    expect(form.huaziSize).toBe(120);
-    expect(form.huaziFontId).toBe("font_hz");
-    expect(form.huaziColor).toBe("#38D9A9");
+    expect(form.emphasisSize).toBe(120);
+    expect(form.emphasisFontId).toBe("font_hz");
+    expect(form.emphasisColor).toBe("#38D9A9");
     expect(form.subtitlePositionY).toBe(0.91);
     expect(form.lipsyncTimeoutMinutes).toBe(5);
     expect(validateAll({ ...form, script: "文案", contentMode: "seedance" }, "")).toBeNull();
@@ -176,46 +204,45 @@ describe("studioCreateModel", () => {
     expect(validateAll({ ...form, script: "文案", voiceId: "voice_1", maxInserts: 0 }, "voice_1")).toBeNull();
   });
 
-  it("forces emphasis off under the deterministic template even with huazi toggled on", () => {
+  it("supports emphasis Runs on the deterministic template", () => {
     const base = loadStoredForm();
     expect(base.contentMode).toBe("deterministic");
-    expect(base.huaziEnabled).toBe(true);
+    expect(base.emphasisEnabled).toBe(true);
 
     const defaults = mapFormToDefaults(base);
-    expect(defaults.subtitle?.emphasis_enabled).toBe(false);
+    expect(defaults.subtitle?.emphasis_enabled).toBe(true);
     // 普通字幕默认开启 → 字幕层整体仍启用
     expect(defaults.subtitle?.enabled).toBe(true);
 
-    // 仅保留（隐藏的）花字、关闭普通字幕时，确定性模板下字幕层整体关闭
-    const huaziOnly = mapFormToDefaults({ ...base, normalSubtitleEnabled: false });
-    expect(huaziOnly.subtitle?.enabled).toBe(false);
-    expect(huaziOnly.subtitle?.emphasis_enabled).toBe(false);
+    // 关闭普通字幕时，字幕内强调也必须随总闸关闭。
+    const emphasisOnly = mapFormToDefaults({ ...base, normalSubtitleEnabled: false });
+    expect(emphasisOnly.subtitle?.enabled).toBe(false);
+    expect(emphasisOnly.subtitle?.emphasis_enabled).toBe(false);
 
-    expect(effectiveHuaziEnabled(base)).toBe(false);
-    expect(supportsEmphasisCaption("deterministic")).toBe(false);
+    expect(effectiveEmphasisEnabled(base)).toBe(true);
+    expect(supportsEmphasisCaption("deterministic")).toBe(true);
     expect(supportsEmphasisCaption("seedance")).toBe(false);
   });
 
   it("keeps emphasis on under the editing-agent template", () => {
-    const form = { ...loadStoredForm(), contentMode: "editing_agent" as const, huaziEnabled: true };
+    const form = { ...loadStoredForm(), contentMode: "editing_agent" as const, emphasisEnabled: true };
     const defaults = mapFormToDefaults(form);
 
     expect(defaults.subtitle?.emphasis_enabled).toBe(true);
-    expect(effectiveHuaziEnabled(form)).toBe(true);
+    expect(effectiveEmphasisEnabled(form)).toBe(true);
     expect(supportsEmphasisCaption("editing_agent")).toBe(true);
   });
 
-  it("does not block the post-process step on a hidden huazi field", () => {
-    // 确定性模板下花字被隐藏：即便残留一个非法花字色值，也不该拦住第 3 步。
+  it("validates emphasis style on both active digital-human templates", () => {
     const form = {
       ...loadStoredForm(),
       contentMode: "deterministic" as const,
-      huaziEnabled: true,
-      huaziColor: "not-a-color",
+      emphasisEnabled: true,
+      emphasisColor: "not-a-color",
     };
-    expect(validateStep(3, form, "voice_1")).toBeNull();
-    // 切到 Agent 智能剪辑后花字重新生效，非法色值应被拦下。
-    expect(validateStep(3, { ...form, contentMode: "editing_agent" }, "voice_1")).toBe("花字颜色需为有效色值");
+    expect(validateStep(3, form, "voice_1")).toBe("强调颜色需为有效色值");
+    expect(validateStep(3, { ...form, contentMode: "editing_agent" }, "voice_1")).toBe("强调颜色需为有效色值");
+    expect(validateStep(3, { ...form, contentMode: "seedance" }, "voice_1")).toBeNull();
   });
 
   it("scales subtitle preview font sizes like the final 1080x1920 render", () => {

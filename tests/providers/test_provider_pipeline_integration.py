@@ -70,7 +70,7 @@ def _payload(**overrides) -> dict:
         "voice": {"voice_id": "voice_sandbox"},
         "broll": {"enabled": False},
         "bgm": {"enabled": False},
-        "subtitle": {"enabled": True},
+        "subtitle": {"enabled": False},
         "lipsync": {"enabled": False},
         "strictness": {"strict_timestamps": False},
     }

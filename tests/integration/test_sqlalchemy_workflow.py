@@ -41,9 +41,10 @@ def test_sqlalchemy_workflow_job_run_report_and_artifacts_are_persisted():
                 "case_id": "case_demo",
                 "title": "SQLAlchemy workflow video",
                 "script": "用一个简短脚本验证数据库工作流持久化。",
-                "publish_content": "Database workflow handoff.",
-                "voice": {"voice_id": "voice_sandbox"},
-                "strictness": {"strict_timestamps": False},
+                    "publish_content": "Database workflow handoff.",
+                    "voice": {"voice_id": "voice_sandbox"},
+                    "subtitle": {"enabled": False},
+                    "strictness": {"strict_timestamps": False},
             },
         )
         assert created.status_code == 201, created.text
@@ -154,6 +155,7 @@ def test_sqlalchemy_job_links_adopted_script_version_not_orphaned():
                 "script": "携带 script_version_id 的请求脚本。",
                 "script_version_id": script_id,
                 "voice": {"voice_id": "voice_sandbox"},
+                "subtitle": {"enabled": False},
                 "strictness": {"strict_timestamps": False},
             },
         )
@@ -226,6 +228,7 @@ def test_hydrate_workflow_runtime_snapshot_loads_adopted_script():
                 "script": "携带 script_version_id 的请求脚本（快照水合）。",
                 "script_version_id": script_id,
                 "voice": {"voice_id": "voice_sandbox"},
+                "subtitle": {"enabled": False},
                 "strictness": {"strict_timestamps": False},
             },
         )

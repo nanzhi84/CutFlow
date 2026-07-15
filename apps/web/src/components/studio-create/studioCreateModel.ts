@@ -1,4 +1,5 @@
 import type { components } from "../../api/schema";
+import captionPolicy from "../../../../../packages/core/contracts/caption_policy.json";
 
 export type UserGenerationDefaults = components["schemas"]["UserGenerationDefaults"];
 
@@ -33,13 +34,13 @@ export type FormState = {
   maxInserts: number;
   subtitleEnabled: boolean;
   normalSubtitleEnabled: boolean;
-  huaziEnabled: boolean;
+  emphasisEnabled: boolean;
   subtitleStyle: LegacySubtitleStyle;
   subtitleFontId: string;
-  huaziFontId: string;
+  emphasisFontId: string;
   subtitleSize: number;
-  huaziSize: number;
-  huaziColor: string;
+  emphasisSize: number;
+  emphasisColor: string;
   subtitlePositionY: number;
   bgmEnabled: boolean;
   bgmVolume: number;
@@ -55,6 +56,7 @@ export type FormState = {
 };
 
 export const STORAGE_KEY = "m6ar_studio_create_preferences_v1";
+export const CAPTION_POLICY = captionPolicy;
 
 const defaultForm: FormState = {
   title: "",
@@ -70,14 +72,14 @@ const defaultForm: FormState = {
   maxInserts: 4,
   subtitleEnabled: true,
   normalSubtitleEnabled: true,
-  huaziEnabled: true,
+  emphasisEnabled: true,
   subtitleStyle: "douyin",
   subtitleFontId: "",
-  huaziFontId: "",
+  emphasisFontId: "",
   subtitleSize: 28,
-  huaziSize: 40,
-  huaziColor: "#FFE84A",
-  subtitlePositionY: 0.84,
+  emphasisSize: 40,
+  emphasisColor: "#FFE84A",
+  subtitlePositionY: CAPTION_POLICY.baseline_y,
   bgmEnabled: false,
   bgmVolume: 0.25,
   bgmAutoMix: true,
@@ -156,6 +158,13 @@ export function subtitlePreviewCssFontSize(
   return Math.round(Math.max(minCssPx, scaled) * 10) / 10;
 }
 
+export function subtitlePreviewSvgFontSize(
+  requestedSize: unknown,
+  outputHeight = SUBTITLE_PREVIEW_OUTPUT_HEIGHT,
+) {
+  return subtitleAssFontSize(requestedSize, outputHeight) * ASS_FONT_POINT_TO_CSS_PIXEL;
+}
+
 export function subtitlePreviewCssOutlineWidth(
   requestedOutline: unknown,
   {
@@ -179,6 +188,9 @@ export function loadStoredForm(): FormState {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) return defaultForm;
     const parsed = JSON.parse(saved) as Record<string, unknown>;
+    const current = Object.fromEntries(
+      Object.entries(parsed).filter(([key]) => key in defaultForm),
+    ) as Partial<FormState>;
     const storedContentMode = parsed.contentMode;
     const contentMode =
       storedContentMode === "deterministic" ||
@@ -205,27 +217,43 @@ export function loadStoredForm(): FormState {
     const legacySubtitleEnabled = typeof parsed.subtitleEnabled === "boolean" ? parsed.subtitleEnabled : defaultForm.subtitleEnabled;
     const normalSubtitleEnabled =
       typeof parsed.normalSubtitleEnabled === "boolean" ? parsed.normalSubtitleEnabled : legacySubtitleEnabled;
-    const huaziEnabled = typeof parsed.huaziEnabled === "boolean" ? parsed.huaziEnabled : legacySubtitleEnabled;
+    const legacyEmphasisEnabled =
+      typeof parsed.huaziEnabled === "boolean" ? parsed.huaziEnabled : legacySubtitleEnabled;
+    const emphasisEnabled =
+      typeof parsed.emphasisEnabled === "boolean" ? parsed.emphasisEnabled : legacyEmphasisEnabled;
     const subtitleFontId = typeof parsed.subtitleFontId === "string" ? parsed.subtitleFontId : "";
-    const huaziFontId = typeof parsed.huaziFontId === "string" ? parsed.huaziFontId : "";
-    const huaziColor = normalizeHexColor(parsed.huaziColor, defaultForm.huaziColor);
+    const emphasisFontId =
+      typeof parsed.emphasisFontId === "string"
+        ? parsed.emphasisFontId
+        : typeof parsed.huaziFontId === "string"
+          ? parsed.huaziFontId
+          : "";
+    const emphasisColor = normalizeHexColor(
+      parsed.emphasisColor ?? parsed.huaziColor,
+      defaultForm.emphasisColor,
+    );
     return {
       ...defaultForm,
-      ...(parsed as Partial<FormState>),
+      ...current,
       contentMode,
       visualMode,
       seedanceReferenceAssetIds,
-      subtitleEnabled: normalSubtitleEnabled || huaziEnabled,
+      subtitleEnabled: normalSubtitleEnabled,
       normalSubtitleEnabled,
-      huaziEnabled,
+      emphasisEnabled: normalSubtitleEnabled && emphasisEnabled,
       subtitleStyle,
       subtitleFontId,
-      huaziFontId,
-      huaziColor,
+      emphasisFontId,
+      emphasisColor,
       speed: clampNumber(Number(parsed.speed ?? defaultForm.speed), 0.5, 2, defaultForm.speed),
       maxInserts: clampNumber(Number(parsed.maxInserts ?? defaultForm.maxInserts), 0, 20, defaultForm.maxInserts),
       subtitleSize: clampNumber(Number(parsed.subtitleSize ?? defaultForm.subtitleSize), 12, 96, defaultForm.subtitleSize),
-      huaziSize: clampNumber(Number(parsed.huaziSize ?? defaultForm.huaziSize), 12, 120, defaultForm.huaziSize),
+      emphasisSize: clampNumber(
+        Number(parsed.emphasisSize ?? parsed.huaziSize ?? defaultForm.emphasisSize),
+        12,
+        120,
+        defaultForm.emphasisSize,
+      ),
       subtitlePositionY: clampNumber(
         Number(parsed.subtitlePositionY ?? defaultForm.subtitlePositionY),
         0.72,
@@ -253,8 +281,8 @@ export function validateStep(step: StudioStep, form: FormState, selectedVoice: s
     return "语速需在 0.5 到 2.0 之间";
   if (step === 3 && form.contentMode === "seedance") return null;
   if (step === 3 && form.normalSubtitleEnabled && (form.subtitleSize < 12 || form.subtitleSize > 96)) return "字幕字号需在 12 到 96 之间";
-  if (step === 3 && effectiveHuaziEnabled(form) && (form.huaziSize < 12 || form.huaziSize > 120)) return "花字字号需在 12 到 120 之间";
-  if (step === 3 && effectiveHuaziEnabled(form) && !/^#[0-9A-Fa-f]{6}$/.test(form.huaziColor)) return "花字颜色需为有效色值";
+  if (step === 3 && effectiveEmphasisEnabled(form) && (form.emphasisSize < 12 || form.emphasisSize > 120)) return "强调字号需在 12 到 120 之间";
+  if (step === 3 && effectiveEmphasisEnabled(form) && !/^#[0-9A-Fa-f]{6}$/.test(form.emphasisColor)) return "强调颜色需为有效色值";
   if (step === 3 && form.normalSubtitleEnabled && (form.subtitlePositionY < 0.72 || form.subtitlePositionY > 0.92))
     return "字幕位置需在安全区内";
   if (step === 3 && form.bgmEnabled && (form.bgmVolume < 0 || form.bgmVolume > 1)) return "BGM 音量需在 0 到 100% 之间";
@@ -281,18 +309,15 @@ export function visualModeLabel(value: FormState["visualMode"]) {
 }
 
 /**
- * 花字（整句强调 overlay）只有 Agent 智能剪辑链（digital_human_editing_agent_v2）会产出：
- * 确定性链 digital_human_v2 已冻结、不再派生 overlay 事件，Seedance 无字幕层。前端据此
- * 隐藏花字开关/设置并在提交时强制 emphasis_enabled=false，避免向后端请求一个当前模板
- * 不会渲染的花字层。
+ * 两条数字人链都支持固定字幕带内的强调 Run；Seedance 无字幕层。
  */
 export function supportsEmphasisCaption(mode: FormState["contentMode"]): boolean {
-  return mode === "editing_agent";
+  return mode !== "seedance";
 }
 
-/** 当前表单实际会提交的花字启用态（叠加了模板能力约束）。 */
-export function effectiveHuaziEnabled(form: FormState): boolean {
-  return supportsEmphasisCaption(form.contentMode) && form.huaziEnabled;
+/** 当前表单实际会提交的字幕内强调启用态（叠加模板与普通字幕总闸）。 */
+export function effectiveEmphasisEnabled(form: FormState): boolean {
+  return supportsEmphasisCaption(form.contentMode) && form.normalSubtitleEnabled && form.emphasisEnabled;
 }
 
 const SUBTITLE_STYLES: LegacySubtitleStyle[] = [
@@ -321,8 +346,8 @@ function isLegacySubtitleStyle(value: unknown): value is LegacySubtitleStyle {
  */
 export function mapFormToDefaults(form: FormState): UserGenerationDefaults {
   const fullCoverage = form.visualMode === "broll_full_coverage";
-  const emphasisEnabled = effectiveHuaziEnabled(form);
-  const subtitleEnabled = form.normalSubtitleEnabled || emphasisEnabled;
+  const emphasisEnabled = effectiveEmphasisEnabled(form);
+  const subtitleEnabled = form.normalSubtitleEnabled;
   return {
     voice: {
       voice_id: form.voiceId,
@@ -339,15 +364,15 @@ export function mapFormToDefaults(form: FormState): UserGenerationDefaults {
     },
     subtitle: {
       enabled: subtitleEnabled,
-      normal_enabled: form.normalSubtitleEnabled,
+      normal_enabled: subtitleEnabled,
       emphasis_enabled: emphasisEnabled,
       style_preset: form.subtitleStyle,
       font_id: form.subtitleFontId.trim() || null,
-      emphasis_font_id: form.huaziFontId.trim() || null,
+      emphasis_font_id: form.emphasisFontId.trim() || null,
       font_size: form.subtitleSize,
-      emphasis_font_size: form.huaziSize,
-      emphasis_primary_color: form.huaziColor,
-      position: { x: 0.5, y: form.subtitlePositionY },
+      emphasis_font_size: form.emphasisSize,
+      emphasis_primary_color: form.emphasisColor,
+      position: { x: CAPTION_POLICY.anchor_x, y: form.subtitlePositionY },
     },
     bgm: {
       enabled: form.bgmEnabled,
@@ -395,23 +420,23 @@ export function mapDefaultsToForm(defaults: UserGenerationDefaults, base: FormSt
   if (defaults.subtitle) {
     const subtitleEnabled = Boolean(defaults.subtitle.enabled);
     next.normalSubtitleEnabled = subtitleEnabled && (defaults.subtitle.normal_enabled ?? true);
-    next.huaziEnabled = subtitleEnabled && (defaults.subtitle.emphasis_enabled ?? true);
-    next.subtitleEnabled = next.normalSubtitleEnabled || next.huaziEnabled;
+    next.emphasisEnabled = next.normalSubtitleEnabled && (defaults.subtitle.emphasis_enabled ?? true);
+    next.subtitleEnabled = next.normalSubtitleEnabled;
     next.subtitleStyle = pickFrom(SUBTITLE_STYLES, defaults.subtitle.style_preset, base.subtitleStyle);
     next.subtitleFontId = defaults.subtitle.font_id ?? "";
-    next.huaziFontId = defaults.subtitle.emphasis_font_id ?? "";
-    next.huaziColor = normalizeHexColor(defaults.subtitle.emphasis_primary_color, base.huaziColor);
+    next.emphasisFontId = defaults.subtitle.emphasis_font_id ?? "";
+    next.emphasisColor = normalizeHexColor(defaults.subtitle.emphasis_primary_color, base.emphasisColor);
     next.subtitleSize = clampNumber(
       Number(defaults.subtitle.font_size ?? base.subtitleSize),
       12,
       96,
       base.subtitleSize,
     );
-    next.huaziSize = clampNumber(
-      Number(defaults.subtitle.emphasis_font_size ?? base.huaziSize),
+    next.emphasisSize = clampNumber(
+      Number(defaults.subtitle.emphasis_font_size ?? base.emphasisSize),
       12,
       120,
-      base.huaziSize,
+      base.emphasisSize,
     );
     next.subtitlePositionY = clampNumber(
       Number(defaults.subtitle.position?.y ?? base.subtitlePositionY),

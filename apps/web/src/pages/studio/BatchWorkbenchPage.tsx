@@ -154,8 +154,7 @@ export default function BatchWorkbenchPage() {
     if (defaults.broll?.mode) setBrollMode(defaults.broll.mode === "full_coverage" ? "full_coverage" : "insert");
     if (defaults.subtitle) {
       const normalEnabled = defaults.subtitle.normal_enabled ?? true;
-      const emphasisEnabled = defaults.subtitle.emphasis_enabled ?? true;
-      setSubtitleEnabled(Boolean(defaults.subtitle.enabled && (normalEnabled || emphasisEnabled)));
+      setSubtitleEnabled(Boolean(defaults.subtitle.enabled && normalEnabled));
     }
     if (defaults.bgm) setBgmEnabled(Boolean(defaults.bgm.enabled));
     if (defaults.voice?.voice_id) setSelectedVoice(defaults.voice.voice_id);

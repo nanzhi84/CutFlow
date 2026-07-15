@@ -1,5 +1,9 @@
 # EditingAgentPlanning 综合剪辑 PRD
 
+> **历史归档 / Superseded（2026-07-15，issue #209）**：本文的一体化 v1 Agent
+> 方案已退役，不再代表当前产品或工作流。当前活动链路拆分为媒体选择、固定字幕带编排与
+> BGM 选择三个职责域，且 v1 新建、重试、续跑均被拒绝。
+
 - 日期：2026-07-01
 - 状态：方案草案
 - 来源：GitHub Issue [#136](https://github.com/nanzhi84/lead-gen-video-workflow/issues/136)
@@ -418,4 +422,3 @@ MVP 稳定后，可以继续升级：
 - 增强字体标注，让字体也具备风格语义。
 - 输出更详细的剪辑解释，供运营复盘。
 - 和 DAG 调度优化结合，减少整体耗时。
-

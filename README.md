@@ -24,9 +24,8 @@ Case 是账号、品牌、素材、脚本、指标和学习反馈的长期边界
 
 系统保留主链模板和专用生成模板；纯 B-roll 画外音不再是独立模板，而是主链的 `broll.mode="full_coverage"`：
 
-- `digital_human_v2`：主链数字人成片。
-- `digital_human_editing_agent_v2`：活动剪辑 Agent 链；媒体选择与成片字幕/BGM 后处理拥有独立规划、调用、修复和复用边界。
-- `digital_human_editing_agent_v1`：仅保留给历史任务恢复的 legacy 模板，不再接受新任务。
+- `digital_human_v2`：19 节点主链数字人成片，渲染后统一编排固定字幕带。
+- `digital_human_editing_agent_v2`：20 节点活动 Agent 链；媒体 Agent 只选择人像/B-roll，BGM Agent 只选择配乐，字幕仍由同一个确定性编排器产出。
 - `seedance_t2v_v1`：Seedance 文生视频链路。
 
 **素材和媒体内核**
@@ -193,8 +192,8 @@ python scripts/bootstrap_database.py
 python scripts/import_font_assets.py
 ```
 
-字幕 v2 默认使用 `Noto Serif CJK SC Regular`（普通字幕）与
-`Noto Sans CJK SC Bold`（花字）。默认资产缺失时节点会明确失败，避免
+固定字幕带默认使用 `Noto Serif CJK SC Regular`（普通 run）与
+`Noto Sans CJK SC Bold`（强调 run）。默认资产缺失时节点会明确失败，避免
 macOS CoreText 与 Linux fontconfig 各自映射 `serif/sans-serif` 后产出不同成片。
 
 只跑迁移：

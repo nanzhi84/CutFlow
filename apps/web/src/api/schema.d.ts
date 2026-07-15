@@ -2881,7 +2881,7 @@ export interface components {
          * ArtifactKind
          * @enum {string}
          */
-        ArtifactKind: "uploaded.file" | "spec.validated_production" | "case.context" | "creative.intent" | "audio.tts" | "audio.alignment.raw" | "audio.alignment" | "narration.units" | "plan.material_pack" | "plan.narration_boundary" | "plan.timeline_windows" | "plan.window_queries" | "plan.window_material_retrieval" | "plan.media_assignment" | "plan.portrait" | "plan.broll" | "plan.style" | "plan.timeline" | "plan.render" | "plan.editing_diagnostics" | "plan.media_selection_diagnostics" | "plan.caption_windows" | "plan.postprocess_diagnostics" | "plan.caption_display" | "video.portrait_track" | "video.lipsync" | "lipsync.report" | "video.rendered" | "video.final" | "video.finished" | "subtitle.ass" | "cover.image" | "cover.thumbnail" | "publish.package" | "run.report.public" | "run.report.debug" | "editor.handoff_package" | "editor.jianying_draft_package" | "provider.raw_request" | "provider.raw_response" | "material.annotation";
+        ArtifactKind: "uploaded.file" | "spec.validated_production" | "case.context" | "creative.intent" | "audio.tts" | "audio.alignment.raw" | "audio.alignment" | "narration.units" | "plan.material_pack" | "plan.narration_boundary" | "plan.timeline_windows" | "plan.window_queries" | "plan.window_material_retrieval" | "plan.media_assignment" | "plan.portrait" | "plan.broll" | "plan.style" | "plan.timeline" | "plan.render" | "plan.media_selection_diagnostics" | "plan.caption_composition" | "plan.bgm_diagnostics" | "video.portrait_track" | "video.lipsync" | "lipsync.report" | "video.rendered" | "video.final" | "video.finished" | "subtitle.ass" | "cover.image" | "cover.thumbnail" | "publish.package" | "run.report.public" | "run.report.debug" | "editor.handoff_package" | "editor.jianying_draft_package" | "provider.raw_request" | "provider.raw_response" | "material.annotation";
         /** ArtifactRef */
         ArtifactRef: {
             /** Artifact Id */
@@ -4934,7 +4934,7 @@ export interface components {
          * DegradationCode
          * @enum {string}
          */
-        DegradationCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "broll.insertions_dropped_geometry" | "editing_agent.deterministic_fallback" | "media_selection_agent.deterministic_fallback" | "window_query.template_fallback" | "timestamp.estimated" | "huazi.animation_fallback" | "huazi.planning_failed" | "font.metrics_fallback" | "caption.visual_analysis_failed" | "caption.normal_relaxed_safety" | "caption.emphasis_relaxed_safety" | "caption.emphasis_below_floor" | "tts.timing_unavailable" | "postprocess.planning_failed" | "sfx.asset_missing" | "sfx.mix_failed";
+        DegradationCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "broll.insertions_dropped_geometry" | "media_selection_agent.deterministic_fallback" | "window_query.template_fallback" | "timestamp.estimated" | "font.metrics_fallback" | "caption.composition_fallback" | "tts.timing_unavailable" | "bgm.planning_failed" | "sfx.asset_missing" | "sfx.mix_failed";
         /** DegradationNotice */
         DegradationNotice: {
             code: components["schemas"]["WarningCode"];
@@ -5012,7 +5012,7 @@ export interface components {
          * @description Per-video extra editing steering for the LLM editing-agent template.
          *
          *     Consumed by ``digital_human_editing_agent_v2``'s ``MediaSelectionAgentPlanning``
-         *     node (and the frozen v1 compatibility node); ignored by every other template. ``instruction`` is a free-text hint the
+         *     node; ignored by every other template. ``instruction`` is a free-text hint the
          *     editing agent honours for this one video (e.g. "尽量用穿搭相近的人像素材，B-roll
          *     只在讲施工细节时出现")。``max_repair_attempts`` bounds how many times an invalid
          *     LLM selection is re-prompted before the node fail-fasts (0 = no repair).
@@ -9281,7 +9281,7 @@ export interface components {
          * WarningCode
          * @enum {string}
          */
-        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced" | "budget.exceeded" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "editing_agent.deterministic_fallback" | "editing_agent.llm_repair" | "editing_agent.local_constraint_repair" | "media_selection_agent.deterministic_fallback" | "media_selection_agent.llm_repair" | "media_selection_agent.local_constraint_repair" | "broll.insertions_dropped_geometry" | "window_query.template_fallback" | "huazi.animation_fallback" | "huazi.planning_failed" | "font.metrics_fallback" | "caption.visual_analysis_failed" | "caption.normal_relaxed_safety" | "caption.emphasis_relaxed_safety" | "caption.emphasis_below_floor" | "tts.timing_unavailable" | "postprocess.planning_failed" | "sfx.asset_missing" | "sfx.mix_failed";
+        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced" | "budget.exceeded" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "media_selection_agent.deterministic_fallback" | "media_selection_agent.llm_repair" | "media_selection_agent.local_constraint_repair" | "broll.insertions_dropped_geometry" | "window_query.template_fallback" | "font.metrics_fallback" | "caption.composition_fallback" | "tts.timing_unavailable" | "bgm.planning_failed" | "sfx.asset_missing" | "sfx.mix_failed";
         /** WorkflowRun */
         WorkflowRun: {
             /** Id */

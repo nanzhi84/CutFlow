@@ -47,7 +47,7 @@ describe("batchModel", () => {
     ).toEqual({ created: 2, failed: 1, firstRunId: "run_1" });
   });
 
-  it("disables huazi-only defaults for deterministic batch runs", () => {
+  it("disables emphasis-only defaults for deterministic batch runs", () => {
     expect(batchSubtitleLayerFlags("digital_human_v2", true, false, true)).toEqual({
       enabled: false,
       normal_enabled: false,
@@ -55,13 +55,13 @@ describe("batchModel", () => {
     });
   });
 
-  it("keeps huazi-only defaults for editing-agent batch runs", () => {
+  it("rejects emphasis-only defaults for editing-agent batch runs", () => {
     expect(
       batchSubtitleLayerFlags("digital_human_editing_agent_v2", true, false, true),
     ).toEqual({
-      enabled: true,
+      enabled: false,
       normal_enabled: false,
-      emphasis_enabled: true,
+      emphasis_enabled: false,
     });
   });
 

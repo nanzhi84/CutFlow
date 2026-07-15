@@ -7,11 +7,9 @@ from packages.core.contracts.artifacts import CreativeIntentArtifact, EmphasisHi
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.production.pipeline._node_context import NodeContext
 
-# An emphasis hint is a short key phrase (a quote from the script) the LLM marks as
-# worth a 花字-style emphasis; bound the count/length so a hallucinated paragraph or
-# flood of phrases can't bloat the plan.
-_MAX_EMPHASIS = 6
-_MIN_PHRASE_LEN = 2
+# An emphasis hint is an exact script substring rendered inside the fixed caption band.
+_MAX_EMPHASIS = 12
+_MIN_PHRASE_LEN = 1
 _MAX_PHRASE_LEN = 30
 
 
@@ -24,12 +22,12 @@ def _clean_phrase(value: object) -> str | None:
     return text
 
 
-def _intent_to_artifact(output: dict) -> CreativeIntentArtifact:
+def _intent_to_artifact(output: dict, script: str) -> CreativeIntentArtifact:
     """Map the LLM output into a typed CreativeIntentArtifact.
 
     The LLM emits {hook, beats, emphasis, ...} which the provider wraps under the
     ``intent`` object (validate_output requires intent.hook/beats). We promote the
-    emphasis phrases to a typed field, dropping malformed/duplicate entries so
+    emphasis phrases to a typed field, dropping malformed entries so
     downstream consumers never see junk; the raw intent blob is preserved as-is.
     """
     intent = output.get("intent") if isinstance(output.get("intent"), dict) else {}
@@ -37,15 +35,30 @@ def _intent_to_artifact(output: dict) -> CreativeIntentArtifact:
     if normalized_bgm_mood:
         intent = {**intent, "bgm_mood": normalized_bgm_mood}
     emphasis: list[EmphasisHint] = []
-    seen: set[str] = set()
     raw_emphasis = intent.get("emphasis")
     if isinstance(raw_emphasis, list):
         for item in raw_emphasis:
-            phrase = _clean_phrase(item)
-            if phrase is None or phrase in seen:
+            if not isinstance(item, dict):
                 continue
-            seen.add(phrase)
-            emphasis.append(EmphasisHint(phrase=phrase))
+            phrase = _clean_phrase(item.get("phrase"))
+            priority = item.get("priority", 50)
+            display_mode = item.get("display_mode", "inline")
+            if (
+                phrase is None
+                or phrase not in script
+                or not isinstance(priority, int)
+                or isinstance(priority, bool)
+                or not 0 <= priority <= 100
+                or display_mode not in {"inline", "whole_cue"}
+            ):
+                continue
+            emphasis.append(
+                EmphasisHint(
+                    phrase=phrase,
+                    priority=priority,
+                    display_mode=display_mode,
+                )
+            )
             if len(emphasis) >= _MAX_EMPHASIS:
                 break
     return CreativeIntentArtifact(intent=intent or None, emphasis=emphasis)
@@ -120,7 +133,7 @@ def run(ctx: NodeContext) -> NodeOutput:
     ctx.repository.prompt_invocations[prompt_invocation.id] = prompt_invocation
     artifact = ctx.artifact(
         ArtifactKind.creative_intent,
-        _intent_to_artifact(result.output).model_dump(mode="json"),
+        _intent_to_artifact(result.output, state.request.script).model_dump(mode="json"),
         "CreativeIntentArtifact.v1",
     )
     return NodeOutput(artifacts=[artifact], provider_invocation_ids=[invocation.id])

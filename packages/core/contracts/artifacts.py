@@ -6,6 +6,13 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
+from packages.core.contracts.caption_policy import (
+    CAPTION_ANCHOR_X,
+    CAPTION_BASELINE_Y,
+    CAPTION_LINE_HEIGHT_RATIO,
+    CAPTION_MAX_WIDTH_RATIO,
+)
+
 from packages.core.contracts import (
     ArtifactRef,
     CaseMemory,
@@ -42,8 +49,6 @@ class SubtitleStylePlan(ContractModel):
     emphasis_primary_color: str | None = None
     emphasis_outline_color: str | None = None
     emphasis_outline: float | None = None
-    default_emphasis_position_id: str | None = None
-    default_emphasis_animation_id: str | None = None
 
 
 class BgmPlan(ContractModel):
@@ -89,22 +94,18 @@ class CaseContextArtifact(ContractModel):
 
 
 class EmphasisHint(ContractModel):
-    """LLM 标记的整句强调关键短语（花字地基）。
+    """A script-exact phrase that may become an inline caption run."""
 
-    ``phrase`` 是脚本里值得做花字/整句强调的关键短语（取自原话，便于确定性子串
-    定位到旁白句）。下游确定性 style 物化把它匹配到旁白句、换算成带时间轴的 OverlayEvent。
-    刻意用短语而非 beat 序号：beat 是 LLM 转述、与旁白文本不可靠对应；短语是原话、
-    子串匹配确定可复现，也更贴合未来逐词花字。
-    """
-
-    phrase: str
+    phrase: str = Field(min_length=1)
+    priority: int = Field(50, ge=0, le=100)
+    display_mode: Literal["inline", "whole_cue"] = "inline"
 
 
 class CreativeIntentArtifact(ContractModel):
     """ResolveCreativeIntent 产出的 LLM 创意语义判断。
 
-    只承载 LLM 的低基数语义（hook/beats 的 ``intent`` + 强调短语）；带时间轴的字幕
-    事件等 render 结果由下游确定性 style 物化派生，不存这里。
+    只承载 LLM 的低基数语义（hook/beats 的 ``intent`` + 强调短语）；带时间轴的
+    Caption Run 由下游确定性规划派生，不存这里。
     """
 
     intent: dict[str, Any] | None = None
@@ -411,48 +412,6 @@ class BrollPlanArtifact(ContractModel):
     skipped_reason: str | None = None
 
 
-class OverlayRect(ContractModel):
-    # Normalised 0..1 box relative to the output canvas; materialized geometry the
-    # renderer consumes directly (falls back to placement_id when absent).
-    x: float = Field(ge=0.0, le=1.0)
-    y: float = Field(ge=0.0, le=1.0)
-    w: float = Field(gt=0.0, le=1.0)
-    h: float = Field(gt=0.0, le=1.0)
-
-    @model_validator(mode="after")
-    def validate_canvas_bounds(self) -> "OverlayRect":
-        if self.x + self.w > 1.0 + 1e-9:
-            raise ValueError("normalized rect exceeds canvas width")
-        if self.y + self.h > 1.0 + 1e-9:
-            raise ValueError("normalized rect exceeds canvas height")
-        return self
-
-
-class OverlayEvent(ContractModel):
-    """确定性 style 物化派生的带时间轴字幕浮层事件（整句强调 / 花字地基）。
-
-    由 ``CreativeIntentArtifact.emphasis`` 的关键短语匹配旁白句换算而来，渲染层把它
-    叠成一条独立样式的字幕。``text`` 是要强调的短语本身（非整句，避免与底部正文重复）。
-    ``style`` 是渲染端白名单字符串；未知值回落到 emphasis，避免 prompt/旧数据漂移
-    直接破坏字幕烧录。
-    """
-
-    start: float
-    end: float
-    text: str
-    event_id: str | None = None
-    style: str = "emphasis"
-    placement_id: str = "top_center_banner"
-    animation_id: str = "pop_in"
-    sfx_id: str = "none"
-    reason: str = ""
-    layout_box_id: str | None = None
-    rect: OverlayRect | None = None
-    text_align: str = "center"
-    priority: int = 0
-    visual_preset_id: Literal["normal", "emphasis", "hero"] | None = None
-
-
 class StylePlanArtifact(ContractModel):
     subtitle: SubtitleStylePlan
     bgm: BgmPlan | None = None
@@ -460,7 +419,6 @@ class StylePlanArtifact(ContractModel):
     font_asset_id: str | None = None
     emphasis_font_asset_id: str | None = None
     bgm_asset_id: str | None = None
-    overlay_events: list[OverlayEvent] = Field(default_factory=list)
 
 
 class CaptionFrameSpan(ContractModel):
@@ -476,293 +434,7 @@ class CaptionFrameSpan(ContractModel):
         return self
 
 
-class NormalCaptionWindow(ContractModel):
-    """Frame-authoritative, display-ready normal-caption window.
-
-    CaptionWindowPlanning owns cue merge/split/wrap decisions. Downstream renderers
-    consume these lines and frames directly instead of recomputing layout from raw
-    narration units.
-    """
-
-    window_id: str = Field(min_length=1)
-    normalized_text: str = Field(min_length=1)
-    start_frame: int = Field(ge=0)
-    end_frame: int = Field(gt=0)
-    spoken_span: CaptionFrameSpan | None = None
-    display_span: CaptionFrameSpan | None = None
-    token_ids: list[str] = Field(default_factory=list)
-    char_span: tuple[int, int] | None = None
-    lines: list[str] = Field(min_length=1, max_length=3)
-    line_start_frames: list[int] = Field(default_factory=list, max_length=3)
-    source_unit_ids: list[str] = Field(min_length=1)
-    # CaptionWindowPlanning may place normal captions in a face-clear negative-space
-    # region on the final composite. ``None`` remains the read-compatible legacy
-    # bottom-centre path for historical artifacts.
-    rect: OverlayRect | None = None
-    # Conservative union of the settled rect and any entry-motion excursion.
-    # Emphasis planning blocks this envelope, while ASS positioning consumes rect.
-    safety_envelope: OverlayRect | None = None
-    text_align: Literal["left", "center", "right"] = "center"
-    visual_preset_id: Literal["normal"] = "normal"
-    effect_id: Literal["soft_in", "none"] = "none"
-
-    @model_validator(mode="after")
-    def validate_window(self) -> "NormalCaptionWindow":
-        if self.end_frame <= self.start_frame:
-            raise ValueError("normal caption end_frame must be greater than start_frame")
-        if any(not line.strip() for line in self.lines):
-            raise ValueError("normal caption lines must be non-empty")
-        if self.line_start_frames and len(self.line_start_frames) != len(self.lines):
-            raise ValueError("normal caption line_start_frames must match lines")
-        if self.display_span is not None and (
-            self.display_span.start_frame != self.start_frame
-            or self.display_span.end_frame != self.end_frame
-        ):
-            raise ValueError("normal caption start/end must mirror display_span")
-        if self.char_span is not None:
-            char_start, char_end = self.char_span
-            if char_start < 0 or char_end <= char_start:
-                raise ValueError("normal caption char_span must be a positive half-open range")
-        return self
-
-
-class CaptionAnchorCandidate(ContractModel):
-    """A locally proven-safe placement candidate exposed to the postprocess Agent."""
-
-    anchor_id: str = Field(min_length=1)
-    rect: OverlayRect
-    text_align: Literal["left", "center", "right"] = "center"
-    allowed_animation_ids: list[str] = Field(default_factory=list)
-    region_tags: list[str] = Field(default_factory=list)
-    face_overlap: float = Field(0.0, ge=0.0, le=1.0)
-    scene_text_overlap: float = Field(0.0, ge=0.0, le=1.0)
-    busy_score: float = Field(0.0, ge=0.0, le=1.0)
-    sample_frames: list[int] = Field(default_factory=list)
-
-
-class CaptionOption(ContractModel):
-    """Opaque complete presentation choice; the Agent selects only its id."""
-
-    caption_option_id: str = Field(min_length=1)
-    anchor_id: str = Field(min_length=1)
-    typography_variant_id: str = Field(min_length=1)
-    animation_id: str = Field(min_length=1)
-    visual_preset_id: Literal["emphasis", "hero"] | None = None
-
-
-class EmphasisCaptionWindow(ContractModel):
-    """Fixed-frame emphasis event and its locally validated presentation options."""
-
-    event_id: str = Field(min_length=1)
-    text: str = Field(min_length=1)
-    normalized_text: str = Field(min_length=1)
-    start_frame: int = Field(ge=0)
-    end_frame: int = Field(gt=0)
-    source_unit_ids: list[str] = Field(min_length=1)
-    anchor_candidates: list[CaptionAnchorCandidate] = Field(default_factory=list)
-    caption_options: list[CaptionOption] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def validate_window_options(self) -> "EmphasisCaptionWindow":
-        if self.end_frame <= self.start_frame:
-            raise ValueError("emphasis caption end_frame must be greater than start_frame")
-        anchors = {candidate.anchor_id for candidate in self.anchor_candidates}
-        if len(anchors) != len(self.anchor_candidates):
-            raise ValueError("emphasis caption anchor_id values must be unique")
-        option_ids = {option.caption_option_id for option in self.caption_options}
-        if len(option_ids) != len(self.caption_options):
-            raise ValueError("emphasis caption option ids must be unique")
-        unknown_anchors = sorted(
-            {option.anchor_id for option in self.caption_options if option.anchor_id not in anchors}
-        )
-        if unknown_anchors:
-            raise ValueError(
-                "caption options reference unknown anchors: " + ", ".join(unknown_anchors)
-            )
-        allowed_by_anchor = {
-            candidate.anchor_id: set(candidate.allowed_animation_ids)
-            for candidate in self.anchor_candidates
-        }
-        disallowed_animations = sorted(
-            {
-                f"{option.anchor_id}:{option.animation_id}"
-                for option in self.caption_options
-                if option.animation_id not in allowed_by_anchor.get(option.anchor_id, set())
-            }
-        )
-        if disallowed_animations:
-            raise ValueError(
-                "caption options use animations not allowed by their anchors: "
-                + ", ".join(disallowed_animations)
-            )
-        return self
-
-
-class CaptionWindowConflict(ContractModel):
-    """Two emphasis events that cannot coexist under the local timing policy."""
-
-    first_event_id: str = Field(min_length=1)
-    second_event_id: str = Field(min_length=1)
-    actual_gap_frames: int
-    required_gap_frames: int = Field(ge=0)
-    reason: Literal["overlap", "insufficient_gap"]
-
-
-class CaptionWindowDiagnostics(ContractModel):
-    """Deterministic compiler and final-frame visual-analysis diagnostics."""
-
-    merged_units: int = Field(0, ge=0)
-    split_cues: int = Field(0, ge=0)
-    font_metrics_source: Literal["hmtx", "eaw_fallback"] = "hmtx"
-    sampled_frames: int = Field(0, ge=0)
-    generated_anchor_candidates: int = Field(0, ge=0)
-    rejected_anchor_candidates: int = Field(0, ge=0)
-    visual_analysis_failed: bool = False
-    emphasis_candidates: int = Field(0, ge=0)
-    events_crossing_cuts_dropped: int = Field(0, ge=0)
-    events_without_options: int = Field(0, ge=0)
-    rejected_face: int = Field(0, ge=0)
-    rejected_scene_text: int = Field(0, ge=0)
-    rejected_busy: int = Field(0, ge=0)
-    unavailable_detectors: list[str] = Field(default_factory=list)
-    safe_anchor_candidates: int = Field(0, ge=0)
-    anchors_pruned_by_cap: int = Field(0, ge=0)
-    options_pruned_by_cap: int = Field(0, ge=0)
-    token_matched: int = Field(0, ge=0)
-    char_fallback: int = Field(0, ge=0)
-    events_with_options: int = Field(0, ge=0)
-    relaxed_tier2_events: int = Field(0, ge=0)
-    relaxed_tier3_events: int = Field(0, ge=0)
-    emphasis_hold_extended: int = Field(0, ge=0)
-    emphasis_hold_below_min: int = Field(0, ge=0)
-    token_claim_failures: int = Field(0, ge=0)
-    caption_gap_clamps: int = Field(0, ge=0)
-    emphasis_conflicts: int = Field(0, ge=0)
-    max_feasible_emphasis_count: int = Field(0, ge=0)
-    normal_generated_candidates: int = Field(0, ge=0)
-    normal_dynamic_positioned: int = Field(0, ge=0)
-    normal_relaxed_safety: int = Field(0, ge=0)
-    normal_rejected_face: int = Field(0, ge=0)
-    normal_rejected_scene_text: int = Field(0, ge=0)
-    normal_rejected_busy: int = Field(0, ge=0)
-
-
-class CaptionWindowsPlanArtifact(ContractModel):
-    """CaptionWindowPlanning output (current payload schema ``CaptionWindowsPlan.v2``)."""
-
-    policy_version: Literal["caption_windows_v1", "caption_windows_v2"] = "caption_windows_v2"
-    source_video_artifact_id: str = Field(min_length=1)
-    source_timeline_artifact_id: str = Field(min_length=1)
-    fps: int = Field(gt=0)
-    width: int = Field(gt=0)
-    height: int = Field(gt=0)
-    normal_enabled: bool
-    emphasis_enabled: bool
-    normal_font_asset_id: str | None = None
-    emphasis_font_asset_id: str | None = None
-    normal_safe_rect: OverlayRect | None = None
-    normal_windows: list[NormalCaptionWindow] = Field(default_factory=list)
-    emphasis_windows: list[EmphasisCaptionWindow] = Field(default_factory=list)
-    emphasis_conflicts: list[CaptionWindowConflict] = Field(default_factory=list)
-    max_feasible_emphasis_count: int = Field(0, ge=0)
-    diagnostics: CaptionWindowDiagnostics = Field(default_factory=CaptionWindowDiagnostics)
-
-    @model_validator(mode="after")
-    def validate_unique_ids(self) -> "CaptionWindowsPlanArtifact":
-        if self.policy_version == "caption_windows_v2":
-            if (self.normal_enabled or self.emphasis_enabled) and not self.normal_font_asset_id:
-                raise ValueError("caption_windows_v2 requires normal_font_asset_id")
-            if self.emphasis_enabled and not self.emphasis_font_asset_id:
-                raise ValueError("caption_windows_v2 requires emphasis_font_asset_id")
-            for window in self.normal_windows:
-                if window.rect is None or window.safety_envelope is None:
-                    raise ValueError(
-                        "caption_windows_v2 normal windows require rect and safety_envelope"
-                    )
-                rect = window.rect
-                envelope = window.safety_envelope
-                epsilon = 1e-6
-                if (
-                    envelope.x > rect.x + epsilon
-                    or envelope.y > rect.y + epsilon
-                    or envelope.x + envelope.w + epsilon < rect.x + rect.w
-                    or envelope.y + envelope.h + epsilon < rect.y + rect.h
-                ):
-                    raise ValueError("normal safety_envelope must contain the rendered rect")
-        normal_ids = {window.window_id for window in self.normal_windows}
-        if len(normal_ids) != len(self.normal_windows):
-            raise ValueError("normal caption window ids must be unique")
-        claimed_token_ids: set[str] = set()
-        previous_display_end: int | None = None
-        previous_char_end: int | None = None
-        for window in self.normal_windows:
-            duplicates = claimed_token_ids.intersection(window.token_ids)
-            if duplicates:
-                raise ValueError(
-                    "normal caption token ids must be globally unique: "
-                    + ", ".join(sorted(duplicates))
-                )
-            if len(set(window.token_ids)) != len(window.token_ids):
-                raise ValueError("normal caption token ids must be unique within a window")
-            claimed_token_ids.update(window.token_ids)
-            if window.display_span is not None:
-                if (
-                    previous_display_end is not None
-                    and window.display_span.start_frame - previous_display_end < 2
-                ):
-                    raise ValueError("normal caption display spans must keep a two-frame gap")
-                previous_display_end = window.display_span.end_frame
-            if window.char_span is not None:
-                char_start, char_end = window.char_span
-                if previous_char_end is not None and char_start < previous_char_end:
-                    raise ValueError(
-                        "normal caption char spans must be monotonic and non-overlapping"
-                    )
-                previous_char_end = char_end
-        emphasis_ids = {window.event_id for window in self.emphasis_windows}
-        if len(emphasis_ids) != len(self.emphasis_windows):
-            raise ValueError("emphasis caption event ids must be unique")
-        for conflict in self.emphasis_conflicts:
-            if (
-                conflict.first_event_id not in emphasis_ids
-                or conflict.second_event_id not in emphasis_ids
-            ):
-                raise ValueError("emphasis conflict references an unknown event")
-            if conflict.first_event_id == conflict.second_event_id:
-                raise ValueError("emphasis conflict must reference two different events")
-        selectable = sum(1 for window in self.emphasis_windows if window.caption_options)
-        if self.max_feasible_emphasis_count > selectable:
-            raise ValueError("max feasible emphasis count exceeds selectable events")
-        return self
-
-
-class PostProcessCaptionChoice(ContractModel):
-    event_id: str = Field(min_length=1)
-    caption_option_id: str = Field(min_length=1)
-    priority: int = Field(ge=0, le=100)
-    reason: str = ""
-
-
-class PostProcessCandidateCounts(ContractModel):
-    bgm: int = Field(0, ge=0)
-    caption_events: int = Field(0, ge=0)
-    caption_options: int = Field(0, ge=0)
-    caption_feasible: int = Field(0, ge=0)
-
-
-class PostProcessSolverDiagnostics(ContractModel):
-    max_feasible_count: int = Field(0, ge=0)
-    target_count: int = Field(0, ge=0)
-    selected_count: int = Field(0, ge=0)
-    pruned_event_ids: list[str] = Field(default_factory=list)
-    defaulted_option_event_ids: list[str] = Field(default_factory=list)
-    hero_downgraded_event_ids: list[str] = Field(default_factory=list)
-    unknown_event_ids: list[str] = Field(default_factory=list)
-    invalid_bgm_id: str | None = None
-    used_deterministic_fallback: bool = False
-
-
-class PostProcessRepairTraceItem(ContractModel):
+class BgmRepairTraceItem(ContractModel):
     attempt: int = Field(ge=0)
     error_count: int = Field(ge=0)
     errors: list[str] = Field(default_factory=list)
@@ -802,60 +474,206 @@ class MediaSelectionAgentDiagnosticsArtifact(ContractModel):
     candidate_counts: MediaSelectionCandidateCounts
 
 
-class PostProcessAgentDiagnosticsArtifact(ContractModel):
-    """PostProcessAgentPlanning diagnostics (``PostProcessAgentDiagnostics.v1``)."""
+class BgmAgentDiagnosticsArtifact(ContractModel):
+    """BgmAgentPlanning diagnostics; caption choices are intentionally absent."""
 
-    policy_version: Literal["postprocess_agent_v1"] = "postprocess_agent_v1"
+    policy_version: Literal["bgm_agent_v1"] = "bgm_agent_v1"
     planned: bool
     reason: str = ""
     bgm_id: str | None = None
-    candidate_id: str | None = None
     asset_id: str | None = None
     segment_id: str | None = None
-    caption_choices: list[PostProcessCaptionChoice] = Field(default_factory=list)
-    repair_trace: list[PostProcessRepairTraceItem] = Field(default_factory=list)
-    candidate_counts: PostProcessCandidateCounts = Field(default_factory=PostProcessCandidateCounts)
-    solver: PostProcessSolverDiagnostics = Field(default_factory=PostProcessSolverDiagnostics)
+    analysis: str = ""
+    repair_trace: list[BgmRepairTraceItem] = Field(default_factory=list)
+    candidate_count: int = Field(0, ge=0)
     provider_invocation_ids: list[str] = Field(default_factory=list)
 
 
+class CaptionRun(ContractModel):
+    run_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    role: Literal["normal", "emphasis"]
+    hint_id: str | None = None
+    token_ids: list[str] = Field(default_factory=list)
+    char_span: tuple[int, int]
+    enter_frame: int = Field(ge=0)
+    exit_frame: int = Field(gt=0)
+    effect_id: Literal["none", "soft_in", "pop"] = "none"
+    advance_px: float = Field(ge=0.0)
+    baseline_offset_px: float = Field(ge=0.0)
+
+    @model_validator(mode="after")
+    def validate_run(self) -> "CaptionRun":
+        start, end = self.char_span
+        if start < 0 or end <= start:
+            raise ValueError("caption run char_span must be a positive half-open range")
+        if self.exit_frame <= self.enter_frame:
+            raise ValueError("caption run exit_frame must be greater than enter_frame")
+        allowed = {"normal": {"none", "soft_in"}, "emphasis": {"none", "pop"}}
+        if self.effect_id not in allowed[self.role]:
+            raise ValueError(f"{self.role} caption run cannot use {self.effect_id}")
+        if self.role == "emphasis" and not self.hint_id:
+            raise ValueError("emphasis caption run requires hint_id")
+        if self.role == "normal" and self.hint_id is not None:
+            raise ValueError("normal caption run cannot carry hint_id")
+        return self
+
+
+class CaptionLine(ContractModel):
+    runs: list[CaptionRun] = Field(min_length=1)
+    advance_px: float = Field(ge=0.0)
+
+    @model_validator(mode="after")
+    def validate_line(self) -> "CaptionLine":
+        if abs(sum(run.advance_px for run in self.runs) - self.advance_px) > 0.51:
+            raise ValueError("caption line advance must equal the sum of run advances")
+        return self
+
+
 class CaptionCue(ContractModel):
-    start: float
-    end: float
-    lines: list[str] = Field(min_length=1, max_length=3)  # 已断行，1-3 行
-    # v2 uses stable NarrationUnit.unit_id strings; integers remain read-compatible
-    # with CaptionDisplayPlan.v1 artifacts written before CaptionWindowPlanning.
-    source_unit_ids: list[str | int]
-    rect: OverlayRect | None = None
-    text_align: Literal["left", "center", "right"] = "center"
-    # Legacy read compatibility only. New caption-display plans never suppress a
-    # normal cue for an emphasis event.
-    suppressed_by: str | None = None
+    cue_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    start_frame: int = Field(ge=0)
+    end_frame: int = Field(gt=0)
+    spoken_span: CaptionFrameSpan
+    display_span: CaptionFrameSpan
+    source_unit_ids: list[str] = Field(min_length=1)
+    lines: list[CaptionLine] = Field(min_length=1, max_length=3)
+    omitted_break_whitespace: list[tuple[int, int]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_cue(self) -> "CaptionCue":
+        if (self.start_frame, self.end_frame) != (
+            self.display_span.start_frame,
+            self.display_span.end_frame,
+        ):
+            raise ValueError("caption cue start/end must mirror display_span")
+        flattened = [run for line in self.lines for run in line.runs]
+        if not flattened:
+            raise ValueError("caption cue requires at least one run")
+        previous_end = 0
+        reconstructed: list[str] = []
+        omitted = {tuple(span) for span in self.omitted_break_whitespace}
+        for start, end in omitted:
+            if start < 0 or end <= start or end > len(self.text):
+                raise ValueError("omitted caption whitespace span is out of bounds")
+            if not self.text[start:end].isspace():
+                raise ValueError("only break whitespace may be omitted from caption runs")
+        token_ids: set[str] = set()
+        for run in flattened:
+            start, end = run.char_span
+            if start < previous_end:
+                raise ValueError("caption run char spans must be ordered and non-overlapping")
+            if end > len(self.text):
+                raise ValueError("caption run char span exceeds cue text")
+            gap = self.text[previous_end:start]
+            if gap and (previous_end, start) not in omitted:
+                raise ValueError("caption run char spans leave an unexplained text gap")
+            reconstructed.append(gap)
+            if self.text[start:end] != run.text:
+                raise ValueError("caption run text must match the cue substring")
+            reconstructed.append(run.text)
+            if run.enter_frame < self.start_frame or run.exit_frame > self.end_frame:
+                raise ValueError("caption run timing must stay inside its cue")
+            duplicates = token_ids.intersection(run.token_ids)
+            if duplicates:
+                raise ValueError("caption token ids must be owned by one run")
+            token_ids.update(run.token_ids)
+            previous_end = end
+        trailing = self.text[previous_end:]
+        if trailing and (previous_end, len(self.text)) not in omitted:
+            raise ValueError("caption run char spans leave an unexplained trailing gap")
+        reconstructed.append(trailing)
+        if "".join(reconstructed) != self.text:
+            raise ValueError("caption runs must reconstruct the cue text")
+        return self
 
 
-class CaptionDisplayDiagnostics(ContractModel):
-    merged_units: int = 0
-    split_cues: int = 0
-    # Legacy counters kept so historical CaptionDisplayPlan.v1 artifacts remain
-    # readable. The no-punch policy always writes zero.
-    suppressed_duplicates: int = 0
-    dropped_fragments: int = 0
-    animation_fallbacks: int = 0
-    font_metrics_source: str = "hmtx"  # hmtx | eaw_fallback
+class CaptionBand(ContractModel):
+    anchor_x: float = Field(CAPTION_ANCHOR_X, ge=0.0, le=1.0)
+    baseline_y: float = Field(CAPTION_BASELINE_Y, ge=0.0, le=1.0)
+    line_height_ratio: float = Field(CAPTION_LINE_HEIGHT_RATIO, gt=0.0)
+    text_align: Literal["center"] = "center"
+    max_width_ratio: float = Field(CAPTION_MAX_WIDTH_RATIO, gt=0.0, le=1.0)
 
 
-class CaptionDisplayPlanArtifact(ContractModel):
-    """Caption Display v2 诊断产物（payload_schema ``CaptionDisplayPlan.v1``）。
+class CaptionTokenFallback(ContractModel):
+    reason: Literal["token_unmatched"] = "token_unmatched"
+    hint_ids: list[str] = Field(min_length=1)
+    phrase: str
 
-    照 ``EditingAgentDiagnostics`` 范式走独立 artifact，不进公共 run report 结构。
-    """
 
-    policy_version: str = "caption_display_v2"
-    normal_cues: list[CaptionCue]
-    # Legacy compatibility field; new plans always write an empty list.
-    suppressed_cues: list[CaptionCue]
-    emphasis_events: list[OverlayEvent]
-    diagnostics: CaptionDisplayDiagnostics
+class CaptionLayoutFallback(ContractModel):
+    reason: Literal["emphasis_unbreakable"] = "emphasis_unbreakable"
+    hint_ids: list[str] = Field(min_length=1)
+    source_unit_ids: list[str] = Field(min_length=1)
+
+
+class CaptionUnitFallback(ContractModel):
+    reason: Literal["narration_unit_unmatched", "narration_unit_timing_invalid"]
+    source_unit_ids: list[str] = Field(min_length=1)
+    text: str
+
+
+class CaptionCompositionDiagnostics(ContractModel):
+    timing_source: Literal["native", "asr_anchored", "interpolated"] = "interpolated"
+    font_metrics_source: Literal["hmtx", "eaw_fallback"] = "hmtx"
+    emphasis_font_metrics_source: Literal["hmtx", "eaw_fallback"] = "hmtx"
+    merged_units: int = Field(0, ge=0)
+    split_cues: int = Field(0, ge=0)
+    units_unmatched: int = Field(0, ge=0)
+    hints_total: int = Field(0, ge=0)
+    hints_applied: int = Field(0, ge=0)
+    hints_unmatched: int = Field(0, ge=0)
+    hints_token_unmatched: int = Field(0, ge=0)
+    hints_overlapped: int = Field(0, ge=0)
+    hints_unbreakable: int = Field(0, ge=0)
+    fallbacks: list[CaptionTokenFallback | CaptionLayoutFallback | CaptionUnitFallback] = Field(
+        default_factory=list
+    )
+
+
+class CaptionCompositionPlanArtifact(ContractModel):
+    policy_version: Literal["caption_composition_v1"] = "caption_composition_v1"
+    fps: int = Field(gt=0)
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    normal_enabled: bool
+    emphasis_enabled: bool
+    band: CaptionBand
+    normal_font_asset_id: str | None = None
+    emphasis_font_asset_id: str | None = None
+    normal_font_size: int = Field(gt=0)
+    emphasis_font_size: int = Field(gt=0)
+    cues: list[CaptionCue] = Field(default_factory=list)
+    diagnostics: CaptionCompositionDiagnostics = Field(
+        default_factory=CaptionCompositionDiagnostics
+    )
+
+    @model_validator(mode="after")
+    def validate_plan(self) -> "CaptionCompositionPlanArtifact":
+        if self.emphasis_enabled and not self.normal_enabled:
+            raise ValueError("emphasis captions require the normal caption band")
+        if not self.normal_enabled and self.cues:
+            raise ValueError("disabled normal captions cannot contain cues")
+        if self.normal_enabled and not self.normal_font_asset_id:
+            raise ValueError("enabled captions require normal_font_asset_id")
+        if self.emphasis_enabled and not self.emphasis_font_asset_id:
+            raise ValueError("enabled emphasis requires emphasis_font_asset_id")
+        cue_ids = [cue.cue_id for cue in self.cues]
+        if len(set(cue_ids)) != len(cue_ids):
+            raise ValueError("caption cue ids must be unique")
+        claimed_tokens: set[str] = set()
+        for cue in self.cues:
+            for line in cue.lines:
+                for run in line.runs:
+                    if run.role == "emphasis" and not self.emphasis_enabled:
+                        raise ValueError("disabled emphasis cannot contain emphasis runs")
+                    duplicates = claimed_tokens.intersection(run.token_ids)
+                    if duplicates:
+                        raise ValueError("caption token ids must be globally unique")
+                    claimed_tokens.update(run.token_ids)
+        return self
 
 
 class TimelineTrackSegment(ContractModel):

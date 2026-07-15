@@ -1,5 +1,10 @@
 # EditingAgentPlanning MVP 设计（技术 spec）
 
+> **历史归档 / Superseded（2026-07-15，issue #209）**：本文描述的
+> `digital_human_editing_agent_v1` 与 `EditingAgentPlanning` 已删除，不再是当前实现依据。
+> 当前活动 Agent 链为 `digital_human_editing_agent_v2`；字幕由
+> `CaptionCompositionPlanning` 确定性编排，BGM 由 `BgmAgentPlanning` 独立选择。
+
 - 日期：2026-07-01
 - 状态：已批准，进入实现
 - 来源：GitHub Issue [#136](https://github.com/nanzhi84/lead-gen-video-workflow/issues/136)

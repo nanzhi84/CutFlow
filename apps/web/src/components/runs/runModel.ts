@@ -19,15 +19,13 @@ const NODE_LABELS: Record<string, string> = {
   PortraitPlanning: "规划数字人镜头",
   BrollPlanning: "规划 B-roll 插入",
   StylePlanning: "规划字幕与包装",
-  EditingAgentPlanning: "剪辑 Agent 规划",
   MediaSelectionAgentPlanning: "媒体选择 Agent 规划",
   TimelineAssemblyValidation: "组装并校验时间线",
-  TimelinePlanning: "组装并校验时间线（历史节点）",
   PortraitTrackBuild: "生成数字人轨道",
   LipSync: "口型同步",
   RenderFinalTimeline: "渲染主时间线",
-  CaptionWindowPlanning: "规划字幕窗口",
-  PostProcessAgentPlanning: "后处理 Agent 规划",
+  CaptionCompositionPlanning: "规划固定字幕带",
+  BgmAgentPlanning: "规划背景音乐",
   SubtitleAndBgmMix: "混合字幕与配乐",
   ExportFinishedVideo: "导出成片",
   FinalizeRunReport: "生成运行报告",
@@ -37,14 +35,6 @@ const NODE_LABELS: Record<string, string> = {
 
 export function nodeLabel(id: string): string {
   return NODE_LABELS[id] ?? id;
-}
-
-const LEGACY_NODE_ALIASES: Record<string, string> = {
-  TimelinePlanning: "TimelineAssemblyValidation",
-};
-
-function canonicalNodeId(id: string): string {
-  return LEGACY_NODE_ALIASES[id] ?? id;
 }
 
 // 各工作流模板的节点顺序，镜像 packages/production/pipeline/node_sequence.py。
@@ -66,26 +56,7 @@ const TEMPLATE_NODE_SEQUENCES: Record<string, string[]> = {
     "PortraitTrackBuild",
     "LipSync",
     "RenderFinalTimeline",
-    "SubtitleAndBgmMix",
-    "ExportFinishedVideo",
-    "FinalizeRunReport",
-  ],
-  digital_human_editing_agent_v1: [
-    "ValidateRequest",
-    "LoadCaseContext",
-    "ResolveCreativeIntent",
-    "TTS",
-    "MaterialPackPlanning",
-    "NarrationAlignment",
-    "NarrationBoundaryPlanning",
-    "TimelineWindowPlanning",
-    "WindowQueryPlanning",
-    "WindowMaterialRetrieval",
-    "EditingAgentPlanning",
-    "TimelinePlanning",
-    "PortraitTrackBuild",
-    "LipSync",
-    "RenderFinalTimeline",
+    "CaptionCompositionPlanning",
     "SubtitleAndBgmMix",
     "ExportFinishedVideo",
     "FinalizeRunReport",
@@ -106,8 +77,8 @@ const TEMPLATE_NODE_SEQUENCES: Record<string, string[]> = {
     "PortraitTrackBuild",
     "LipSync",
     "RenderFinalTimeline",
-    "CaptionWindowPlanning",
-    "PostProcessAgentPlanning",
+    "CaptionCompositionPlanning",
+    "BgmAgentPlanning",
     "SubtitleAndBgmMix",
     "ExportFinishedVideo",
     "FinalizeRunReport",
@@ -134,16 +105,16 @@ export function buildNodeTimeline(
   nodes: NodeRun[],
   runStatus?: string,
 ): NodeTimelineItem[] {
-  const byId = new Map(nodes.map((node) => [canonicalNodeId(node.node_id), node]));
+  const byId = new Map(nodes.map((node) => [node.node_id, node]));
   const sequence = TEMPLATE_NODE_SEQUENCES[templateId ?? ""] ?? [];
   const items: NodeTimelineItem[] = sequence.flatMap((nodeId) => {
-    const node = byId.get(canonicalNodeId(nodeId));
+    const node = byId.get(nodeId);
     if (!node && runStatus === "succeeded") return [];
     return [{ nodeId, status: node?.status ?? "pending", node }];
   });
-  const known = new Set(sequence.map(canonicalNodeId));
+  const known = new Set(sequence);
   for (const node of nodes) {
-    if (!known.has(canonicalNodeId(node.node_id))) {
+    if (!known.has(node.node_id)) {
       items.push({ nodeId: node.node_id, status: node.status, node });
     }
   }
@@ -155,9 +126,9 @@ type StageDef = { key: string; label: string; detail: string; nodes: string[] };
 const STAGE_DEFS: StageDef[] = [
   { key: "script", label: "脚本与意图", detail: "校验请求、加载案例、解析创作意图", nodes: ["ValidateRequest", "LoadCaseContext", "ResolveCreativeIntent"] },
   { key: "voice", label: "配音合成", detail: "生成数字人配音并对齐时间轴", nodes: ["TTS", "NarrationAlignment"] },
-  { key: "material", label: "素材匹配与编排", detail: "匹配素材，并组装校验时间线", nodes: ["MaterialPackPlanning", "NarrationBoundaryPlanning", "TimelineWindowPlanning", "WindowQueryPlanning", "WindowMaterialRetrieval", "DeterministicEditingPlanning", "PortraitPlanning", "BrollPlanning", "StylePlanning", "EditingAgentPlanning", "MediaSelectionAgentPlanning", "TimelineAssemblyValidation", "TimelinePlanning"] },
+  { key: "material", label: "素材匹配与编排", detail: "匹配素材，并组装校验时间线", nodes: ["MaterialPackPlanning", "NarrationBoundaryPlanning", "TimelineWindowPlanning", "WindowQueryPlanning", "WindowMaterialRetrieval", "DeterministicEditingPlanning", "PortraitPlanning", "BrollPlanning", "StylePlanning", "MediaSelectionAgentPlanning", "TimelineAssemblyValidation"] },
   { key: "lipsync", label: "口型同步", detail: "生成数字人轨道并做唇形同步", nodes: ["PortraitTrackBuild", "LipSync"] },
-  { key: "compose", label: "合成出片", detail: "渲染时间线、规划并混合字幕配乐、导出成片", nodes: ["RenderFinalTimeline", "CaptionWindowPlanning", "PostProcessAgentPlanning", "SubtitleAndBgmMix", "ExportFinishedVideo", "FinalizeRunReport"] },
+  { key: "compose", label: "合成出片", detail: "渲染时间线、规划并混合字幕配乐、导出成片", nodes: ["RenderFinalTimeline", "CaptionCompositionPlanning", "BgmAgentPlanning", "SubtitleAndBgmMix", "ExportFinishedVideo", "FinalizeRunReport"] },
 ];
 
 export type StageView = { key: string; label: string; detail: string; status: string };
@@ -240,9 +211,6 @@ export function warningLabel(value: string) {
   if (value === "lipsync.fallback_used") return "主口型供应商失败，已由兜底供应商生成";
   if (value === "bgm.loudness_probe_failed") return "BGM 响度探测失败，已按请求音量混音";
   if (value === "font.resolution_failed") return "指定字体文件解析失败，已使用默认字体";
-  if (value === "editing_agent.deterministic_fallback") return "剪辑 Agent 已使用确定性兜底";
-  if (value === "editing_agent.llm_repair") return "剪辑 Agent 已通过模型修复重试";
-  if (value === "editing_agent.local_constraint_repair") return "剪辑 Agent 已执行本地约束修正";
   if (value === "media_selection_agent.deterministic_fallback") return "媒体选择 Agent 已使用确定性兜底";
   if (value === "media_selection_agent.llm_repair") return "媒体选择 Agent 已通过模型修复重试";
   if (value === "media_selection_agent.local_constraint_repair") return "媒体选择 Agent 已执行本地约束修正";
@@ -250,11 +218,9 @@ export function warningLabel(value: string) {
   if (value === "window_query.template_fallback") {
     return "检索 query 已回退模板拼接（LLM 不可用）";
   }
-  if (value === "huazi.animation_fallback") return "花字动画降级";
-  if (value === "huazi.planning_failed") return "花字规划失败（本次无花字）";
   if (value === "font.metrics_fallback") return "字体度量回退估算";
-  if (value === "caption.visual_analysis_failed") return "花字视觉安全分析失败（本次无花字）";
-  if (value === "postprocess.planning_failed") return "后处理 Agent 规划失败（本次无花字或 BGM）";
+  if (value === "caption.composition_fallback") return "部分强调已回退为普通字幕";
+  if (value === "bgm.planning_failed") return "BGM Agent 未成功，已使用确定性本地选择";
   return "未知警告";
 }
 

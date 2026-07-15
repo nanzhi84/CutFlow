@@ -1,10 +1,24 @@
-"""CreativeIntent 强调字幕链路：容错读取 helper + resolver 映射 + style 物化。"""
+"""CreativeIntent 的字幕内强调语义与历史 payload 容错。"""
 
 from __future__ import annotations
 
-from packages.core.contracts import ArtifactKind
+from types import SimpleNamespace
+
+import pytest
+
+from packages.core.contracts import (
+    Artifact,
+    ArtifactKind,
+    ArtifactRef,
+    DigitalHumanVideoRequest,
+    ErrorCode,
+)
 from packages.core.contracts.artifacts import CreativeIntentArtifact, EmphasisHint
 from packages.core.workflow import NodeExecutionError
+from packages.production.pipeline.nodes.resolve_creative_intent import (
+    _MAX_EMPHASIS,
+    _intent_to_artifact,
+)
 
 
 class _Art:
@@ -22,41 +36,103 @@ def _state_with(payload):
     return _State({ArtifactKind.creative_intent: _Art(payload)})
 
 
-# --- 契约 ---
-
-
-def test_creative_intent_defaults_are_empty():
-    ci = CreativeIntentArtifact()
-    assert ci.intent is None
-    assert ci.emphasis == []
-
-
-def test_creative_intent_round_trips_emphasis():
-    ci = CreativeIntentArtifact(
+def test_creative_intent_round_trips_caption_run_hints():
+    artifact = CreativeIntentArtifact(
         intent={"hook": "h", "beats": ["a"]},
-        emphasis=[EmphasisHint(phrase="限时五折")],
-    )
-    dumped = ci.model_dump(mode="json")
-    again = CreativeIntentArtifact.model_validate(dumped)
-    assert again.emphasis[0].phrase == "限时五折"
-
-
-def test_resolve_creative_intent_normalizes_bgm_mood():
-    from packages.production.pipeline.nodes.resolve_creative_intent import _intent_to_artifact
-
-    artifact = _intent_to_artifact(
-        {"intent": {"hook": "h", "beats": ["a"], "bgm_mood": "高能推进"}}
+        emphasis=[
+            EmphasisHint(phrase="限时五折", priority=90, display_mode="inline"),
+            EmphasisHint(phrase="最后一天", priority=70, display_mode="whole_cue"),
+        ],
     )
 
+    restored = CreativeIntentArtifact.model_validate(artifact.model_dump(mode="json"))
+
+    assert restored.emphasis == artifact.emphasis
+
+
+def test_intent_to_artifact_accepts_only_exact_typed_script_phrases():
+    script = "今天限时五折，最后一天。"
+    output = {
+        "intent": {
+            "hook": "h",
+            "beats": ["a"],
+            "bgm_mood": "高能推进",
+            "emphasis": [
+                {"phrase": "限时五折", "priority": 90, "display_mode": "inline"},
+                {"phrase": "最后一天", "priority": 70, "display_mode": "whole_cue"},
+                {"phrase": "限时五折", "priority": 20, "display_mode": "inline"},
+                {"phrase": "脚本没有", "priority": 100, "display_mode": "inline"},
+                {"phrase": "限时五折", "priority": True, "display_mode": "inline"},
+                {"phrase": "限时五折", "priority": 50, "display_mode": "banner"},
+                "限时五折",
+            ],
+        }
+    }
+
+    artifact = _intent_to_artifact(output, script)
+
+    assert artifact.intent is not None
     assert artifact.intent["bgm_mood"] == "高能"
+    assert [(item.phrase, item.priority, item.display_mode) for item in artifact.emphasis] == [
+        ("限时五折", 90, "inline"),
+        ("最后一天", 70, "whole_cue"),
+        ("限时五折", 20, "inline"),
+    ]
+
+
+def test_intent_to_artifact_preserves_order_and_caps_hint_count():
+    phrases = [f"短语{i}" for i in range(20)]
+    script = "，".join(phrases)
+    artifact = _intent_to_artifact(
+        {
+            "intent": {
+                "hook": "h",
+                "beats": [],
+                "emphasis": [
+                    {"phrase": phrase, "priority": index, "display_mode": "inline"}
+                    for index, phrase in enumerate(phrases)
+                ],
+            }
+        },
+        script,
+    )
+
+    assert [item.phrase for item in artifact.emphasis] == phrases[:_MAX_EMPHASIS]
+
+
+def test_intent_to_artifact_missing_hints_defaults_to_empty():
+    artifact = _intent_to_artifact({"intent": {"hook": "h", "beats": ["a"]}}, "脚本")
+    assert artifact.emphasis == []
+
+
+def test_load_creative_intent_tolerates_historical_extra_fields():
+    from packages.production.pipeline.nodes._creative_intent import load_creative_intent
+
+    payload = {
+        "scene_type": "hard_ad",
+        "intent": {"hook": "h", "beats": ["a"]},
+        "overlay_events": [],
+        "emphasis": [{"phrase": "限时五折", "priority": 80, "display_mode": "inline"}],
+    }
+
+    artifact = load_creative_intent(_state_with(payload))
+
+    assert artifact.intent == {"hook": "h", "beats": ["a"]}
+    assert artifact.emphasis[0].phrase == "限时五折"
+
+
+def test_load_creative_intent_falls_back_when_known_field_is_invalid():
+    from packages.production.pipeline.nodes._creative_intent import load_creative_intent
+
+    artifact = load_creative_intent(
+        _state_with({"intent": {"hook": "h", "beats": ["a"]}, "emphasis": "invalid"})
+    )
+
+    assert artifact.intent == {"hook": "h", "beats": ["a"]}
+    assert artifact.emphasis == []
 
 
 def test_resolve_creative_intent_ref_rejects_cross_case_artifact():
-    from types import SimpleNamespace
-
-    import pytest
-
-    from packages.core.contracts import Artifact, ArtifactRef, DigitalHumanVideoRequest, ErrorCode
     from packages.production.pipeline.nodes import resolve_creative_intent
 
     artifact = Artifact(
@@ -90,186 +166,17 @@ def test_resolve_creative_intent_ref_rejects_cross_case_artifact():
     assert exc.value.error.code == ErrorCode.artifact_schema_mismatch
 
 
-# --- load_creative_intent helper ---
-
-
-def test_load_missing_returns_defaults():
-    from packages.production.pipeline.nodes._creative_intent import load_creative_intent
-
-    ci = load_creative_intent(_State({}))
-    assert ci.emphasis == []
-    assert ci.intent is None
-
-
-def test_load_reads_emphasis():
-    from packages.production.pipeline.nodes._creative_intent import load_creative_intent
-
-    ci = load_creative_intent(
-        _state_with(
-            {
-                "intent": {"hook": "h", "beats": ["a"]},
-                "emphasis": [{"phrase": "限时五折"}],
-            }
-        )
-    )
-    assert [e.phrase for e in ci.emphasis] == ["限时五折"]
-
-
-def test_load_tolerates_legacy_payload_with_removed_fields():
-    """老 run 的 creative_intent payload 带已删字段（scene_type/cover_focus 等），不得撞 extra=forbid。"""
-    from packages.production.pipeline.nodes._creative_intent import load_creative_intent
-
-    legacy = {
-        "scene_type": "hard_ad",
-        "style_hint": "",
-        "density": "medium",
-        "closing_cta": "",
-        "intent": {"hook": "h", "beats": ["a"]},
-        "cover_focus": {},
-        "overlay_events": [],
-        "script_features_hint": {},
-    }
-    ci = load_creative_intent(_state_with(legacy))
-    assert ci.intent == {"hook": "h", "beats": ["a"]}
-    assert ci.emphasis == []
-
-
-def test_load_falls_back_to_intent_on_invalid_known_field():
-    """已声明字段类型非法（model_validate 失败）时，走 except 兜底，仍能保住 intent。"""
-    from packages.production.pipeline.nodes._creative_intent import load_creative_intent
-
-    ci = load_creative_intent(
-        _state_with({"intent": {"hook": "h", "beats": ["a"]}, "emphasis": "not-a-list"})
-    )
-    assert ci.intent == {"hook": "h", "beats": ["a"]}
-    assert ci.emphasis == []
-
-
-# --- resolver: _intent_to_artifact ---
-
-
-def test_intent_to_artifact_maps_emphasis():
-    from packages.production.pipeline.nodes.resolve_creative_intent import _intent_to_artifact
-
-    out = {
-        "intent": {
-            "hook": "h",
-            "beats": ["a", "b"],
-            "emphasis": ["限时五折", "只要九块九"],
-        }
-    }
-    art = _intent_to_artifact(out)
-    assert [e.phrase for e in art.emphasis] == ["限时五折", "只要九块九"]
-    assert art.intent["hook"] == "h"
-
-
-def test_intent_to_artifact_filters_and_dedups_emphasis():
-    from packages.production.pipeline.nodes.resolve_creative_intent import _intent_to_artifact
-
-    out = {
-        "intent": {
-            "hook": "h",
-            "beats": [],
-            # 去重、丢空/单字/超长、丢非字符串
-            "emphasis": ["五折", "五折", "", "x", "字" * 40, 123, "  限时  "],
-        }
-    }
-    art = _intent_to_artifact(out)
-    assert [e.phrase for e in art.emphasis] == ["五折", "限时"]
-
-
-def test_intent_to_artifact_missing_new_fields_defaults():
-    from packages.production.pipeline.nodes.resolve_creative_intent import _intent_to_artifact
-
-    art = _intent_to_artifact({"intent": {"hook": "h", "beats": ["a"]}})
-    assert art.emphasis == []
-
-
-def test_intent_to_artifact_caps_emphasis_count():
-    from packages.production.pipeline.nodes.resolve_creative_intent import (
-        _MAX_EMPHASIS,
-        _intent_to_artifact,
-    )
-
-    art = _intent_to_artifact(
-        {"intent": {"hook": "h", "beats": [], "emphasis": [f"短语{i}" for i in range(20)]}}
-    )
-    assert len(art.emphasis) == _MAX_EMPHASIS
-
-
-# --- 花字候选派生已搬到 _huazi_candidates.derive_huazi_candidates（见
-#     tests/production/test_huazi_candidates.py）；确定性链不再派生花字。
-
-
-# --- _subtitles: emphasis rendering ---
-
-_NARR = {"units": [{"text": "今天限时五折活动", "start": 0.0, "end": 2.0}]}
-_STYLE = {"subtitle": {"font_size": 64}}
-
-
-def _write(tmp_path, **kwargs):
-    from packages.production.pipeline._subtitles import write_ass_subtitles
-
-    out = tmp_path / "s.ass"
-    write_ass_subtitles(out, narration=_NARR, style=_STYLE, width=1080, height=1920, **kwargs)
-    return out.read_text(encoding="utf-8")
-
-
-def test_emphasis_overlay_renders_layer1_dialogue(tmp_path):
-    txt = _write(
-        tmp_path,
-        overlay_events=[{"start": 0.0, "end": 2.0, "text": "限时五折", "style": "emphasis"}],
-    )
-    assert "Style: Emphasis," in txt
-    assert "Dialogue: 1," in txt  # emphasis layered above the Layer 0 narration
-    assert (
-        r"Emphasis,,0,0,0,,{\an8\pos(540,269)\fad(80,120)\t(0,180,\fscx108\fscy108)}限时五折" in txt
-    )
-    assert "&H0000FFFF" in txt  # yellow emphasis primary colour
-
-
-def test_no_overlay_is_byte_identical_to_legacy(tmp_path):
-    """无 overlay 时输出与旧路径逐字节一致：不传 vs 传空列表 vs None。"""
-    from packages.production.pipeline._subtitles import write_ass_subtitles
-
-    (tmp_path / "a").mkdir()
-    (tmp_path / "b").mkdir()
-    (tmp_path / "c").mkdir()
-    a = tmp_path / "a" / "s.ass"
-    b = tmp_path / "b" / "s.ass"
-    c = tmp_path / "c" / "s.ass"
-    write_ass_subtitles(a, narration=_NARR, style=_STYLE, width=1080, height=1920)
-    write_ass_subtitles(b, narration=_NARR, style=_STYLE, width=1080, height=1920, overlay_events=[])
-    write_ass_subtitles(
-        c, narration=_NARR, style=_STYLE, width=1080, height=1920, overlay_events=None
-    )
-    legacy = a.read_text(encoding="utf-8")
-    assert legacy == b.read_text(encoding="utf-8") == c.read_text(encoding="utf-8")
-    assert "Emphasis" not in legacy
-    assert "Dialogue: 1," not in legacy
-    # 原 Default 样式行逐字节不变（防字幕风格回归）
-    assert ",1,4,1,2," in legacy and "&H00FFFFFF" in legacy
-
-
-def test_emphasis_text_is_ass_escaped(tmp_path):
-    txt = _write(
-        tmp_path,
-        overlay_events=[{"start": 0.0, "end": 2.0, "text": "限{时}五折", "style": "emphasis"}],
-    )
-    assert "限时五折" in txt  # 花括号被 ass_escape 去掉，避免 ASS 注入/破帧
-
-
-# --- 水源守卫：绑定到 ResolveCreativeIntent 的 prompt 必须真的让 LLM 产出 emphasis ---
-
-
-def test_creative_intent_prompt_requests_emphasis():
-    """整条花字链路只有在 LLM 被要求输出 emphasis 时才有数据；prompt 若漏掉 emphasis，
-    上面所有派生/渲染逻辑都收不到非空输入，功能形同虚设。锁住这个契约。"""
+def test_creative_intent_prompt_requests_caption_run_semantics():
     from packages.core.storage.repository import Repository
 
-    repo = Repository()
+    repository = Repository()
     binding = next(
-        b for b in repo.prompt_bindings.values() if b.node_id == "ResolveCreativeIntent"
+        item for item in repository.prompt_bindings.values() if item.node_id == "ResolveCreativeIntent"
     )
-    content = repo.prompt_versions[binding.prompt_version_id].content
-    assert "emphasis" in content
+    content = repository.prompt_versions[binding.prompt_version_id].content
+
+    assert "phrase" in content
+    assert "priority" in content
+    assert "display_mode" in content
+    assert "inline" in content
+    assert "whole_cue" in content

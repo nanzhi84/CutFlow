@@ -106,7 +106,7 @@ def assign_token_ownership(
     token a deterministic identity and character range, then walks narration-unit
     text in the same order and claims each token exactly once.  A unit that cannot
     be matched leaves its tokens unowned instead of guessing from temporal overlap;
-    CaptionWindowPlanning has an explicit cue-level fallback for that case.
+    CaptionCompositionPlanning records an explicit cue-level fallback for that case.
     """
 
     matches = list(_DISPLAY_TOKEN.finditer(str(script or "")))
@@ -221,7 +221,7 @@ def _anchor_display_tokens(
         # Provider token times are spoken truth and may legitimately overlap at a
         # sentence boundary. Never force them onto a single global cursor: doing
         # so can collapse the first token of the next sentence to zero duration.
-        # Display non-overlap is a CaptionWindowPlanning concern.
+        # Display non-overlap is a CaptionCompositionPlanning concern.
         start = max(0.0, min(limit, start))
         end = max(start, min(limit, end))
         if end > start:

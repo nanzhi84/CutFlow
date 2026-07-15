@@ -56,11 +56,11 @@ def _upload(upload_id: str, *, status: str, object_uri: str | None) -> UploadSes
     )
 
 
-def test_migration_revision_is_single_head() -> None:
+def test_migration_revision_is_in_current_single_head_chain() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     migration = script.get_revision(REVISION)
 
-    assert script.get_heads() == [REVISION]
+    assert script.get_heads() == ["0062_drop_v1_prompts"]
     assert migration is not None
     assert migration.down_revision == "0057_drop_provider_retry_policy"
     assert len(REVISION) <= 32

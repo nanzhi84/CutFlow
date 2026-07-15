@@ -122,6 +122,11 @@ def test_terminal_predicate_matches_done_set_semantics():
         )
         assert pending_adapter._node_already_terminal(pending_run.id, "TTS") is False
 
-    # A historical persisted node id resolves through canonical_node_id.
-    alias_adapter, alias_run = _adapter_with_terminal_node(node_id="TimelinePlanning")
-    assert alias_adapter._node_already_terminal(alias_run.id, "TimelineAssemblyValidation") is True
+    # Clean-Slate does not let a retired persisted id satisfy an active node.
+    retired_adapter, retired_run = _adapter_with_terminal_node(node_id="TimelinePlanning")
+    assert (
+        retired_adapter._node_already_terminal(
+            retired_run.id, "TimelineAssemblyValidation"
+        )
+        is False
+    )

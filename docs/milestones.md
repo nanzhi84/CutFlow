@@ -21,7 +21,7 @@
 
 - 默认存储后端是 `sqlalchemy`。
 - Alembic 迁移只在 `packages/core/storage/alembic/versions/`。
-- 当前单一 migration head 是 `0058_resumable_uploads`。
+- 当前单一 migration head 是 `0062_drop_v1_prompts`。
 - `memory` 后端保留给测试和 demo。
 
 ## M3 · 工作流运行时
@@ -67,7 +67,7 @@
 当前状态：
 
 - 主生产模板是 `digital_human_v2`。
-- 活动扩展模板包括 `digital_human_editing_agent_v2` 和 `seedance_t2v_v1`；`digital_human_editing_agent_v1` 仅用于历史任务恢复；纯 B-roll 画外音走主链 `broll.mode="full_coverage"`。
+- 活动扩展模板包括 `digital_human_editing_agent_v2` 和 `seedance_t2v_v1`；历史 `digital_human_editing_agent_v1` 已退出注册且不可恢复；纯 B-roll 画外音走主链 `broll.mode="full_coverage"`。
 - 素材选择确定性执行，并用 selection ledger 做近期降权。
 - Provider 调用经 `ProviderGateway`，prompt 经 `PromptRegistry`。
 - 真实 provider 需要 profile 和 active secret；sandbox fallback 只在显式配置时启用。

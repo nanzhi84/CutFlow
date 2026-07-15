@@ -34,7 +34,6 @@ from packages.core.provider_idempotency import (
     build_provider_call_idempotency,
 )
 from packages.production.pipeline._run_state import RunState
-from packages.production.pipeline.node_sequence import canonical_node_id
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from packages.ai.gateway import ProviderGateway
@@ -131,7 +130,7 @@ class NodeContext:
         return build_provider_call_idempotency(
             job_id=self.run.job_id,
             run_id=self.run.id,
-            canonical_node_id=canonical_node_id(self.node_run.node_id),
+            canonical_node_id=self.node_run.node_id,
             logical_call_slot=logical_call_slot,
             provider_profile_id=provider_profile_id,
             input_manifest_hash=self.node_run.input_manifest_hash,

@@ -74,14 +74,12 @@ def test_profile_and_manifest_are_key_coordinates():
     assert _key(base) != _key(_ctx(node_run_id="nr_a", manifest="m2"))
 
 
-def test_canonical_node_alias_folds_into_same_key():
-    # A historical node id and its active semantic name must produce one key so a
-    # resumed run recovers the same durable identity.
-    legacy = _key(_ctx(node_run_id="nr_a", node_id="TimelinePlanning"), slot="slot")
+def test_retired_node_id_does_not_alias_an_active_provider_key():
+    retired = _key(_ctx(node_run_id="nr_a", node_id="TimelinePlanning"), slot="slot")
     active = _key(
         _ctx(node_run_id="nr_b", node_id="TimelineAssemblyValidation"), slot="slot"
     )
-    assert legacy == active
+    assert retired != active
 
 
 def test_fallback_key_follows_the_run_so_in_flight_tasks_keep_their_identity():

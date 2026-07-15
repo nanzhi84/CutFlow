@@ -39,12 +39,9 @@ export function batchSubtitleLayerFlags(
 ): BatchSubtitleLayerFlags {
   const supportsSubtitles = workflowTemplate !== "seedance_t2v_v1";
   const normalEnabled = supportsSubtitles && panelEnabled && requestedNormal;
-  const emphasisEnabled =
-    workflowTemplate === "digital_human_editing_agent_v2" &&
-    panelEnabled &&
-    requestedEmphasis;
+  const emphasisEnabled = normalEnabled && requestedEmphasis;
   return {
-    enabled: normalEnabled || emphasisEnabled,
+    enabled: normalEnabled,
     normal_enabled: normalEnabled,
     emphasis_enabled: emphasisEnabled,
   };

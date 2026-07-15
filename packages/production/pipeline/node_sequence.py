@@ -19,15 +19,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 
 TIMELINE_ASSEMBLY_VALIDATION_NODE_ID = "TimelineAssemblyValidation"
-LEGACY_NODE_ID_ALIASES = {
-    "TimelinePlanning": TIMELINE_ASSEMBLY_VALIDATION_NODE_ID,
-}
-
-
-def canonical_node_id(node_id: str) -> str:
-    """Map historical node ids to their active semantic name."""
-
-    return LEGACY_NODE_ID_ALIASES.get(node_id, node_id)
 
 
 NODE_SEQUENCE = [
@@ -46,6 +37,7 @@ NODE_SEQUENCE = [
     "PortraitTrackBuild",
     "LipSync",
     "RenderFinalTimeline",
+    "CaptionCompositionPlanning",
     "SubtitleAndBgmMix",
     "ExportFinishedVideo",
     "FinalizeRunReport",
@@ -59,34 +51,8 @@ SEEDANCE_T2V_SEQUENCE = [
     "FinalizeRunReport",
 ]
 
-# Same digital-human chain as NODE_SEQUENCE, but the deterministic portrait / B-roll /
-# style assignment stage is replaced by the single LLM EditingAgentPlanning node
-# (issue #136/#160). Upstream order matches v2 so EditingAgentPlanning sees the same
-# MaterialPack + NarrationBoundary + per-window retrieval inputs.
-EDITING_AGENT_SEQUENCE = [
-    "ValidateRequest",
-    "LoadCaseContext",
-    "ResolveCreativeIntent",
-    "TTS",
-    "MaterialPackPlanning",
-    "NarrationAlignment",
-    "NarrationBoundaryPlanning",
-    "TimelineWindowPlanning",
-    "WindowQueryPlanning",
-    "WindowMaterialRetrieval",
-    "EditingAgentPlanning",
-    "TimelinePlanning",
-    "PortraitTrackBuild",
-    "LipSync",
-    "RenderFinalTimeline",
-    "SubtitleAndBgmMix",
-    "ExportFinishedVideo",
-    "FinalizeRunReport",
-]
-
-# Editing-agent v2 separates media assignment from the final caption/BGM
-# post-processing domain. The v1 sequence above is frozen for historical run
-# resume; new editing-agent jobs use this sequence.
+# Editing-agent v2 separates media assignment, deterministic caption composition,
+# and BGM-only semantic selection while preserving the paid LipSync prefix.
 EDITING_AGENT_V2_SEQUENCE = [
     "ValidateRequest",
     "LoadCaseContext",
@@ -103,8 +69,8 @@ EDITING_AGENT_V2_SEQUENCE = [
     "PortraitTrackBuild",
     "LipSync",
     "RenderFinalTimeline",
-    "CaptionWindowPlanning",
-    "PostProcessAgentPlanning",
+    "CaptionCompositionPlanning",
+    "BgmAgentPlanning",
     "SubtitleAndBgmMix",
     "ExportFinishedVideo",
     "FinalizeRunReport",
@@ -116,7 +82,6 @@ EDITING_AGENT_V2_SEQUENCE = [
 WORKFLOW_TEMPLATE_NODE_COUNTS = {
     "digital_human_v2": len(NODE_SEQUENCE),
     "seedance_t2v_v1": len(SEEDANCE_T2V_SEQUENCE),
-    "digital_human_editing_agent_v1": len(EDITING_AGENT_SEQUENCE),
     "digital_human_editing_agent_v2": len(EDITING_AGENT_V2_SEQUENCE),
 }
 
@@ -135,10 +100,6 @@ WORKFLOW_GRAPHS: dict[str, dict[str, list]] = {
     "seedance_t2v_v1": {
         "nodes": list(SEEDANCE_T2V_SEQUENCE),
         "edges": _linear_edges(SEEDANCE_T2V_SEQUENCE),
-    },
-    "digital_human_editing_agent_v1": {
-        "nodes": list(EDITING_AGENT_SEQUENCE),
-        "edges": _linear_edges(EDITING_AGENT_SEQUENCE),
     },
     "digital_human_editing_agent_v2": {
         "nodes": list(EDITING_AGENT_V2_SEQUENCE),

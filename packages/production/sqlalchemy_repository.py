@@ -63,7 +63,7 @@ from packages.core.contracts import (
     normalize_visual_asset_kind,
     utcnow,
 )
-from packages.core.contracts.artifacts import ClipEmbeddingRecord
+from packages.core.contracts.artifacts import CaptionCompositionPlanArtifact, ClipEmbeddingRecord
 from packages.core.observability.funnel import resolve_event_owner
 from packages.core.storage import ObjectStore, Repository, get_object_store
 from packages.core.storage.database import (
@@ -118,6 +118,7 @@ from packages.core.storage.base_repository import BaseRepository
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
 from packages.media.assets import local_object_path
+from packages.production.pipeline.reuse import has_retryable_active_failure
 from packages.media.sqlalchemy_repository import (
     annotation_row_to_editor,
     media_asset_row_to_contract,
@@ -205,15 +206,13 @@ NODE_LABELS = {
     "PortraitPlanning": "规划数字人镜头",
     "BrollPlanning": "规划 B-roll",
     "StylePlanning": "规划字幕与包装",
-    "EditingAgentPlanning": "剪辑 Agent 规划",
     "MediaSelectionAgentPlanning": "媒体选择 Agent 规划",
     "TimelineAssemblyValidation": "组装并校验时间线",
-    "TimelinePlanning": "组装并校验时间线（历史节点）",
     "PortraitTrackBuild": "生成数字人轨道",
     "LipSync": "口型同步",
     "RenderFinalTimeline": "渲染主时间线",
-    "CaptionWindowPlanning": "规划字幕窗口",
-    "PostProcessAgentPlanning": "后处理 Agent 规划",
+    "CaptionCompositionPlanning": "规划固定字幕带",
+    "BgmAgentPlanning": "规划背景音乐",
     "SubtitleAndBgmMix": "混合字幕与 BGM",
     "ExportFinishedVideo": "导出成片",
     "FinalizeRunReport": "生成 Run 报告",
@@ -370,16 +369,6 @@ def _run_warnings(node_runs: list[NodeRun]) -> list[str]:
     return sorted(set(values))
 
 
-def _run_has_retryable_failure(run: WorkflowRun, node_runs: list[NodeRun]) -> bool:
-    if run.status != RunStatus.failed:
-        return False
-    return any(
-        bool(node.error and node.error.retryable)
-        for node in node_runs
-        if node.status == NodeStatus.failed
-    )
-
-
 def _run_card_from_parts(
     *,
     run: WorkflowRun,
@@ -398,7 +387,7 @@ def _run_card_from_parts(
         current_node_label=_current_node_label(node_runs),
         title=_run_title(job, finished_video_title),
         warnings=_run_warnings(node_runs),
-        can_resume=_run_has_retryable_failure(run, node_runs),
+        can_resume=has_retryable_active_failure(run, node_runs),
         can_retry=run.status in {RunStatus.failed, RunStatus.cancelled},
         can_publish=run.status == RunStatus.succeeded and has_finished_video,
         preview_url=preview_url,
@@ -1684,6 +1673,14 @@ class SqlAlchemyProductionRepository(BaseRepository):
             portrait_plan = self._latest_run_artifact_payload(session, finished.run_id, ArtifactKind.plan_portrait)
             broll_plan = self._latest_run_artifact_payload(session, finished.run_id, ArtifactKind.plan_broll)
             style_plan = self._latest_run_artifact_payload(session, finished.run_id, ArtifactKind.plan_style)
+            caption_composition = self._latest_run_artifact_payload(
+                session, finished.run_id, ArtifactKind.plan_caption_composition
+            )
+            caption_plan = (
+                CaptionCompositionPlanArtifact.model_validate(caption_composition)
+                if caption_composition is not None
+                else None
+            )
             audio_path = self._latest_run_artifact_path(session, finished.run_id, ArtifactKind.audio_tts)
             narration_units = self._narration_units(session, finished.run_id)
             jianying = JianyingDraftBuilder(self.object_store).build(
@@ -1713,7 +1710,9 @@ class SqlAlchemyProductionRepository(BaseRepository):
                         style_plan,
                         resolve_source_path=lambda asset_id: self._media_asset_source_path(session, asset_id),
                     ),
-                    text_segments=build_text_segments_from_narration(narration_units, style_plan),
+                    text_segments=build_text_segments_from_narration(
+                        narration_units, caption_plan
+                    ),
                 )
             )
             artifact = ArtifactRow(
@@ -1848,6 +1847,9 @@ class SqlAlchemyProductionRepository(BaseRepository):
             session, finished.run_id, ArtifactKind.plan_style
         ) or {}
         style_dict = style_plan if isinstance(style_plan, dict) else {}
+        caption_composition = self._latest_run_artifact_payload(
+            session, finished.run_id, ArtifactKind.plan_caption_composition
+        ) or {}
         broll_plan = self._latest_run_artifact_payload(
             session, finished.run_id, ArtifactKind.plan_broll
         ) or {}
@@ -1875,12 +1877,12 @@ class SqlAlchemyProductionRepository(BaseRepository):
         ]
         return {
             "subtitle": style_dict.get("subtitle") if isinstance(style_dict.get("subtitle"), dict) else {},
-            "overlay_events": style_dict.get("overlay_events", []),
+            "caption_composition": caption_composition,
             "broll_overlays": overlays,
             "timeline_tracks": tracks,
             "manual_acceptance": {
                 "jianying_effect_id_policy": "If native Jianying effect_id changes, keep cutflow_effects/effects.json as source of truth and record a degradation on mismatch.",
-                "requires_review": bool(overlays or tracks or style_dict.get("overlay_events")),
+                "requires_review": bool(overlays or tracks),
             },
         }
 

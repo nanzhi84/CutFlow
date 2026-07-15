@@ -130,7 +130,7 @@ def test_failed_run_resume_bypasses_never_policy_until_failed_node(tmp_path):
     assert plan.decisions[-1].reason == "node_status_not_reusable"
 
 
-def test_failed_resume_reuses_historical_timeline_node_under_new_name(tmp_path):
+def test_retired_timeline_node_is_not_an_active_reuse_alias(tmp_path):
     timeline = tmp_path / "timeline.json"
     timeline.write_text("timeline", encoding="utf-8")
     template = _template(
@@ -148,8 +148,118 @@ def test_failed_resume_reuses_historical_timeline_node_under_new_name(tmp_path):
 
     plan = compute_reuse_plan(source, template, artifacts)
 
-    assert plan.reused_node_ids == ["TimelineAssemblyValidation"]
-    assert plan.rerun_from_node_id == "LipSync"
+    assert plan.reused_node_ids == []
+    assert plan.rerun_from_node_id == "TimelineAssemblyValidation"
+    assert plan.decisions[0].reason == "node_run_missing"
+
+
+def test_historical_subtitle_failure_reuses_lipsync_and_starts_new_caption_segment():
+    """An old agent-v2 tail failure keeps its paid prefix and enters new node 16."""
+
+    from packages.production.pipeline.digital_human import editing_agent_v2_template
+
+    template = editing_agent_v2_template()
+    render_index = next(
+        index for index, node in enumerate(template.nodes) if node.node_id == "RenderFinalTimeline"
+    )
+    artifacts: dict[str, c.Artifact] = {}
+    node_runs: list[c.NodeRun] = []
+    for node in template.nodes[: render_index + 1]:
+        artifact = c.Artifact(
+            id=f"art_{node.node_id}",
+            run_id="run_source",
+            kind=node.output_artifact_kinds[0],
+            payload_schema=f"{node.node_id}.fixture.v1",
+            payload={},
+        )
+        artifacts[artifact.id] = artifact
+        node_runs.append(
+            c.NodeRun(
+                id=f"nr_{node.node_id}",
+                run_id="run_source",
+                node_id=node.node_id,
+                node_version=node.node_version,
+                status=c.NodeStatus.succeeded,
+                input_manifest_hash="same",
+                output_artifact_ids=[artifact.id],
+            )
+        )
+    for node_id, node_version in (
+        ("CaptionWindowPlanning", "v4"),
+        ("PostProcessAgentPlanning", "v2"),
+    ):
+        node_runs.append(
+            c.NodeRun(
+                id=f"nr_{node_id}",
+                run_id="run_source",
+                node_id=node_id,
+                node_version=node_version,
+                status=c.NodeStatus.succeeded,
+                input_manifest_hash="same",
+                output_artifact_ids=[],
+            )
+        )
+    failed_mix = _node_run(
+        "SubtitleAndBgmMix",
+        "art_never_written",
+        status=c.NodeStatus.failed,
+    ).model_copy(update={"node_version": "v2"})
+    node_runs.append(failed_mix)
+    source = _run(node_runs, status=c.RunStatus.failed)
+
+    assert [(node.node_id, node.node_version) for node in source.node_runs[-3:]] == [
+        ("CaptionWindowPlanning", "v4"),
+        ("PostProcessAgentPlanning", "v2"),
+        ("SubtitleAndBgmMix", "v2"),
+    ]
+
+    plan = compute_reuse_plan(source, template, artifacts)
+
+    assert plan.rerun_from_node_id == "CaptionCompositionPlanning"
+    assert "LipSync" in plan.reused_node_ids
+    assert "RenderFinalTimeline" in plan.reused_node_ids
+    assert "CaptionCompositionPlanning" not in plan.reused_node_ids
+    assert plan.decisions[-1].reason == "node_run_missing"
+
+
+def test_shared_resume_gate_rejects_v1_and_removed_failed_nodes():
+    from packages.production.pipeline.reuse import has_retryable_active_failure
+
+    retryable_error = c.NodeError(
+        code=c.ErrorCode.provider_timeout,
+        message="retryable",
+        retryable=True,
+    )
+    v1_run = c.WorkflowRun(
+        id="run_v1",
+        job_id="job_v1",
+        workflow_template_id="digital_human_editing_agent_v1",
+        workflow_version="v1",
+        status=c.RunStatus.failed,
+    )
+    active_run = v1_run.model_copy(
+        update={
+            "id": "run_v2",
+            "workflow_template_id": "digital_human_editing_agent_v2",
+            "workflow_version": "v2",
+        }
+    )
+    failed = c.NodeRun(
+        id="nr_failed",
+        run_id="run_v1",
+        node_id="EditingAgentPlanning",
+        node_version="v1",
+        status=c.NodeStatus.failed,
+        input_manifest_hash="sha256:test",
+        error=retryable_error,
+    )
+
+    assert has_retryable_active_failure(v1_run, [failed]) is False
+    assert has_retryable_active_failure(active_run, [failed]) is False
+    active_failed = failed.model_copy(
+        update={"run_id": active_run.id, "node_id": "SubtitleAndBgmMix"}
+    )
+    assert has_retryable_active_failure(active_run, [active_failed]) is True
 
 
 def test_failed_resume_drops_legacy_window_portrait_double_write(tmp_path):
@@ -219,6 +329,69 @@ def test_default_strict_reuses_completed_nodes(tmp_path):
     plan = compute_reuse_plan(source, template, artifacts)
 
     assert plan.reused_node_ids == ["A", "B"]
+    assert plan.rerun_from_node_id is None
+
+
+def test_file_uri_is_reusable_without_a_local_path_field(tmp_path):
+    path = tmp_path / "artifact.json"
+    path.write_text("artifact", encoding="utf-8")
+    artifact = _artifact("art_a", path).model_copy(update={"local_path": None})
+
+    plan = compute_reuse_plan(_run([_node_run("A", "art_a")]), _template(_node("A")), {"art_a": artifact})
+
+    assert plan.reused_node_ids == ["A"]
+
+
+def test_reuse_rejects_a_deleted_local_artifact(tmp_path):
+    path = tmp_path / "deleted.json"
+    path.write_text("artifact", encoding="utf-8")
+    artifact = _artifact("art_a", path)
+    path.unlink()
+
+    plan = compute_reuse_plan(_run([_node_run("A", "art_a")]), _template(_node("A")), {"art_a": artifact})
+
+    assert plan.decisions[-1].reason == "artifact_file_missing"
+
+
+def test_reuse_rejects_an_artifact_kind_outside_the_node_contract(tmp_path):
+    path = tmp_path / "wrong-kind.json"
+    path.write_text("artifact", encoding="utf-8")
+    artifact = _artifact("art_a", path).model_copy(
+        update={"kind": c.ArtifactKind.plan_timeline}
+    )
+
+    plan = compute_reuse_plan(_run([_node_run("A", "art_a")]), _template(_node("A")), {"art_a": artifact})
+
+    assert plan.decisions[-1].reason == "artifact_kind_mismatch"
+
+
+def test_completed_node_without_declared_output_cannot_be_reused():
+    node_run = _node_run("A", "unused").model_copy(update={"output_artifact_ids": []})
+
+    plan = compute_reuse_plan(_run([node_run]), _template(_node("A")), {})
+
+    assert plan.decisions[-1].reason == "artifact_missing"
+
+
+def test_reuse_stops_at_a_retired_source_node_after_the_reusable_prefix(tmp_path):
+    path = tmp_path / "artifact.json"
+    path.write_text("artifact", encoding="utf-8")
+    source = _run([_node_run("A", "art_a"), _node_run("Retired", "art_retired")])
+
+    plan = compute_reuse_plan(source, _template(_node("A")), {"art_a": _artifact("art_a", path)})
+
+    assert plan.reused_node_ids == ["A"]
+    assert plan.decisions[-1].reason == "node_not_in_template"
+
+
+def test_failed_run_without_a_failed_node_uses_normal_reuse_checks(tmp_path):
+    path = tmp_path / "artifact.json"
+    path.write_text("artifact", encoding="utf-8")
+    source = _run([_node_run("A", "art_a")], status=c.RunStatus.failed)
+
+    plan = compute_reuse_plan(source, _template(_node("A")), {"art_a": _artifact("art_a", path)})
+
+    assert plan.reused_node_ids == ["A"]
     assert plan.rerun_from_node_id is None
 
 

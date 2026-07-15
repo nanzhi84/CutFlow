@@ -80,6 +80,24 @@ def test_lipsync_options_still_accepts_supported_fields():
     assert options.timeout_minutes == 45
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"enabled": False, "normal_enabled": True, "emphasis_enabled": True},
+        {"enabled": True, "normal_enabled": False, "emphasis_enabled": True},
+    ],
+)
+def test_subtitle_options_rejects_emphasis_without_an_enabled_normal_band(payload):
+    with pytest.raises(ValidationError, match="emphasis subtitles require normal subtitles"):
+        SubtitleOptions.model_validate(payload)
+
+
+def test_subtitle_options_normalizes_the_legacy_global_off_shorthand():
+    options = SubtitleOptions.model_validate({"enabled": False})
+    assert options.normal_enabled is False
+    assert options.emphasis_enabled is False
+
+
 # OutputOptions request-layer fields removed in issue #118: they were exposed on
 # the contract / OpenAPI / frontend but never consumed by any production node
 # (only ``width`` / ``height`` / ``fps`` reach the render/portrait/broll nodes;
@@ -210,19 +228,22 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
     },
     SubtitleOptions: {
         "enabled": (
-            ("packages/production/pipeline/nodes/subtitle_and_bgm_mix.py", "request.subtitle.enabled"),
+            (
+                "packages/production/pipeline/nodes/caption_composition_planning.py",
+                "request.subtitle.enabled",
+            ),
         ),
         "normal_enabled": (
             ("packages/production/pipeline/_materialize.py", "request.subtitle.normal_enabled"),
             (
-                "packages/production/pipeline/nodes/subtitle_and_bgm_mix.py",
+                "packages/production/pipeline/nodes/caption_composition_planning.py",
                 "request.subtitle.normal_enabled",
             ),
         ),
         "emphasis_enabled": (
             ("packages/production/pipeline/_materialize.py", "request.subtitle.emphasis_enabled"),
             (
-                "packages/production/pipeline/nodes/subtitle_and_bgm_mix.py",
+                "packages/production/pipeline/nodes/caption_composition_planning.py",
                 "request.subtitle.emphasis_enabled",
             ),
         ),
@@ -254,7 +275,7 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
             ("packages/production/pipeline/_materialize.py", "request.bgm.enabled"),
             ("packages/production/pipeline/nodes/material_pack_planning.py", "request.bgm.enabled"),
             (
-                "packages/production/pipeline/nodes/postprocess_agent_planning.py",
+                "packages/production/pipeline/nodes/bgm_agent_planning.py",
                 "state.request.bgm.enabled",
             ),
         ),
@@ -284,10 +305,16 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
     },
     OutputOptions: {
         "width": (
-            ("packages/production/pipeline/nodes/subtitle_and_bgm_mix.py", "request.output.width"),
+            (
+                "packages/production/pipeline/nodes/caption_composition_planning.py",
+                "request.output.width",
+            ),
         ),
         "height": (
-            ("packages/production/pipeline/nodes/subtitle_and_bgm_mix.py", "request.output.height"),
+            (
+                "packages/production/pipeline/nodes/caption_composition_planning.py",
+                "request.output.height",
+            ),
         ),
         "fps": (("packages/production/pipeline/nodes/render_final_timeline.py", "request.output.fps"),),
     },
@@ -389,11 +416,9 @@ _RETAINED_ARTIFACT_FIELDS = {
         "font_weight",
         "emphasis_font_weight",
         "emphasis_outline",
-        "default_emphasis_position_id",
-        "default_emphasis_animation_id",
     ),
     FontPlan: ("font_id",),
-    StylePlanArtifact: ("subtitle", "bgm", "font", "font_asset_id", "overlay_events"),
+    StylePlanArtifact: ("subtitle", "bgm", "font", "font_asset_id"),
     CaseContextArtifact: (
         "case_id",
         "case_profile",

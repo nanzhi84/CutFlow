@@ -1,5 +1,7 @@
 # 检索与剪辑 Agent 智能化收口：query 生成、结构化输出与外观标注增强
 
+> **Superseded（历史方案快照）**：本文描述的是 2026-07-05 的旧节点拓扑；当前活动拓扑与职责边界以 `packages/production/pipeline/node_sequence.py`、`packages/production/CLAUDE.md` 和 issue #209 的字幕 Clean-Slate 为准，文中的统一 Editing/PostProcess Agent 与字幕/花字职责不再可执行。
+>
 > 2026-07-05 · 基于 PR #156→#169 演进线（head `579c059`）的架构评审与分阶段方案。
 > 修订 r2（同日）：与 owner 讨论后收敛范围——去掉决策拆分/视觉聚拢/聚类 key/约束编译/case 偏好持久化/放开 broll 含人池；
 > 开放式外观标注升级为核心项，语义描述必须进 LLM prompt（qwen3.7-plus 256k 上下文充足），embedding key 与标注解耦。

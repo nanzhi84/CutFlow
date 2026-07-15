@@ -29,7 +29,13 @@ from packages.ai.gateway import ProviderGateway, SqlAlchemyProviderRuntimeReposi
 from packages.ai.prompts import PromptRegistry, SqlAlchemyPromptRuntimeRepository
 from packages.core.storage import Repository
 from packages.core.storage.bootstrap import get_sqlalchemy_session_factory
-from packages.core.storage.database import ArtifactRow, FinishedVideoRow, NodeRunRow, OutboxEventRow, WorkflowRunRow
+from packages.core.storage.database import (
+    ArtifactRow,
+    FinishedVideoRow,
+    NodeRunRow,
+    OutboxEventRow,
+    WorkflowRunRow,
+)
 from packages.core.storage.secret_store import LocalSecretStore
 from packages.core.workflow import load_workflow_runtime_settings
 from packages.core.observability.events import (
@@ -139,7 +145,9 @@ def _payload(title: str) -> dict:
     }
 
 
-def _wait_for_status(session_factory, run_id: str, statuses: set[str], timeout_sec: int = 60) -> str:
+def _wait_for_status(
+    session_factory, run_id: str, statuses: set[str], timeout_sec: int = 60
+) -> str:
     deadline = time.monotonic() + timeout_sec
     last = None
     while time.monotonic() < deadline:
@@ -179,14 +187,19 @@ def test_temporal_cancel_before_worker_runs_finishes_cancelled_without_video():
     with WorkerThread():
         assert _wait_for_status(session_factory, run_id, {"cancelled"}) == "cancelled"
     with session_factory() as session:
-        assert session.scalar(select(FinishedVideoRow).where(FinishedVideoRow.run_id == run_id)) is None
+        assert (
+            session.scalar(select(FinishedVideoRow).where(FinishedVideoRow.run_id == run_id))
+            is None
+        )
 
 
 def test_temporal_resume_reruns_from_missing_middle_artifact_file(tmp_path: Path):
     session_factory = _session_factory()
     with WorkerThread(), TestClient(app) as client:
         _login(client)
-        created = client.post("/api/jobs/digital-human-video", json=_payload("Temporal resume source"))
+        created = client.post(
+            "/api/jobs/digital-human-video", json=_payload("Temporal resume source")
+        )
         assert created.status_code == 201, created.text
         source_run_id = created.json()["initial_run"]["id"]
         assert _wait_for_status(session_factory, source_run_id, {"succeeded"}) == "succeeded"
@@ -225,7 +238,13 @@ def test_temporal_resume_reruns_from_missing_middle_artifact_file(tmp_path: Path
                 )
                 if row.status == "skipped"
             ]
-        assert skipped == ["ValidateRequest", "LoadCaseContext", "ResolveCreativeIntent", "TTS", "MaterialPackPlanning"]
+        assert skipped == [
+            "ValidateRequest",
+            "LoadCaseContext",
+            "ResolveCreativeIntent",
+            "TTS",
+            "MaterialPackPlanning",
+        ]
 
 
 def test_temporal_worker_outbox_events_reach_run_websocket(monkeypatch):

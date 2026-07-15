@@ -28,51 +28,11 @@ LOCAL_AUTH_SEED_USER_IDS = {"usr_admin", "usr_viewer"}
 LOCAL_AUTH_SEED_REGISTRATION_CODE_IDS = {"reg_seed_local_admin"}
 _SYNCABLE_PROMPT_VERSION_IDS = {
     "prompt_creative_intent_v1",
-    "prompt_editing_agent_v1",
     "prompt_window_query_v1",
-    "prompt_postprocess_agent_v1",
+    "prompt_bgm_agent_v1",
 }
-# CreativeIntent still requests candidate headroom. PostProcess now ranks every
-# candidate and leaves count/timing/hero legality to the local solver; this marker
-# re-syncs a stored pre-solver prompt row to the current content.
-_CREATIVE_INTENT_EMPHASIS_FLOOR_MARKER = "至少给出 6 条"
-_POSTPROCESS_LOCAL_SOLVER_MARKER = "本地求解器负责最终数量、时间冲突和 hero 上限"
-_LEGACY_EDITING_AGENT_MARKERS = (
-    "{asr_segments}",
-    "{portrait_slot_plan}",
-    "{portrait_requirement_groups}",
-    "{portrait_draft_plan}",
-    '"broll_overrides"',
-    '"subtitle_style_plan"',
-)
-_EDITING_AGENT_LINE_FORMAT_MARKERS = (
-    "candidate_id | asset_id | available_seconds | description | reason",
-    "candidate_id | asset_id | scene_name | allowed_slot_ids | matched_keywords | "
-    "available_seconds | description",
-)
-_LEGACY_EDITING_AGENT_FULL_COVERAGE_MARKERS = (
-    "full_coverage 窗口可用多条候选顺序拼接",
-    "同一 slot 可以输出多条不同 candidate_id 以累计覆盖 required_seconds",
-    "slot 可用多条不同 candidate_id 顺序拼接",
-)
-_EDITING_AGENT_FULL_COVERAGE_SINGLE_CLIP_MARKER = "每个 B-roll slot 最多只能输出一条 candidate_id"
-_LEGACY_EDITING_AGENT_FONT_PLANNING_MARKERS = (
-    '"font_plan"',
-    "font_candidates",
-)
-# Caption Display v2 (issue #188) moved huazi planning out of the main editing
-# agent into a separate HuaziPlanningSubagent. A stored editing-agent prompt that
-# still carries any of these legacy huazi markers must be re-synced to the
-# huazi-free content.
-_LEGACY_EDITING_AGENT_HUAZI_MARKERS = (
-    "{huazi_events}",
-    "{placement_candidates}",
-    "{animation_candidates}",
-    "{sfx_candidates}",
-    "花字位置候选",
-    "花字动画候选",
-    "花字音效候选",
-)
+_CREATIVE_INTENT_RUNS_MARKER = "display_mode"
+_BGM_AGENT_BOUNDARY_MARKER = "只能输出 bgm_id 和 analysis"
 
 
 def seed_rows(
@@ -390,20 +350,6 @@ def _sync_existing_seed_row(existing: object, seed: object) -> bool:
 
 
 def _needs_prompt_version_sync(existing: PromptVersionRow) -> bool:
-    if existing.id == "prompt_editing_agent_v1":
-        content = existing.content or ""
-        return (
-            any(marker in content for marker in _LEGACY_EDITING_AGENT_MARKERS)
-            or "legal_window_ids" not in content
-            or any(marker not in content for marker in _EDITING_AGENT_LINE_FORMAT_MARKERS)
-            or "允许重复使用同一素材" in content
-            or "{portrait_uniqueness_rule}" not in content
-            or "multi_clip_allowed" not in content
-            or any(marker in content for marker in _LEGACY_EDITING_AGENT_FULL_COVERAGE_MARKERS)
-            or _EDITING_AGENT_FULL_COVERAGE_SINGLE_CLIP_MARKER not in content
-            or any(marker in content for marker in _LEGACY_EDITING_AGENT_FONT_PLANNING_MARKERS)
-            or any(marker in content for marker in _LEGACY_EDITING_AGENT_HUAZI_MARKERS)
-        )
     if existing.id == "prompt_window_query_v1":
         content = existing.content or ""
         return any(
@@ -421,17 +367,15 @@ def _needs_prompt_version_sync(existing: PromptVersionRow) -> bool:
         )
     if existing.id == "prompt_creative_intent_v1":
         content = existing.content or ""
-        return "bgm_mood" not in content or _CREATIVE_INTENT_EMPHASIS_FLOOR_MARKER not in content
-    if existing.id == "prompt_postprocess_agent_v1":
-        return _POSTPROCESS_LOCAL_SOLVER_MARKER not in (existing.content or "")
+        return "bgm_mood" not in content or _CREATIVE_INTENT_RUNS_MARKER not in content
+    if existing.id == "prompt_bgm_agent_v1":
+        return _BGM_AGENT_BOUNDARY_MARKER not in (existing.content or "")
     return False
 
 
 def _prompt_sync_changelog(version_id: str) -> str:
     if version_id == "prompt_creative_intent_v1":
-        return "Synced built-in CreativeIntent prompt BGM mood + emphasis floor contract."
+        return "Synced built-in CreativeIntent inline caption Run contract."
     if version_id == "prompt_window_query_v1":
         return "Synced built-in WindowQueryPlanning prompt contract."
-    if version_id == "prompt_postprocess_agent_v1":
-        return "Synced built-in PostProcess local-solver boundary contract."
-    return "Synced built-in EditingAgentPlanning prompt huazi-only style contract."
+    return "Synced built-in BgmAgentPlanning ID-only contract."

@@ -27,7 +27,10 @@ from packages.core.contracts import (
 from packages.core.storage.object_store import LocalObjectStore
 from packages.core.storage.repository import Repository
 from packages.core.workflow import NodeExecutionError
-from packages.production.pipeline._editing_agent import build_agent_input, index_candidates
+from packages.production.pipeline._media_selection_agent import (
+    build_media_agent_input,
+    index_media_candidates,
+)
 from packages.production.pipeline._materialize import (
     materialize_full_coverage_broll_from_assignment,
 )
@@ -674,16 +677,16 @@ def test_agent_windows_always_feasible(monkeypatch, tmp_path):
     payload = _payload(_run_node(adapter, state), ArtifactKind.plan_timeline_windows)
     material = state.artifacts[ArtifactKind.plan_material_pack].payload
 
-    agent_input = build_agent_input(
+    agent_input = build_media_agent_input(
         request=state.request,
         boundary=_agent_boundary_from_windows(payload),
-        candidates=index_candidates(material),
+        candidates=index_media_candidates(material),
         narration_units=state.artifacts[ArtifactKind.narration_units].payload["units"],
         duration=payload["total_frames"] / payload["fps"],
     )
 
     assert agent_input["portrait_slots"]
-    assert all(slot["legal_window_ids"] for slot in agent_input["portrait_slots"])
+    assert all(slot["legal_candidate_ids"] for slot in agent_input["portrait_slots"])
 
 
 def test_semantic_only_when_no_real_pauses(monkeypatch, tmp_path):

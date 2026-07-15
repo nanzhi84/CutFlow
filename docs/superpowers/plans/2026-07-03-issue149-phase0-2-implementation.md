@@ -1,5 +1,8 @@
 # Plan: issue149 Phase 0–2 实现计划（单一综合 PR）
 
+> **历史归档 / Superseded（2026-07-15，issue #209）**：本文记录 issue #149
+> 当时的实施边界；其中 v1 工作流与节点别名已删除，当前实现不得再承担其恢复兼容。
+
 > 配套设计：`docs/superpowers/specs/2026-07-03-issue149-editing-boundary-convergence.md`
 > 分支：`feat/issue149-convergence`（基于 origin/main = 8e9b3161）
 > 分工：Codex（gpt-5.5 / xhigh / fast）写全部代码；Claude 规划、验收、清 slop、commit。

@@ -30,15 +30,11 @@ EXPECTED_PROMPT_GROUPS = {
         "prompt_cover_reference_style": "prompt.cover.reference_style",
     },
     "editing": {
-        # MVP (issue #136): a single editing-agent prompt bound to
-        # EditingAgentPlanning; the steady/balanced/fast rhythm variants were
-        # dropped (no rhythm presets exposed). Caption Display v2 (issue #188) keeps
-        # the huazi subagent only for legacy v1 runs and gives active v2 media and
-        # postprocess planning independent prompts.
-        "prompt_editing_agent": "prompt.editing.agent",
-        "prompt_huazi_subagent": "prompt.huazi.subagent",
+        # Clean-slate caption composition (#209) leaves the Agent chain with two
+        # narrow LLM responsibilities: media selection and BGM selection. Caption
+        # composition itself is deterministic and has no prompt.
         "prompt_media_selection_agent": "prompt.media_selection.agent",
-        "prompt_postprocess_agent": "prompt.postprocess.agent",
+        "prompt_bgm_agent": "prompt.bgm.agent",
         "prompt_window_query": "prompt.window_query.planning",
     },
 }
@@ -111,24 +107,19 @@ def test_prompt_group_seed_does_not_change_existing_bindings():
         assert (binding.prompt_template_id, binding.prompt_version_id, binding.node_id) == expected
 
 
-def test_caption_display_v2_seed_prompts_bind_to_separate_responsibility_nodes():
+def test_clean_slate_agent_prompts_bind_to_narrow_responsibility_nodes():
     repository = Repository()
 
     expected_bindings = {
-        "prompt_binding_prompt_huazi_subagent": (
-            "prompt_huazi_subagent",
-            "prompt_huazi_subagent_v1",
-            "HuaziPlanningSubagent",
-        ),
         "prompt_binding_prompt_media_selection_agent": (
             "prompt_media_selection_agent",
             "prompt_media_selection_agent_v2",
             "MediaSelectionAgentPlanning",
         ),
-        "prompt_binding_prompt_postprocess_agent": (
-            "prompt_postprocess_agent",
-            "prompt_postprocess_agent_v1",
-            "PostProcessAgentPlanning",
+        "prompt_binding_prompt_bgm_agent": (
+            "prompt_bgm_agent",
+            "prompt_bgm_agent_v1",
+            "BgmAgentPlanning",
         ),
     }
     for binding_id, expected in expected_bindings.items():
@@ -170,21 +161,6 @@ def test_seeded_cover_reference_style_prompt_requests_chinese_style_guide():
     assert "English style guide" not in content
 
 
-def test_editing_agent_seed_prompt_documents_line_candidate_format_and_json_output():
-    content = Repository().prompt_versions["prompt_editing_agent_v1"].content
-
-    assert "JSON" in content
-    assert "candidate_id | asset_id | available_seconds | description | reason" in content
-    assert (
-        "candidate_id | asset_id | scene_name | allowed_slot_ids | matched_keywords | "
-        "available_seconds | description"
-    ) in content
-    assert "multi_clip_allowed" in content
-    assert "每个 B-roll slot 最多只能输出一条 candidate_id" in content
-    assert "available_seconds >= required_seconds" in content
-    assert "同一 slot 可以输出多条不同 candidate_id" not in content
-
-
 def test_media_selection_agent_prompt_is_media_only():
     repository = Repository()
     content = repository.prompt_versions["prompt_media_selection_agent_v2"].content
@@ -213,36 +189,26 @@ def test_media_selection_agent_prompt_is_media_only():
     assert '"matched_keywords"' not in output_example
     assert "bgm_id" not in output_example
     assert "bgm_plan" not in output_example
-    assert "caption_option_id" not in output_example
     assert "严格职责边界" in content
     assert "{portrait_candidates}" in legacy_content
     assert "{broll_candidates}" in legacy_content
 
 
-def test_postprocess_agent_prompt_selects_only_bgm_and_complete_caption_option_ids():
+def test_bgm_agent_prompt_selects_only_bgm():
     repository = Repository()
-    content = repository.prompt_versions["prompt_postprocess_agent_v1"].content
-    hints = prompt_variable_hints("prompt_postprocess_agent")
+    content = repository.prompt_versions["prompt_bgm_agent_v1"].content
+    hints = prompt_variable_hints("prompt_bgm_agent")
     output_example = content.rsplit("只输出如下 JSON：", 1)[1]
 
-    assert hints == [
-        "script",
-        "bgm_candidates",
-        "caption_windows",
-        "caption_constraints",
-        "repair_feedback",
-    ]
+    assert hints == ["script", "bgm_candidates", "repair_feedback"]
     assert _format_fields(content) == set(hints)
     assert '"bgm_id"' in output_example
-    assert '"caption_choices"' in output_example
-    assert '"caption_option_id"' in output_example
     assert '"analysis"' in output_example
+    assert "caption" not in output_example
     assert '"font"' not in output_example
     assert '"rect"' not in output_example
     assert '"animation_id"' not in output_example
-    assert "三个顶层字段 bgm_id、caption_choices、analysis 必须全部显式存在" in content
-    assert "每个 event_id 都输出且只输出一条 caption_choice" in content
-    assert "最终数量、时间冲突、最小间隔和 hero 上限全部由本地求解器负责" in content
+    assert "只能输出 bgm_id 和 analysis" in content
 
 
 def test_prompt_template_view_exposes_seed_variable_hints():
@@ -268,6 +234,9 @@ def test_creative_intent_seed_prompt_requests_top_level_contract():
     assert "audience" in content
     assert "beats" in content
     assert "bgm_mood" in content
+    assert "display_mode" in content
+    assert "inline" in content
+    assert "whole_cue" in content
     assert "沉稳 / 温暖 / 轻快 / 励志 / 高能 / 紧张 / 高级 / 俏皮" in content
     assert "禁止使用 markdown 代码块" in content
     assert "不要再嵌套 intent" not in content

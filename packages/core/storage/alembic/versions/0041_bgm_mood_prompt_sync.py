@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
 
 from alembic import op
 import sqlalchemy as sa
@@ -17,12 +15,7 @@ def _has_table(name: str) -> bool:
 
 
 def _prompt_group_content(version_id: str) -> str:
-    path = Path(__file__).resolve().parents[2] / "prompt_group_defaults.json"
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    for item in payload.get("items", []):
-        if item.get("version_id") == version_id:
-            return str(item["content"])
-    raise RuntimeError(f"Missing {version_id} in prompt_group_defaults.json")
+    return {"prompt_window_query_v1":"你是短视频素材检索 query 规划助手。你的任务是把已经确定好的时间线窗口转成向量检索意图文本，面向 qwen3-vl 视频语义检索。\n\n【输入】\n口播脚本：\n{script}\n\n剪辑指令：\n{edit_instruction}\n\n案例上下文（product / audience / tone）：\n{case_context}\n\n创意节拍：\n{creative_beats}\n\n窗口 JSON（每项含 window_id、kind、narration_text、scene_hint）：\n{windows}\n\n【任务】\n1. 为每个窗口生成一条中文为主的向量检索 query。\n2. query 优先写具象视觉要素：场景、动作、物件、人物外观、空间状态、画面证据。\n3. 若 scene_hint 非空，必须把它视为该窗口的视觉检索场景线索，并与 narration_text 融合；不要照抄成空泛标签。\n4. 融入剪辑指令里的偏好约束，但不要发明输入里没有的品牌、价格、地点或人物身份。\n5. kind=portrait 时，侧重口播人像、人物外观一致性、正脸/稳定出镜/口型可用等诉求。\n6. kind=broll 时，侧重能证明这句旁白的具象画面证据、过程、产品或场景细节。\n7. 每条 retrieval_intent 不超过 300 字。\n\n【硬约束】\n- 你只生成检索意图文本，不输出帧号、秒数、素材 ID、候选 ID 或剪辑决策。\n- 必须覆盖输入 windows 中的每个 window_id，window_id 必须原样返回。\n- 只输出 JSON 对象，不要 Markdown，不要代码块，不要解释。\n\n输出格式：\n{{\"window_queries\": [{{\"window_id\": \"...\", \"retrieval_intent\": \"...\"}}]}}"}[version_id]
 
 
 def _creative_intent_content() -> str:

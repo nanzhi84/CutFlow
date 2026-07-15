@@ -2,7 +2,7 @@
 
 The active editing-agent v2 workflow keeps media selection isolated from final
 caption/BGM post-processing. This node therefore never reads CreativeIntent,
-never invokes the legacy HuaziPlanningSubagent, and never emits ``plan.style``.
+never plans captions or BGM, and never emits ``plan.style``.
 """
 
 from __future__ import annotations

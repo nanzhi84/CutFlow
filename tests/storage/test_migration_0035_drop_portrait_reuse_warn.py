@@ -67,7 +67,7 @@ def _seed_node_run(session, *, warnings: list[str], degradations: list[dict]) ->
         WorkflowRunRow(
             id=run_id,
             job_id=job_id,
-            workflow_template_id="digital_human_editing_agent_v1",
+            workflow_template_id="digital_human_editing_agent_v2",
             workflow_version="v1",
             status="succeeded",
         )
@@ -77,7 +77,7 @@ def _seed_node_run(session, *, warnings: list[str], degradations: list[dict]) ->
         NodeRunRow(
             id=node_run_id,
             run_id=run_id,
-            node_id="EditingAgentPlanning",
+            node_id="MediaSelectionAgentPlanning",
             node_version="v1",
             status="degraded",
             input_manifest_hash="sha256:test",
@@ -89,17 +89,17 @@ def _seed_node_run(session, *, warnings: list[str], degradations: list[dict]) ->
 
 
 def test_upgrade_removes_legacy_portrait_reuse_code_from_node_runs(db_session_factory):
-    valid_warning = WarningCode.editing_agent_deterministic_fallback.value
+    valid_warning = WarningCode.media_selection_agent_deterministic_fallback.value
     valid_degradation = {
         "code": WarningCode.broll_insertions_dropped_geometry.value,
         "message": "B-roll dropped.",
-        "node_id": "EditingAgentPlanning",
+        "node_id": "MediaSelectionAgentPlanning",
         "affects_true_yield": False,
     }
     legacy_degradation = {
         "code": _LEGACY_CODE,
         "message": "Relaxed portrait reuse.",
-        "node_id": "EditingAgentPlanning",
+        "node_id": "MediaSelectionAgentPlanning",
         "affects_true_yield": False,
     }
 
@@ -125,7 +125,7 @@ def test_upgrade_removes_legacy_portrait_reuse_code_from_node_runs(db_session_fa
         assert row.degradations == [valid_degradation]
 
         node_run = node_run_row_to_contract(row)
-        assert node_run.warnings == [WarningCode.editing_agent_deterministic_fallback]
+        assert node_run.warnings == [WarningCode.media_selection_agent_deterministic_fallback]
         assert [notice.code for notice in node_run.degradations] == [
             WarningCode.broll_insertions_dropped_geometry
         ]
