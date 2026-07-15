@@ -572,10 +572,15 @@ class S3ObjectStore(ObjectStore):
         # Streaming, multipart upload by path: boto3's upload_file never reads the
         # whole object into RAM (it streams from disk in multipart chunks).
         self._validate_write_ref(ref)
-        extra_args: dict[str, str] = {"CacheControl": self._cache_control()}
+        source = Path(local_path)
+        size_bytes = source.stat().st_size
+        checksum = sha256_file(source)
+        extra_args: dict[str, Any] = {
+            "CacheControl": self._cache_control(),
+            "Metadata": {"sha256": checksum},
+        }
         if content_type:
             extra_args["ContentType"] = content_type
-        source = Path(local_path)
         self._client.upload_file(
             str(source),
             ref.bucket,
@@ -583,14 +588,18 @@ class S3ObjectStore(ObjectStore):
             ExtraArgs=extra_args,
             Config=self._transfer_config,
         )
+        remote = self._client.head_object(Bucket=ref.bucket, Key=ref.key)
+        remote_checksum = (remote.get("Metadata") or {}).get("sha256")
+        if remote.get("ContentLength") != size_bytes or remote_checksum != checksum:
+            raise OSError(f"Uploaded object failed size/checksum verification: {ref.uri}")
         cache_path = self._cache_path(ref)
         if source.resolve() != cache_path.resolve():
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, cache_path)
         return StoredObject(
             ref=ref,
-            size_bytes=source.stat().st_size,
-            sha256=sha256_file(source),
+            size_bytes=size_bytes,
+            sha256=checksum,
         )
 
     def download_file(self, ref: ObjectRef, local_path: Path) -> Path:

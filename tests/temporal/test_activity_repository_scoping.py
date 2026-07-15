@@ -11,6 +11,7 @@ external services are touched.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import temporalio.activity as temporal_activity
 
 from packages.ai.gateway import ProviderGateway
@@ -213,6 +214,9 @@ class _FakeProductionRepository:
         repository.jobs[job.id] = job
         repository.runs[run.id] = run
 
+    def mark_run_started(self, _run_id: str) -> None:
+        return None
+
     def sync_workflow_snapshot(self, *, job: Job, run: WorkflowRun, repository: Repository) -> None:
         self.synced_repo_ids.append(id(repository))
         self.synced_artifacts[run.id] = {
@@ -265,6 +269,7 @@ def _scoped_context(monkeypatch, production: _FakeProductionRepository) -> tuple
 
 def test_run_node_builds_fresh_repository_per_call(monkeypatch) -> None:
     monkeypatch.setattr(temporal_activity, "heartbeat", lambda *a, **k: None)
+    monkeypatch.setattr(temporal_activity, "shield_thread_cancel_exception", nullcontext)
     production = _FakeProductionRepository()
     ctx, built_repo_ids = _scoped_context(monkeypatch, production)
 

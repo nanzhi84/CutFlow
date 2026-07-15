@@ -27,6 +27,7 @@
 - 节点是纯 `run(ctx)`：输入读 `ctx.state`，输出经 `ctx.artifact(...)` 落库，跨节点服务只走 `NodeContext`，不直接传 adapter。
 - 降级必须显式上报为 `DegradationNotice`，禁止静默降级；节点 succeeded + 有 degradation 自动标 `degraded`。
 - 确定性选材，不得随机；失败/取消时只释放 uncommitted 预留，committed picks 保留作多样性记忆。
+- SQL 快照提交先锁 `workflow_runs`：一旦 durable 状态进入 `cancelling/cancelled`，禁止新增成功节点输出、交付产物和成功事件；取消报告、provider 调用审计、用量记录与 reservation 释放仍可提交。resume 只水合 succeeded/degraded/skipped 节点显式声明的 output artifact。
 - `BrollPlanArtifact` 新写入只用 `overlays`；下游读取统一走 `broll_overlays_from_plan()`，不要再写 `segments` 双结构。
 - 真实 vs sandbox 由 provider profile 选取判定；无真实供应商时是否回退 sandbox 受 `sandbox_fallback_allowed()`（即 `CUTAGENT_ALLOW_SANDBOX_FALLBACK`，默认 OFF=显式报错）控制。
 - 有 provider 副作用的节点（TTS/ResolveCreativeIntent/LipSync/ExportFinishedVideo/SeedanceGenerateVideo）必须带 `idempotency_key`，否则 reuse 拒绝复用。

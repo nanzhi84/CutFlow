@@ -205,7 +205,7 @@ def test_resume_requires_api_repository_job() -> None:
         adapter.resume_run(source_run_id="run_source", new_run=run, reuse_plan={"source_run_id": "run_source"})
 
 
-def test_cancel_run_signals_or_force_terminates_and_updates_local_state(monkeypatch):
+def test_cancel_run_signals_and_leaves_running_run_cancelling(monkeypatch):
     job, run = _job_and_run()
     repo = Repository()
     repo.jobs[job.id] = job
@@ -219,7 +219,7 @@ def test_cancel_run_signals_or_force_terminates_and_updates_local_state(monkeypa
     monkeypatch.setattr(adapter, "_cancel_workflow", fake_cancel)
     monkeypatch.setattr(adapter, "_run", lambda coro: asyncio.run(coro))
 
-    assert adapter.cancel_run(run.id, reason="operator").status == c.RunStatus.cancelled
+    assert adapter.cancel_run(run.id, reason="operator").status == c.RunStatus.cancelling
     assert repo.jobs[job.id].status == c.JobStatus.running
     repo.runs[run.id] = run
     forced = adapter.cancel_run(run.id, force=True, reason="operator")
@@ -228,22 +228,112 @@ def test_cancel_run_signals_or_force_terminates_and_updates_local_state(monkeypa
         {"run_id": run.id, "force": False, "reason": "operator"},
         {"run_id": run.id, "force": True, "reason": "operator"},
     ]
-    assert forced.status == c.RunStatus.cancelled
-    assert repo.jobs[job.id].status == c.JobStatus.cancelled
+    assert forced.status == c.RunStatus.cancelling
+    assert repo.jobs[job.id].status == c.JobStatus.running
 
 
-def test_force_cancel_does_not_rewrite_terminal_runs() -> None:
+def test_local_cancelling_does_not_rewrite_terminal_runs() -> None:
     job, run = _job_and_run()
     repo = Repository()
     repo.jobs[job.id] = job.model_copy(update={"status": c.JobStatus.succeeded})
     repo.runs[run.id] = run.model_copy(update={"status": c.RunStatus.succeeded})
     adapter = ta.TemporalRuntimeAdapter(WorkflowRuntimeSettings(runtime="temporal"), repository=repo)
 
-    adapter._mark_local_force_cancelled(run.id)
-    adapter._mark_local_force_cancelled("missing")
+    adapter._mark_local_cancelling(run.id)
+    adapter._mark_local_cancelling("missing")
 
     assert repo.runs[run.id].status == c.RunStatus.succeeded
     assert repo.jobs[job.id].status == c.JobStatus.succeeded
+
+
+def test_cancel_does_not_signal_when_sql_commit_already_finished_run(monkeypatch) -> None:
+    job, run = _job_and_run()
+    repo = Repository()
+    repo.jobs[job.id] = job
+    repo.runs[run.id] = run
+
+    class _ProductionRepository:
+        def request_run_cancellation(self, run_id: str, *, force: bool):
+            assert run_id == run.id
+            assert force is False
+            return run.model_copy(update={"status": c.RunStatus.succeeded})
+
+    adapter = ta.TemporalRuntimeAdapter(
+        WorkflowRuntimeSettings(runtime="temporal"),
+        repository=repo,
+        production_repository=_ProductionRepository(),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_run",
+        lambda _coro: pytest.fail("completed workflow must not receive a cancel signal"),
+    )
+
+    result = adapter.cancel_run(run.id)
+
+    assert result.status == c.RunStatus.succeeded
+    assert repo.runs[run.id].status == c.RunStatus.succeeded
+
+
+def test_sql_force_escalation_cannot_be_downgraded_by_later_graceful_signal(
+    monkeypatch,
+) -> None:
+    job, run = _job_and_run()
+    repo = Repository()
+    repo.jobs[job.id] = job
+    repo.runs[run.id] = run
+
+    class _ProductionRepository:
+        def request_run_cancellation(self, _run_id: str, *, force: bool):
+            assert force is False
+            return run.model_copy(update={"status": c.RunStatus.cancelling})
+
+        def run_cancel_mode(self, _run_id: str) -> str:
+            return "force"
+
+    adapter = ta.TemporalRuntimeAdapter(
+        WorkflowRuntimeSettings(runtime="temporal"),
+        repository=repo,
+        production_repository=_ProductionRepository(),
+    )
+    calls: list[bool] = []
+
+    async def fake_cancel(_run_id: str, *, force: bool, reason: str | None):
+        calls.append(force)
+
+    monkeypatch.setattr(adapter, "_cancel_workflow", fake_cancel)
+    monkeypatch.setattr(adapter, "_run", lambda coro: asyncio.run(coro))
+
+    adapter.cancel_run(run.id, force=False)
+
+    assert calls == [True]
+
+
+def test_force_cancel_uses_signal_with_force_mode(monkeypatch):
+    seen: dict[str, object] = {}
+
+    class _Handle:
+        async def signal(self, name, payload, **kwargs):
+            seen.update(name=name, payload=payload, kwargs=kwargs)
+
+    class _Client:
+        def get_workflow_handle(self, run_id):
+            seen["run_id"] = run_id
+            return _Handle()
+
+    adapter = _adapter()
+
+    async def fake_client():
+        return _Client()
+
+    monkeypatch.setattr(adapter, "_client", fake_client)
+    adapter._run(adapter._cancel_workflow("run_force", force=True, reason="operator"))
+    adapter.close()
+
+    assert seen["run_id"] == "run_force"
+    assert seen["name"] == "cancel"
+    assert seen["payload"] == {"mode": "force", "reason": "operator"}
+    assert seen["kwargs"] == {"rpc_timeout": ta.TEMPORAL_RPC_TIMEOUT}
 
 
 def test_client_connect_os_error_surfaces_worker_lost(monkeypatch):

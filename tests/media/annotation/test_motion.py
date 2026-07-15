@@ -305,9 +305,9 @@ def test_read_motion_frames_fail_open_and_decodes_raw_frames(monkeypatch, tmp_pa
     )
 
     monkeypatch.setattr(
-        motion_mod.subprocess,
+        motion_mod.FfmpegRunner,
         "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=bytes(range(16)), stderr=b""),
+        lambda *_args, **_kwargs: SimpleNamespace(stdout=bytes(range(16)), stderr=b""),
     )
 
     frames, duration = motion_mod._read_motion_frames(fake_cv2, fake_np, str(video), sample_fps=2, width=4)
@@ -317,9 +317,9 @@ def test_read_motion_frames_fail_open_and_decodes_raw_frames(monkeypatch, tmp_pa
     assert frames[0][1][0] == "blurred"
 
     monkeypatch.setattr(
-        motion_mod.subprocess,
+        motion_mod.FfmpegRunner,
         "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout=b"", stderr=b"decode failed"),
+        lambda *_args, **_kwargs: SimpleNamespace(stdout=b"", stderr=b"decode failed"),
     )
     assert motion_mod._read_motion_frames(fake_cv2, fake_np, str(video), sample_fps=2, width=4)[0] == []
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -50,6 +51,8 @@ from packages.core.workflow.temporal_adapter import (
 )
 from packages.production import SqlAlchemyProductionRepository
 from packages.production.pipeline import build_digital_human_workflow
+from packages.production.pipeline import digital_human as digital_human_pipeline
+from packages.media.video.ffmpeg import FfmpegRunner
 
 
 def _session_factory():
@@ -160,6 +163,26 @@ def _wait_for_status(
     raise AssertionError(f"Run {run_id} did not reach {statuses}; last status={last!r}")
 
 
+def _wait_for_file(path: Path, *, timeout_sec: float = 10) -> None:
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"Timed out waiting for {path}")
+
+
+def _assert_pid_exited(pid: int, *, timeout_sec: float = 2) -> None:
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"Process {pid} is still alive")
+
+
 def test_temporal_submit_worker_completes_and_persists_finished_video():
     session_factory = _session_factory()
     with WorkerThread(), TestClient(app) as client:
@@ -191,6 +214,55 @@ def test_temporal_cancel_before_worker_runs_finishes_cancelled_without_video():
             session.scalar(select(FinishedVideoRow).where(FinishedVideoRow.run_id == run_id))
             is None
         )
+
+
+def test_temporal_cancel_running_activity_reaps_process_tree_before_cancelled(
+    monkeypatch,
+    tmp_path: Path,
+):
+    session_factory = _session_factory()
+    pid_file = tmp_path / "activity-process-tree.txt"
+    script = (
+        "import os,subprocess,sys,time;"
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']);"
+        f"open({str(pid_file)!r},'w').write(f'{{os.getpid()}} {{child.pid}}');"
+        "time.sleep(60)"
+    )
+
+    def blocking_validate_request(_ctx):
+        FfmpegRunner(timeout_sec=60).run([sys.executable, "-c", script])
+        raise AssertionError("cancelled media process unexpectedly completed")
+
+    monkeypatch.setitem(
+        digital_human_pipeline.NODE_HANDLERS,
+        "ValidateRequest",
+        blocking_validate_request,
+    )
+
+    with WorkerThread(), TestClient(app) as client:
+        _login(client)
+        created = client.post("/api/jobs/digital-human-video", json=_payload("Temporal cancel active"))
+        assert created.status_code == 201, created.text
+        run_id = created.json()["initial_run"]["id"]
+        assert _wait_for_status(session_factory, run_id, {"running"}) == "running"
+        _wait_for_file(pid_file)
+
+        response = client.post(f"/api/runs/{run_id}/cancel", json={"reason": "test active"})
+        assert response.status_code == 202, response.text
+        assert response.json()["run"]["status"] == "cancelling"
+        cancellation_started = time.monotonic()
+        assert _wait_for_status(session_factory, run_id, {"cancelled"}) == "cancelled"
+        assert time.monotonic() - cancellation_started < 10
+
+    parent_pid, child_pid = (int(value) for value in pid_file.read_text().split())
+    _assert_pid_exited(parent_pid)
+    _assert_pid_exited(child_pid)
+    with session_factory() as session:
+        assert session.scalar(select(FinishedVideoRow).where(FinishedVideoRow.run_id == run_id)) is None
+        node_rows = list(
+            session.scalars(select(NodeRunRow).where(NodeRunRow.run_id == run_id))
+        )
+        assert all(row.status != "failed" for row in node_rows)
 
 
 def test_temporal_resume_reruns_from_missing_middle_artifact_file(tmp_path: Path):

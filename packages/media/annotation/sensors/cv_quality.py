@@ -20,10 +20,10 @@ from __future__ import annotations
 import logging
 import os
 import re
-import subprocess
 from collections.abc import Sequence
 
 from packages.core.contracts import QualityEventType
+from packages.media.video.ffmpeg import FfmpegCommandError, FfmpegRunner, ffmpeg_bin
 
 from .._util import TIME_DECIMALS as _TIME_DECIMALS
 
@@ -297,7 +297,7 @@ def _run_ffmpeg_filter(video_path: str, vf: str) -> str | None:
     Returns stderr text; ffmpeg unavailable / call failure returns None.
     """
     cmd = [
-        "ffmpeg",
+        ffmpeg_bin(),
         "-hide_banner",
         "-nostdin",
         "-i",
@@ -310,13 +310,11 @@ def _run_ffmpeg_filter(video_path: str, vf: str) -> str | None:
         "-",
     ]
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, timeout=_FFMPEG_FILTER_TIMEOUT_SEC
-        )
-    except Exception as exc:  # pragma: no cover - depends on local ffmpeg
+        result = FfmpegRunner(timeout_sec=_FFMPEG_FILTER_TIMEOUT_SEC).run(cmd)
+    except (FfmpegCommandError, OSError) as exc:  # pragma: no cover - local ffmpeg
         logger.warning("[cv_quality] ffmpeg filter failed (%s): %s", vf, exc)
         return None
-    return (result.stderr or b"").decode("utf-8", "ignore")
+    return result.stderr or ""
 
 
 def _detect_blur_segments(

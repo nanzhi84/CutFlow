@@ -140,6 +140,18 @@ def validate_rendered_output(
     return media_info
 
 
+def promote_staged_media(staged_path: Path, ready_path: Path) -> None:
+    """Durably publish a validated local media file within one filesystem."""
+    with staged_path.open("rb") as staged_file:
+        os.fsync(staged_file.fileno())
+    os.replace(staged_path, ready_path)
+    directory_fd = os.open(ready_path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def generate_seed_video(
     output_path: Path,
     *,

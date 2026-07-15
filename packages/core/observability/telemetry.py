@@ -15,6 +15,7 @@ REQUIRED_LOG_FIELDS = (
     "case_id",
     "job_id",
     "run_id",
+    "node_id",
     "node_run_id",
     "provider_invocation_id",
     "prompt_invocation_id",
@@ -95,6 +96,21 @@ OUTBOX_LAG = Gauge(
 TEMPORAL_ACTIVITY_FAILURES = Counter(
     "temporal_activity_failures_total",
     "Temporal activity failures.",
+    registry=REGISTRY,
+)
+WORKFLOW_CANCEL_LATENCY = Histogram(
+    "workflow_cancel_latency_seconds",
+    "Time from durable cancellation request to cancelled completion.",
+    registry=REGISTRY,
+)
+WORKFLOW_CANCEL_FORCE_KILLS = Counter(
+    "workflow_cancel_force_kill_total",
+    "Media process groups escalated to SIGKILL during cancellation.",
+    registry=REGISTRY,
+)
+ARTIFACT_COMMIT_SKIPPED_CANCELLED = Counter(
+    "artifact_commit_skipped_cancelled_total",
+    "New delivery artifacts rejected by the cancellation commit fence.",
     registry=REGISTRY,
 )
 # Cross-process Redis coordination health (issue #67). ``component`` is one of
@@ -202,6 +218,18 @@ def record_yield_funnel_event() -> None:
 
 def record_temporal_activity_failure() -> None:
     TEMPORAL_ACTIVITY_FAILURES.inc()
+
+
+def record_workflow_cancel_latency(duration_seconds: float) -> None:
+    WORKFLOW_CANCEL_LATENCY.observe(max(0.0, duration_seconds))
+
+
+def record_workflow_cancel_force_kill() -> None:
+    WORKFLOW_CANCEL_FORCE_KILLS.inc()
+
+
+def record_artifact_commit_skipped_cancelled() -> None:
+    ARTIFACT_COMMIT_SKIPPED_CANCELLED.inc()
 
 
 def update_outbox_lag(repository: Repository) -> None:

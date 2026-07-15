@@ -11,14 +11,13 @@ from __future__ import annotations
 import logging
 import math
 import os
-import subprocess
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from packages.core.config import build_settings
 from packages.core.config.settings import MotionGuardSettings
 from packages.core.contracts import QualityEventType
-from packages.media.video.ffmpeg import ffmpeg_bin
+from packages.media.video.ffmpeg import FfmpegCommandError, FfmpegRunner, ffmpeg_bin
 
 from .._util import TIME_DECIMALS as _TIME_DECIMALS
 
@@ -560,22 +559,16 @@ def _read_motion_frames(
         "-",
     ]
     try:
-        result = subprocess.run(
+        result = FfmpegRunner(
+            timeout_sec=max(30, int(math.ceil(max(duration, 1.0) * 10.0 + 20.0)))
+        ).run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=max(30, int(math.ceil(max(duration, 1.0) * 10.0 + 20.0))),
+            text=False,
         )
-    except Exception as exc:
+    except (FfmpegCommandError, OSError) as exc:
         logger.debug("[motion_guard] ffmpeg decode failed for %s: %s", video_path, exc)
         return [], duration
-    if result.returncode != 0 or not result.stdout:
-        logger.debug(
-            "[motion_guard] ffmpeg decode returned %s for %s: %s",
-            result.returncode,
-            video_path,
-            (result.stderr or b"")[-400:].decode(errors="ignore"),
-        )
+    if not result.stdout:
         return [], duration
 
     frame_size = target_width * target_height

@@ -1,15 +1,8 @@
-"""Runtime hydration must be deterministically ordered (issue #193 follow-up).
+"""Committed node-output hydration must be deterministic (issue #193 follow-up).
 
-The hydrated artifact dict is consumed last-write-wins per ArtifactKind by
-``_state_from_persisted_artifacts``, and that winner lands in
-``node_run.input_manifest_hash`` — which is a coordinate of the provider-call
-idempotency key. A run legitimately holds several artifacts of one kind (a repair
-loop writes one ``provider_raw_request`` per attempt), so an unordered scan could pick
-a different winner on each hydration, mint a different key on an activity retry, and
-re-submit an already-paid provider call.
-
-The rows here are INSERTED in reverse of their ``(created_at, id)`` order, so a scan
-without an ORDER BY returns them in the wrong order and the assertions fail.
+The runtime consumes only outputs explicitly declared by successful/degraded/skipped
+NodeRuns. When several committed outputs share an ArtifactKind, node/output order is
+last-write-wins and feeds the next node's input manifest and provider idempotency key.
 """
 
 from __future__ import annotations
@@ -20,10 +13,11 @@ from packages.core.contracts import (
     ArtifactKind,
     DigitalHumanVideoRequest,
     JobType,
+    NodeStatus,
     RunStatus,
     utcnow,
 )
-from packages.core.storage.database import ArtifactRow, JobRow, WorkflowRunRow
+from packages.core.storage.database import ArtifactRow, JobRow, NodeRunRow, WorkflowRunRow
 from packages.core.storage.repository import Repository, new_id
 from packages.core.workflow import manifest_hash
 from packages.production import SqlAlchemyProductionRepository
@@ -38,11 +32,7 @@ _REQUEST = DigitalHumanVideoRequest(
 
 
 def _seed_run_with_duplicate_kind_artifacts(db_session_factory) -> tuple[str, str, str]:
-    """Seed a run holding two provider_raw_request artifacts (a repair loop's attempts).
-
-    ``older`` is created first in time but inserted LAST, so the physical row order a
-    seq scan returns is the opposite of the (created_at, id) order.
-    """
+    """Seed two same-kind artifacts committed in a deterministic output order."""
     run_id = new_id("run")
     job_id = new_id("job")
     now = utcnow()
@@ -84,6 +74,7 @@ def _seed_run_with_duplicate_kind_artifacts(db_session_factory) -> tuple[str, st
                 id=artifact_id,
                 case_id="case_demo",
                 run_id=run_id,
+                node_run_id="nr_hydration_order",
                 kind=ArtifactKind.provider_raw_request.value,
                 payload_schema="ProviderRawRequest.v1",
                 payload={"attempt": artifact_id},
@@ -92,6 +83,17 @@ def _seed_run_with_duplicate_kind_artifacts(db_session_factory) -> tuple[str, st
             row.updated_at = created_at
             session.add(row)
             session.flush()
+        session.add(
+            NodeRunRow(
+                id="nr_hydration_order",
+                run_id=run_id,
+                node_id="LipSync",
+                node_version="v1",
+                status=NodeStatus.succeeded.value,
+                input_manifest_hash="input",
+                output_artifact_ids=[older_id, newer_id],
+            )
+        )
         session.commit()
     return run_id, older_id, newer_id
 
@@ -124,8 +126,7 @@ def test_hydration_picks_the_latest_artifact_of_a_duplicated_kind(db_session_fac
 
     state = _hydrated_state(db_session_factory, run_id)
 
-    # Last-write-wins over a (created_at, id)-ordered scan => the newest artifact wins.
-    # Without the ORDER BY the reversed physical order would surface `older_id` instead.
+    # Last-write-wins over the successful NodeRun's explicit output order.
     assert state.artifacts[ArtifactKind.provider_raw_request].id == newer_id
     assert older_id != newer_id
 

@@ -23,7 +23,8 @@
 - `audio/forced_alignment.py`、`audio/silence.py`、`audio/sandbox_tts.py`（sandbox 兜底 TTS）、`cover.py`、`voice_provider_bridge.py`、`assets.py`（object-store 落盘助手 `store_file`，S3 后端走 path-based multipart upload/download，避免整文件进内存）
 
 ## 约定与要求
-- ffmpeg/ffprobe 一律走子进程；二进制路径解析顺序为 settings（env `CUTAGENT_FFMPEG_BIN`/`CUTAGENT_FFPROBE_BIN`）→ `shutil.which` → `~/.local/bin`。
+- ffmpeg/ffprobe 一律走 `video/ffmpeg.py` 的 `FfmpegRunner`；不得在 media 包内直接调用 `subprocess.run`。runner 负责进程组、取消传播、TERM→KILL 和 reap。二进制路径解析顺序为 settings（env `CUTAGENT_FFMPEG_BIN`/`CUTAGENT_FFPROBE_BIN`）→ `shutil.which` → `~/.local/bin`。
+- 最终媒体先写同目录 `*.part.*`，完成媒体校验后用 `promote_staged_media()` 原子晋升；取消或失败时临时目录必须自动清理，未晋升文件不得进入对象存储。
 - 传感器一律 fail-open：依赖缺失/解码失败返回空，绝不抛、绝不伪造负证据；无语音/无切镜的空结果是正常路径而非降级。
 - 标注 retry-never-degrade：窗口按失败类型重试，耗尽则整资产 `annotation_status=failed`（空 clips），用「返回 FAILED 对象」表达，不向上抛。
 - VLM 等付费调用带 `ProviderCall.idempotency_key`（per asset/prompt/frames）；prompt 取自 seeded 模板，`cover.py` 仅组装文本不发图。

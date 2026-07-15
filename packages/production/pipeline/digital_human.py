@@ -71,6 +71,7 @@ from packages.core.observability import (
     node_stage,
     record_funnel_event,
     record_node_run,
+    record_workflow_cancel_latency,
     record_workflow_run,
     workflow_stage,
 )
@@ -856,10 +857,13 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         self, run_id: str, request: DigitalHumanVideoRequest
     ) -> _RunState:
         state = _RunState(request=request)
-        for artifact in self.repository.artifacts.values():
-            if artifact.run_id == run_id:
-                state.artifacts[artifact.kind] = artifact
         for node_run in self.repository.node_runs.get(run_id, []):
+            if node_run.status not in {
+                NodeStatus.succeeded,
+                NodeStatus.degraded,
+                NodeStatus.skipped,
+            }:
+                continue
             for artifact_id in node_run.output_artifact_ids:
                 artifact = self.repository.artifacts.get(artifact_id)
                 if artifact is not None:
@@ -878,7 +882,11 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
         if job is None:
             return None
         try:
-            return self._state_from_persisted_artifacts(run_id, self._request(job))
+            state = self._state_from_persisted_artifacts(run_id, self._request(job))
+            for artifact in self.repository.artifacts.values():
+                if artifact.run_id == run_id:
+                    state.artifacts.setdefault(artifact.kind, artifact)
+            return state
         except Exception:
             logger.warning("Failed to hydrate terminal state for run %s.", run_id, exc_info=True)
             return None
@@ -1182,6 +1190,25 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             assert_transition("run", run.status, RunStatus.cancelling)
             run = run.model_copy(update={"status": RunStatus.cancelling, "updated_at": utcnow()})
             self.repository.runs[run.id] = run
+        if run.status == RunStatus.cancelling:
+            record_workflow_cancel_latency((utcnow() - run.updated_at).total_seconds())
+        node_runs = self.repository.node_runs.get(run_id, [])
+        for index in range(len(node_runs) - 1, -1, -1):
+            node_run = node_runs[index]
+            if node_run.status != NodeStatus.running:
+                continue
+            assert_transition("node", node_run.status, NodeStatus.cancelled)
+            cancelled_node = node_run.model_copy(
+                update={
+                    "status": NodeStatus.cancelled,
+                    "output_artifact_ids": [],
+                    "finished_at": utcnow(),
+                    "updated_at": utcnow(),
+                }
+            )
+            node_runs[index] = cancelled_node
+            record_node_run(cancelled_node)
+            break
         assert_transition("run", self.repository.runs[run.id].status, RunStatus.cancelled)
         self.repository.runs[run.id] = self.repository.runs[run.id].model_copy(
             update={"status": RunStatus.cancelled, "finished_at": utcnow(), "updated_at": utcnow()}

@@ -55,7 +55,7 @@ def _upgrade(engine, filename: str) -> None:
 def test_caption_cleanslate_migrations_form_the_single_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert script.get_heads() == ["0062_drop_v1_prompts"]
+    assert script.get_heads() == ["0063_workflow_cancel_request"]
     assert script.get_revision("0059_bgm_agent_prompt").down_revision == (
         "0058_resumable_uploads"
     )

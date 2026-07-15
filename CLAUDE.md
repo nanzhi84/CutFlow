@@ -28,7 +28,7 @@ python scripts/provision_oss_cors.py # S3/OSS 浏览器直传上传前配置 COR
 
 - **Contract-first**：改任何 API 形状 → 必须重生成 `apps/web/src/api/openapi.json` + `schema.d.ts`（CI 校验漂移）。`schema.d.ts` 是生成物，**禁止手改**。
 - 领域类型唯一来源 `packages/core/contracts`（Pydantic v2），跨包共享走它。
-- DB schema 迁移**只**在 `packages/core/storage/alembic/versions/`（当前 `0001…0062`，单一 head `0062_drop_v1_prompts`；`0058` 增加可恢复上传，`0059` 发布 BGM Agent prompt，`0060` 收敛 CreativeIntent 字幕提示，`0061` 清理旧字幕/花字/PostProcess 数据，`0062` 删除 v1 Agent prompt 与诊断；历史 prompt 迁移必须内联冻结、不得读取可变 seed JSON；`0014` 合并过早期双 `0012` 分支，两个 `0018` 文件是线性顺接、非分叉）。
+- DB schema 迁移**只**在 `packages/core/storage/alembic/versions/`（当前 `0001…0063`，单一 head `0063_workflow_cancel_request`；`0058` 增加可恢复上传，`0059` 发布 BGM Agent prompt，`0060` 收敛 CreativeIntent 字幕提示，`0061` 清理旧字幕/花字/PostProcess 数据，`0062` 删除 v1 Agent prompt 与诊断，`0063` 持久化 run 取消模式与请求时间；历史 prompt 迁移必须内联冻结、不得读取可变 seed JSON；`0014` 合并过早期双 `0012` 分支，两个 `0018` 文件是线性顺接、非分叉）。
 - 存储/运行时/对象存储后端由 `Settings`（`CUTAGENT_*` env）切换，清单见 `.env.example`。
 - 浏览器上传走 `/api/uploads/prepare` → object-store presigned PUT → `/api/uploads/complete`；API 不代理文件字节，complete 阶段验证 HEAD/sha256/content-type/媒体探测并登记产物。
 - 外部 AI/媒体调用一律经 `ProviderGateway` 按能力分发；prompt 不得硬编码，经 registry + binding，生产只解析 published 版本。

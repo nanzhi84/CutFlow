@@ -248,6 +248,7 @@ def configure_app_state(app: FastAPI, *, session_factory=None) -> None:
         app.state.workflow = TemporalRuntimeAdapter(
             app.state.workflow_runtime_settings,
             repository=runtime_repository,
+            production_repository=app.state.sqlalchemy_production_repository,
         )
     else:
         app.state.workflow = local_runtime
