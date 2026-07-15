@@ -374,7 +374,7 @@ def apply_reuse_plan(payload: dict[str, Any]) -> dict[str, Any]:
         )
         _sync_if_configured(ctx, repository, run_id)
         return summary
-    except (ExecutionCancelled, TemporalCancelledError):
+    except TemporalCancelledError:
         raise
     except Exception:
         record_temporal_activity_failure()
@@ -732,12 +732,6 @@ class TemporalRuntimeAdapter:
         self, run_id: str, *, force: bool = False, reason: str | None = None
     ) -> WorkflowRun | None:
         previous = self.repository.runs.get(run_id) if self.repository is not None else None
-        if previous is not None and previous.status in {
-            RunStatus.succeeded,
-            RunStatus.failed,
-            RunStatus.cancelled,
-        }:
-            return previous
         signal_force = force
         if self.production_repository is not None:
             requested = self.production_repository.request_run_cancellation(
@@ -750,6 +744,12 @@ class TemporalRuntimeAdapter:
                 return requested
             signal_force = self.production_repository.run_cancel_mode(run_id) == "force"
         else:
+            if previous is not None and previous.status in {
+                RunStatus.succeeded,
+                RunStatus.failed,
+                RunStatus.cancelled,
+            }:
+                return previous
             self._mark_local_cancelling(run_id)
         self._run(self._cancel_workflow(run_id, force=signal_force, reason=reason))
         return self.repository.runs.get(run_id) if self.repository is not None else None

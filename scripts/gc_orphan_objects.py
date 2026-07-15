@@ -106,7 +106,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.max_age_hours <= 0:
+        parser.error("--max-age-hours must be greater than zero")
     engine = create_database_engine()
     print(f"Database target: {engine.url.render_as_string(hide_password=True)}")
     store = object_store_from_env()

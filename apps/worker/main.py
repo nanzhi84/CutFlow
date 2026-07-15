@@ -182,7 +182,10 @@ async def _upload_recovery_loop(
         await asyncio.sleep(float(interval_seconds))
 
 
-async def _reconcile_cancelling_runs(client, production_repository) -> None:
+async def _reconcile_cancelling_runs(
+    client: Client,
+    production_repository: SqlAlchemyProductionRepository,
+) -> None:
     logger = logging.getLogger("cutagent.worker")
     for run_id in production_repository.run_ids_with_cancelling(limit=100):
         try:

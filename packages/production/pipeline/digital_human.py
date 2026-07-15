@@ -629,6 +629,11 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
                 # leaves exactly this state, and the replay must finish the run.
                 self._complete_run(run_id)
             return self._node_activity_summary(run_id, node_id)
+        if run.status == RunStatus.cancelling:
+            self._mark_cancelled(run_id)
+            return self._node_activity_summary(run_id, node_id)
+        if run.status == RunStatus.cancelled:
+            return self._node_activity_summary(run_id, node_id)
         request = self._request(job)
         state = self._state_from_persisted_artifacts(run_id, request)
         if job.status != JobStatus.running:
@@ -636,9 +641,6 @@ class LocalRuntimeAdapter(WorkflowRuntimeAdapter):
             self.repository.jobs[job.id] = job.model_copy(
                 update={"status": JobStatus.running, "updated_at": utcnow()}
             )
-        if run.status == RunStatus.cancelling:
-            self._mark_cancelled(run_id)
-            return self._node_activity_summary(run_id, node_id)
         if run.status == RunStatus.admitted:
             run = self._mark_run_running(run, job)
         if self.repository.runs[run_id].status != RunStatus.running:

@@ -277,6 +277,7 @@ def _process_tree_script(
     *,
     ignore_sigterm: bool,
     child_ignores_sigterm: bool | None = None,
+    child_closes_stdio: bool = False,
 ) -> str:
     handler = "signal.signal(signal.SIGTERM, signal.SIG_IGN);" if ignore_sigterm else ""
     child_ignores_sigterm = (
@@ -287,10 +288,15 @@ def _process_tree_script(
         if child_ignores_sigterm
         else "import time; time.sleep(30)"
     )
+    child_stdio = (
+        ",stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL"
+        if child_closes_stdio
+        else ""
+    )
     return (
         "import os,signal,subprocess,sys,time;"
         f"{handler}"
-        f"child=subprocess.Popen([sys.executable,'-c',{child_handler!r}]);"
+        f"child=subprocess.Popen([sys.executable,'-c',{child_handler!r}]{child_stdio});"
         f"open({str(pid_file)!r},'w').write(f'{{os.getpid()}} {{child.pid}}');"
         "time.sleep(30)"
     )
@@ -333,6 +339,27 @@ def test_ffmpeg_runner_kills_child_after_parent_exits_on_sigterm(tmp_path):
         )
 
     assert time.monotonic() - started < 1.0
+    _assert_process_tree_exited(pid_file)
+
+
+def test_ffmpeg_runner_checks_process_group_after_parent_pipes_close(tmp_path):
+    pid_file = tmp_path / "closed-pipes-pids.txt"
+    token = _DeadlineCancellationToken(delay=0.2, force=False)
+
+    with cancellation_scope(token), pytest.raises(ExecutionCancelled):
+        ffmpeg_mod.FfmpegRunner(timeout_sec=10, cancel_grace_sec=0.1).run(
+            [
+                sys.executable,
+                "-c",
+                _process_tree_script(
+                    pid_file,
+                    ignore_sigterm=False,
+                    child_ignores_sigterm=True,
+                    child_closes_stdio=True,
+                ),
+            ]
+        )
+
     _assert_process_tree_exited(pid_file)
 
 

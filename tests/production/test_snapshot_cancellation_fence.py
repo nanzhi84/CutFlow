@@ -297,3 +297,30 @@ def test_cancelled_terminal_state_cannot_be_reverted_by_stale_snapshot(db_sessio
         assert session.get(JobRow, job.id).status == JobStatus.cancelled.value
         assert session.get(ArtifactRow, "art_cancel_fence_terminal") is None
         assert session.get(FinishedVideoRow, "fv_cancel_fence_terminal") is None
+
+
+def test_final_cancel_snapshot_cannot_reference_blocked_finished_video(db_session_factory):
+    production = SqlAlchemyProductionRepository(db_session_factory)
+    job, run = _job_and_run("cancelled_with_delivery")
+    _seed_running_run(production, job, run)
+    production.request_run_cancellation(run.id, force=False)
+    delivery_job, _delivery_run, delivery_repository = _delivery_snapshot(
+        job,
+        run,
+        "cancelled_with_delivery",
+    )
+
+    production.sync_workflow_snapshot(
+        job=delivery_job.model_copy(update={"status": JobStatus.cancelled}),
+        run=run.model_copy(update={"status": RunStatus.cancelled}),
+        repository=delivery_repository,
+    )
+
+    with db_session_factory() as session:
+        durable_job = session.get(JobRow, job.id)
+        assert durable_job.status == JobStatus.cancelled.value
+        assert durable_job.latest_finished_video_id is None
+        assert session.get(WorkflowRunRow, run.id).status == RunStatus.cancelled.value
+        assert session.get(ArtifactRow, "art_cancel_fence_cancelled_with_delivery") is None
+        assert session.get(FinishedVideoRow, "fv_cancel_fence_cancelled_with_delivery") is None
+        assert session.get(PublishPackageRow, "pkg_cancel_fence_cancelled_with_delivery") is None

@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import time
 
+import pytest
+
 from packages.core.storage.object_store import LocalObjectStore
-from scripts.gc_orphan_objects import collect_orphans
+from scripts.gc_orphan_objects import collect_orphans, main
 
 
 def test_collect_orphans_keeps_referenced_and_recent_generated_objects(tmp_path) -> None:
@@ -22,3 +24,8 @@ def test_collect_orphans_keeps_referenced_and_recent_generated_objects(tmp_path)
     orphans = collect_orphans(store, {old_referenced.uri}, max_age_hours=1)
 
     assert [candidate.uri for candidate in orphans] == [old_orphan.uri]
+
+
+def test_gc_rejects_non_positive_age_before_opening_database() -> None:
+    with pytest.raises(SystemExit, match="2"):
+        main(["--max-age-hours", "0"])

@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Sequence
 
 from packages.core.config import build_settings
 from packages.core.contracts import ErrorCode, MediaInfo
@@ -176,7 +176,7 @@ class FfmpegRunner:
         text: bool = True,
     ) -> subprocess.CompletedProcess:
         command = list(args)
-        timeout = float(timeout_sec or self.timeout_sec)
+        timeout = self.timeout_sec if timeout_sec is None else float(timeout_sec)
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -267,6 +267,16 @@ class FfmpegRunner:
             return False
         return True
 
+    @staticmethod
+    def _process_group_alive(process: subprocess.Popen) -> bool:
+        if os.name != "posix":
+            return process.poll() is None
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
     def _terminate_process_group(
         self,
         process: subprocess.Popen,
@@ -274,7 +284,7 @@ class FfmpegRunner:
         grace_sec: float,
         cancellation: bool = False,
         started_at: float,
-    ) -> tuple[Any, Any]:
+    ) -> tuple[str | bytes | None, str | bytes | None]:
         if self._signal_process_group(process, signal.SIGTERM):
             logger.info(
                 "Sent SIGTERM to media process group",
@@ -300,8 +310,12 @@ class FfmpegRunner:
                     if cancellation and current_cancellation_token().force:
                         break
                     continue
-                self._log_reaped(process, started_at=started_at)
-                return stdout, stderr
+                if not self._process_group_alive(process):
+                    self._log_reaped(process, started_at=started_at)
+                    return stdout, stderr
+                if cancellation and current_cancellation_token().force:
+                    break
+                time.sleep(min(PROCESS_POLL_INTERVAL_SEC, max(0.0, remaining)))
         if self._signal_process_group(process, signal.SIGKILL):
             if cancellation:
                 record_workflow_cancel_force_kill()

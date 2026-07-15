@@ -275,6 +275,41 @@ def test_cancel_does_not_signal_when_sql_commit_already_finished_run(monkeypatch
     assert repo.runs[run.id].status == c.RunStatus.succeeded
 
 
+def test_sql_cancel_uses_durable_state_when_api_cache_is_stale(monkeypatch) -> None:
+    job, run = _job_and_run()
+    repo = Repository()
+    repo.jobs[job.id] = job.model_copy(update={"status": c.JobStatus.succeeded})
+    repo.runs[run.id] = run.model_copy(update={"status": c.RunStatus.succeeded})
+
+    class _ProductionRepository:
+        def request_run_cancellation(self, run_id: str, *, force: bool):
+            assert run_id == run.id
+            assert force is False
+            return run.model_copy(update={"status": c.RunStatus.cancelling})
+
+        def run_cancel_mode(self, _run_id: str) -> str:
+            return "graceful"
+
+    adapter = ta.TemporalRuntimeAdapter(
+        WorkflowRuntimeSettings(runtime="temporal"),
+        repository=repo,
+        production_repository=_ProductionRepository(),
+    )
+    calls: list[str] = []
+
+    async def fake_cancel(run_id: str, *, force: bool, reason: str | None):
+        assert force is False
+        calls.append(run_id)
+
+    monkeypatch.setattr(adapter, "_cancel_workflow", fake_cancel)
+    monkeypatch.setattr(adapter, "_run", lambda coro: asyncio.run(coro))
+
+    result = adapter.cancel_run(run.id)
+
+    assert result.status == c.RunStatus.cancelling
+    assert calls == [run.id]
+
+
 def test_sql_force_escalation_cannot_be_downgraded_by_later_graceful_signal(
     monkeypatch,
 ) -> None:

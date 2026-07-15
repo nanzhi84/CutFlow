@@ -33,6 +33,6 @@ S3/OSS 上传写入 SHA-256 metadata，并在上传后用 HEAD 校验大小和 c
 
 ## 可观测与排障
 
-结构化日志包含 `run_id`、`node_run_id`、PID/PGID、cancel mode、TERM/KILL 与 reaped 事件。核心指标为取消完成延迟、force kill 次数和取消后被栅栏跳过的产物提交数。
+结构化日志包含 `run_id`、`node_id`、PID/PGID、cancel mode、TERM/KILL 与 reaped 事件。核心指标为取消完成延迟、force kill 次数和取消后被栅栏跳过的产物提交数。
 
-排障时先确认状态顺序 `running → cancelling → cancelled`，再按同一 `run_id` 检查 `media.process.cancel_requested`、`media.process.sigterm`/`sigkill`、`media.process.reaped`。只有出现 reaped 且 SQL 中没有取消后的交付产物，才算取消闭环完成。
+排障时先确认状态顺序 `running → cancelling → cancelled`，再按同一 `run_id` 检查 `media.process.cancel_requested`、`media.process.sigterm_sent`/`media.process.sigkill_sent`、`media.process.reaped`。只有出现 reaped 且 SQL 中没有取消后的交付产物，才算取消闭环完成。

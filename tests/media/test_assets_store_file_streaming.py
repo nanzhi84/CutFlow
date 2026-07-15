@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 
+import pytest
+
 from packages.core.storage.object_store import (
     LocalObjectStore,
     S3ObjectStore,
@@ -113,6 +115,23 @@ def test_s3_store_file_uses_path_based_upload_not_full_buffer(tmp_path):
     # sha256/size computed by streaming off disk, not read_bytes().
     assert stored.sha256 == expected_sha
     assert stored.size_bytes == len(payload)
+
+
+def test_s3_store_file_rejects_remote_checksum_mismatch(tmp_path, monkeypatch):
+    store, client = _make_s3_store(tmp_path)
+    source = tmp_path / "corrupt.mp4"
+    source.write_bytes(b"local-content")
+    monkeypatch.setattr(
+        client,
+        "head_object",
+        lambda **_kwargs: {
+            "ContentLength": source.stat().st_size,
+            "Metadata": {"sha256": "wrong"},
+        },
+    )
+
+    with pytest.raises(OSError, match="size/checksum verification"):
+        store_file(store, source, purpose="generated-video")
 
 
 def test_s3_store_file_addressed_key_is_streamed_content_sha(tmp_path):

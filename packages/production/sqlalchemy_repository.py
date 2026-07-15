@@ -758,8 +758,19 @@ class SqlAlchemyProductionRepository(BaseRepository):
     ) -> Job:
         if existing is None:
             return incoming
-        if cancellation_fence and incoming.status != JobStatus.cancelled:
-            return SqlAlchemyProductionRepository._job_with_durable_state(existing, incoming)
+        if cancellation_fence:
+            preserved = SqlAlchemyProductionRepository._job_with_durable_state(
+                existing,
+                incoming,
+            )
+            if incoming.status == JobStatus.cancelled:
+                return preserved.model_copy(
+                    update={
+                        "status": JobStatus.cancelled,
+                        "updated_at": incoming.updated_at,
+                    }
+                )
+            return preserved
         return incoming
 
     @staticmethod
@@ -1514,9 +1525,8 @@ class SqlAlchemyProductionRepository(BaseRepository):
                     repository.runs[source_run.id] = source_run
                     run_ids.add(source_run.id)
             # Node order is part of resume state: when several committed outputs share an
-            # artifact kind, _state_from_persisted_artifacts applies last-write-wins and
-            # the winner feeds the next node's input manifest. (created_at, id) is a total
-            # order, so activity retries derive the same provider-call idempotency key.
+            # artifact kind, _state_from_persisted_artifacts applies each node's declared
+            # output ids in order and the final value feeds the next input manifest.
             node_runs = [
                 node_run_row_to_contract(row)
                 for row in session.scalars(

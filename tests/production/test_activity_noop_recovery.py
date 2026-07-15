@@ -130,3 +130,18 @@ def test_terminal_predicate_matches_done_set_semantics():
         )
         is False
     )
+
+
+def test_activity_dispatched_before_admitted_cancel_does_not_restart_job():
+    adapter, run = _adapter_with_terminal_node(
+        node_id="ValidateRequest",
+        node_status=NodeStatus.pending,
+        run_status=RunStatus.cancelled,
+        job_status=JobStatus.cancelled,
+    )
+
+    summary = adapter.run_node_activity(run.id, "ValidateRequest")
+
+    assert summary["run_status"] == RunStatus.cancelled.value
+    assert adapter.repository.jobs[run.job_id].status == JobStatus.cancelled
+    assert len(adapter.repository.node_runs[run.id]) == 1
