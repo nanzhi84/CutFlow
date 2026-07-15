@@ -14,6 +14,7 @@ import pytest
 from packages.core.storage.object_store import (
     get_object_store,
     LocalObjectStore,
+    MultipartPart,
     S3ObjectStore,
     TieredObjectStore,
     object_store_from_env,
@@ -36,6 +37,10 @@ class FakeS3Client:
         self.download_calls: list[tuple[str, str, object]] = []
         self.presign_calls: list[tuple[str, dict[str, str], int]] = []
         self.delete_calls: list[tuple[str, str]] = []
+        self.multipart_uploads: list[dict] = []
+        self.multipart_parts: list[dict] = []
+        self.multipart_completions: list[dict] = []
+        self.multipart_aborts: list[dict] = []
 
     def head_bucket(self, *, Bucket: str) -> None:
         if not self.bucket_created:
@@ -64,13 +69,28 @@ class FakeS3Client:
         if (Bucket, Key) not in self.objects:
             raise FakeS3Error("404")
 
-    def generate_presigned_url(self, ClientMethod: str, Params: dict[str, str], ExpiresIn: int) -> str:
+    def generate_presigned_url(
+        self, ClientMethod: str, Params: dict[str, str], ExpiresIn: int
+    ) -> str:
         self.presign_calls.append((ClientMethod, Params, ExpiresIn))
         return f"http://minio.local/{Params['Bucket']}/{Params['Key']}?X-Amz-Signature=fake"
 
     def delete_object(self, *, Bucket: str, Key: str) -> None:
         self.delete_calls.append((Bucket, Key))
         self.objects.pop((Bucket, Key), None)
+
+    def create_multipart_upload(self, **kwargs):
+        self.multipart_uploads.append(kwargs)
+        return {"UploadId": "remote-upload-id"}
+
+    def list_parts(self, **kwargs):
+        return {"Parts": list(self.multipart_parts), "IsTruncated": False}
+
+    def complete_multipart_upload(self, **kwargs):
+        self.multipart_completions.append(kwargs)
+
+    def abort_multipart_upload(self, **kwargs):
+        self.multipart_aborts.append(kwargs)
 
 
 def test_object_store_from_env_defaults_to_tiered_local(monkeypatch: pytest.MonkeyPatch, tmp_path):
@@ -151,6 +171,72 @@ def test_tiered_object_store_delegates_unparseable_signed_url_to_durable(tmp_pat
     assert signed.url == "https://media.example/tts.mp3"
 
 
+def test_local_multipart_roundtrip_and_abort_are_deterministic(tmp_path):
+    store = LocalObjectStore(tmp_path / "objects")
+    ref = store.prepare_upload("large.ttf", "incoming/uploads", content_key="upl_local")
+    upload_id = store.create_multipart_upload(ref.uri, content_type="font/ttf")
+
+    signed_one = store.sign_upload_part(
+        ref.uri, upload_id=upload_id, part_number=1, expires_in=timedelta(minutes=15)
+    )
+    signed_two = store.sign_upload_part(
+        ref.uri, upload_id=upload_id, part_number=2, expires_in=timedelta(minutes=15)
+    )
+    store.put_bytes(parse_object_uri(signed_one.url), b"abcdefgh")
+    store.put_bytes(parse_object_uri(signed_two.url), b"ijkl")
+
+    parts = store.list_parts(ref.uri, upload_id=upload_id)
+    assert [(part.part_number, part.size_bytes) for part in parts] == [(1, 8), (2, 4)]
+    store.complete_multipart_upload(ref.uri, upload_id=upload_id, parts=parts)
+    assert store.get_bytes(ref) == b"abcdefghijkl"
+
+    aborted_ref = store.prepare_upload("aborted.ttf", "incoming/uploads")
+    aborted_id = store.create_multipart_upload(aborted_ref.uri, content_type="font/ttf")
+    store.abort_multipart_upload(aborted_ref.uri, upload_id=aborted_id)
+    store.abort_multipart_upload(aborted_ref.uri, upload_id=aborted_id)
+    assert not (store.root / ".multipart" / aborted_id).exists()
+
+
+def test_s3_multipart_protocol_uses_authoritative_list_parts(tmp_path):
+    fake_client = FakeS3Client()
+    fake_client.multipart_parts = [
+        {"PartNumber": 2, "ETag": '"etag-2"', "Size": 4},
+        {"PartNumber": 1, "ETag": '"etag-1"', "Size": 8},
+    ]
+    store = S3ObjectStore(
+        endpoint_url="http://minio.local:9000",
+        bucket="cutagent-demo",
+        access_key="minioadmin",
+        secret_key="minioadmin",
+        client=fake_client,
+        cache_root=tmp_path / "cache",
+    )
+    uri = "s3://cutagent-demo/incoming/uploads/u1/large.ttf"
+
+    upload_id = store.create_multipart_upload(uri, content_type="font/ttf")
+    signed = store.sign_upload_part(
+        uri, upload_id=upload_id, part_number=2, expires_in=timedelta(minutes=15)
+    )
+    parts = store.list_parts(uri, upload_id=upload_id)
+    store.complete_multipart_upload(uri, upload_id=upload_id, parts=parts)
+    store.abort_multipart_upload(uri, upload_id=upload_id)
+
+    assert upload_id == "remote-upload-id"
+    assert fake_client.multipart_uploads[0]["ContentType"] == "font/ttf"
+    assert fake_client.presign_calls[-1][0] == "upload_part"
+    assert "PartNumber=2" not in signed.url  # fake URL is opaque; params are asserted below
+    assert fake_client.presign_calls[-1][1]["PartNumber"] == 2
+    assert parts == [
+        MultipartPart(part_number=1, etag='"etag-1"', size_bytes=8),
+        MultipartPart(part_number=2, etag='"etag-2"', size_bytes=4),
+    ]
+    assert fake_client.multipart_completions[0]["MultipartUpload"]["Parts"] == [
+        {"PartNumber": 1, "ETag": '"etag-1"'},
+        {"PartNumber": 2, "ETag": '"etag-2"'},
+    ]
+    assert fake_client.multipart_aborts[0]["UploadId"] == upload_id
+
+
 def test_prepare_upload_accepts_content_key_for_deterministic_local_key(tmp_path):
     store = LocalObjectStore(tmp_path / "objects")
 
@@ -172,7 +258,9 @@ def test_get_object_store_uses_pytest_temp_root():
     ephemeral_root = Path(store.ephemeral.root).resolve()
     temp_root = Path(tempfile.gettempdir()).resolve()
     configured_root = Path(os.environ["CUTAGENT_LOCAL_OBJECTSTORE_PATH"]).resolve()
-    repository_objectstore = (Path(__file__).resolve().parents[2] / ".data" / "objectstore").resolve()
+    repository_objectstore = (
+        Path(__file__).resolve().parents[2] / ".data" / "objectstore"
+    ).resolve()
 
     # The durable tier honors the configured throwaway local objectstore path
     # (the test harness points CUTAGENT_LOCAL_OBJECTSTORE_PATH at a temp dir), and
@@ -445,5 +533,7 @@ def test_s3_object_store_roundtrip_with_minio(tmp_path):
 
     assert store.exists(ref) is True
     assert store.get_bytes(ref) == b"minio-roundtrip"
-    assert signed.url.startswith(os.getenv("CUTAGENT_OBJECTSTORE_ENDPOINT", "http://127.0.0.1:9000"))
+    assert signed.url.startswith(
+        os.getenv("CUTAGENT_OBJECTSTORE_ENDPOINT", "http://127.0.0.1:9000")
+    )
     assert "X-Amz-" in signed.url

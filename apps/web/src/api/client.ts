@@ -156,23 +156,21 @@ export async function fetchJson<T>(path: string, options: FetchOptions = {}): Pr
 
 const enc = encodeURIComponent;
 
-/** SHA-256 hex of a file. Browser-direct uploads send it so the API can verify
- * the object server-side (it never sees the bytes during upload). */
-export async function sha256Hex(file: File): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
 /** PUT a file directly to a presigned OSS URL: raw body, the signed Content-Type,
  * NO cookies / NO FormData. Reports progress via the XHR upload events. */
+export class ObjectStoreUploadError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = "ObjectStoreUploadError";
+  }
+}
+
 export function putToOss(
   url: string,
-  file: File,
+  body: Blob,
   contentType: string,
   onProgress?: (loaded: number, total: number) => void,
-): Promise<void> {
+): Promise<string | null> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", url);
@@ -182,10 +180,10 @@ export function putToOss(
     };
     xhr.onload = () =>
       xhr.status >= 200 && xhr.status < 300
-        ? resolve()
-        : reject(new Error(`对象存储上传失败（HTTP ${xhr.status}）`));
+        ? resolve(xhr.getResponseHeader("ETag"))
+        : reject(new ObjectStoreUploadError(xhr.status, `对象存储上传失败（HTTP ${xhr.status}）`));
     xhr.onerror = () => reject(new Error("对象存储上传网络错误"));
-    xhr.send(file);
+    xhr.send(body);
   });
 }
 
@@ -444,6 +442,29 @@ export const api = {
         method: "POST",
         body: payload,
         idempotencyKey: createIdempotencyKey("upload_complete"),
+      }),
+    signParts: (
+      uploadSessionId: string,
+      payload: JsonRequest<operations["sign_upload_parts_api_uploads__upload_session_id__parts_sign_post"]>,
+    ) =>
+      fetchJson<JsonResponse<operations["sign_upload_parts_api_uploads__upload_session_id__parts_sign_post"]>>(
+        `/api/uploads/${enc(uploadSessionId)}/parts/sign`,
+        { method: "POST", body: payload, idempotencyKey: createIdempotencyKey("upload_parts_sign") },
+      ),
+    resume: (uploadSessionId: string) =>
+      fetchJson<JsonResponse<operations["resume_upload_api_uploads__upload_session_id__resume_get"]>>(
+        `/api/uploads/${enc(uploadSessionId)}/resume`,
+      ),
+    objectComplete: (
+      uploadSessionId: string,
+      payload: JsonRequest<operations["object_complete_upload_api_uploads__upload_session_id__object_complete_post"]>,
+    ) =>
+      fetchJson<
+        JsonResponse<operations["object_complete_upload_api_uploads__upload_session_id__object_complete_post"]>
+      >(`/api/uploads/${enc(uploadSessionId)}/object-complete`, {
+        method: "POST",
+        body: payload,
+        idempotencyKey: createIdempotencyKey("upload_object_complete"),
       }),
     cancel: (uploadSessionId: string) =>
       fetchJson<JsonResponse<operations["cancel_upload_api_uploads__upload_session_id__cancel_post"]>>(
@@ -896,6 +917,8 @@ export type VoiceProfile = components["schemas"]["VoiceProfile"];
 export type UploadKind = components["schemas"]["UploadKind"];
 export type UploadSession = components["schemas"]["UploadSession"];
 export type CompleteUploadResponse = components["schemas"]["CompleteUploadResponse"];
+export type PrepareUploadResponse = components["schemas"]["PrepareUploadResponse"];
+export type ResumeUploadResponse = components["schemas"]["ResumeUploadResponse"];
 export type MediaAssetCard = components["schemas"]["MediaAssetCard"];
 export type MediaAssetRecord = components["schemas"]["MediaAssetRecord"];
 export type SignedUrlResponse = components["schemas"]["SignedUrlResponse"];

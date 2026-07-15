@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import io
+import json
 import os
 import shutil
 import time
@@ -68,6 +69,13 @@ class StoredObject:
 class ObjectHead:
     size: int
     content_type: str | None
+
+
+@dataclass(frozen=True)
+class MultipartPart:
+    part_number: int
+    etag: str
+    size_bytes: int
 
 
 class ObjectStore:
@@ -197,6 +205,30 @@ class ObjectStore:
     ) -> SignedUrlResponse:
         raise NotImplementedError
 
+    def create_multipart_upload(self, uri: str, *, content_type: str) -> str:
+        raise NotImplementedError
+
+    def sign_upload_part(
+        self,
+        uri: str,
+        *,
+        upload_id: str,
+        part_number: int,
+        expires_in: timedelta,
+    ) -> SignedUrlResponse:
+        raise NotImplementedError
+
+    def list_parts(self, uri: str, *, upload_id: str) -> list[MultipartPart]:
+        raise NotImplementedError
+
+    def complete_multipart_upload(
+        self, uri: str, *, upload_id: str, parts: list[MultipartPart]
+    ) -> None:
+        raise NotImplementedError
+
+    def abort_multipart_upload(self, uri: str, *, upload_id: str) -> None:
+        raise NotImplementedError
+
     def head(self, uri: str) -> ObjectHead:
         raise NotImplementedError
 
@@ -249,6 +281,34 @@ class LocalObjectStore(ObjectStore):
     def get_bytes(self, ref: ObjectRef) -> bytes:
         return self._path(ref).read_bytes()
 
+    def upload_file(
+        self,
+        local_path: Path,
+        ref: ObjectRef,
+        *,
+        content_type: str | None = None,
+    ) -> StoredObject:
+        source = Path(local_path)
+        target = self._path(ref)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.resolve() != target.resolve():
+            temporary = target.parent / f"{target.name}.{uuid4().hex}.part"
+            try:
+                shutil.copyfile(source, temporary)
+                os.replace(temporary, target)
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
+        return StoredObject(ref=ref, size_bytes=source.stat().st_size, sha256=sha256_file(source))
+
+    def download_file(self, ref: ObjectRef, local_path: Path) -> Path:
+        source = self._path(ref)
+        target = Path(local_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.resolve() != target.resolve():
+            shutil.copyfile(source, target)
+        return target
+
     def exists(self, ref: ObjectRef) -> bool:
         return self._path(ref).exists()
 
@@ -281,6 +341,84 @@ class LocalObjectStore(ObjectStore):
             url=uri, expires_at=utcnow() + expires_in, request_id="req_local_put"
         )
 
+    def create_multipart_upload(self, uri: str, *, content_type: str) -> str:
+        ref = parse_local_uri(uri)
+        self._path(ref)  # validates the bucket
+        upload_id = f"mpu_{uuid4().hex}"
+        upload_root = self._multipart_root(upload_id)
+        upload_root.mkdir(parents=True, exist_ok=False)
+        (upload_root / "metadata.json").write_text(
+            json.dumps({"uri": uri, "content_type": content_type}), encoding="utf-8"
+        )
+        return upload_id
+
+    def sign_upload_part(
+        self,
+        uri: str,
+        *,
+        upload_id: str,
+        part_number: int,
+        expires_in: timedelta,
+    ) -> SignedUrlResponse:
+        self._validate_multipart(upload_id, uri)
+        part_ref = ObjectRef(
+            bucket=self.bucket,
+            key=f".multipart/{upload_id}/parts/{part_number}.part",
+            uri=f"local://{self.bucket}/.multipart/{upload_id}/parts/{part_number}.part",
+        )
+        return SignedUrlResponse(
+            url=part_ref.uri,
+            expires_at=utcnow() + expires_in,
+            request_id="req_local_part",
+        )
+
+    def list_parts(self, uri: str, *, upload_id: str) -> list[MultipartPart]:
+        root = self._validate_multipart(upload_id, uri) / "parts"
+        if not root.exists():
+            return []
+        result: list[MultipartPart] = []
+        for path in root.glob("*.part"):
+            try:
+                part_number = int(path.stem)
+            except ValueError:
+                continue
+            result.append(
+                MultipartPart(
+                    part_number=part_number,
+                    etag=f'"{sha256_file(path)}"',
+                    size_bytes=path.stat().st_size,
+                )
+            )
+        return sorted(result, key=lambda item: item.part_number)
+
+    def complete_multipart_upload(
+        self, uri: str, *, upload_id: str, parts: list[MultipartPart]
+    ) -> None:
+        root = self._validate_multipart(upload_id, uri)
+        target = self._path(parse_local_uri(uri))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.parent / f"{target.name}.{uuid4().hex}.part"
+        try:
+            with temporary.open("wb") as output:
+                for part in sorted(parts, key=lambda item: item.part_number):
+                    part_path = root / "parts" / f"{part.part_number}.part"
+                    if not part_path.exists():
+                        raise FileNotFoundError(str(part_path))
+                    with part_path.open("rb") as source:
+                        shutil.copyfileobj(source, output, length=1024 * 1024)
+            os.replace(temporary, target)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+        shutil.rmtree(root, ignore_errors=True)
+
+    def abort_multipart_upload(self, uri: str, *, upload_id: str) -> None:
+        try:
+            self._validate_multipart(upload_id, uri)
+        except FileNotFoundError:
+            return
+        shutil.rmtree(self._multipart_root(upload_id), ignore_errors=True)
+
     def head(self, uri: str) -> ObjectHead:
         path = self._path(parse_local_uri(uri))
         if not path.exists():
@@ -288,8 +426,9 @@ class LocalObjectStore(ObjectStore):
         return ObjectHead(size=path.stat().st_size, content_type=None)
 
     def copy(self, src_uri: str, dst_uri: str) -> None:
-        content = self._path(parse_local_uri(src_uri)).read_bytes()
-        self.put_bytes(parse_local_uri(dst_uri), content)
+        source = self._path(parse_local_uri(src_uri))
+        target_ref = parse_local_uri(dst_uri)
+        self.upload_file(source, target_ref)
 
     def ensure_cors(
         self, origins: list[str], *, expose: list[str] | None = None, max_age: int = 600
@@ -315,6 +454,21 @@ class LocalObjectStore(ObjectStore):
         if ref.bucket != self.bucket:
             raise ValueError(f"Object bucket {ref.bucket} is not managed by this store.")
         return self.root / ref.key
+
+    def _multipart_root(self, upload_id: str) -> Path:
+        if not upload_id.startswith("mpu_") or any(ch in upload_id for ch in ("/", "\\")):
+            raise ValueError("Invalid multipart upload id.")
+        return self.root / ".multipart" / upload_id
+
+    def _validate_multipart(self, upload_id: str, uri: str) -> Path:
+        root = self._multipart_root(upload_id)
+        metadata_path = root / "metadata.json"
+        if not metadata_path.exists():
+            raise FileNotFoundError(upload_id)
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata.get("uri") != uri:
+            raise ValueError("Multipart upload does not belong to this object URI.")
+        return root
 
 
 class S3ObjectStore(ObjectStore):
@@ -501,7 +655,11 @@ class S3ObjectStore(ObjectStore):
         # ResponseCacheControl makes the GET response carry Cache-Control even for
         # objects stored before that header was written at upload time, so the
         # browser stops re-fetching historical covers too (issue #206).
-        params = {"Bucket": ref.bucket, "Key": ref.key, "ResponseCacheControl": self._cache_control()}
+        params = {
+            "Bucket": ref.bucket,
+            "Key": ref.key,
+            "ResponseCacheControl": self._cache_control(),
+        }
         if response_content_disposition:
             params["ResponseContentDisposition"] = response_content_disposition
         url = self._client.generate_presigned_url(
@@ -525,6 +683,96 @@ class S3ObjectStore(ObjectStore):
             ExpiresIn=int(expires_in.total_seconds()),
         )
         return SignedUrlResponse(url=url, expires_at=utcnow() + expires_in, request_id="req_put")
+
+    def create_multipart_upload(self, uri: str, *, content_type: str) -> str:
+        ref = parse_object_uri(uri)
+        self._validate_write_ref(ref)
+        response = self._client.create_multipart_upload(
+            Bucket=ref.bucket,
+            Key=ref.key,
+            ContentType=content_type,
+            CacheControl=self._cache_control(),
+        )
+        return str(response["UploadId"])
+
+    def sign_upload_part(
+        self,
+        uri: str,
+        *,
+        upload_id: str,
+        part_number: int,
+        expires_in: timedelta,
+    ) -> SignedUrlResponse:
+        ref = parse_object_uri(uri)
+        self._validate_write_ref(ref)
+        url = self._client.generate_presigned_url(
+            "upload_part",
+            Params={
+                "Bucket": ref.bucket,
+                "Key": ref.key,
+                "UploadId": upload_id,
+                "PartNumber": part_number,
+            },
+            ExpiresIn=int(expires_in.total_seconds()),
+        )
+        return SignedUrlResponse(
+            url=url,
+            expires_at=utcnow() + expires_in,
+            request_id="req_upload_part",
+        )
+
+    def list_parts(self, uri: str, *, upload_id: str) -> list[MultipartPart]:
+        ref = parse_object_uri(uri)
+        self._validate_write_ref(ref)
+        parts: list[MultipartPart] = []
+        marker: int | None = None
+        while True:
+            kwargs: dict[str, Any] = {
+                "Bucket": ref.bucket,
+                "Key": ref.key,
+                "UploadId": upload_id,
+            }
+            if marker is not None:
+                kwargs["PartNumberMarker"] = marker
+            response = self._client.list_parts(**kwargs)
+            for part in response.get("Parts", []):
+                parts.append(
+                    MultipartPart(
+                        part_number=int(part["PartNumber"]),
+                        etag=str(part["ETag"]),
+                        size_bytes=int(part["Size"]),
+                    )
+                )
+            if not response.get("IsTruncated"):
+                break
+            marker = int(response["NextPartNumberMarker"])
+        return sorted(parts, key=lambda item: item.part_number)
+
+    def complete_multipart_upload(
+        self, uri: str, *, upload_id: str, parts: list[MultipartPart]
+    ) -> None:
+        ref = parse_object_uri(uri)
+        self._validate_write_ref(ref)
+        self._client.complete_multipart_upload(
+            Bucket=ref.bucket,
+            Key=ref.key,
+            UploadId=upload_id,
+            MultipartUpload={
+                "Parts": [
+                    {"PartNumber": part.part_number, "ETag": part.etag}
+                    for part in sorted(parts, key=lambda item: item.part_number)
+                ]
+            },
+        )
+
+    def abort_multipart_upload(self, uri: str, *, upload_id: str) -> None:
+        ref = parse_object_uri(uri)
+        self._validate_write_ref(ref)
+        self._client.abort_multipart_upload(
+            Bucket=ref.bucket,
+            Key=ref.key,
+            UploadId=upload_id,
+        )
 
     def head(self, uri: str) -> ObjectHead:
         ref = parse_object_uri(uri)
@@ -853,6 +1101,7 @@ def reset_object_store() -> None:
 __all__ = [
     "DEFAULT_SIGNED_GET_TTL",
     "ObjectRef",
+    "MultipartPart",
     "ObjectStore",
     "LocalObjectStore",
     "S3ObjectStore",

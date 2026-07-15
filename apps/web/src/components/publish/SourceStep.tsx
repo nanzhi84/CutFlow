@@ -146,7 +146,7 @@ export function SourceStep({
           <DropZone
             accept={VIDEO_ACCEPT}
             multiple
-            maxSize={100}
+            maxSize={200}
             onFilesDrop={(_files, details) => void uploadFiles(details.acceptedFiles)}
             label="拖拽外部视频到此处"
           />

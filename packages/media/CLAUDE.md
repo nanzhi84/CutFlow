@@ -7,6 +7,7 @@
 - V4 标注：传感器（PySceneDetect/Silero VAD/OpenCV）出客观信号，VLM 只判语义；产出 `AnnotationV4`。
 - 视频原语（`video/ffmpeg.py`）：ffmpeg/ffprobe 子进程做 `probe_media`、抽帧（`extract_thumbnails`/`extract_frame_at_time`）、`stabilize_video`、`compress_video_to_budget`、`normalize_for_upload`（上传可选规范化：旋转/裁剪/1080p/BT.709/H.264 + post-encode 校验）、`trim_to_valid_segments`、`probe_stream_types`。
 - 纯转换：`audio/forced_alignment.py`（MiniMax TTS 字幕→ASR 形状）、`audio/silence.py`（silencedetect→停顿窗）；封面 prompt 组装与音色 provider 桥接（`voice_provider_bridge.py`：load / hydrate 上传水合 / persist 音色与预览，`clone_voice` 在仓储 `sqlalchemy_repository.py`）。
+- 可恢复上传：`upload_reconciler.py` 驱动 completing → object_completed → verified → ready，流式校验对象并在 ready 后可重入派生缩略图。
 
 ## 关键文件 / 子目录
 - `sqlalchemy_repository.py` — 媒体/音色仓储实现（对外导出 `SqlAlchemyMediaRepository`）

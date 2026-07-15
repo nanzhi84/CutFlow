@@ -35,7 +35,7 @@ def test_migration_revision_preserves_single_head() -> None:
     heads = script.get_heads()
     migration = script.get_revision(REVISION)
 
-    assert heads == ["0057_drop_provider_retry_policy"]
+    assert heads == ["0058_resumable_uploads"]
     assert migration is not None
     assert migration.down_revision == "0053_postprocess_local_solver"
     assert len(REVISION) <= 32

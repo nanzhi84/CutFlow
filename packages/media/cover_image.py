@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 COVER_TARGET_WIDTH = 1080
 COVER_TARGET_HEIGHT = 1920
 
@@ -43,6 +45,26 @@ def build_cover_thumbnail_bytes(
     image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
     if image is None or image.size == 0:
         raise ValueError("Cover image content is not decodable.")
+    return _encode_cover_thumbnail(image, max_long_edge=max_long_edge, max_bytes=max_bytes)
+
+
+def build_cover_thumbnail_file(
+    path: str | Path,
+    *,
+    max_long_edge: int = THUMBNAIL_MAX_LONG_EDGE,
+    max_bytes: int = THUMBNAIL_MAX_BYTES,
+) -> bytes:
+    """Encode a small WebP directly from a file path without a whole-file bytes copy."""
+
+    cv2, _ = _cv2()
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if image is None or image.size == 0:
+        raise ValueError("Cover image content is not decodable.")
+    return _encode_cover_thumbnail(image, max_long_edge=max_long_edge, max_bytes=max_bytes)
+
+
+def _encode_cover_thumbnail(image, *, max_long_edge: int, max_bytes: int) -> bytes:
+    cv2, _ = _cv2()
     height, width = image.shape[:2]
     if height <= 0 or width <= 0:
         raise ValueError("Cover image has invalid dimensions.")

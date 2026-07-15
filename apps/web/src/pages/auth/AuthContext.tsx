@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo } from "reac
 import { useLocation, useNavigate } from "react-router-dom";
 import { api, type AuthUser, type LoginRequest } from "../../api/client";
 import { routes } from "../../routes";
+import { uploadManager } from "../../uploads/manager";
 
 type AuthContextValue = {
   user: AuthUser | null;
@@ -68,6 +69,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [logoutMutation]);
 
   const user = session.data?.user ?? null;
+  useEffect(() => {
+    uploadManager.setUser(user?.id ?? null);
+  }, [user?.id]);
   const value = useMemo(
     () => ({
       user,

@@ -44,7 +44,7 @@ def test_migration_revision_chains_to_current_head() -> None:
     heads = script.get_heads()
     migration = script.get_revision("0053_postprocess_local_solver")
 
-    assert heads == ["0057_drop_provider_retry_policy"]
+    assert heads == ["0058_resumable_uploads"]
     assert migration is not None
     assert migration.down_revision == "0052_finished_video_cover_thumb"
     assert len("0053_postprocess_local_solver") <= 32

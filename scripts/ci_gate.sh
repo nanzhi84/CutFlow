@@ -190,6 +190,19 @@ for bucket in (
         print(f"bucket {bucket} already exists")
 PY
 
+# Exercise the actual browser multipart protocol against MinIO, including a
+# ~70% refresh/resume, repeat completion, cancel abort, and expiry abort.
+CUTAGENT_RUN_S3_TESTS=1 \
+CUTAGENT_OBJECTSTORE_BACKEND=s3 \
+CUTAGENT_OBJECTSTORE_ENDPOINT="$OBJECTSTORE_ENDPOINT" \
+CUTAGENT_OBJECTSTORE_BUCKET="$OBJECTSTORE_BUCKET" \
+CUTAGENT_OBJECTSTORE_ACCESS_KEY="$OBJECTSTORE_ACCESS_KEY" \
+CUTAGENT_OBJECTSTORE_SECRET_KEY="$OBJECTSTORE_SECRET_KEY" \
+CUTAGENT_OBJECTSTORE_ADDRESSING_STYLE=path \
+run_pytest \
+  tests/integration/test_upload_resumable_minio.py \
+  tests/api/test_object_store_backends.py::test_s3_object_store_roundtrip_with_minio
+
 # Mirror the local demo for the Temporal run: durable + ephemeral both on the
 # shared MinIO (distinct buckets, path-style addressing). The ephemeral S3 config
 # is what satisfies the fail-fast guard under CUTAGENT_WORKFLOW_RUNTIME=temporal.

@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from apps.api.main import app
 from packages.core.storage.object_store import ObjectHead, parse_local_uri
 from packages.media.assets import local_object_path
-from tests.api._upload_helpers import direct_upload
+from tests.api._upload_helpers import direct_upload, minimal_ttf_bytes
 
 client = TestClient(app)
 
@@ -36,7 +36,7 @@ def test_complete_rejects_sha256_mismatch():
     # The browser PUTs ``body`` but the declared sha256 is for *other* bytes of the
     # same length: the size + content-type checks pass, then complete recomputes
     # the sha256 from the stored object and rejects the disagreement.
-    body = b"\x00\x01\x02 font bytes for sha mismatch"
+    body = minimal_ttf_bytes(family="Hash Mismatch")
     wrong_sha256 = hashlib.sha256(b"a completely different payload").hexdigest()
     prepared, completed = direct_upload(
         client,
@@ -53,10 +53,11 @@ def test_complete_rejects_sha256_mismatch():
 
 def test_complete_rejects_content_type_mismatch_from_head(monkeypatch):
     login_admin()
-    body = b"\x00\x01 font bytes for content-type mismatch"
+    body = minimal_ttf_bytes(family="Content Type Mismatch")
     prepared = client.post(
         "/api/uploads/prepare",
         json={
+            "client_upload_id": "client_content_type_mismatch",
             "kind": "font",
             "filename": "ct.ttf",
             "content_type": "font/ttf",
@@ -91,6 +92,7 @@ def test_cancel_deletes_staging_object_and_marks_cancelled():
     prepared = client.post(
         "/api/uploads/prepare",
         json={
+            "client_upload_id": "client_cancel_cleanup",
             "kind": "font",
             "filename": "cancel.ttf",
             "content_type": "font/ttf",

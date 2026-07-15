@@ -26,7 +26,10 @@ def hydrate_voice_reference_upload(
         return
     with media_repository.session_factory() as session:
         row = session.get(UploadSessionRow, upload_id)
-        if row is None or row.status != c.UploadStatus.completed.value:
+        if row is None or row.status not in {
+            c.UploadStatus.completed.value,
+            c.UploadStatus.ready.value,
+        }:
             raise NodeExecutionError(
                 c.ErrorCode.upload_invalid_state, "Reference upload must be completed first."
             )

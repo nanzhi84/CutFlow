@@ -299,5 +299,6 @@ python -m pytest -q tests/temporal
 - [关键技术选型](docs/technical-choices.md)
 - [关键设计决策](docs/design-decisions.md)
 - [Redis 跨进程协调层](docs/architecture/redis-coordination.md)（架构参考）
+- [可恢复上传与原子登记](docs/architecture/resumable-upload.md)（架构与部署参考）
 
 文档索引见 [docs/README.md](docs/README.md)。

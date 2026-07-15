@@ -85,6 +85,9 @@ Temporal 是生产长流程运行时。Local runtime 保留给测试和受控本
 - `packages/core/storage/object_store.py`
 - `packages/core/storage/object_store_env.py`
 - `packages/core/storage/tiered_object_store.py`
+- `packages/media/upload_reconciler.py`
+
+浏览器上传同样走 ObjectStore：小文件单 PUT，大于等于 16 MiB 使用 8 MiB multipart。客户端先持久化到 OPFS，服务端以 `ListParts` 对账，并通过 SQL 状态机完成崩溃恢复和原子登记。
 
 ## 媒体栈
 

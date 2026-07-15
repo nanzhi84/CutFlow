@@ -83,6 +83,17 @@ Artifacts 通过 URI 引用，可能跨进程或跨主机流转。
 - Temporal 多 worker 运行需要共享 ephemeral storage。
 - Cloud ASR 等 provider 需要可访问或 presigned URL。
 
+## 浏览器上传先本地持久化，再直传对象存储
+
+可恢复上传不能只保存服务端 session；刷新后浏览器原始 `File` 已丢失。因此远端上传前必须先把完整文件分块写入 OPFS，并在 Worker 中增量计算 SHA-256。
+
+影响：
+
+- 浏览器拒绝持久化或本地配额不足时，在任何远端字节上传前明确失败。
+- IndexedDB 只放任务元数据，不放完整 Blob 或预签名 URL；恢复以服务端 `ListParts` 为准。
+- 对象完成、验证和资源登记是持久化状态机；`verified -> ready` 的 Artifact/业务对象登记必须同事务。
+- 细节、部署顺序和审计 SQL 见 `architecture/resumable-upload.md`。
+
 ## 数据库备份必须经过恢复验证且有界
 
 本地 Postgres 自动备份使用 custom-format `pg_dump`，只有在隔离临时库完成完整

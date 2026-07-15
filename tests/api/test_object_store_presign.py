@@ -29,6 +29,23 @@ class FakeS3:
     def put_bucket_cors(self, Bucket, CORSConfiguration):
         self.calls.append(("cors", Bucket, CORSConfiguration))
 
+    def create_multipart_upload(self, **kwargs):
+        self.calls.append(("create_multipart", kwargs))
+        return {"UploadId": "mpu-1"}
+
+    def list_parts(self, **kwargs):
+        self.calls.append(("list_parts", kwargs))
+        return {
+            "Parts": [{"PartNumber": 1, "ETag": '"etag"', "Size": 8}],
+            "IsTruncated": False,
+        }
+
+    def complete_multipart_upload(self, **kwargs):
+        self.calls.append(("complete_multipart", kwargs))
+
+    def abort_multipart_upload(self, **kwargs):
+        self.calls.append(("abort_multipart", kwargs))
+
 
 def _store(bucket: str = "cutagent-dev", read: tuple[str, ...] = ()):
     fake = FakeS3()
@@ -57,7 +74,9 @@ def test_local_presign_head_and_copy_roundtrip(tmp_path: Path):
     staging = store.prepare_upload("v.mp4", "incoming/uploads", content_key="u1")
     # the "browser PUT" writes through the store
     store.put_bytes(staging, b"hello-local")
-    put = store.signed_put_url(staging.uri, content_type="video/mp4", expires_in=timedelta(minutes=15))
+    put = store.signed_put_url(
+        staging.uri, content_type="video/mp4", expires_in=timedelta(minutes=15)
+    )
     assert put.url == staging.uri
     head = store.head(staging.uri)
     assert head.size == len("hello-local")
@@ -121,8 +140,12 @@ def test_ensure_cors_puts_rule_with_expose_etag():
 
 def _s3(bucket: str, fake: FakeS3, read: tuple[str, ...] = ()):
     return S3ObjectStore(
-        endpoint_url="https://e", bucket=bucket, read_buckets=read,
-        access_key="k", secret_key="s", client=fake,
+        endpoint_url="https://e",
+        bucket=bucket,
+        read_buckets=read,
+        access_key="k",
+        secret_key="s",
+        client=fake,
     )
 
 
@@ -148,3 +171,33 @@ def test_tiered_routes_presign_and_cross_bucket_copy():
     )
     assert any(c[0] == "copy" for c in mfake.calls)
     assert not any(c[0] == "copy" for c in dfake.calls)
+
+
+def test_tiered_routes_entire_multipart_protocol_to_uri_bucket():
+    dfake, efake = FakeS3(), FakeS3()
+    tiered = TieredObjectStore(
+        durable=_s3("cutagent-dev", dfake),
+        ephemeral=_s3("cutagent-ephemeral", efake),
+    )
+    uri = "s3://cutagent-dev/incoming/uploads/u1/v.mp4"
+
+    upload_id = tiered.create_multipart_upload(uri, content_type="video/mp4")
+    tiered.sign_upload_part(
+        uri,
+        upload_id=upload_id,
+        part_number=1,
+        expires_in=timedelta(minutes=15),
+    )
+    parts = tiered.list_parts(uri, upload_id=upload_id)
+    tiered.complete_multipart_upload(uri, upload_id=upload_id, parts=parts)
+    tiered.abort_multipart_upload(uri, upload_id=upload_id)
+
+    assert upload_id == "mpu-1"
+    assert [call[0] for call in dfake.calls] == [
+        "create_multipart",
+        "presign",
+        "list_parts",
+        "complete_multipart",
+        "abort_multipart",
+    ]
+    assert efake.calls == []

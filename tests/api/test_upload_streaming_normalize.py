@@ -18,7 +18,7 @@ from tests.fixtures.media import (
     require_ffmpeg_filters,
     require_strict_bt709_tags,
 )
-from tests.api._upload_helpers import direct_upload
+from tests.api._upload_helpers import direct_upload, minimal_ttf_bytes
 
 
 client = TestClient(app)
@@ -54,13 +54,16 @@ def _get_artifact(artifact_id: str) -> Artifact:
 def upload_settings_override():
     """Temporarily override settings.upload on the live app state, then restore."""
     original = app.state.settings
+    original_reconciler_settings = app.state.upload_reconciler.settings
 
     def apply(**upload_overrides):
         new_upload = original.upload.model_copy(update=upload_overrides)
         app.state.settings = original.model_copy(update={"upload": new_upload})
+        app.state.upload_reconciler.settings = new_upload
 
     yield apply
     app.state.settings = original
+    app.state.upload_reconciler.settings = original_reconciler_settings
 
 
 def test_direct_upload_round_trips_large_payload_byte_for_byte():
@@ -70,7 +73,7 @@ def test_direct_upload_round_trips_large_payload_byte_for_byte():
     # payload must round-trip byte-for-byte and keep its sha256 (there is no
     # server proxy mutating bytes anymore). Use the incidental font kind so
     # complete skips ffprobe and does not auto-create a MediaAsset.
-    content = b"streamed-upload-" * 5000  # ~75 KiB
+    content = minimal_ttf_bytes(family="Large Upload") + b"streamed-upload-" * 5000
     digest = hashlib.sha256(content).hexdigest()
     prepared, completed = direct_upload(
         client,
@@ -105,6 +108,7 @@ def test_complete_rejects_size_mismatch_via_head_verification():
     prepared = client.post(
         "/api/uploads/prepare",
         json={
+            "client_upload_id": "client_stream_size_mismatch",
             "kind": "font",
             "case_id": "case_stream",
             "filename": "size.ttf",
@@ -116,9 +120,7 @@ def test_complete_rejects_size_mismatch_via_head_verification():
     )
     assert prepared.status_code == 201, prepared.text
     # Browser PUTs 4096 bytes, but complete declares 16 -> HEAD size check fails.
-    client.app.state.object_store.put_bytes(
-        parse_local_uri(prepared.json()["put_url"]), body
-    )
+    client.app.state.object_store.put_bytes(parse_local_uri(prepared.json()["put_url"]), body)
     response = client.post(
         "/api/uploads/complete",
         json={
@@ -153,6 +155,7 @@ def test_complete_upload_normalizes_portrait_when_enabled(upload_settings_overri
     assert completed.status_code == 200, completed.text
     body = completed.json()
     assert "normalized" in body["media_asset"]["tags"]
+    assert body["upload_session"]["normalized"] is True
     artifact = _get_artifact(body["artifact"]["artifact_id"])
     # The admitted asset is the normalized one (sha changed) and conforms to profile.
     assert artifact.sha256 != digest
@@ -188,7 +191,9 @@ def test_complete_upload_skips_normalization_when_disabled(tmp_path):
     assert (info.width, info.height) == (320, 568)
 
 
-def test_complete_upload_normalizes_hdr_portrait_to_bt709_when_enabled(upload_settings_override, tmp_path):
+def test_complete_upload_normalizes_hdr_portrait_to_bt709_when_enabled(
+    upload_settings_override, tmp_path
+):
     require_ffmpeg_filters("zscale")
     require_strict_bt709_tags()
     login_admin()
@@ -213,6 +218,7 @@ def test_complete_upload_normalizes_hdr_portrait_to_bt709_when_enabled(upload_se
     assert completed.status_code == 200, completed.text
     body = completed.json()
     assert "normalized" in body["media_asset"]["tags"]
+    assert body["upload_session"]["normalized"] is True
     artifact = _get_artifact(body["artifact"]["artifact_id"])
     info = probe_media(local_object_path(client.app.state.object_store, artifact.uri))
     # HDR source admitted as BT.709 SDR — no silent color degrade downstream.

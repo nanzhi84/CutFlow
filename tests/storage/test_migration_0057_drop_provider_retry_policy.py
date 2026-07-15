@@ -33,7 +33,7 @@ def test_migration_revision_is_single_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     migration = script.get_revision(REVISION)
 
-    assert script.get_heads() == [REVISION]
+    assert script.get_heads() == ["0058_resumable_uploads"]
     assert migration is not None
     assert migration.down_revision == "0056_media_prompt_domains"
     assert len(REVISION) <= 32

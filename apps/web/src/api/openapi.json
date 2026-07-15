@@ -626,6 +626,143 @@
         }
       }
     },
+    "/api/uploads/{upload_session_id}/parts/sign": {
+      "post": {
+        "summary": "Sign Upload Parts",
+        "operationId": "sign_upload_parts_api_uploads__upload_session_id__parts_sign_post",
+        "parameters": [
+          {
+            "name": "upload_session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignUploadPartsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignUploadPartsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/uploads/{upload_session_id}/resume": {
+      "get": {
+        "summary": "Resume Upload",
+        "operationId": "resume_upload_api_uploads__upload_session_id__resume_get",
+        "parameters": [
+          {
+            "name": "upload_session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResumeUploadResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/uploads/{upload_session_id}/object-complete": {
+      "post": {
+        "summary": "Object Complete Upload",
+        "operationId": "object_complete_upload_api_uploads__upload_session_id__object_complete_post",
+        "parameters": [
+          {
+            "name": "upload_session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ObjectCompleteUploadRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectCompleteUploadResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/uploads/{upload_session_id}/cancel": {
       "post": {
         "summary": "Cancel Upload",
@@ -15711,6 +15848,147 @@
         ],
         "title": "MediaAssetReplaceSourceRequest"
       },
+      "MediaInfo": {
+        "properties": {
+          "media_type": {
+            "type": "string",
+            "enum": [
+              "video",
+              "audio",
+              "image",
+              "subtitle",
+              "json"
+            ],
+            "title": "Media Type"
+          },
+          "codec": {
+            "type": "string",
+            "title": "Codec"
+          },
+          "format": {
+            "type": "string",
+            "title": "Format"
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mime Type"
+          },
+          "duration_sec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Sec"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "fps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fps"
+          },
+          "sample_rate": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample Rate"
+          },
+          "channels": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channels"
+          },
+          "color_transfer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Color Transfer"
+          },
+          "color_primaries": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Color Primaries"
+          },
+          "is_hdr": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Hdr"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "media_type",
+          "codec",
+          "format"
+        ],
+        "title": "MediaInfo"
+      },
       "MetricsBackfillRequest": {
         "properties": {
           "window": {
@@ -16240,6 +16518,82 @@
           "cancelled"
         ],
         "title": "NodeStatus"
+      },
+      "ObjectCompleteUploadRequest": {
+        "properties": {
+          "size_bytes": {
+            "type": "integer",
+            "maximum": 209715200.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Size Bytes"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Metadata"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "size_bytes",
+          "sha256"
+        ],
+        "title": "ObjectCompleteUploadRequest"
+      },
+      "ObjectCompleteUploadResponse": {
+        "properties": {
+          "upload_session": {
+            "$ref": "#/components/schemas/UploadSession"
+          },
+          "artifact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "media_asset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MediaAssetRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publish_package": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublishPackage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "upload_session",
+          "request_id"
+        ],
+        "title": "ObjectCompleteUploadResponse"
       },
       "OkResponse": {
         "properties": {
@@ -19341,6 +19695,12 @@
       },
       "PrepareUploadRequest": {
         "properties": {
+          "client_upload_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "Client Upload Id"
+          },
           "kind": {
             "$ref": "#/components/schemas/UploadKind"
           },
@@ -19365,7 +19725,7 @@
           },
           "size_bytes": {
             "type": "integer",
-            "maximum": 104857600.0,
+            "maximum": 209715200.0,
             "exclusiveMinimum": 0.0,
             "title": "Size Bytes"
           },
@@ -19389,6 +19749,7 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
+          "client_upload_id",
           "kind",
           "filename",
           "content_type",
@@ -19401,8 +19762,33 @@
           "upload_session": {
             "$ref": "#/components/schemas/UploadSession"
           },
+          "upload_strategy": {
+            "$ref": "#/components/schemas/UploadStrategy"
+          },
+          "part_size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Part Size Bytes"
+          },
+          "part_count": {
+            "type": "integer",
+            "title": "Part Count"
+          },
           "put_url": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Put Url"
           },
           "put_content_type": {
@@ -19410,8 +19796,15 @@
             "title": "Put Content Type"
           },
           "expires_at": {
-            "type": "string",
-            "format": "date-time",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Expires At"
           }
         },
@@ -19419,9 +19812,9 @@
         "type": "object",
         "required": [
           "upload_session",
-          "put_url",
-          "put_content_type",
-          "expires_at"
+          "upload_strategy",
+          "part_count",
+          "put_content_type"
         ],
         "title": "PrepareUploadResponse",
         "description": "prepare's response: the presigned PUT target the browser uploads to.\n\nA dedicated shape (not ``UploadSession``) because the SQLAlchemy row mapper\noverwrites ``UploadSession.upload_url`` with the object URI, which would\ndiscard the signed URL."
@@ -22558,6 +22951,61 @@
         "type": "object",
         "title": "ResumeRunRequest"
       },
+      "ResumeUploadResponse": {
+        "properties": {
+          "upload_session": {
+            "$ref": "#/components/schemas/UploadSession"
+          },
+          "completed_parts": {
+            "items": {
+              "$ref": "#/components/schemas/UploadPart"
+            },
+            "type": "array",
+            "title": "Completed Parts"
+          },
+          "artifact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "media_asset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MediaAssetRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publish_package": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublishPackage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "upload_session",
+          "request_id"
+        ],
+        "title": "ResumeUploadResponse"
+      },
       "RetryRunRequest": {
         "properties": {
           "reason": {
@@ -23831,6 +24279,71 @@
         "title": "SetCasePublishTargetsRequest",
         "description": "Replace the full set of accounts a Case publishes to (idempotent PUT)."
       },
+      "SignUploadPartsRequest": {
+        "properties": {
+          "part_numbers": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Part Numbers"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "part_numbers"
+        ],
+        "title": "SignUploadPartsRequest"
+      },
+      "SignUploadPartsResponse": {
+        "properties": {
+          "upload_session": {
+            "$ref": "#/components/schemas/UploadSession"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/SignedUploadPart"
+            },
+            "type": "array",
+            "title": "Parts"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "upload_session",
+          "parts"
+        ],
+        "title": "SignUploadPartsResponse"
+      },
+      "SignedUploadPart": {
+        "properties": {
+          "part_number": {
+            "type": "integer",
+            "title": "Part Number"
+          },
+          "put_url": {
+            "type": "string",
+            "title": "Put Url"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "part_number",
+          "put_url",
+          "expires_at"
+        ],
+        "title": "SignedUploadPart"
+      },
       "SignedUrlResponse": {
         "properties": {
           "url": {
@@ -24250,6 +24763,33 @@
         ],
         "title": "UploadKind"
       },
+      "UploadPart": {
+        "properties": {
+          "part_number": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Part Number"
+          },
+          "etag": {
+            "type": "string",
+            "title": "Etag"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Size Bytes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "part_number",
+          "etag",
+          "size_bytes"
+        ],
+        "title": "UploadPart"
+      },
       "UploadSession": {
         "properties": {
           "id": {
@@ -24287,6 +24827,21 @@
             "title": "Schema Version",
             "default": "v1"
           },
+          "client_upload_id": {
+            "type": "string",
+            "title": "Client Upload Id"
+          },
+          "owner_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner User Id"
+          },
           "kind": {
             "$ref": "#/components/schemas/UploadKind"
           },
@@ -24313,6 +24868,17 @@
             "type": "integer",
             "title": "Size Bytes"
           },
+          "final_size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Size Bytes"
+          },
           "sha256": {
             "anyOf": [
               {
@@ -24324,9 +24890,51 @@
             ],
             "title": "Sha256"
           },
+          "client_expected_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Expected Sha256"
+          },
+          "canonical_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Sha256"
+          },
           "status": {
             "$ref": "#/components/schemas/UploadSessionStatus",
             "default": "prepared"
+          },
+          "upload_strategy": {
+            "$ref": "#/components/schemas/UploadStrategy",
+            "default": "single"
+          },
+          "part_size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Part Size Bytes"
+          },
+          "part_count": {
+            "type": "integer",
+            "title": "Part Count",
+            "default": 1
           },
           "upload_url": {
             "anyOf": [
@@ -24361,6 +24969,28 @@
             ],
             "title": "Object Uri"
           },
+          "staging_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Staging Uri"
+          },
+          "final_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Uri"
+          },
           "stabilize": {
             "type": "boolean",
             "title": "Stabilize",
@@ -24375,6 +25005,51 @@
             "type": "boolean",
             "title": "Normalized",
             "default": false
+          },
+          "completion_metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Completion Metadata"
+          },
+          "verified_media_info": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MediaInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "retry_count": {
+            "type": "integer",
+            "title": "Retry Count",
+            "default": 0
+          },
+          "next_retry_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Retry At"
           },
           "expires_at": {
             "type": "string",
@@ -24398,12 +25073,25 @@
         "enum": [
           "prepared",
           "uploading",
+          "completing",
+          "object_completed",
+          "verified",
+          "ready",
+          "rejected",
           "completed",
           "failed",
           "cancelled",
           "expired"
         ],
         "title": "UploadSessionStatus"
+      },
+      "UploadStrategy": {
+        "type": "string",
+        "enum": [
+          "single",
+          "multipart"
+        ],
+        "title": "UploadStrategy"
       },
       "UpsertAlertRuleRequest": {
         "properties": {

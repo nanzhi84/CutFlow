@@ -17,6 +17,7 @@ from packages.core.config import build_object_store_settings, build_settings
 from packages.core.storage.object_store_env import object_store_from_env
 
 _STAGING_PREFIX = "incoming/uploads/"
+_STAGING_RULE_ID = "expire-abandoned-upload-staging"
 
 
 def main() -> int:
@@ -39,13 +40,15 @@ def main() -> int:
 
     _ensure_staging_lifecycle(cfg)
     print(
-        f"Lifecycle provisioned on {cfg.bucket!r}: objects under {_STAGING_PREFIX!r} expire after 1 day."
+        f"Lifecycle provisioned on {cfg.bucket!r}: objects under {_STAGING_PREFIX!r} "
+        "expire and incomplete multipart uploads abort after 1 day."
     )
     return 0
 
 
 def _ensure_staging_lifecycle(cfg) -> None:
     import boto3
+    from botocore.exceptions import ClientError
     from botocore.config import Config
 
     s3 = cfg.s3
@@ -57,18 +60,26 @@ def _ensure_staging_lifecycle(cfg) -> None:
         region_name=s3.region_name,
         config=Config(signature_version="s3v4", s3={"addressing_style": s3.addressing_style}),
     )
+    try:
+        current = client.get_bucket_lifecycle_configuration(Bucket=cfg.bucket)
+        existing_rules = list(current.get("Rules", []))
+    except ClientError as exc:
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        if code not in {"NoSuchLifecycleConfiguration", "NoSuchLifecycle"}:
+            raise
+        existing_rules = []
+    managed_rule = {
+        "ID": _STAGING_RULE_ID,
+        "Filter": {"Prefix": _STAGING_PREFIX},
+        "Status": "Enabled",
+        "Expiration": {"Days": 1},
+        "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1},
+    }
+    rules = [rule for rule in existing_rules if rule.get("ID") != _STAGING_RULE_ID]
+    rules.append(managed_rule)
     client.put_bucket_lifecycle_configuration(
         Bucket=cfg.bucket,
-        LifecycleConfiguration={
-            "Rules": [
-                {
-                    "ID": "expire-abandoned-upload-staging",
-                    "Filter": {"Prefix": _STAGING_PREFIX},
-                    "Status": "Enabled",
-                    "Expiration": {"Days": 1},
-                }
-            ]
-        },
+        LifecycleConfiguration={"Rules": rules},
     )
 
 

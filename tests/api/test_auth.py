@@ -84,6 +84,7 @@ def test_viewer_cannot_use_operator_or_admin_routes():
     prepare_upload = client.post(
         "/api/uploads/prepare",
         json={
+            "client_upload_id": "client_viewer_forbidden",
             "kind": "video",
             "filename": "viewer.txt",
             "content_type": "text/plain",
@@ -119,7 +120,9 @@ def test_idempotency_key_replays_successful_write_and_rejects_conflict():
 
 def test_logout_revokes_session_cookie():
     client = TestClient(app)
-    client.post("/api/auth/login", json={"email": "admin@local.cutagent", "password": "local-admin"})
+    client.post(
+        "/api/auth/login", json={"email": "admin@local.cutagent", "password": "local-admin"}
+    )
     logout = client.post("/api/auth/logout")
     assert logout.status_code == 200
     session = client.get("/api/auth/session")

@@ -316,20 +316,31 @@ class SqlAlchemyMediaRepository(BaseRepository):
     ) -> MediaAssetRecord:
         with self.session_factory() as session:
             upload = session.get(UploadSessionRow, payload.upload_session_id)
-            if upload is None or upload.status != "completed":
+            if upload is None or upload.status not in {"completed", "ready"}:
                 raise NodeExecutionError(
                     ErrorCode.upload_invalid_state, "Upload must be completed first."
                 )
             artifact = session.scalar(
                 select(ArtifactRow)
                 .where(ArtifactRow.kind == ArtifactKind.uploaded_file.value)
-                .where(ArtifactRow.payload.contains({"id": upload.id}))
+                .where(
+                    (ArtifactRow.source_upload_session_id == upload.id)
+                    | (ArtifactRow.payload.contains({"id": upload.id}))
+                )
                 .order_by(ArtifactRow.created_at.desc())
                 .limit(1)
             )
             if artifact is None:
                 raise NodeExecutionError(
                     ErrorCode.artifact_missing, "Completed upload artifact is missing."
+                )
+            existing_asset = session.scalar(
+                select(MediaAssetRow).where(MediaAssetRow.source_artifact_id == artifact.id)
+            )
+            if existing_asset is not None:
+                return media_asset_row_to_contract(
+                    existing_asset,
+                    thumbnail_url=self._thumbnail_url_for_asset(session, existing_asset),
                 )
             # The card's thumbnail_uri points at the SMALL WebP when the upload flow
             # produced one (issue #206); the full-resolution "mid" frame grab is the
@@ -693,7 +704,7 @@ class SqlAlchemyMediaRepository(BaseRepository):
     def clone_voice(self, payload: CloneVoiceRequest) -> VoiceProfile:
         with self.session_factory() as session:
             upload = session.get(UploadSessionRow, payload.reference_upload_session_id)
-            if upload is None or upload.status != "completed":
+            if upload is None or upload.status not in {"completed", "ready"}:
                 raise NodeExecutionError(
                     ErrorCode.upload_invalid_state, "Reference upload must be completed first."
                 )

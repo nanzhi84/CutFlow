@@ -353,6 +353,10 @@ class Artifact(EntityMeta):
     payload_schema: str
     payload: JsonValue | None = None
     created_by_node_run_id: str | None = None
+    # Durable provenance for browser uploads. Nullable because most artifacts are
+    # workflow-generated; a unique DB constraint makes uploaded-file registration
+    # idempotent across API retries and reconciler races.
+    source_upload_session_id: str | None = None
 
 
 class RetryPolicy(ContractModel):

@@ -68,6 +68,21 @@ def test_cancelled_upload_cannot_complete():
         assert_transition("upload_session", "cancelled", "completed")
 
 
+def test_resumable_upload_state_machine_has_durable_recovery_boundaries():
+    for current, target in (
+        ("prepared", "uploading"),
+        ("uploading", "completing"),
+        ("completing", "object_completed"),
+        ("object_completed", "verified"),
+        ("verified", "ready"),
+    ):
+        assert_transition("upload_session", current, target)
+
+    assert_transition("upload_session", "completing", "rejected")
+    with pytest.raises(NodeExecutionError):
+        assert_transition("upload_session", "ready", "verified")
+
+
 def test_case_memory_only_tracks_active_constraints():
     assert {item for item in CaseMemory.model_fields["status"].annotation.__args__} == {
         "active",

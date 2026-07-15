@@ -21,7 +21,7 @@
 
 - 默认存储后端是 `sqlalchemy`。
 - Alembic 迁移只在 `packages/core/storage/alembic/versions/`。
-- 当前单一 migration head 是 `0022_drop_publish_hashtags`。
+- 当前单一 migration head 是 `0058_resumable_uploads`。
 - `memory` 后端保留给测试和 demo。
 
 ## M3 · 工作流运行时
@@ -56,6 +56,7 @@
 - 默认 pytest 覆盖不依赖外部基础设施的单测。
 - DB 集成测试已并入默认 pytest 套件（需 Postgres，不再 opt-in）。
 - Temporal 测试通过 `CUTAGENT_RUN_TEMPORAL_TESTS=1` opt-in。
+- MinIO multipart 恢复测试通过 `CUTAGENT_RUN_S3_TESTS=1` 显式运行，并已进入本地/远端门禁。
 - `scripts/ci_gate.sh` 镜像主要 CI 门禁。
 - GitHub Actions 包含 `unit`、`integration`、`frontend` jobs。
 

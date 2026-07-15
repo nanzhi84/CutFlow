@@ -15,7 +15,11 @@ from packages.core.config import (
     format_preflight_report,
     validate_startup_settings,
 )
-from packages.core.storage import Repository
+from packages.core.storage import (
+    Repository,
+    configure_object_store,
+    object_store_from_settings,
+)
 from packages.core.storage.bootstrap import (
     bootstrap_sqlalchemy_storage,
     get_sqlalchemy_session_factory,
@@ -23,6 +27,7 @@ from packages.core.storage.bootstrap import (
 from packages.core.observability import configure_logging
 from packages.core.storage.secret_store import LocalSecretStore
 from packages.core.storage.sqlalchemy_secrets import SqlAlchemySecretStore
+from packages.core.storage.sqlalchemy_uploads import SqlAlchemyUploadRepository
 from packages.core.workflow import load_workflow_runtime_settings
 from packages.core.workflow.temporal_adapter import (
     CASE_ADMISSION_POLL_SECONDS,
@@ -36,17 +41,25 @@ from packages.ops import BudgetEnforcementGuard, SqlAlchemyOpsRepository
 from packages.ops.circuit_breaker import ProviderCircuitBreaker
 from packages.production import SqlAlchemyProductionRepository
 from packages.production.pipeline import build_digital_human_workflow
+from packages.media import UploadReconciler
 
 
 async def async_main() -> None:
     configure_logging()
     # Fail closed in production before connecting to anything (#66).
-    _preflight_issues = validate_startup_settings(build_settings())
+    app_settings = build_settings()
+    _preflight_issues = validate_startup_settings(app_settings)
     if _preflight_issues:
         raise RuntimeError(format_preflight_report(_preflight_issues))
     bootstrap_sqlalchemy_storage()
     settings = load_workflow_runtime_settings()
     session_factory = get_sqlalchemy_session_factory()
+    object_store = object_store_from_settings(
+        app_settings.object_store,
+        workflow_runtime=app_settings.workflow.runtime,
+        redis_url=app_settings.redis_url,
+    )
+    configure_object_store(object_store)
     runtime_repository = Repository()
     local_secret_store = LocalSecretStore()
     secret_store = SqlAlchemySecretStore(session_factory, fallback=local_secret_store)
@@ -72,7 +85,13 @@ async def async_main() -> None:
         provider_gateway=provider_gateway,
         prompt_registry=prompt_registry,
     )
-    production_repository = SqlAlchemyProductionRepository(session_factory)
+    production_repository = SqlAlchemyProductionRepository(session_factory, object_store)
+    upload_reconciler = UploadReconciler(
+        SqlAlchemyUploadRepository(session_factory),
+        object_store,
+        app_settings.upload,
+        owner="temporal-worker",
+    )
     configure_temporal_activity_context(
         TemporalActivityContext(
             repository=runtime_repository,
@@ -104,12 +123,18 @@ async def async_main() -> None:
     admission_recovery_task = asyncio.create_task(
         _admission_recovery_loop(client, settings, production_repository)
     )
+    upload_recovery_task = asyncio.create_task(
+        _upload_recovery_loop(upload_reconciler, app_settings.upload.reconcile_interval_seconds)
+    )
     try:
         await worker.run()
     finally:
         admission_recovery_task.cancel()
+        upload_recovery_task.cancel()
         with suppress(asyncio.CancelledError):
             await admission_recovery_task
+        with suppress(asyncio.CancelledError):
+            await upload_recovery_task
 
 
 async def _admission_recovery_loop(
@@ -136,6 +161,23 @@ async def _admission_recovery_loop(
                 exc_info=True,
             )
         await asyncio.sleep(float(CASE_ADMISSION_POLL_SECONDS))
+
+
+async def _upload_recovery_loop(
+    reconciler: UploadReconciler,
+    interval_seconds: int,
+) -> None:
+    logger = logging.getLogger("cutagent.worker")
+    while True:
+        try:
+            await asyncio.to_thread(reconciler.reconcile_once)
+        except Exception:
+            logger.warning(
+                "Failed to reconcile interrupted uploads",
+                extra={"event": "upload_reconcile_scan_failed"},
+                exc_info=True,
+            )
+        await asyncio.sleep(float(interval_seconds))
 
 
 def main() -> None:

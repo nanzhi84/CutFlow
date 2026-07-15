@@ -17,7 +17,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
-from tests.api._upload_helpers import direct_upload
+from tests.api._upload_helpers import direct_upload, minimal_ttf_bytes
 
 client = TestClient(app)
 
@@ -36,7 +36,7 @@ def _upload_artifact() -> str:
         kind="font",
         filename="pkg.ttf",
         content_type="font/ttf",
-        body=b"publish package artifact bytes",
+        body=minimal_ttf_bytes(family="Publishing SQL Pin"),
         case_id="case_demo",
         metadata={"template_mode": "replace"},
     )

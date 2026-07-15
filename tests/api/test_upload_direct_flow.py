@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from apps.api.main import app
 from packages.core.storage.object_store import parse_local_uri
-from tests.api._upload_helpers import direct_upload
+from tests.api._upload_helpers import direct_upload, minimal_ttf_bytes
 
 client = TestClient(app)
 
@@ -28,7 +28,7 @@ def login_admin():
 
 def test_direct_upload_font_flow_moves_to_final_and_recomputes_sha256():
     login_admin()
-    body = b"\x00\x01\x02 fake font bytes"
+    body = minimal_ttf_bytes()
     prepared, completed = direct_upload(
         client, kind="font", filename="x.ttf", content_type="font/ttf", body=body
     )
@@ -65,6 +65,7 @@ def test_complete_rejects_size_mismatch_via_head():
     prepared = client.post(
         "/api/uploads/prepare",
         json={
+            "client_upload_id": "client_direct_size_mismatch",
             "kind": "font",
             "filename": "y.ttf",
             "content_type": "font/ttf",

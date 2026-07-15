@@ -9,8 +9,15 @@ from apps.api.main import app
 from packages.core.auth.service import hash_registration_code
 from packages.core.auth.sqlalchemy_service import hash_session_token
 from packages.core.storage.bootstrap import get_sqlalchemy_session_factory
-from packages.core.storage.database import ArtifactRow, RegistrationCodeRow, SessionRow, UploadSessionRow, UserRow
+from packages.core.storage.database import (
+    ArtifactRow,
+    RegistrationCodeRow,
+    SessionRow,
+    UploadSessionRow,
+    UserRow,
+)
 from packages.core.storage.object_store import parse_local_uri
+from tests.api._upload_helpers import minimal_ttf_bytes
 
 
 def sqlalchemy_session_factory():
@@ -58,7 +65,7 @@ def test_sqlalchemy_auth_login_session_and_logout_are_persisted():
 
 def test_sqlalchemy_upload_and_artifact_flow_are_persisted():
     session_factory = sqlalchemy_session_factory()
-    content = b"sqlalchemy upload payload"
+    content = minimal_ttf_bytes(family="SQLAlchemy Persistence")
     digest = hashlib.sha256(content).hexdigest()
 
     with TestClient(app) as client:
@@ -75,6 +82,7 @@ def test_sqlalchemy_upload_and_artifact_flow_are_persisted():
         prepared = client.post(
             "/api/uploads/prepare",
             json={
+                "client_upload_id": "client_sqlalchemy_persistence",
                 "kind": "font",
                 "filename": "db-sample.ttf",
                 "content_type": "font/ttf",
@@ -105,14 +113,14 @@ def test_sqlalchemy_upload_and_artifact_flow_are_persisted():
         )
         assert completed.status_code == 200, completed.text
         body = completed.json()
-        assert body["upload_session"]["status"] == "completed"
+        assert body["upload_session"]["status"] == "ready"
         assert body["artifact"]["kind"] == "uploaded.file"
 
         with session_factory() as session:
             upload_row = session.get(UploadSessionRow, upload["id"])
             artifact_row = session.get(ArtifactRow, body["artifact"]["artifact_id"])
             assert upload_row is not None
-            assert upload_row.status == "completed"
+            assert upload_row.status == "ready"
             assert artifact_row is not None
             # complete() copies the verified object from staging to its final,
             # kind-routed key and rewrites upload.object_uri, so the artifact
@@ -199,7 +207,9 @@ def test_sqlalchemy_seeded_registration_code_uses_hash_not_plaintext_key():
     expected_hash = hash_registration_code("reg_local_admin")
 
     with session_factory() as session:
-        row = session.scalar(select(RegistrationCodeRow).where(RegistrationCodeRow.code_hash == expected_hash))
+        row = session.scalar(
+            select(RegistrationCodeRow).where(RegistrationCodeRow.code_hash == expected_hash)
+        )
         assert row is not None
         assert row.id != "reg_local_admin"
         assert row.code_hash != "reg_local_admin"
@@ -289,8 +299,18 @@ def test_sqlalchemy_change_password_revokes_other_sessions_but_keeps_current():
         # Two independent sessions (distinct cookie jars) for the same user.
         client_a = TestClient(app)
         client_b = TestClient(app)
-        assert client_a.post("/api/auth/login", json={"email": email, "password": old_password}).status_code == 200
-        assert client_b.post("/api/auth/login", json={"email": email, "password": old_password}).status_code == 200
+        assert (
+            client_a.post(
+                "/api/auth/login", json={"email": email, "password": old_password}
+            ).status_code
+            == 200
+        )
+        assert (
+            client_b.post(
+                "/api/auth/login", json={"email": email, "password": old_password}
+            ).status_code
+            == 200
+        )
         token_b = client_b.cookies.get("cutagent_session")
         assert client_a.get("/api/auth/me").status_code == 200
         assert client_b.get("/api/auth/me").status_code == 200
@@ -326,10 +346,13 @@ def test_sqlalchemy_last_active_admin_is_guarded_on_db_backend():
     # rejected), so later tests can still authenticate as the seeded admin.
     session_factory = sqlalchemy_session_factory()
     with TestClient(app) as client:
-        assert client.post(
-            "/api/auth/login",
-            json={"email": "admin@local.cutagent", "password": "local-admin"},
-        ).status_code == 200
+        assert (
+            client.post(
+                "/api/auth/login",
+                json={"email": "admin@local.cutagent", "password": "local-admin"},
+            ).status_code
+            == 200
+        )
 
         # Defensive: ensure usr_admin is the only active admin (demote any other
         # active admins left behind by earlier tests; the seed only has usr_admin).

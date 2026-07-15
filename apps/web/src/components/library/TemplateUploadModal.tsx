@@ -136,7 +136,7 @@ export function TemplateUploadModal({
             </button>
           ))}
         </div>
-        <DropZone accept={accept} maxSize={100} multiple onFilesDrop={(nextFiles) => setFiles(nextFiles)} label={`上传${templateKindLabels[kind]}文件`} />
+        <DropZone accept={accept} maxSize={200} multiple onFilesDrop={(nextFiles) => setFiles(nextFiles)} label={`上传${templateKindLabels[kind]}文件`} />
         <label>
           <span>统一场景标签</span>
           <input value={scene} onChange={(event) => setScene(event.target.value)} placeholder="例如：办公室、产品特写、生活方式" />
