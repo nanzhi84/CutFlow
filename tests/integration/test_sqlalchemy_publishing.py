@@ -10,7 +10,7 @@ from packages.core.storage.database import (
     PublishBatchRow,
     PublishPackageRow,
 )
-from tests.api._upload_helpers import direct_upload
+from tests.api._upload_helpers import direct_upload, minimal_ttf_bytes
 
 
 def sqlalchemy_session_factory():
@@ -31,7 +31,7 @@ def create_completed_upload_artifact(client: TestClient) -> str:
         case_id="case_demo",
         filename="publishable-video.ttf",
         content_type="font/ttf",
-        body=b"publishing package payload",
+        body=minimal_ttf_bytes(family="Publishing Package"),
         metadata={"template_mode": "replace"},
     )
     assert prepared.status_code == 201, prepared.text
@@ -84,7 +84,10 @@ def test_sqlalchemy_publish_package_batch_item_and_attempt_flow_are_persisted():
 
         created_batch = client.post(
             "/api/publish/batches",
-            json={"publish_package_ids": [package["id"]], "platform_targets": ["douyin", "xiaohongshu"]},
+            json={
+                "publish_package_ids": [package["id"]],
+                "platform_targets": ["douyin", "xiaohongshu"],
+            },
         )
         assert created_batch.status_code == 201, created_batch.text
         batch = created_batch.json()
@@ -100,7 +103,9 @@ def test_sqlalchemy_publish_package_batch_item_and_attempt_flow_are_persisted():
         assert patched_item.status_code == 200, patched_item.text
         assert patched_item.json()["selected"] is False
 
-        submitted = client.post(f"/api/publish/batches/{batch['id']}/submit", json={"dry_run": False})
+        submitted = client.post(
+            f"/api/publish/batches/{batch['id']}/submit", json={"dry_run": False}
+        )
         assert submitted.status_code == 202, submitted.text
         submitted_body = submitted.json()
         assert submitted_body["status"] == "completed"
@@ -119,7 +124,9 @@ def test_sqlalchemy_publish_package_batch_item_and_attempt_flow_are_persisted():
                 )
             )
             skipped_attempts = list(
-                session.scalars(select(PublishAttemptRow).where(PublishAttemptRow.item_id == first_item["id"]))
+                session.scalars(
+                    select(PublishAttemptRow).where(PublishAttemptRow.item_id == first_item["id"])
+                )
             )
             assert len(attempts) == 1
             assert skipped_attempts == []

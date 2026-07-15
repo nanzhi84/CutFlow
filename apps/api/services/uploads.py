@@ -2,59 +2,27 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import timedelta
-from pathlib import Path
+from math import ceil
 
-from fastapi import Request
+from fastapi import BackgroundTasks, Request
 
-from apps.api.common import (
-    media_repository,
-    object_store,
-    publishing_repository,
-    request_id,
-    settings,
-    upload_repository,
-)
+from apps.api.common import object_store, request_id, settings, upload_repository
 from packages.core import contracts as c
-from packages.core.contracts.media import ALLOWED_UPLOAD_CONTENT_TYPES
-from packages.core.storage.object_store import ObjectStore, parse_object_uri, sha256_file
+from packages.core.contracts.media import (
+    ALLOWED_UPLOAD_CONTENT_TYPES,
+    UPLOAD_KIND_MAX_SIZE_BYTES,
+)
+from packages.core.storage.object_store import ObjectStore
 from packages.core.storage.repository import new_id
 from packages.core.workflow import NodeExecutionError
-from packages.media.assets import local_object_path, store_file
-from packages.media.cover_image import (
-    THUMBNAIL_SUFFIX,
-    WEB_THUMBNAIL_LABEL,
-    build_cover_thumbnail_bytes,
-)
-from packages.media.video.ffmpeg import (
-    FfmpegCommandError,
-    extract_thumbnails,
-    normalize_for_upload,
-    probe_media,
-    stabilize_video,
-)
+from packages.media import UploadReconciler
 
-# Browser-writable staging prefix on the durable bucket. complete() server-side
-# copies the verified object to its final, kind-routed key and drops staging.
 _STAGING_PURPOSE = "incoming/uploads"
-
-# Issue #99/#133: visual asset kinds converge to the unified ``video`` bucket and
-# the legacy ``portrait`` / ``broll`` ``UploadKind`` members have been removed (the
-# production data migration ``0026``/``0033`` landed zero legacy rows). The created
-# media asset kind is derived through the shared ``normalize_visual_asset_kind`` so
-# every ingestion path converges identically; the object routes to the shared
-# materials bucket regardless.
-# NOTE: this is the visual *asset kind*; the selection *medium* (A-roll/B-roll
-# track role in the selection ledger / usage ranking) is a separate concept and
-# is intentionally left untouched.
 
 
 def _visual_asset_kind_and_tags(upload_kind: c.UploadKind) -> tuple[str, list[str]]:
-    """Map an upload kind to the persisted media-asset kind + base tags.
+    """Keep the shared visual-kind normalization seam used by ingestion tests."""
 
-    Delegates to the shared ``normalize_visual_asset_kind`` so every ingestion path
-    converges legacy visual kinds identically; a converged kind carries a
-    ``legacy_kind:<original>`` provenance tag.
-    """
     persisted_kind, legacy_tag = c.normalize_visual_asset_kind(upload_kind.value)
     tags = [persisted_kind, "upload"]
     if legacy_tag is not None:
@@ -63,71 +31,354 @@ def _visual_asset_kind_and_tags(upload_kind: c.UploadKind) -> tuple[str, list[st
 
 
 def prepare_upload(
-    payload: c.PrepareUploadRequest, request: Request
+    payload: c.PrepareUploadRequest,
+    request: Request,
+    user: c.AuthUser,
 ) -> c.PrepareUploadResponse:
     store = object_store(request)
+    repository = upload_repository(request)
+    upload_settings = settings(request).upload
     if not store.supports_presign():
         raise NodeExecutionError(
             c.ErrorCode.upload_invalid_state,
             "Object store backend does not support presigned uploads.",
+        )
+    if payload.size_bytes > upload_settings.max_size_bytes:
+        raise NodeExecutionError(c.ErrorCode.upload_too_large, "Upload exceeds 200 MiB.")
+    kind_limit = UPLOAD_KIND_MAX_SIZE_BYTES.get(payload.kind)
+    if kind_limit is not None and payload.size_bytes > kind_limit:
+        raise NodeExecutionError(
+            c.ErrorCode.upload_too_large,
+            f"{payload.kind.value} uploads are limited to {kind_limit // 1024 // 1024} MiB.",
         )
     if payload.content_type not in ALLOWED_UPLOAD_CONTENT_TYPES.get(payload.kind, frozenset()):
         raise NodeExecutionError(
             c.ErrorCode.upload_unsupported_type,
             f"Content type {payload.content_type!r} is not allowed for {payload.kind.value}.",
         )
-    upload_id = new_id("upl")
-    # Stage to the durable bucket under a key keyed by the session id; complete()
-    # re-derives the final key from this same id (see _final_uri_for).
-    staging_ref = store.prepare_upload(payload.filename, _STAGING_PURPOSE, content_key=upload_id)
-    ttl = timedelta(seconds=settings(request).upload.presign_ttl_seconds)
-    signed = store.signed_put_url(
-        staging_ref.uri, content_type=payload.content_type, expires_in=ttl
+
+    existing = repository.get_upload_by_client_id(payload.client_upload_id)
+    if existing is not None:
+        _assert_access(existing, user)
+        _assert_prepare_matches(existing, payload)
+        upload = existing
+    else:
+        strategy = (
+            c.UploadStrategy.multipart
+            if payload.size_bytes >= upload_settings.multipart_threshold_bytes
+            else c.UploadStrategy.single
+        )
+        part_size = (
+            upload_settings.part_size_bytes if strategy == c.UploadStrategy.multipart else None
+        )
+        part_count = ceil(payload.size_bytes / part_size) if part_size else 1
+        upload_id = new_id("upl")
+        staging_ref = store.prepare_upload(
+            payload.filename, _STAGING_PURPOSE, content_key=upload_id
+        )
+        upload = repository.create_upload(
+            c.UploadSession(
+                id=upload_id,
+                client_upload_id=payload.client_upload_id,
+                owner_user_id=user.id,
+                kind=payload.kind,
+                case_id=payload.case_id,
+                filename=payload.filename,
+                content_type=payload.content_type,
+                size_bytes=payload.size_bytes,
+                sha256=payload.sha256,
+                client_expected_sha256=payload.sha256,
+                upload_strategy=strategy,
+                part_size_bytes=part_size,
+                part_count=part_count,
+                object_uri=staging_ref.uri,
+                staging_uri=staging_ref.uri,
+                stabilize=payload.stabilize,
+                expires_at=c.utcnow() + timedelta(days=1),
+            )
+        )
+
+    staging_uri = upload.staging_uri or upload.object_uri
+    if staging_uri is None:
+        raise NodeExecutionError(c.ErrorCode.upload_invalid_state, "Upload staging URI is missing.")
+    if upload.upload_strategy == c.UploadStrategy.multipart:
+        repository.ensure_multipart_upload_id(
+            upload.id,
+            lambda: store.create_multipart_upload(staging_uri, content_type=upload.content_type),
+        )
+    ttl = timedelta(seconds=upload_settings.presign_ttl_seconds)
+    signed = (
+        store.signed_put_url(
+            staging_uri,
+            content_type=upload.content_type,
+            expires_in=ttl,
+        )
+        if upload.upload_strategy == c.UploadStrategy.single
+        and upload.status in {c.UploadStatus.prepared, c.UploadStatus.uploading}
+        else None
     )
-    upload = c.UploadSession(
-        id=upload_id,
-        kind=payload.kind,
-        case_id=payload.case_id,
-        filename=payload.filename,
-        content_type=payload.content_type,
-        size_bytes=payload.size_bytes,
-        sha256=payload.sha256,
-        object_uri=staging_ref.uri,
-        stabilize=payload.stabilize,
-    )
-    upload = upload_repository(request).create_upload(upload)
     return c.PrepareUploadResponse(
         upload_session=upload,
-        put_url=signed.url,
-        put_content_type=payload.content_type,
-        expires_at=signed.expires_at,
+        upload_strategy=upload.upload_strategy,
+        part_size_bytes=upload.part_size_bytes,
+        part_count=upload.part_count,
+        put_url=signed.url if signed else None,
+        put_content_type=upload.content_type,
+        expires_at=signed.expires_at if signed else None,
     )
 
 
-def _load_upload(request: Request, upload_id: str) -> c.UploadSession:
+def sign_upload_parts(
+    upload_session_id: str,
+    payload: c.SignUploadPartsRequest,
+    request: Request,
+    user: c.AuthUser,
+) -> c.SignUploadPartsResponse:
+    upload = _load_upload(request, upload_session_id, user)
+    if upload.upload_strategy != c.UploadStrategy.multipart:
+        raise NodeExecutionError(
+            c.ErrorCode.upload_invalid_state, "Upload session does not use multipart."
+        )
+    if upload.status not in {c.UploadStatus.prepared, c.UploadStatus.uploading}:
+        raise NodeExecutionError(
+            c.ErrorCode.upload_invalid_state,
+            f"Parts cannot be signed from status {upload.status.value}.",
+        )
+    invalid = [part for part in payload.part_numbers if part > upload.part_count]
+    if invalid:
+        raise NodeExecutionError(
+            c.ErrorCode.validation_invalid_options,
+            f"Part numbers exceed part_count={upload.part_count}: {invalid}.",
+        )
+    staging_uri = upload.staging_uri or upload.object_uri
+    multipart_upload_id = upload_repository(request).multipart_upload_id(upload.id)
+    if not staging_uri or not multipart_upload_id:
+        raise NodeExecutionError(
+            c.ErrorCode.upload_invalid_state, "Multipart upload metadata is missing."
+        )
+    completed = {
+        part.part_number
+        for part in object_store(request).list_parts(staging_uri, upload_id=multipart_upload_id)
+    }
+    ttl = timedelta(seconds=settings(request).upload.presign_ttl_seconds)
+    signed_parts = []
+    for part_number in payload.part_numbers:
+        if part_number in completed:
+            continue
+        signed = object_store(request).sign_upload_part(
+            staging_uri,
+            upload_id=multipart_upload_id,
+            part_number=part_number,
+            expires_in=ttl,
+        )
+        signed_parts.append(
+            c.SignedUploadPart(
+                part_number=part_number,
+                put_url=signed.url,
+                expires_at=signed.expires_at,
+            )
+        )
+    if upload.status == c.UploadStatus.prepared:
+        upload = upload_repository(request).patch_upload(
+            upload.id, {"status": c.UploadStatus.uploading}
+        )
+    return c.SignUploadPartsResponse(upload_session=upload, parts=signed_parts)
+
+
+def resume_upload(
+    upload_session_id: str,
+    request: Request,
+    user: c.AuthUser,
+) -> c.ResumeUploadResponse:
+    upload = _load_upload(request, upload_session_id, user)
+    parts: list[c.UploadPart] = []
+    if upload.upload_strategy == c.UploadStrategy.multipart and upload.status in {
+        c.UploadStatus.prepared,
+        c.UploadStatus.uploading,
+    }:
+        staging_uri = upload.staging_uri or upload.object_uri
+        multipart_upload_id = upload_repository(request).multipart_upload_id(upload.id)
+        if staging_uri and multipart_upload_id:
+            parts = [
+                c.UploadPart(
+                    part_number=part.part_number,
+                    etag=part.etag,
+                    size_bytes=part.size_bytes,
+                )
+                for part in object_store(request).list_parts(
+                    staging_uri, upload_id=multipart_upload_id
+                )
+            ]
+    artifact = None
+    media_asset = None
+    publish_package = None
+    if upload.status == c.UploadStatus.ready:
+        upload, artifact, media_asset, publish_package = upload_repository(request).ready_resources(
+            upload.id
+        )
+    return c.ResumeUploadResponse(
+        upload_session=upload,
+        completed_parts=parts,
+        artifact=artifact,
+        media_asset=media_asset,
+        publish_package=publish_package,
+        request_id=request_id(),
+    )
+
+
+def object_complete_upload(
+    upload_session_id: str,
+    payload: c.ObjectCompleteUploadRequest,
+    request: Request,
+    user: c.AuthUser,
+    background_tasks: BackgroundTasks,
+) -> c.ObjectCompleteUploadResponse:
+    upload = _load_upload(request, upload_session_id, user)
+    upload = upload_repository(request).mark_completing(
+        upload.id,
+        size_bytes=payload.size_bytes,
+        expected_sha256=payload.sha256,
+        metadata=payload.metadata,
+    )
+    if upload.status == c.UploadStatus.ready:
+        upload, artifact, media_asset, publish_package = upload_repository(request).ready_resources(
+            upload.id
+        )
+        return c.ObjectCompleteUploadResponse(
+            upload_session=upload,
+            artifact=artifact,
+            media_asset=media_asset,
+            publish_package=publish_package,
+            request_id=request_id(),
+        )
+    background_tasks.add_task(_reconciler(request).process, upload.id)
+    return c.ObjectCompleteUploadResponse(
+        upload_session=upload,
+        request_id=request_id(),
+    )
+
+
+def complete_upload(
+    payload: c.CompleteUploadRequest,
+    request: Request,
+    user: c.AuthUser,
+) -> c.CompleteUploadResponse:
+    """Compatibility adapter over the #210 durable state machine.
+
+    Old callers still receive a ready resource response synchronously, but all
+    object completion, verification and registration use the same reconciler as
+    the new 202 endpoint.
+    """
+
+    upload = _load_upload(request, payload.upload_session_id, user)
+    expected_sha256 = payload.sha256 or upload.client_expected_sha256 or upload.sha256
+    upload_repository(request).mark_completing(
+        upload.id,
+        size_bytes=payload.size_bytes or upload.size_bytes,
+        expected_sha256=expected_sha256,
+        metadata=payload.metadata,
+    )
+    upload = _reconciler(request).process(upload.id, raise_on_rejected=True)
+    if upload.status != c.UploadStatus.ready:
+        code = (
+            c.ErrorCode.upload_unsupported_type
+            if upload.status == c.UploadStatus.rejected
+            else c.ErrorCode.upload_invalid_state
+        )
+        raise NodeExecutionError(code, upload.last_error or "Upload processing failed.")
+    upload, artifact, media_asset, publish_package = upload_repository(request).ready_resources(
+        upload.id
+    )
+    return c.CompleteUploadResponse(
+        upload_session=upload,
+        artifact=artifact,
+        media_asset=media_asset,
+        publish_package=publish_package,
+        request_id=request_id(),
+    )
+
+
+def cancel_upload(
+    upload_session_id: str,
+    request: Request,
+    user: c.AuthUser,
+) -> c.UploadSession:
+    upload = _load_upload(request, upload_session_id, user)
+    if upload.status == c.UploadStatus.cancelled:
+        return upload
+    if upload.status in {
+        c.UploadStatus.ready,
+        c.UploadStatus.rejected,
+        c.UploadStatus.failed,
+        c.UploadStatus.expired,
+    }:
+        raise NodeExecutionError(
+            c.ErrorCode.upload_invalid_state,
+            f"Upload cannot be cancelled from status {upload.status.value}.",
+        )
+    # Persist the terminal winner under a row lock before touching object storage.
+    # An in-flight reconciler then observes cancelled and cleans any deterministic
+    # final key it may have copied just before its stale transition was rejected.
+    cancelled = upload_repository(request).patch_upload(
+        upload_session_id, {"status": c.UploadStatus.cancelled}
+    )
+    _reconciler(request).cleanup_terminal(cancelled)
+    return cancelled
+
+
+def get_upload(
+    upload_session_id: str,
+    request: Request,
+    user: c.AuthUser,
+) -> c.UploadSession:
+    return _load_upload(request, upload_session_id, user)
+
+
+def _load_upload(request: Request, upload_id: str, user: c.AuthUser) -> c.UploadSession:
     upload = upload_repository(request).get_upload(upload_id)
     if upload is None:
         raise NodeExecutionError(c.ErrorCode.upload_invalid_state, "Upload session not found.")
+    _assert_access(upload, user)
     return upload
 
 
-def _patch_upload(request: Request, upload_id: str, updates: dict) -> c.UploadSession:
-    return upload_repository(request).patch_upload(upload_id, updates)
+def _assert_access(upload: c.UploadSession, user: c.AuthUser) -> None:
+    if user.role == c.UserRole.admin:
+        return
+    if upload.owner_user_id != user.id:
+        # Do not disclose another operator's stable client_upload_id/session.
+        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Upload session not found.")
 
 
-def _final_uri_for(store: ObjectStore, staging_uri: str, kind: c.UploadKind) -> str:
-    # Staging key is "incoming/uploads/{upload_id}/{filename}"; reuse the same
-    # upload_id (content_key) so the kind-routed final key is derived deterministically.
-    segments = parse_object_uri(staging_uri).key.split("/")
-    key_uuid, filename = segments[-2], segments[-1]
-    return store.prepare_upload(filename, kind.value, content_key=key_uuid).uri
+def _assert_prepare_matches(upload: c.UploadSession, payload: c.PrepareUploadRequest) -> None:
+    if (
+        upload.kind != payload.kind
+        or upload.case_id != payload.case_id
+        or upload.filename != payload.filename
+        or upload.content_type != payload.content_type
+        or upload.size_bytes != payload.size_bytes
+        or upload.client_expected_sha256 != payload.sha256
+        or upload.stabilize != payload.stabilize
+    ):
+        raise NodeExecutionError(
+            c.ErrorCode.idempotency_conflict,
+            "client_upload_id was already used for a different upload.",
+        )
+
+
+def _reconciler(request: Request) -> UploadReconciler:
+    return request.app.state.upload_reconciler
 
 
 def _safe_delete(store: ObjectStore, uri: str) -> None:
     try:
         store.delete(uri)
-    except Exception:  # noqa: BLE001 — best-effort staging cleanup, never block the caller
+    except Exception:  # noqa: BLE001 - best-effort terminal cleanup
         pass
+
+
+def _patch_upload(request: Request, upload_id: str, updates: dict) -> c.UploadSession:
+    return upload_repository(request).patch_upload(upload_id, updates)
 
 
 def _fail_upload(
@@ -137,279 +388,13 @@ def _fail_upload(
     staging_uri: str,
     derived_uris: Iterable[str] = (),
 ) -> None:
-    # Drop the browser-written staging object AND any server-written derived
-    # objects (normalize/stabilize each store_file a fresh object before a later
-    # step may fail). Best-effort, per-object: one delete failing must not block
-    # the others or mask the original error.
+    """Legacy test/helper seam using the new terminal cleanup semantics."""
+
     _safe_delete(store, staging_uri)
     for uri in derived_uris:
         if uri and uri != staging_uri:
             _safe_delete(store, uri)
     try:
         _patch_upload(request, upload_id, {"status": c.UploadStatus.failed})
-    except Exception:  # noqa: BLE001 — never mask the original failure
+    except Exception:  # noqa: BLE001 - never mask the original failure
         pass
-
-
-def complete_upload(payload: c.CompleteUploadRequest, request: Request) -> c.CompleteUploadResponse:
-    store = object_store(request)
-    upload = _load_upload(request, payload.upload_session_id)
-    staging_uri = upload.object_uri
-    if staging_uri is None:
-        raise NodeExecutionError(c.ErrorCode.upload_invalid_state, "Upload session has no object.")
-    # First hop: the API never observed the browser's direct PUT.
-    upload = _patch_upload(request, upload.id, {"status": c.UploadStatus.uploading})
-
-    # Server-written derived objects (normalize/stabilize outputs). A failure
-    # after one of these is written must clean them up too, not just staging.
-    derived_uris: set[str] = set()
-
-    # Verify + post-process the uploaded object. ANY failure here drops the
-    # staging object and fails the session — the API never held the bytes, so a
-    # missing / oversize (size!=declared) / corrupt object only surfaces now.
-    try:
-        try:
-            head = store.head(staging_uri)
-        except NodeExecutionError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — missing object / storage error
-            raise NodeExecutionError(
-                c.ErrorCode.upload_invalid_state, "Uploaded object not found in storage."
-            ) from exc
-        declared_size = payload.size_bytes if payload.size_bytes is not None else upload.size_bytes
-        if declared_size is not None and head.size != declared_size:
-            raise NodeExecutionError(c.ErrorCode.upload_size_mismatch, "Upload size mismatch.")
-        if head.content_type and head.content_type != upload.content_type:
-            raise NodeExecutionError(c.ErrorCode.upload_unsupported_type, "Upload content-type mismatch.")
-
-        media_info = _probe_upload_media(request, upload)
-        # The API never saw the bytes during upload, so recompute sha256 from the
-        # downloaded object (the probe already pulled it into the local cache).
-        actual_sha256 = sha256_file(local_object_path(store, staging_uri))
-        if payload.sha256 and payload.sha256 != actual_sha256:
-            raise NodeExecutionError(c.ErrorCode.upload_sha256_mismatch, "Upload sha256 mismatch.")
-        upload = _patch_upload(request, upload.id, {"sha256": actual_sha256})
-
-        was_normalized = False
-        is_av_video = (
-            media_info is not None
-            and media_info.media_type == "video"
-            and upload.kind == c.UploadKind.video
-        )
-        if is_av_video and settings(request).upload.normalize_video:
-            upload, media_info = _normalize_upload_video(request, upload)
-            if upload.object_uri:
-                derived_uris.add(upload.object_uri)
-            was_normalized = True
-        if upload.stabilize and upload.kind == c.UploadKind.video:
-            upload, media_info = _stabilize_upload_video(request, upload)
-            if upload.object_uri:
-                derived_uris.add(upload.object_uri)
-
-        # Move the verified object from the browser-writable staging key to a
-        # server-only final key (routed by kind), then drop staging. If
-        # normalize/stabilize already rewrote object_uri to a server-written
-        # object, only staging needs dropping.
-        if upload.object_uri == staging_uri:
-            final_uri = _final_uri_for(store, staging_uri, upload.kind)
-            store.copy(staging_uri, final_uri)
-            upload = _patch_upload(request, upload.id, {"object_uri": final_uri})
-        if upload.object_uri != staging_uri:
-            _safe_delete(store, staging_uri)
-    except Exception:
-        _fail_upload(request, store, upload.id, staging_uri, derived_uris)
-        raise
-
-    # Second hop: uploading -> completed, then register the artifact.
-    upload = _patch_upload(request, upload.id, {"status": c.UploadStatus.completed})
-    artifact = upload_repository(request).create_artifact_from_upload(upload, media_info=media_info)
-    artifact_ref = upload_repository(request).artifact_ref(artifact.id)
-    _create_upload_thumbnails(request, artifact)
-    media_asset = None
-    publish_package = None
-    replace_mode = payload.metadata.get("template_mode") == "replace"
-    if upload.kind in {
-        c.UploadKind.video,
-        c.UploadKind.image,
-        c.UploadKind.bgm,
-        c.UploadKind.font,
-        c.UploadKind.cover_template,
-    } and not replace_mode:
-        asset_kind, base_tags = _visual_asset_kind_and_tags(upload.kind)
-        media_payload = c.CreateMediaAssetFromUploadRequest(
-            upload_session_id=upload.id,
-            case_id=upload.case_id,
-            title=payload.metadata.get("title") or upload.filename,
-            kind=asset_kind,
-            tags=base_tags,
-        )
-        if upload.stabilized:
-            media_payload.tags.append("stabilized")
-        if was_normalized:
-            media_payload.tags.append("normalized")
-        # 「AI素材」marker: the AI-source library tab uploads with this metadata flag
-        # so the asset is tagged for the Seedance reference picker (no new contract
-        # field needed — rides the existing metadata dict).
-        if payload.metadata.get("ai_material") == "1" and "ai_material" not in media_payload.tags:
-            media_payload.tags.append("ai_material")
-        media_asset = media_repository(request).create_asset_from_upload(media_payload)
-    elif upload.kind == c.UploadKind.publish_video:
-        package_payload = c.CreatePublishPackageRequest(
-            upload_artifact_id=artifact.id,
-            title=payload.metadata.get("title") or upload.filename,
-            description=payload.metadata.get("description", ""),
-        )
-        publish_package = publishing_repository(request).create_package(package_payload)
-    return c.CompleteUploadResponse(
-        upload_session=upload,
-        artifact=artifact_ref,
-        media_asset=media_asset,
-        publish_package=publish_package,
-        request_id=request_id(),
-    )
-
-
-def _probe_upload_media(request: Request, upload: c.UploadSession) -> c.MediaInfo | None:
-    if not upload.object_uri or not upload.content_type.startswith(("video/", "audio/", "image/")):
-        return None
-    try:
-        return probe_media(local_object_path(object_store(request), upload.object_uri))
-    except FfmpegCommandError as exc:
-        # 上传场景的探针失败是输入问题，错误码归 upload 域而非 render 域。
-        raise NodeExecutionError(
-            c.ErrorCode.upload_unsupported_type,
-            "上传的媒体文件无法解析，请确认文件未损坏且为受支持的格式。",
-        ) from exc
-
-
-def _stabilize_upload_video(
-    request: Request, upload: c.UploadSession
-) -> tuple[c.UploadSession, c.MediaInfo]:
-    if upload.object_uri is None:
-        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Upload object is missing.")
-    source_path = local_object_path(object_store(request), upload.object_uri)
-    try:
-        output_path = stabilize_video(source_path)
-        media_info = probe_media(output_path)
-    except FfmpegCommandError as exc:
-        raise NodeExecutionError(exc.error_code, "上传视频增稳失败，请确认视频可解析且 ffmpeg 支持 vidstab。") from exc
-    stored = store_file(object_store(request), output_path, purpose="media-stabilized")
-    updates = {
-        "object_uri": stored.ref.uri,
-        "sha256": stored.sha256,
-        "size_bytes": stored.size_bytes,
-        "stabilized": True,
-    }
-    upload = upload_repository(request).patch_upload(upload.id, updates)
-    return upload, media_info
-
-
-def _normalize_upload_video(
-    request: Request, upload: c.UploadSession
-) -> tuple[c.UploadSession, c.MediaInfo]:
-    """Normalize a portrait/b-roll upload to the strict delivery profile.
-
-    Rotation correction, optional letterbox crop, HDR->SDR(bt709) tonemap, 1080p
-    scale/pad, h264/yuv420p, and a post-encode validate gate that raises on any
-    profile violation (Spec §2.3 no-silent-degrade). Replaces the upload object
-    with the normalized asset so downstream stabilize/probe/thumbnail see upright,
-    correctly-colored, profile-conformant media."""
-    if upload.object_uri is None:
-        raise NodeExecutionError(c.ErrorCode.artifact_missing, "Upload object is missing.")
-    source_path = local_object_path(object_store(request), upload.object_uri)
-    try:
-        result = normalize_for_upload(source_path)
-    except FfmpegCommandError as exc:
-        raise NodeExecutionError(
-            exc.error_code,
-            "上传视频规范化失败，请确认视频可解析且符合受支持的格式。",
-        ) from exc
-    stored = store_file(object_store(request), result.output_path, purpose="media-normalized")
-    # ``normalized`` is informational only and has no DB column (no migration in
-    # this cluster), so it is not persisted via patch — we stamp it on the
-    # returned contract so the response/tags reflect it.
-    updates = {
-        "object_uri": stored.ref.uri,
-        "sha256": stored.sha256,
-        "size_bytes": stored.size_bytes,
-    }
-    upload = upload_repository(request).patch_upload(upload.id, updates)
-    return upload.model_copy(update={"normalized": True}), result.media_info
-
-
-def _create_upload_thumbnails(request: Request, artifact: c.Artifact) -> None:
-    """Register the library card's thumbnail for a freshly uploaded asset.
-
-    Videos also keep their two full-resolution frame grabs (they are the source
-    for cover work), but the object the CARD loads is a small WebP — the library
-    grid used to pull full-resolution lossless PNGs on a 10s poll (issue #206).
-    Images get a WebP too, so their card stops serving the original upload.
-    """
-    if artifact.uri is None or artifact.media_info is None:
-        return
-    media_type = artifact.media_info.media_type
-    if media_type not in ("video", "image"):
-        return
-    store = object_store(request)
-    source_path = local_object_path(store, artifact.uri)
-    thumbnail_source: Path
-    if media_type == "video":
-        try:
-            frames = extract_thumbnails(source_path, source_path.parent / f"{source_path.stem}_thumbs")
-        except FfmpegCommandError as exc:
-            raise NodeExecutionError(
-                exc.error_code, "Uploaded media thumbnail extraction failed."
-            ) from exc
-        for frame in frames:
-            ref = store.prepare_upload(frame.path.name, "thumbnails")
-            stored = store.put_bytes(ref, frame.path.read_bytes())
-            upload_repository(request).create_artifact(
-                kind=c.ArtifactKind.cover_image,
-                payload_schema="uri-only",
-                payload={"source_artifact_id": artifact.id, "thumbnail_label": frame.label},
-                uri=stored.ref.uri,
-                sha256=stored.sha256,
-                media_info=frame.media_info,
-            )
-        thumbnail_source = frames[-1].path
-    else:
-        thumbnail_source = source_path
-    _create_web_thumbnail(request, artifact, thumbnail_source)
-
-
-def _create_web_thumbnail(request: Request, artifact: c.Artifact, source: Path) -> None:
-    """Store the small WebP the library card actually loads. Fail-open.
-
-    The upload itself is already accepted and registered by the time this runs, so
-    a thumbnail encode failure must not fail it; the card then falls back to the
-    frame grab (video) or the original (image), i.e. the pre-#206 behaviour.
-    """
-    try:
-        content = build_cover_thumbnail_bytes(source.read_bytes())
-    except (ValueError, OSError):
-        return
-    store = object_store(request)
-    ref = store.prepare_upload(f"{WEB_THUMBNAIL_LABEL}{THUMBNAIL_SUFFIX}", "thumbnails")
-    stored = store.put_bytes(ref, content)
-    upload_repository(request).create_artifact(
-        kind=c.ArtifactKind.cover_thumbnail,
-        payload_schema="uri-only",
-        payload={"source_artifact_id": artifact.id, "thumbnail_label": WEB_THUMBNAIL_LABEL},
-        uri=stored.ref.uri,
-        sha256=stored.sha256,
-    )
-
-
-def cancel_upload(upload_session_id: str, request: Request) -> c.UploadSession:
-    upload = _load_upload(request, upload_session_id)
-    # The browser may already have PUT the staging object; drop it on cancel.
-    if upload.object_uri and upload.status in {c.UploadStatus.prepared, c.UploadStatus.uploading}:
-        _safe_delete(object_store(request), upload.object_uri)
-    return _patch_upload(request, upload_session_id, {"status": c.UploadStatus.cancelled})
-
-
-def get_upload(upload_session_id: str, request: Request) -> c.UploadSession:
-    upload = upload_repository(request).get_upload(upload_session_id)
-    if upload is None:
-        raise NodeExecutionError(c.ErrorCode.upload_invalid_state, "Upload session not found.")
-    return upload

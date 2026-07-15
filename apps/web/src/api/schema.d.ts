@@ -263,6 +263,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/uploads/{upload_session_id}/parts/sign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sign Upload Parts */
+        post: operations["sign_upload_parts_api_uploads__upload_session_id__parts_sign_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/uploads/{upload_session_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Resume Upload */
+        get: operations["resume_upload_api_uploads__upload_session_id__resume_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/uploads/{upload_session_id}/object-complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Object Complete Upload */
+        post: operations["object_complete_upload_api_uploads__upload_session_id__object_complete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/uploads/{upload_session_id}/cancel": {
         parameters: {
             query?: never;
@@ -5625,6 +5676,38 @@ export interface components {
             /** Upload Session Id */
             upload_session_id: string;
         };
+        /** MediaInfo */
+        MediaInfo: {
+            /**
+             * Media Type
+             * @enum {string}
+             */
+            media_type: "video" | "audio" | "image" | "subtitle" | "json";
+            /** Codec */
+            codec: string;
+            /** Format */
+            format: string;
+            /** Mime Type */
+            mime_type?: string | null;
+            /** Duration Sec */
+            duration_sec?: number | null;
+            /** Width */
+            width?: number | null;
+            /** Height */
+            height?: number | null;
+            /** Fps */
+            fps?: number | null;
+            /** Sample Rate */
+            sample_rate?: number | null;
+            /** Channels */
+            channels?: number | null;
+            /** Color Transfer */
+            color_transfer?: string | null;
+            /** Color Primaries */
+            color_primaries?: string | null;
+            /** Is Hdr */
+            is_hdr?: boolean | null;
+        };
         /**
          * MetricsBackfillRequest
          * @description 单条人工回填（§5.3）：从具体成片/发布进来，无需匹配键，填后台原始计数。
@@ -5805,6 +5888,26 @@ export interface components {
          * @enum {string}
          */
         NodeStatus: "pending" | "running" | "succeeded" | "failed" | "skipped" | "degraded" | "cancelled";
+        /** ObjectCompleteUploadRequest */
+        ObjectCompleteUploadRequest: {
+            /** Size Bytes */
+            size_bytes: number;
+            /** Sha256 */
+            sha256: string;
+            /** Metadata */
+            metadata?: {
+                [key: string]: string;
+            };
+        };
+        /** ObjectCompleteUploadResponse */
+        ObjectCompleteUploadResponse: {
+            upload_session: components["schemas"]["UploadSession"];
+            artifact?: components["schemas"]["ArtifactRef"] | null;
+            media_asset?: components["schemas"]["MediaAssetRecord"] | null;
+            publish_package?: components["schemas"]["PublishPackage"] | null;
+            /** Request Id */
+            request_id: string;
+        };
         /** OkResponse */
         OkResponse: {
             /**
@@ -6728,6 +6831,8 @@ export interface components {
         };
         /** PrepareUploadRequest */
         PrepareUploadRequest: {
+            /** Client Upload Id */
+            client_upload_id: string;
             kind: components["schemas"]["UploadKind"];
             /** Case Id */
             case_id?: string | null;
@@ -6755,15 +6860,17 @@ export interface components {
          */
         PrepareUploadResponse: {
             upload_session: components["schemas"]["UploadSession"];
+            upload_strategy: components["schemas"]["UploadStrategy"];
+            /** Part Size Bytes */
+            part_size_bytes?: number | null;
+            /** Part Count */
+            part_count: number;
             /** Put Url */
-            put_url: string;
+            put_url?: string | null;
             /** Put Content Type */
             put_content_type: string;
-            /**
-             * Expires At
-             * Format: date-time
-             */
-            expires_at: string;
+            /** Expires At */
+            expires_at?: string | null;
         };
         /**
          * PreviewCoverFrameRequest
@@ -8093,6 +8200,17 @@ export interface components {
              */
             reuse_valid_artifacts: boolean;
         };
+        /** ResumeUploadResponse */
+        ResumeUploadResponse: {
+            upload_session: components["schemas"]["UploadSession"];
+            /** Completed Parts */
+            completed_parts?: components["schemas"]["UploadPart"][];
+            artifact?: components["schemas"]["ArtifactRef"] | null;
+            media_asset?: components["schemas"]["MediaAssetRecord"] | null;
+            publish_package?: components["schemas"]["PublishPackage"] | null;
+            /** Request Id */
+            request_id: string;
+        };
         /** RetryRunRequest */
         RetryRunRequest: {
             /** Reason */
@@ -8617,6 +8735,29 @@ export interface components {
             /** Account Ids */
             account_ids?: string[];
         };
+        /** SignUploadPartsRequest */
+        SignUploadPartsRequest: {
+            /** Part Numbers */
+            part_numbers: number[];
+        };
+        /** SignUploadPartsResponse */
+        SignUploadPartsResponse: {
+            upload_session: components["schemas"]["UploadSession"];
+            /** Parts */
+            parts: components["schemas"]["SignedUploadPart"][];
+        };
+        /** SignedUploadPart */
+        SignedUploadPart: {
+            /** Part Number */
+            part_number: number;
+            /** Put Url */
+            put_url: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+        };
         /** SignedUrlResponse */
         SignedUrlResponse: {
             /** Url */
@@ -8791,6 +8932,15 @@ export interface components {
          * @enum {string}
          */
         UploadKind: "video" | "image" | "voice_reference" | "bgm" | "font" | "cover_template" | "publish_video";
+        /** UploadPart */
+        UploadPart: {
+            /** Part Number */
+            part_number: number;
+            /** Etag */
+            etag: string;
+            /** Size Bytes */
+            size_bytes: number;
+        };
         /** UploadSession */
         UploadSession: {
             /** Id */
@@ -8817,6 +8967,10 @@ export interface components {
              * @default v1
              */
             schema_version: string;
+            /** Client Upload Id */
+            client_upload_id?: string;
+            /** Owner User Id */
+            owner_user_id?: string | null;
             kind: components["schemas"]["UploadKind"];
             /** Case Id */
             case_id?: string | null;
@@ -8826,16 +8980,35 @@ export interface components {
             content_type: string;
             /** Size Bytes */
             size_bytes: number;
+            /** Final Size Bytes */
+            final_size_bytes?: number | null;
             /** Sha256 */
             sha256?: string | null;
+            /** Client Expected Sha256 */
+            client_expected_sha256?: string | null;
+            /** Canonical Sha256 */
+            canonical_sha256?: string | null;
             /** @default prepared */
             status: components["schemas"]["UploadSessionStatus"];
+            /** @default single */
+            upload_strategy: components["schemas"]["UploadStrategy"];
+            /** Part Size Bytes */
+            part_size_bytes?: number | null;
+            /**
+             * Part Count
+             * @default 1
+             */
+            part_count: number;
             /** Upload Url */
             upload_url?: string | null;
             /** Local Temp Path */
             local_temp_path?: string | null;
             /** Object Uri */
             object_uri?: string | null;
+            /** Staging Uri */
+            staging_uri?: string | null;
+            /** Final Uri */
+            final_uri?: string | null;
             /**
              * Stabilize
              * @default false
@@ -8851,6 +9024,20 @@ export interface components {
              * @default false
              */
             normalized: boolean;
+            /** Completion Metadata */
+            completion_metadata?: {
+                [key: string]: string;
+            };
+            verified_media_info?: components["schemas"]["MediaInfo"] | null;
+            /** Last Error */
+            last_error?: string | null;
+            /**
+             * Retry Count
+             * @default 0
+             */
+            retry_count: number;
+            /** Next Retry At */
+            next_retry_at?: string | null;
             /**
              * Expires At
              * Format: date-time
@@ -8861,7 +9048,12 @@ export interface components {
          * UploadSessionStatus
          * @enum {string}
          */
-        UploadSessionStatus: "prepared" | "uploading" | "completed" | "failed" | "cancelled" | "expired";
+        UploadSessionStatus: "prepared" | "uploading" | "completing" | "object_completed" | "verified" | "ready" | "rejected" | "completed" | "failed" | "cancelled" | "expired";
+        /**
+         * UploadStrategy
+         * @enum {string}
+         */
+        UploadStrategy: "single" | "multipart";
         /** UpsertAlertRuleRequest */
         UpsertAlertRuleRequest: {
             rule: components["schemas"]["OpsAlertRule"];
@@ -9789,6 +9981,107 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CompleteUploadResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sign_upload_parts_api_uploads__upload_session_id__parts_sign_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                upload_session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignUploadPartsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignUploadPartsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resume_upload_api_uploads__upload_session_id__resume_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                upload_session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResumeUploadResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    object_complete_upload_api_uploads__upload_session_id__object_complete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                upload_session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ObjectCompleteUploadRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObjectCompleteUploadResponse"];
                 };
             };
             /** @description Validation Error */

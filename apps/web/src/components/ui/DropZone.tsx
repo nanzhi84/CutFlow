@@ -16,7 +16,7 @@ export function DropZone({
   onFilesDrop,
   accept,
   multiple = false,
-  maxSize = 100,
+  maxSize = 200,
   className = "",
   label = "拖拽文件到此处或点击上传",
   children,

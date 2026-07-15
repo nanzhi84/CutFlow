@@ -213,6 +213,19 @@ jobs:
         run: python scripts/bootstrap_database.py
       - name: Run database integration tests
         run: timeout -k 5 600 python -m pytest -q tests/integration
+      - name: Run real MinIO multipart upload recovery tests
+        env:
+          CUTAGENT_RUN_S3_TESTS: "1"
+          CUTAGENT_OBJECTSTORE_BACKEND: s3
+          CUTAGENT_OBJECTSTORE_ENDPOINT: http://127.0.0.1:9000
+          CUTAGENT_OBJECTSTORE_BUCKET: cutagent-local
+          CUTAGENT_OBJECTSTORE_ACCESS_KEY: minioadmin
+          CUTAGENT_OBJECTSTORE_SECRET_KEY: minioadmin
+          CUTAGENT_OBJECTSTORE_ADDRESSING_STYLE: path
+        run: |
+          timeout -k 5 600 python -m pytest -q -ra \
+            tests/integration/test_upload_resumable_minio.py \
+            tests/api/test_object_store_backends.py::test_s3_object_store_roundtrip_with_minio
       - name: Run Temporal integration tests
         # Mirror the local demo: a MinIO-backed durable tier AND a MinIO-backed
         # ephemeral tier (distinct buckets). The ephemeral S3 config is what

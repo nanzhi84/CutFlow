@@ -164,19 +164,53 @@ class RegistrationCodeRow(TimestampMixin, Base):
 
 class UploadSessionRow(TimestampMixin, Base):
     __tablename__ = "upload_sessions"
+    __table_args__ = (
+        Index("idx_upload_sessions_reconcile", "status", "next_retry_at", "lease_expires_at"),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    client_upload_id: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        unique=True,
+        # Keeps inserts from a drained-but-not-yet-terminated legacy API process
+        # valid during the migration window. New code always supplies its stable ID.
+        server_default=text("'legacy_' || gen_random_uuid()::text"),
+    )
+    owner_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
     kind: Mapped[str] = mapped_column(String, nullable=False)
     case_id: Mapped[str | None] = mapped_column(ForeignKey("cases.id", ondelete="SET NULL"))
     filename: Mapped[str] = mapped_column(String, nullable=False)
     content_type: Mapped[str] = mapped_column(String, nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    final_size_bytes: Mapped[int | None] = mapped_column(Integer)
     sha256: Mapped[str | None] = mapped_column(String)
+    client_expected_sha256: Mapped[str | None] = mapped_column(String)
+    canonical_sha256: Mapped[str | None] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, nullable=False)
+    upload_strategy: Mapped[str] = mapped_column(
+        String, nullable=False, default="single", server_default="single"
+    )
+    multipart_upload_id: Mapped[str | None] = mapped_column(Text)
+    part_size_bytes: Mapped[int | None] = mapped_column(Integer)
+    part_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     object_uri: Mapped[str | None] = mapped_column(Text)
+    staging_uri: Mapped[str | None] = mapped_column(Text)
+    final_uri: Mapped[str | None] = mapped_column(Text)
     local_temp_path: Mapped[str | None] = mapped_column(Text)
     stabilize: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     stabilized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    completion_metadata: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    verified_media_info: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_owner: Mapped[str | None] = mapped_column(String)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -206,7 +240,9 @@ class CaseRow(TimestampMixin, Base):
     industry: Mapped[str | None] = mapped_column(String)
     product: Mapped[str | None] = mapped_column(String)
     target_audience: Mapped[str | None] = mapped_column(Text)
-    key_selling_points: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+    key_selling_points: Mapped[list[str]] = mapped_column(
+        ARRAY(String), nullable=False, default=list
+    )
     ip_persona: Mapped[str | None] = mapped_column(Text)
     brand_voice: Mapped[str | None] = mapped_column(Text)
     strategy_tags: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
@@ -233,6 +269,9 @@ class ArtifactRow(TimestampMixin, Base):
     payload_schema: Mapped[str] = mapped_column(String, nullable=False)
     payload: Mapped[dict | list | str | int | float | bool | None] = mapped_column(JSONB)
     created_by_node_run_id: Mapped[str | None] = mapped_column(String)
+    source_upload_session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("upload_sessions.id", ondelete="SET NULL"), unique=True
+    )
 
 
 class JobRow(TimestampMixin, Base):
@@ -273,14 +312,20 @@ class NodeRunRow(TimestampMixin, Base):
     __tablename__ = "node_runs"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    run_id: Mapped[str] = mapped_column(ForeignKey("workflow_runs.id", ondelete="CASCADE"), nullable=False)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("workflow_runs.id", ondelete="CASCADE"), nullable=False
+    )
     node_id: Mapped[str] = mapped_column(String, nullable=False)
     node_version: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     input_manifest_hash: Mapped[str] = mapped_column(String, nullable=False)
-    output_artifact_ids: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
-    provider_invocation_ids: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+    output_artifact_ids: Mapped[list[str]] = mapped_column(
+        ARRAY(String), nullable=False, default=list
+    )
+    provider_invocation_ids: Mapped[list[str]] = mapped_column(
+        ARRAY(String), nullable=False, default=list
+    )
     error: Mapped[dict | None] = mapped_column(JSONB)
     skipped_reason: Mapped[str | None] = mapped_column(Text)
     degradation_reason: Mapped[str | None] = mapped_column(Text)
@@ -352,16 +397,16 @@ class SelectionReservationRow(Base):
     committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    __table_args__ = (
-        UniqueConstraint("run_id", "medium", "asset_id"),
-    )
+    __table_args__ = (UniqueConstraint("run_id", "medium", "asset_id"),)
 
 
 class AnnotationRow(TimestampMixin, Base):
     __tablename__ = "annotations"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    asset_id: Mapped[str] = mapped_column(ForeignKey("media_assets.id", ondelete="CASCADE"), nullable=False)
+    asset_id: Mapped[str] = mapped_column(
+        ForeignKey("media_assets.id", ondelete="CASCADE"), nullable=False
+    )
     etag: Mapped[str] = mapped_column(String, nullable=False)
     canonical_schema: Mapped[str] = mapped_column(String, nullable=False)
     canonical: Mapped[dict] = mapped_column(JSONB, nullable=False)
@@ -419,7 +464,9 @@ class VoiceProfileRow(TimestampMixin, Base):
     preview_artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id"))
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     vendor: Mapped[str] = mapped_column(String, nullable=False, server_default="", default="")
-    status: Mapped[str] = mapped_column(String, nullable=False, server_default="ready", default="ready")
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, server_default="ready", default="ready"
+    )
     case_ids: Mapped[list[str]] = mapped_column(
         ARRAY(String), nullable=False, default=list, server_default="{}"
     )
@@ -593,7 +640,9 @@ class PromptBindingRow(TimestampMixin, Base):
     __tablename__ = "prompt_bindings"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    prompt_template_id: Mapped[str] = mapped_column(ForeignKey("prompt_templates.id"), nullable=False)
+    prompt_template_id: Mapped[str] = mapped_column(
+        ForeignKey("prompt_templates.id"), nullable=False
+    )
     prompt_version_id: Mapped[str] = mapped_column(ForeignKey("prompt_versions.id"), nullable=False)
     case_id: Mapped[str | None] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"))
     node_id: Mapped[str | None] = mapped_column(String)
@@ -606,7 +655,9 @@ class PromptInvocationRow(TimestampMixin, Base):
     __tablename__ = "prompt_invocations"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    prompt_template_id: Mapped[str] = mapped_column(ForeignKey("prompt_templates.id"), nullable=False)
+    prompt_template_id: Mapped[str] = mapped_column(
+        ForeignKey("prompt_templates.id"), nullable=False
+    )
     prompt_version_id: Mapped[str] = mapped_column(ForeignKey("prompt_versions.id"), nullable=False)
     case_id: Mapped[str | None] = mapped_column(ForeignKey("cases.id", ondelete="SET NULL"))
     run_id: Mapped[str | None] = mapped_column(ForeignKey("workflow_runs.id", ondelete="SET NULL"))
@@ -623,7 +674,9 @@ class PromptExperimentRow(TimestampMixin, Base):
     __tablename__ = "prompt_experiments"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    prompt_template_id: Mapped[str] = mapped_column(ForeignKey("prompt_templates.id"), nullable=False)
+    prompt_template_id: Mapped[str] = mapped_column(
+        ForeignKey("prompt_templates.id"), nullable=False
+    )
     variants: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False)
     traffic_split: Mapped[dict] = mapped_column(JSONB, nullable=False)
     scope: Mapped[dict] = mapped_column(JSONB, nullable=False)
@@ -683,7 +736,9 @@ class CaseMemoryRow(TimestampMixin, Base):
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     embedding: Mapped[object | None] = mapped_column(Vector(1536))
 
-    __table_args__ = (CheckConstraint("confidence >= 0 AND confidence <= 1", name="confidence_range"),)
+    __table_args__ = (
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="confidence_range"),
+    )
 
 
 class PublishRecordRow(TimestampMixin, Base):
@@ -847,15 +902,15 @@ class RubricBumpProposalRow(TimestampMixin, Base):
     new_consistency: Mapped[float] = mapped_column(
         Float, nullable=False, default=0, server_default="0"
     )
-    sample_size: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0"
-    )
+    sample_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     rationale: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
 
 
 class FinishedVideoRow(TimestampMixin, Base):
     __tablename__ = "finished_videos"
-    __table_args__ = (UniqueConstraint("case_id", "video_number", name="uq_finished_videos_case_video_number"),)
+    __table_args__ = (
+        UniqueConstraint("case_id", "video_number", name="uq_finished_videos_case_video_number"),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
@@ -907,8 +962,12 @@ class PublishBatchItemRow(TimestampMixin, Base):
     __tablename__ = "publish_batch_items"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    batch_id: Mapped[str] = mapped_column(ForeignKey("publish_batches.id", ondelete="CASCADE"), nullable=False)
-    publish_package_id: Mapped[str] = mapped_column(ForeignKey("publish_packages.id"), nullable=False)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("publish_batches.id", ondelete="CASCADE"), nullable=False
+    )
+    publish_package_id: Mapped[str] = mapped_column(
+        ForeignKey("publish_packages.id"), nullable=False
+    )
     platform: Mapped[str] = mapped_column(String, nullable=False)
     title: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -929,7 +988,9 @@ class PublishAttemptRow(TimestampMixin, Base):
     __tablename__ = "publish_attempts"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    batch_id: Mapped[str] = mapped_column(ForeignKey("publish_batches.id", ondelete="CASCADE"), nullable=False)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("publish_batches.id", ondelete="CASCADE"), nullable=False
+    )
     item_id: Mapped[str] = mapped_column(ForeignKey("publish_batch_items.id"), nullable=False)
     platforms: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
     manual_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -947,19 +1008,25 @@ class ClientRow(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     remark: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
-    status: Mapped[str] = mapped_column(String, nullable=False, default="active", server_default="active")
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="active", server_default="active"
+    )
 
 
 class PublishAccountRow(TimestampMixin, Base):
     __tablename__ = "publish_accounts"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    client_id: Mapped[str] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), nullable=False)
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("clients.id", ondelete="CASCADE"), nullable=False
+    )
     platform: Mapped[str] = mapped_column(String, nullable=False)
     account_name: Mapped[str] = mapped_column(String, nullable=False)
     platform_uid: Mapped[str | None] = mapped_column(String)
     xiaovmao_uid: Mapped[str | None] = mapped_column(String)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="active", server_default="active")
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="active", server_default="active"
+    )
 
     __table_args__ = (
         UniqueConstraint(
@@ -976,7 +1043,9 @@ class CasePublishTargetRow(TimestampMixin, Base):
     account_id: Mapped[str] = mapped_column(
         ForeignKey("publish_accounts.id", ondelete="CASCADE"), nullable=False
     )
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
 
     __table_args__ = (
         UniqueConstraint("case_id", "account_id", name="uq_case_publish_targets_case_account"),
@@ -990,9 +1059,15 @@ class YieldFunnelEventRow(TimestampMixin, Base):
     case_id: Mapped[str | None] = mapped_column(ForeignKey("cases.id", ondelete="SET NULL"))
     job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"))
     run_id: Mapped[str | None] = mapped_column(ForeignKey("workflow_runs.id", ondelete="SET NULL"))
-    finished_video_id: Mapped[str | None] = mapped_column(ForeignKey("finished_videos.id", ondelete="SET NULL"))
-    publish_package_id: Mapped[str | None] = mapped_column(ForeignKey("publish_packages.id", ondelete="SET NULL"))
-    publish_attempt_id: Mapped[str | None] = mapped_column(ForeignKey("publish_attempts.id", ondelete="SET NULL"))
+    finished_video_id: Mapped[str | None] = mapped_column(
+        ForeignKey("finished_videos.id", ondelete="SET NULL")
+    )
+    publish_package_id: Mapped[str | None] = mapped_column(
+        ForeignKey("publish_packages.id", ondelete="SET NULL")
+    )
+    publish_attempt_id: Mapped[str | None] = mapped_column(
+        ForeignKey("publish_attempts.id", ondelete="SET NULL")
+    )
     # Creator-based isolation owner (migration 0018). Nullable FK; orphan rows
     # (no run/job/finished_video linkage) stay NULL and are admin-only.
     owner_user_id: Mapped[str | None] = mapped_column(
@@ -1064,7 +1139,9 @@ class OpsAlertEventRow(TimestampMixin, Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     code: Mapped[str] = mapped_column(String, nullable=False)
-    rule_id: Mapped[str | None] = mapped_column(ForeignKey("ops_alert_rules.id", ondelete="SET NULL"))
+    rule_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ops_alert_rules.id", ondelete="SET NULL")
+    )
     status: Mapped[str] = mapped_column(String, nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     severity: Mapped[str] = mapped_column(String, nullable=False)
@@ -1151,9 +1228,7 @@ class OutboxEventRow(TimestampMixin, Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
 
-    __table_args__ = (
-        UniqueConstraint("aggregate_type", "aggregate_id", "topic", "dedupe_key"),
-    )
+    __table_args__ = (UniqueConstraint("aggregate_type", "aggregate_id", "topic", "dedupe_key"),)
 
 
 Index("idx_artifacts_case_run", ArtifactRow.case_id, ArtifactRow.run_id)
@@ -1175,8 +1250,16 @@ Index(
     SelectionReservationRow.medium,
     SelectionReservationRow.status,
 )
-Index("idx_selection_reservations_ttl", SelectionReservationRow.status, SelectionReservationRow.expires_at)
-Index("idx_clip_embedding_asset", ClipEmbeddingIndexRow.asset_id, ClipEmbeddingIndexRow.index_namespace)
+Index(
+    "idx_selection_reservations_ttl",
+    SelectionReservationRow.status,
+    SelectionReservationRow.expires_at,
+)
+Index(
+    "idx_clip_embedding_asset",
+    ClipEmbeddingIndexRow.asset_id,
+    ClipEmbeddingIndexRow.index_namespace,
+)
 Index(
     "idx_clip_embedding_model_version",
     ClipEmbeddingIndexRow.index_namespace,
@@ -1199,17 +1282,27 @@ Index(
     unique=True,
     postgresql_where=SelectionReservationRow.status == "reserved",
 )
-Index("idx_provider_invocations_case", ProviderInvocationRow.case_id, ProviderInvocationRow.provider_id)
+Index(
+    "idx_provider_invocations_case",
+    ProviderInvocationRow.case_id,
+    ProviderInvocationRow.provider_id,
+)
 Index(
     "uq_provider_invocations_idempotency_key",
     ProviderInvocationRow.idempotency_key,
     unique=True,
     postgresql_where=ProviderInvocationRow.idempotency_key.isnot(None),
 )
-Index("idx_usage_meter_provider", UsageMeterRecordRow.provider_id, UsageMeterRecordRow.capability_id)
+Index(
+    "idx_usage_meter_provider", UsageMeterRecordRow.provider_id, UsageMeterRecordRow.capability_id
+)
 Index("idx_case_memories_case_status", CaseMemoryRow.case_id, CaseMemoryRow.status)
 Index("idx_case_memories_case_type", CaseMemoryRow.case_id, CaseMemoryRow.memory_type)
-Index("idx_performance_case_metric", PerformanceObservationRow.case_id, PerformanceObservationRow.metric_name)
+Index(
+    "idx_performance_case_metric",
+    PerformanceObservationRow.case_id,
+    PerformanceObservationRow.metric_name,
+)
 Index("idx_performance_video", PerformanceObservationRow.video_version_id)
 Index("idx_feature_vectors_case", CreativeFeatureVectorRow.case_id)
 Index("idx_feature_vectors_video", CreativeFeatureVectorRow.video_version_id)
@@ -1234,7 +1327,13 @@ Index(
     postgresql_where=RewardSignalRow.evidence_ref.isnot(None),
 )
 Index("idx_rubric_bump_case_status", RubricBumpProposalRow.case_id, RubricBumpProposalRow.status)
-Index("idx_outbox_pending", OutboxEventRow.status, OutboxEventRow.available_at, OutboxEventRow.created_at, OutboxEventRow.id)
+Index(
+    "idx_outbox_pending",
+    OutboxEventRow.status,
+    OutboxEventRow.available_at,
+    OutboxEventRow.created_at,
+    OutboxEventRow.id,
+)
 Index("idx_failure_taxonomy_class", FailureTaxonomyRow.failure_class, FailureTaxonomyRow.created_at)
 Index("idx_failure_taxonomy_run", FailureTaxonomyRow.run_id)
 Index("idx_ops_alert_events_status", OpsAlertEventRow.status, OpsAlertEventRow.code)

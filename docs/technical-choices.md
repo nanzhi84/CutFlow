@@ -22,13 +22,13 @@ FastAPI 是 API 事实源。OpenAPI 从后端应用导出，再生成前端 Type
 
 ## 数据存储
 
-PostgreSQL + SQLAlchemy 是默认持久化路径。`postgres` 后端名是 SQLAlchemy 的别名，`memory` 后端只用于测试和 demo。
+PostgreSQL + SQLAlchemy 是唯一持久化路径。`postgres` 后端名是 SQLAlchemy 的兼容别名；测试使用独立、可销毁的 PostgreSQL 数据库。
 
 为什么这样选：
 
 - 生产状态必须跨进程重启保留。
 - 幂等、outbox、artifact、provider 用量、预算和审计都需要持久化。
-- 测试仍需要快速的内存路径。
+- 测试与生产使用同一套事务和约束语义，避免内存替身掩盖并发与迁移问题。
 
 关键路径：
 
@@ -85,6 +85,9 @@ Temporal 是生产长流程运行时。Local runtime 保留给测试和受控本
 - `packages/core/storage/object_store.py`
 - `packages/core/storage/object_store_env.py`
 - `packages/core/storage/tiered_object_store.py`
+- `packages/media/upload_reconciler.py`
+
+浏览器上传同样走 ObjectStore：小文件单 PUT，大于等于 16 MiB 使用 8 MiB multipart。客户端先持久化到 OPFS，服务端以 `ListParts` 对账，并通过 SQL 状态机完成崩溃恢复和原子登记。
 
 ## 媒体栈
 

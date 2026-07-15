@@ -61,7 +61,7 @@ export function LibraryAssetUploadModal({ isOpen, onClose, kind, onUploaded }: L
       <form className="grid gap-4" onSubmit={handleSubmit}>
         <DropZone
           accept={accept}
-          maxSize={kind === "font" ? 40 : 100}
+          maxSize={kind === "font" ? 40 : 200}
           multiple={kind === "bgm"}
           onFilesDrop={(nextFiles) => setFiles(nextFiles)}
           label={`上传${libraryAssetLabels[kind]}文件`}

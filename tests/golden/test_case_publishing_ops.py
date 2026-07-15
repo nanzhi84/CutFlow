@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from fastapi.testclient import TestClient
 
 from apps.api.app import create_app
-from tests.api._upload_helpers import direct_upload
+from tests.api._upload_helpers import direct_upload, minimal_ttf_bytes
 
 
 @contextmanager
@@ -58,7 +58,11 @@ def create_finished_video(active_client, title: str = "Publishing seed") -> str:
 def create_publish_batch(active_client, finished_video_id: str):
     package = active_client.post(
         "/api/publish/packages",
-        json={"source_finished_video_id": finished_video_id, "title": "Publish me", "description": ""},
+        json={
+            "source_finished_video_id": finished_video_id,
+            "title": "Publish me",
+            "description": "",
+        },
     )
     assert package.status_code == 201, package.text
     batch = active_client.post(
@@ -78,7 +82,7 @@ def upload_cover_artifact(active_client) -> str:
         kind="font",
         filename="cover.ttf",
         content_type="font/ttf",
-        body=b"cover image bytes",
+        body=minimal_ttf_bytes(family="Cover Artifact"),
         case_id="case_demo",
         metadata={"template_mode": "replace"},
     )
@@ -109,13 +113,19 @@ def test_case_publish_flow_reaches_ops_dashboard():
             videos = client.get("/api/cases/case_demo/finished-videos").json()["items"]
         package = client.post(
             "/api/publish/packages",
-            json={"source_finished_video_id": videos[-1]["id"], "title": "Publish me", "description": ""},
+            json={
+                "source_finished_video_id": videos[-1]["id"],
+                "title": "Publish me",
+                "description": "",
+            },
         ).json()
         batch = client.post(
             "/api/publish/batches",
             json={"publish_package_ids": [package["id"]], "platform_targets": ["douyin"]},
         ).json()
-        submitted = client.post(f"/api/publish/batches/{batch['id']}/submit", json={"dry_run": False}).json()
+        submitted = client.post(
+            f"/api/publish/batches/{batch['id']}/submit", json={"dry_run": False}
+        ).json()
         assert submitted["status"] == "completed"
         assert submitted["items"][0]["status"] == "published"
 
@@ -154,7 +164,11 @@ def test_publish_package_cover_can_be_uploaded_and_cleared():
         finished_video_id = create_finished_video(active_client, "Cover upload seed")
         package = active_client.post(
             "/api/publish/packages",
-            json={"source_finished_video_id": finished_video_id, "title": "Cover package", "description": ""},
+            json={
+                "source_finished_video_id": finished_video_id,
+                "title": "Cover package",
+                "description": "",
+            },
         )
         assert package.status_code == 201, package.text
         artifact_id = upload_cover_artifact(active_client)
@@ -209,7 +223,9 @@ def test_publish_attempts_can_be_listed_by_batch():
         login_admin_for(active_client)
         finished_video_id = create_finished_video(active_client, "Attempt list seed")
         batch = create_publish_batch(active_client, finished_video_id)
-        submitted = active_client.post(f"/api/publish/batches/{batch['id']}/submit", json={"dry_run": True})
+        submitted = active_client.post(
+            f"/api/publish/batches/{batch['id']}/submit", json={"dry_run": True}
+        )
         assert submitted.status_code == 202, submitted.text
 
         attempts = active_client.get(f"/api/publish/batches/{batch['id']}/attempts")

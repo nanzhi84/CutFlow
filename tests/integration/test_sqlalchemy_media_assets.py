@@ -5,7 +5,7 @@ from sqlalchemy import select
 from apps.api.main import app
 from packages.core.storage.bootstrap import get_sqlalchemy_session_factory
 from packages.core.storage.database import AnnotationRow, MediaAssetRow
-from tests.api._upload_helpers import direct_upload
+from tests.api._upload_helpers import direct_upload, minimal_ttf_bytes
 
 
 def sqlalchemy_session_factory():
@@ -20,7 +20,7 @@ def create_completed_media_asset(client: TestClient) -> dict:
     )
     assert admin_login.status_code == 200, admin_login.text
 
-    content = b"media asset payload"
+    content = minimal_ttf_bytes(family="Media Asset")
     prepared, completed = direct_upload(
         client,
         kind="font",

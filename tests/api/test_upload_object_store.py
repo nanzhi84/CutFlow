@@ -28,7 +28,7 @@ from packages.core.storage.sqlalchemy_uploads import artifact_row_to_contract
 from packages.media.assets import local_object_path
 from packages.media.video.ffmpeg import probe_media
 from tests.fixtures.media import generate_test_video, require_ffmpeg_filters
-from tests.api._upload_helpers import direct_upload
+from tests.api._upload_helpers import direct_upload, minimal_ttf_bytes
 from packages.core.storage.object_store import parse_local_uri, parse_object_uri
 
 
@@ -199,7 +199,7 @@ def test_local_media_preview_url_is_browser_playable_content_route():
 
 def test_font_media_preview_uses_content_route_for_s3_objects():
     login_admin()
-    content = b"fake-font-preview-bytes"
+    content = minimal_ttf_bytes(family="Preview Font")
     prepared, completed = direct_upload(
         client,
         kind="font",
@@ -393,6 +393,7 @@ def test_upload_complete_rejects_size_mismatch_against_head():
     prepared = client.post(
         "/api/uploads/prepare",
         json={
+            "client_upload_id": "client_head_size_mismatch",
             "kind": "font",
             "filename": "short.ttf",
             "content_type": "font/ttf",
@@ -427,7 +428,10 @@ def test_publish_video_upload_creates_publish_package(tmp_path):
     assert prepared.status_code == 201, prepared.text
     assert completed.status_code == 200, completed.text
     assert completed.json()["media_asset"] is None
-    assert completed.json()["publish_package"]["upload_artifact_id"] == completed.json()["artifact"]["artifact_id"]
+    assert (
+        completed.json()["publish_package"]["upload_artifact_id"]
+        == completed.json()["artifact"]["artifact_id"]
+    )
     assert completed.json()["publish_package"]["platform_defaults"]["title"] == "Publish upload"
 
 
@@ -456,7 +460,9 @@ def test_video_upload_probes_media_and_creates_real_thumbnail_artifacts(tmp_path
     thumbnails = _cover_artifacts_for_source(artifact_id)
     assert {artifact.payload["thumbnail_label"] for artifact in thumbnails} == {"first", "mid"}
     assert all(artifact.sha256 for artifact in thumbnails)
-    assert all(artifact.media_info and artifact.media_info.media_type == "image" for artifact in thumbnails)
+    assert all(
+        artifact.media_info and artifact.media_info.media_type == "image" for artifact in thumbnails
+    )
 
 
 def _web_thumbnails_for_source(source_artifact_id: str) -> list[Artifact]:
@@ -610,6 +616,7 @@ def test_legacy_visual_upload_kind_is_rejected(tmp_path, legacy_kind):
     prepared = client.post(
         "/api/uploads/prepare",
         json={
+            "client_upload_id": f"client_legacy_{legacy_kind}",
             "kind": legacy_kind,
             "case_id": "case_legacy_visual",
             "filename": f"{legacy_kind}.mp4",

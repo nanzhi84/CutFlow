@@ -29,7 +29,7 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Small env helpers (single point that knows how to read os.environ).
 
@@ -256,9 +256,7 @@ class ObjectStoreSettings(BaseModel):
     # which is the presigned PUT lifetime. CUTAGENT_OBJECTSTORE_SIGNED_GET_TTL_SECONDS
     signed_get_ttl_seconds: int = 604800
     s3: S3TransportSettings = Field(default_factory=S3TransportSettings)
-    ephemeral: EphemeralObjectStoreSettings = Field(
-        default_factory=EphemeralObjectStoreSettings
-    )
+    ephemeral: EphemeralObjectStoreSettings = Field(default_factory=EphemeralObjectStoreSettings)
 
 
 class WorkflowSettings(BaseModel):
@@ -384,15 +382,21 @@ class MotionGuardSettings(BaseModel):
 class UploadSettings(BaseModel):
     """Upload ingestion knobs (``settings.upload.*``).
 
-    Uploads go browser-direct to OSS via a presigned PUT; the API never receives
-    the bytes. The hard 100 MiB per-file cap lives in the contract
-    (``PrepareUploadRequest.size_bytes`` ``le=``) and is re-checked by complete()'s
-    exact-size HEAD match — not via this module."""
+    Uploads go browser-direct to OSS via presigned single or multipart PUTs; the
+    API never receives the bytes. The hard 200 MiB per-file cap also lives in the
+    request contracts and is re-checked by the reconciler's exact-size HEAD."""
 
     model_config = ConfigDict(frozen=True)
 
     # CUTAGENT_UPLOAD_PRESIGN_TTL_SECONDS: lifetime of a presigned PUT URL.
-    presign_ttl_seconds: int = 900
+    presign_ttl_seconds: int = Field(900, ge=60, le=7 * 24 * 60 * 60)
+    max_size_bytes: int = Field(200 * 1024 * 1024, gt=0, le=200 * 1024 * 1024)
+    multipart_threshold_bytes: int = Field(16 * 1024 * 1024, gt=0)
+    # S3/OSS requires every non-final part to be at least 5 MiB.
+    part_size_bytes: int = Field(8 * 1024 * 1024, ge=5 * 1024 * 1024)
+    reconcile_interval_seconds: int = Field(5, ge=1)
+    reconcile_lease_seconds: int = Field(300, ge=1)
+    reconcile_max_retries: int = Field(8, ge=1, le=100)
     # CUTAGENT_UPLOAD_CORS_ALLOWED_ORIGINS: comma-separated web origins allowed to
     # PUT directly to the durable upload bucket (provisioned onto OSS bucket CORS).
     cors_allowed_origins: tuple[str, ...] = ()
@@ -401,6 +405,14 @@ class UploadSettings(BaseModel):
     # validation) before admitting them. Off by default so the existing upload
     # flow / tests are unchanged unless a deployment opts in.
     normalize_video: bool = False
+
+    @model_validator(mode="after")
+    def validate_multipart_geometry(self) -> "UploadSettings":
+        if self.multipart_threshold_bytes > self.max_size_bytes:
+            raise ValueError("multipart threshold must not exceed the upload size limit")
+        if self.part_size_bytes > self.max_size_bytes:
+            raise ValueError("multipart part size must not exceed the upload size limit")
+        return self
 
 
 class ApiSettings(BaseModel):
@@ -618,20 +630,14 @@ def build_object_store_settings() -> ObjectStoreSettings:
         local_path=_env_str("CUTAGENT_LOCAL_OBJECTSTORE_PATH", ".data/objectstore"),
         cache_max_bytes=_env_int("CUTAGENT_OBJECTSTORE_CACHE_MAX_BYTES", 0),
         cache_ttl_hours=_env_float("CUTAGENT_OBJECTSTORE_CACHE_TTL_HOURS", 0),
-        signed_get_ttl_seconds=_env_int(
-            "CUTAGENT_OBJECTSTORE_SIGNED_GET_TTL_SECONDS", 604800
-        ),
+        signed_get_ttl_seconds=_env_int("CUTAGENT_OBJECTSTORE_SIGNED_GET_TTL_SECONDS", 604800),
         s3=S3TransportSettings(
-            endpoint_url=_env_str(
-                "CUTAGENT_OBJECTSTORE_ENDPOINT", "http://127.0.0.1:9000"
-            ),
+            endpoint_url=_env_str("CUTAGENT_OBJECTSTORE_ENDPOINT", "http://127.0.0.1:9000"),
             access_key=_env_str("CUTAGENT_OBJECTSTORE_ACCESS_KEY", ""),
             secret_key=_env_str("CUTAGENT_OBJECTSTORE_SECRET_KEY", ""),
             region_name=_env_str("CUTAGENT_OBJECTSTORE_REGION", "us-east-1"),
             addressing_style=_env_str("CUTAGENT_OBJECTSTORE_ADDRESSING_STYLE", "path"),
-            multipart_threshold_mb=_env_int(
-                "CUTAGENT_OBJECTSTORE_MULTIPART_THRESHOLD_MB", 8
-            ),
+            multipart_threshold_mb=_env_int("CUTAGENT_OBJECTSTORE_MULTIPART_THRESHOLD_MB", 8),
             multipart_chunk_mb=_env_int("CUTAGENT_OBJECTSTORE_MULTIPART_CHUNK_MB", 8),
             max_concurrency=_env_int("CUTAGENT_OBJECTSTORE_MAX_CONCURRENCY", 4),
             connect_timeout=_env_int("CUTAGENT_OBJECTSTORE_CONNECT_TIMEOUT", 10),
@@ -640,9 +646,7 @@ def build_object_store_settings() -> ObjectStoreSettings:
         ),
         ephemeral=EphemeralObjectStoreSettings(
             backend=_env_str("CUTAGENT_EPHEMERAL_OBJECTSTORE_BACKEND", "local").lower(),
-            bucket=_env_str(
-                "CUTAGENT_EPHEMERAL_OBJECTSTORE_BUCKET", "cutagent-ephemeral"
-            ),
+            bucket=_env_str("CUTAGENT_EPHEMERAL_OBJECTSTORE_BUCKET", "cutagent-ephemeral"),
             local_path=_env_str(
                 "CUTAGENT_OBJECTSTORE_EPHEMERAL_PATH",
                 _default_ephemeral_local_path(),
@@ -653,9 +657,7 @@ def build_object_store_settings() -> ObjectStoreSettings:
             access_key=_env_str("CUTAGENT_EPHEMERAL_OBJECTSTORE_ACCESS_KEY", ""),
             secret_key=_env_str("CUTAGENT_EPHEMERAL_OBJECTSTORE_SECRET_KEY", ""),
             region_name=_env_str("CUTAGENT_EPHEMERAL_OBJECTSTORE_REGION", "us-east-1"),
-            addressing_style=_env_str(
-                "CUTAGENT_EPHEMERAL_OBJECTSTORE_ADDRESSING_STYLE", "path"
-            ),
+            addressing_style=_env_str("CUTAGENT_EPHEMERAL_OBJECTSTORE_ADDRESSING_STYLE", "path"),
         ),
     )
 
@@ -665,9 +667,7 @@ def build_workflow_settings() -> WorkflowSettings:
         runtime=_env_str("CUTAGENT_WORKFLOW_RUNTIME", "local").lower(),
         temporal_address=_env_str("CUTAGENT_TEMPORAL_ADDRESS", "127.0.0.1:7233"),
         temporal_namespace=_env_str("CUTAGENT_TEMPORAL_NAMESPACE", "default"),
-        temporal_task_queue=_env_str(
-            "CUTAGENT_TEMPORAL_TASK_QUEUE", "cutagent-production"
-        ),
+        temporal_task_queue=_env_str("CUTAGENT_TEMPORAL_TASK_QUEUE", "cutagent-production"),
         case_max_inflight_runs=_env_min_int("CUTAGENT_CASE_MAX_INFLIGHT_RUNS", 3),
         worker_max_activities=_env_min_int("CUTAGENT_WORKER_MAX_ACTIVITIES", 8),
     )
@@ -696,9 +696,7 @@ def build_providers_settings() -> ProvidersSettings:
         max_inflight=_env_positive_int("CUTAGENT_PROVIDER_MAX_INFLIGHT", 4),
         max_qps=_env_positive_int("CUTAGENT_PROVIDER_MAX_QPS", 4),
         circuit_breaker_enabled=os.getenv("CUTAGENT_PROVIDER_CIRCUIT_BREAKER") == "1",
-        circuit_error_rate_threshold=_env_unit_float(
-            "CUTAGENT_PROVIDER_CIRCUIT_ERROR_RATE", 0.5
-        ),
+        circuit_error_rate_threshold=_env_unit_float("CUTAGENT_PROVIDER_CIRCUIT_ERROR_RATE", 0.5),
         circuit_window_hours=_env_min_int("CUTAGENT_PROVIDER_CIRCUIT_WINDOW", 24),
         allowed_api_hosts=_env_str("CUTAGENT_ALLOWED_API_HOSTS", ""),
         enforce_host_allowlist=os.getenv("CUTAGENT_ENFORCE_PROVIDER_HOST_ALLOWLIST") == "1",
@@ -729,9 +727,7 @@ def build_settings() -> Settings:
         deployment=DeploymentSettings(
             environment=_env_str("CUTAGENT_ENV", "local").strip().lower(),
             replica_count=_env_int("CUTAGENT_REPLICA_COUNT", 1),
-            publishing_local_proxy=_env_str("CUTAGENT_PUBLISHING_LOCAL_PROXY", "")
-            .strip()
-            .lower()
+            publishing_local_proxy=_env_str("CUTAGENT_PUBLISHING_LOCAL_PROXY", "").strip().lower()
             in {"1", "true", "yes", "on"},
         ),
         storage=StorageSettings(
@@ -745,26 +741,19 @@ def build_settings() -> Settings:
         object_store=build_object_store_settings(),
         workflow=build_workflow_settings(),
         auth=AuthSettings(
-            registration_open=_env_str("CUTAGENT_REGISTRATION_OPEN", "true").lower()
-            == "true",
+            registration_open=_env_str("CUTAGENT_REGISTRATION_OPEN", "true").lower() == "true",
             registration_code_salt=_env_str(
                 "CUTAGENT_REGISTRATION_CODE_SALT", "local-dev-registration-code-salt"
             ),
-            seed_local_auth=_env_str("CUTAGENT_SEED_LOCAL_AUTH", "true")
-            .strip()
-            .lower()
+            seed_local_auth=_env_str("CUTAGENT_SEED_LOCAL_AUTH", "true").strip().lower()
             in {"1", "true", "yes", "on"},
             max_login_attempts=_env_int("CUTAGENT_AUTH_MAX_LOGIN_ATTEMPTS", 8),
             login_window_minutes=_env_int("CUTAGENT_AUTH_LOGIN_WINDOW_MINUTES", 15),
-            max_registration_attempts=_env_int(
-                "CUTAGENT_AUTH_MAX_REGISTRATION_ATTEMPTS", 5
-            ),
-            registration_window_minutes=_env_int(
-                "CUTAGENT_AUTH_REGISTRATION_WINDOW_MINUTES", 60
-            ),
-            trust_forwarded_for=_env_str(
-                "CUTAGENT_AUTH_TRUST_FORWARDED_FOR", "false"
-            ).strip().lower()
+            max_registration_attempts=_env_int("CUTAGENT_AUTH_MAX_REGISTRATION_ATTEMPTS", 5),
+            registration_window_minutes=_env_int("CUTAGENT_AUTH_REGISTRATION_WINDOW_MINUTES", 60),
+            trust_forwarded_for=_env_str("CUTAGENT_AUTH_TRUST_FORWARDED_FOR", "false")
+            .strip()
+            .lower()
             in {"1", "true", "yes", "on"},
             cookie_secure=_env_bool_optional("CUTAGENT_AUTH_COOKIE_SECURE"),
         ),
@@ -784,32 +773,28 @@ def build_settings() -> Settings:
             active_px=_env_float("CUTAGENT_MOTION_GUARD_ACTIVE_PX", 1.5),
             hard_px=_env_float("CUTAGENT_MOTION_GUARD_HARD_PX", 3.0),
             p95_hard_px=_env_float("CUTAGENT_MOTION_GUARD_P95_HARD_PX", 7.0),
-            tail_y_range_hard_px=_env_float(
-                "CUTAGENT_MOTION_GUARD_TAIL_Y_RANGE_HARD_PX", 70.0
-            ),
-            tail_net_y_hard_px=_env_float(
-                "CUTAGENT_MOTION_GUARD_TAIL_NET_Y_HARD_PX", 65.0
-            ),
+            tail_y_range_hard_px=_env_float("CUTAGENT_MOTION_GUARD_TAIL_Y_RANGE_HARD_PX", 70.0),
+            tail_net_y_hard_px=_env_float("CUTAGENT_MOTION_GUARD_TAIL_NET_Y_HARD_PX", 65.0),
             smooth_move_straightness=_env_float(
                 "CUTAGENT_MOTION_GUARD_SMOOTH_MOVE_STRAIGHTNESS", 0.88
             ),
-            smooth_move_flip_ratio=_env_float(
-                "CUTAGENT_MOTION_GUARD_SMOOTH_MOVE_FLIP_RATIO", 0.16
-            ),
+            smooth_move_flip_ratio=_env_float("CUTAGENT_MOTION_GUARD_SMOOTH_MOVE_FLIP_RATIO", 0.16),
             sweep_axis_ratio=_env_float("CUTAGENT_MOTION_GUARD_SWEEP_AXIS_RATIO", 2.3),
-            jitter_flip_ratio=_env_float(
-                "CUTAGENT_MOTION_GUARD_JITTER_FLIP_RATIO", 0.22
-            ),
-            jitter_jerk_ratio=_env_float(
-                "CUTAGENT_MOTION_GUARD_JITTER_JERK_RATIO", 0.65
-            ),
-            refine_min_duration=_env_float(
-                "CUTAGENT_MOTION_GUARD_REFINE_MIN_DURATION", 0.8
-            ),
+            jitter_flip_ratio=_env_float("CUTAGENT_MOTION_GUARD_JITTER_FLIP_RATIO", 0.22),
+            jitter_jerk_ratio=_env_float("CUTAGENT_MOTION_GUARD_JITTER_JERK_RATIO", 0.65),
+            refine_min_duration=_env_float("CUTAGENT_MOTION_GUARD_REFINE_MIN_DURATION", 0.8),
             refine_round_sec=_env_float("CUTAGENT_MOTION_GUARD_REFINE_ROUND_SEC", 0.1),
         ),
         upload=UploadSettings(
             presign_ttl_seconds=_env_int("CUTAGENT_UPLOAD_PRESIGN_TTL_SECONDS", 900),
+            max_size_bytes=_env_int("CUTAGENT_UPLOAD_MAX_SIZE_BYTES", 200 * 1024 * 1024),
+            multipart_threshold_bytes=_env_int(
+                "CUTAGENT_UPLOAD_MULTIPART_THRESHOLD_BYTES", 16 * 1024 * 1024
+            ),
+            part_size_bytes=_env_int("CUTAGENT_UPLOAD_PART_SIZE_BYTES", 8 * 1024 * 1024),
+            reconcile_interval_seconds=_env_int("CUTAGENT_UPLOAD_RECONCILE_INTERVAL_SECONDS", 5),
+            reconcile_lease_seconds=_env_int("CUTAGENT_UPLOAD_RECONCILE_LEASE_SECONDS", 300),
+            reconcile_max_retries=_env_int("CUTAGENT_UPLOAD_RECONCILE_MAX_RETRIES", 8),
             cors_allowed_origins=tuple(
                 o.strip()
                 for o in _env_str(
@@ -821,25 +806,17 @@ def build_settings() -> Settings:
             normalize_video=os.getenv("CUTAGENT_UPLOAD_NORMALIZE_VIDEO") == "1",
         ),
         api=ApiSettings(
-            disable_background_dispatcher=os.getenv(
-                "CUTAGENT_DISABLE_BACKGROUND_DISPATCHER"
-            )
+            disable_background_dispatcher=os.getenv("CUTAGENT_DISABLE_BACKGROUND_DISPATCHER")
             == "1",
-            idempotency_max_body_bytes=_env_int(
-                "CUTAGENT_IDEMPOTENCY_MAX_BODY_BYTES", 1024 * 1024
-            ),
+            idempotency_max_body_bytes=_env_int("CUTAGENT_IDEMPOTENCY_MAX_BODY_BYTES", 1024 * 1024),
             idempotency_max_response_bytes=_env_int(
                 "CUTAGENT_IDEMPOTENCY_MAX_RESPONSE_BYTES", 1024 * 1024
             ),
         ),
         balance=BalanceSettings(
             poller_enabled=os.getenv("CUTAGENT_BALANCE_POLLER_ENABLED") == "1",
-            poll_interval_seconds=_env_int(
-                "CUTAGENT_BALANCE_POLL_INTERVAL_SECONDS", 900
-            ),
-            request_timeout_seconds=_env_int(
-                "CUTAGENT_BALANCE_REQUEST_TIMEOUT_SECONDS", 10
-            ),
+            poll_interval_seconds=_env_int("CUTAGENT_BALANCE_POLL_INTERVAL_SECONDS", 900),
+            request_timeout_seconds=_env_int("CUTAGENT_BALANCE_REQUEST_TIMEOUT_SECONDS", 10),
         ),
         learning=LearningSettings(
             retro_window_days=_env_int("CUTAGENT_LEARNING_RETRO_WINDOW_DAYS", 3),
@@ -850,14 +827,10 @@ def build_settings() -> Settings:
             reward_video_discarded_script=_env_float(
                 "CUTAGENT_LEARNING_REWARD_VIDEO_DISCARDED_SCRIPT", -0.3
             ),
-            reward_stale_unpublished=_env_float(
-                "CUTAGENT_LEARNING_REWARD_STALE_UNPUBLISHED", -0.1
-            ),
+            reward_stale_unpublished=_env_float("CUTAGENT_LEARNING_REWARD_STALE_UNPUBLISHED", -0.1),
             bump_min_samples=_env_int("CUTAGENT_LEARNING_BUMP_MIN_SAMPLES", 5),
             bump_miss_streak=_env_int("CUTAGENT_LEARNING_BUMP_MISS_STREAK", 3),
-            bump_consistency_floor=_env_float(
-                "CUTAGENT_LEARNING_BUMP_CONSISTENCY_FLOOR", 0.6
-            ),
+            bump_consistency_floor=_env_float("CUTAGENT_LEARNING_BUMP_CONSISTENCY_FLOOR", 0.6),
         ),
         providers=build_providers_settings(),
         publishing=build_publishing_settings(),

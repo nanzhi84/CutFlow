@@ -109,9 +109,16 @@ RUBRIC_BUMP_TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 UPLOAD_SESSION_TRANSITIONS: dict[str, frozenset[str]] = {
-    "prepared": frozenset({"uploading", "failed", "cancelled", "expired"}),
-    "uploading": frozenset({"completed", "failed", "cancelled", "expired"}),
-    "completed": frozenset(),
+    "prepared": frozenset({"uploading", "completing", "failed", "cancelled", "expired"}),
+    "uploading": frozenset({"completing", "failed", "cancelled", "expired"}),
+    "completing": frozenset({"object_completed", "rejected", "failed", "cancelled", "expired"}),
+    "object_completed": frozenset({"verified", "rejected", "failed", "cancelled", "expired"}),
+    "verified": frozenset({"ready", "rejected", "failed", "cancelled", "expired"}),
+    "ready": frozenset(),
+    "rejected": frozenset(),
+    # Legacy rolling-deploy state. Migration 0058 moves these rows to ready or
+    # verified; the transition remains legal for an old API instance finishing.
+    "completed": frozenset({"verified", "ready"}),
     "failed": frozenset(),
     "cancelled": frozenset(),
     "expired": frozenset(),
@@ -131,7 +138,9 @@ PUBLISH_ITEM_TRANSITIONS: dict[str, frozenset[str]] = {
     "normalizing": frozenset({"asr_running", "generation_failed", "excluded"}),
     "asr_running": frozenset({"copy_running", "generation_failed", "excluded"}),
     "copy_running": frozenset({"cover_running", "generation_failed", "excluded"}),
-    "cover_running": frozenset({"review_ready", "manual_review_ready", "generation_failed", "excluded"}),
+    "cover_running": frozenset(
+        {"review_ready", "manual_review_ready", "generation_failed", "excluded"}
+    ),
     "review_ready": frozenset({"publishing", "excluded"}),
     "manual_review_ready": frozenset({"publishing", "excluded"}),
     "publishing": frozenset({"published", "publish_failed"}),

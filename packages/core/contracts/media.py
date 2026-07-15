@@ -15,13 +15,19 @@ from pydantic import (
     model_validator,
 )
 
-from .base import ArtifactRef, ContractModel, EntityMeta, ErrorCode, JobStatus, utcnow
+from .base import ArtifactRef, ContractModel, EntityMeta, ErrorCode, JobStatus, MediaInfo, utcnow
 from .publishing import PublishPackage
 
 
 class UploadSessionStatus(str, Enum):
     prepared = "prepared"
     uploading = "uploading"
+    completing = "completing"
+    object_completed = "object_completed"
+    verified = "verified"
+    ready = "ready"
+    rejected = "rejected"
+    # Kept only so pre-#210 rows/payloads remain readable during rolling deploys.
     completed = "completed"
     failed = "failed"
     cancelled = "cancelled"
@@ -29,6 +35,11 @@ class UploadSessionStatus(str, Enum):
 
 
 UploadStatus = UploadSessionStatus
+
+
+class UploadStrategy(str, Enum):
+    single = "single"
+    multipart = "multipart"
 
 
 class UploadKind(str, Enum):
@@ -52,32 +63,48 @@ class UploadKind(str, Enum):
 
 
 class PrepareUploadRequest(ContractModel):
+    client_upload_id: str = Field(min_length=8, max_length=128)
     kind: UploadKind
     case_id: str | None = None
     filename: str
     content_type: str
-    size_bytes: int = Field(gt=0, le=100 * 1024 * 1024)
+    size_bytes: int = Field(gt=0, le=200 * 1024 * 1024)
     sha256: str | None = None
     stabilize: bool = False
 
 
 class UploadSession(EntityMeta):
+    client_upload_id: str = Field(default_factory=lambda: f"client_{uuid4().hex}")
+    owner_user_id: str | None = None
     kind: UploadKind
     case_id: str | None = None
     filename: str
     content_type: str
     size_bytes: int
+    final_size_bytes: int | None = None
     sha256: str | None = None
+    client_expected_sha256: str | None = None
+    canonical_sha256: str | None = None
     status: UploadStatus = UploadStatus.prepared
+    upload_strategy: UploadStrategy = UploadStrategy.single
+    part_size_bytes: int | None = None
+    part_count: int = 1
     # Deprecated/legacy: a mirror of object_uri (the SQLAlchemy row mapper sets it
     # so). The presigned PUT URL now lives on PrepareUploadResponse.put_url; do not
     # use this field as an access/upload URL.
     upload_url: str | None = None
     local_temp_path: str | None = None
     object_uri: str | None = None
+    staging_uri: str | None = None
+    final_uri: str | None = None
     stabilize: bool = False
     stabilized: bool = False
     normalized: bool = False
+    completion_metadata: dict[str, str] = Field(default_factory=dict)
+    verified_media_info: MediaInfo | None = None
+    last_error: str | None = None
+    retry_count: int = 0
+    next_retry_at: datetime | None = None
     expires_at: datetime = Field(default_factory=lambda: utcnow() + timedelta(hours=1))
 
 
@@ -96,6 +123,59 @@ class CompleteUploadResponse(ContractModel):
     request_id: str
 
 
+class UploadPart(ContractModel):
+    part_number: int = Field(ge=1, le=10_000)
+    etag: str
+    size_bytes: int = Field(ge=0)
+
+
+class SignUploadPartsRequest(ContractModel):
+    part_numbers: list[int] = Field(min_length=1, max_length=100)
+
+    @field_validator("part_numbers")
+    @classmethod
+    def validate_part_numbers(cls, value: list[int]) -> list[int]:
+        if len(value) != len(set(value)):
+            raise ValueError("part_numbers must be unique")
+        if any(part < 1 or part > 10_000 for part in value):
+            raise ValueError("part_numbers must be between 1 and 10000")
+        return value
+
+
+class SignedUploadPart(ContractModel):
+    part_number: int
+    put_url: str
+    expires_at: datetime
+
+
+class SignUploadPartsResponse(ContractModel):
+    upload_session: UploadSession
+    parts: list[SignedUploadPart]
+
+
+class ObjectCompleteUploadRequest(ContractModel):
+    size_bytes: int = Field(gt=0, le=200 * 1024 * 1024)
+    sha256: str
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+
+class ObjectCompleteUploadResponse(ContractModel):
+    upload_session: UploadSession
+    artifact: ArtifactRef | None = None
+    media_asset: MediaAssetRecord | None = None
+    publish_package: PublishPackage | None = None
+    request_id: str
+
+
+class ResumeUploadResponse(ContractModel):
+    upload_session: UploadSession
+    completed_parts: list[UploadPart] = Field(default_factory=list)
+    artifact: ArtifactRef | None = None
+    media_asset: MediaAssetRecord | None = None
+    publish_package: PublishPackage | None = None
+    request_id: str
+
+
 class PrepareUploadResponse(ContractModel):
     """prepare's response: the presigned PUT target the browser uploads to.
 
@@ -104,9 +184,12 @@ class PrepareUploadResponse(ContractModel):
     discard the signed URL."""
 
     upload_session: UploadSession
-    put_url: str
+    upload_strategy: UploadStrategy
+    part_size_bytes: int | None = None
+    part_count: int
+    put_url: str | None = None
     put_content_type: str
-    expires_at: datetime
+    expires_at: datetime | None = None
 
 
 _VIDEO_CONTENT_TYPES = frozenset({"video/mp4", "video/quicktime", "video/webm"})
@@ -135,6 +218,13 @@ ALLOWED_UPLOAD_CONTENT_TYPES: dict[UploadKind, frozenset[str]] = {
     UploadKind.voice_reference: _AUDIO_CONTENT_TYPES,
     UploadKind.bgm: _AUDIO_CONTENT_TYPES,
     UploadKind.font: _FONT_CONTENT_TYPES,
+}
+
+# Product-specific limits that remain stricter than the global 200 MiB ceiling.
+# They mirror the existing browser pickers and are enforced server-side as well.
+UPLOAD_KIND_MAX_SIZE_BYTES: dict[UploadKind, int] = {
+    UploadKind.font: 40 * 1024 * 1024,
+    UploadKind.voice_reference: 80 * 1024 * 1024,
 }
 
 
@@ -402,7 +492,9 @@ class ClipEmbeddingJobStatusResponse(ContractModel):
 
 
 class ClipEmbeddingIndexJobResponse(ClipEmbeddingJobStatusResponse):
-    schema_version: Literal["clip_embedding_index_job_response.v1"] = "clip_embedding_index_job_response.v1"
+    schema_version: Literal["clip_embedding_index_job_response.v1"] = (
+        "clip_embedding_index_job_response.v1"
+    )
 
 
 class TimelineSegment(ContractModel):

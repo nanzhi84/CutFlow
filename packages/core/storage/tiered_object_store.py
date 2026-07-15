@@ -5,6 +5,7 @@ from pathlib import Path
 
 from packages.core.contracts import SignedUrlResponse
 from packages.core.storage.object_store import (
+    MultipartPart,
     ObjectHead,
     ObjectRef,
     ObjectStore,
@@ -137,6 +138,39 @@ class TieredObjectStore(ObjectStore):
             uri, content_type=content_type, expires_in=expires_in
         )
 
+    def create_multipart_upload(self, uri: str, *, content_type: str) -> str:
+        return self._store_for_ref(parse_object_uri(uri)).create_multipart_upload(
+            uri, content_type=content_type
+        )
+
+    def sign_upload_part(
+        self,
+        uri: str,
+        *,
+        upload_id: str,
+        part_number: int,
+        expires_in: timedelta,
+    ) -> SignedUrlResponse:
+        return self._store_for_ref(parse_object_uri(uri)).sign_upload_part(
+            uri,
+            upload_id=upload_id,
+            part_number=part_number,
+            expires_in=expires_in,
+        )
+
+    def list_parts(self, uri: str, *, upload_id: str) -> list[MultipartPart]:
+        return self._store_for_ref(parse_object_uri(uri)).list_parts(uri, upload_id=upload_id)
+
+    def complete_multipart_upload(
+        self, uri: str, *, upload_id: str, parts: list[MultipartPart]
+    ) -> None:
+        self._store_for_ref(parse_object_uri(uri)).complete_multipart_upload(
+            uri, upload_id=upload_id, parts=parts
+        )
+
+    def abort_multipart_upload(self, uri: str, *, upload_id: str) -> None:
+        self._store_for_ref(parse_object_uri(uri)).abort_multipart_upload(uri, upload_id=upload_id)
+
     def head(self, uri: str) -> ObjectHead:
         return self._store_for_ref(parse_object_uri(uri)).head(uri)
 
@@ -160,9 +194,7 @@ class TieredObjectStore(ObjectStore):
     def _store_for_ref(self, ref: ObjectRef) -> ObjectStore:
         if ref.bucket == getattr(self.ephemeral, "bucket", None):
             return self.ephemeral
-        if self.materials is not None and ref.bucket == getattr(
-            self.materials, "bucket", None
-        ):
+        if self.materials is not None and ref.bucket == getattr(self.materials, "bucket", None):
             return self.materials
         # Default to the durable store; its own read/write guard accepts its write
         # bucket plus any configured read-only buckets, and raises otherwise.

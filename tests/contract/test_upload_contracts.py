@@ -3,35 +3,49 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from packages.core.contracts import PrepareUploadRequest, PrepareUploadResponse
+from packages.core.contracts import (
+    ObjectCompleteUploadRequest,
+    ObjectCompleteUploadResponse,
+    PrepareUploadRequest,
+    PrepareUploadResponse,
+    ResumeUploadResponse,
+    SignUploadPartsRequest,
+    SignUploadPartsResponse,
+)
 from packages.core.contracts.media import ALLOWED_UPLOAD_CONTENT_TYPES, UploadKind
 
-# 100 MiB is a deliberate product hard cap, NOT a bug to "fix" by lifting it.
-# #87 C6 is wontfix-by-design: uploads are a single browser-direct presigned PUT
-# (no chunked/resumable transfer), so a single PUT must reliably complete within
-# this bound. Reviving multipart/resume would force a contract change (this `le`),
-# an object_store multipart protocol, complete()'s sha256 re-hash off the API
-# process, an alembic part/uploadId migration, and a frontend upload queue —
-# tracked as too-expensive in #87. This test pins the cap so it isn't quietly raised.
-_100_MIB = 100 * 1024 * 1024
+# Issue #210 raises the hard product cap to exactly 200 MiB and routes files at
+# or above 16 MiB through the resumable multipart protocol.
+_200_MIB = 200 * 1024 * 1024
 
 
 def test_size_cap_enforced():
-    """Pin the #87 C6 wontfix product cap: exactly 100 MiB is accepted, one byte
-    over is rejected. Do not relax this without re-opening the chunked-upload design."""
+    """Exactly 200 MiB is accepted and one byte over is rejected."""
     PrepareUploadRequest(
-        kind=UploadKind.publish_video, filename="v.mp4",
-        content_type="video/mp4", size_bytes=_100_MIB,
+        client_upload_id="client_contract_200mib",
+        kind=UploadKind.publish_video,
+        filename="v.mp4",
+        content_type="video/mp4",
+        size_bytes=_200_MIB,
     )
     with pytest.raises(ValidationError):
         PrepareUploadRequest(
-            kind=UploadKind.publish_video, filename="v.mp4",
-            content_type="video/mp4", size_bytes=_100_MIB + 1,
+            client_upload_id="client_contract_too_large",
+            kind=UploadKind.publish_video,
+            filename="v.mp4",
+            content_type="video/mp4",
+            size_bytes=_200_MIB + 1,
         )
 
 
-def test_multipart_field_removed():
-    assert "multipart" not in PrepareUploadRequest.model_fields
+def test_stable_client_upload_id_is_required():
+    with pytest.raises(ValidationError):
+        PrepareUploadRequest(
+            kind=UploadKind.video,
+            filename="v.mp4",
+            content_type="video/mp4",
+            size_bytes=1,
+        )
 
 
 def test_allowlist_covers_every_kind():
@@ -43,4 +57,31 @@ def test_allowlist_covers_every_kind():
 
 def test_prepare_response_shape():
     fields = set(PrepareUploadResponse.model_fields)
-    assert {"upload_session", "put_url", "put_content_type", "expires_at"} <= fields
+    assert {
+        "upload_session",
+        "upload_strategy",
+        "part_size_bytes",
+        "part_count",
+        "put_url",
+        "put_content_type",
+        "expires_at",
+    } <= fields
+
+
+def test_resumable_request_and_response_shapes():
+    assert {"part_numbers"} == set(SignUploadPartsRequest.model_fields)
+    assert {"upload_session", "parts"} <= set(SignUploadPartsResponse.model_fields)
+    assert {"size_bytes", "sha256", "metadata"} == set(ObjectCompleteUploadRequest.model_fields)
+    assert {
+        "upload_session",
+        "artifact",
+        "media_asset",
+        "publish_package",
+        "request_id",
+    } <= set(ObjectCompleteUploadResponse.model_fields)
+    assert {"completed_parts", "artifact", "request_id"} <= set(ResumeUploadResponse.model_fields)
+
+    with pytest.raises(ValidationError):
+        SignUploadPartsRequest(part_numbers=[1, 1])
+    with pytest.raises(ValidationError):
+        SignUploadPartsRequest(part_numbers=[0])
