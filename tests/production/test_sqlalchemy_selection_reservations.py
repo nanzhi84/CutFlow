@@ -75,7 +75,7 @@ class RecordingSyncSession:
     def commit(self) -> None:
         self.committed = True
 
-    def get(self, model, key):
+    def get(self, model, key, **_kwargs):
         return None
 
 

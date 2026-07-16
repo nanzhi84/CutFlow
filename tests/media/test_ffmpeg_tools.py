@@ -2,12 +2,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
+import sys
+import time
 from types import SimpleNamespace
 
 import pytest
 
 from packages.core.contracts import MediaInfo
+from packages.core.workflow import (
+    ExecutionCancelled,
+    cancellation_scope,
+    current_cancellation_token,
+)
+from packages.media.rendering import promote_staged_media
 from packages.media.video import ffmpeg as ffmpeg_mod
 from packages.media.video.ffmpeg import (
     FfmpegCommandError,
@@ -211,25 +220,322 @@ def test_session_media_fixture_factory_caches_generated_assets(media_fixture_fac
     assert audio.exists()
 
 
-def test_ffmpeg_runner_maps_timeout_and_exit_errors(monkeypatch):
-    def timeout_run(*_args, **kwargs):
-        raise subprocess.TimeoutExpired(cmd=kwargs.get("args") or ["ffmpeg"], timeout=2, stderr="slow")
-
-    monkeypatch.setattr(ffmpeg_mod.subprocess, "run", timeout_run)
+def test_ffmpeg_runner_maps_timeout_and_exit_errors():
     with pytest.raises(FfmpegCommandError) as timeout_exc:
-        ffmpeg_mod.FfmpegRunner(timeout_sec=3).run(["ffmpeg", "-version"], timeout_sec=2)
+        ffmpeg_mod.FfmpegRunner(timeout_sec=0.05, cancel_grace_sec=0.05).run(
+            [sys.executable, "-c", "import time; time.sleep(10)"]
+        )
     assert timeout_exc.value.error_code.value == "provider.timeout"
-    assert timeout_exc.value.stderr == "slow"
 
-    def failed_run(args, **_kwargs):
-        raise subprocess.CalledProcessError(7, args, stderr="bad codec")
-
-    monkeypatch.setattr(ffmpeg_mod.subprocess, "run", failed_run)
     with pytest.raises(FfmpegCommandError) as failed_exc:
-        ffmpeg_mod.FfmpegRunner().run(["ffmpeg", "-i", "in.mp4"])
+        ffmpeg_mod.FfmpegRunner().run(
+            [sys.executable, "-c", "import sys; sys.stderr.write('bad codec'); sys.exit(7)"]
+        )
     assert failed_exc.value.error_code.value == "render.failed"
-    assert failed_exc.value.command == ["ffmpeg", "-i", "in.mp4"]
+    assert failed_exc.value.returncode == 7
     assert failed_exc.value.stderr == "bad codec"
+
+
+class _DeadlineCancellationToken:
+    def __init__(self, *, delay: float, force: bool) -> None:
+        self.deadline = time.monotonic() + delay
+        self._force = force
+
+    @property
+    def cancelled(self) -> bool:
+        return time.monotonic() >= self.deadline
+
+    @property
+    def force(self) -> bool:
+        return self._force
+
+
+class _EscalatingCancellationToken:
+    def __init__(self, *, cancel_after: float, force_after: float) -> None:
+        now = time.monotonic()
+        self.cancel_deadline = now + cancel_after
+        self.force_deadline = now + force_after
+
+    @property
+    def cancelled(self) -> bool:
+        return time.monotonic() >= self.cancel_deadline
+
+    @property
+    def force(self) -> bool:
+        return time.monotonic() >= self.force_deadline
+
+
+class _FailingCancellationToken:
+    def __init__(self, pid_file) -> None:
+        self.pid_file = pid_file
+
+    @property
+    def cancelled(self) -> bool:
+        if self.pid_file.exists():
+            raise RuntimeError("cancellation backend failed")
+        return False
+
+    @property
+    def force(self) -> bool:
+        return False
+
+
+def test_default_cancellation_token_is_inactive():
+    token = current_cancellation_token()
+
+    assert token.cancelled is False
+    assert token.force is False
+
+
+def test_ffmpeg_process_helpers_handle_platform_fallbacks(monkeypatch):
+    class FakeProcess:
+        pid = 12345
+
+        def __init__(self) -> None:
+            self.returncode = None
+            self.signals: list[str] = []
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.signals.append("terminate")
+
+        def kill(self) -> None:
+            self.signals.append("kill")
+
+    runner = ffmpeg_mod.FfmpegRunner()
+    process = FakeProcess()
+    monkeypatch.setattr(ffmpeg_mod.os, "name", "nt")
+
+    assert runner._pgid(process) is None
+    assert runner._process_group_alive(process)
+    assert runner._signal_process_group(process, ffmpeg_mod.signal.SIGTERM)
+    assert runner._signal_process_group(process, ffmpeg_mod.signal.SIGKILL)
+    assert process.signals == ["terminate", "kill"]
+
+    process.returncode = 0
+    assert not runner._process_group_alive(process)
+    assert not runner._signal_process_group(process, ffmpeg_mod.signal.SIGTERM)
+
+    def missing_process(_pid, _sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(ffmpeg_mod.os, "name", "posix")
+    monkeypatch.setattr(ffmpeg_mod.os, "killpg", missing_process)
+    assert not runner._signal_process_group(process, ffmpeg_mod.signal.SIGTERM)
+
+
+def test_ffmpeg_runner_trims_long_binary_stderr():
+    stderr = b"discarded-prefix" + b"x" * ffmpeg_mod.MAX_CAPTURED_STDERR_CHARS
+
+    assert ffmpeg_mod._trim_stderr(stderr) == "x" * ffmpeg_mod.MAX_CAPTURED_STDERR_CHARS
+
+
+def test_ffmpeg_force_termination_records_kill_and_reap(monkeypatch):
+    process = SimpleNamespace(
+        pid=12345,
+        returncode=-9,
+        communicate=lambda: ("stdout", "stderr"),
+    )
+    runner = ffmpeg_mod.FfmpegRunner()
+    signals = []
+    force_kills = []
+    reaped = []
+
+    monkeypatch.setattr(
+        runner,
+        "_signal_process_group",
+        lambda _process, sig: signals.append(sig) or True,
+    )
+    monkeypatch.setattr(
+        ffmpeg_mod,
+        "record_workflow_cancel_force_kill",
+        lambda: force_kills.append(True),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_log_reaped",
+        lambda _process, *, started_at: reaped.append(started_at),
+    )
+
+    output = runner._terminate_process_group(
+        process,
+        grace_sec=0,
+        cancellation=True,
+        started_at=42.0,
+    )
+
+    assert output == ("stdout", "stderr")
+    assert signals == [ffmpeg_mod.signal.SIGTERM, ffmpeg_mod.signal.SIGKILL]
+    assert force_kills == [True]
+    assert reaped == [42.0]
+
+
+def _wait_for_process_exit(pid: int, *, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"process {pid} is still alive")
+
+
+def _process_tree_script(
+    pid_file,
+    *,
+    ignore_sigterm: bool,
+    child_ignores_sigterm: bool | None = None,
+    child_closes_stdio: bool = False,
+) -> str:
+    handler = "signal.signal(signal.SIGTERM, signal.SIG_IGN);" if ignore_sigterm else ""
+    child_ignores_sigterm = (
+        ignore_sigterm if child_ignores_sigterm is None else child_ignores_sigterm
+    )
+    child_handler = (
+        "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"
+        if child_ignores_sigterm
+        else "import time; time.sleep(30)"
+    )
+    child_stdio = (
+        ",stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL"
+        if child_closes_stdio
+        else ""
+    )
+    return (
+        "import os,signal,subprocess,sys,time;"
+        f"{handler}"
+        f"child=subprocess.Popen([sys.executable,'-c',{child_handler!r}]{child_stdio});"
+        f"open({str(pid_file)!r},'w').write(f'{{os.getpid()}} {{child.pid}}');"
+        "time.sleep(30)"
+    )
+
+
+def _assert_process_tree_exited(pid_file) -> None:
+    parent_pid, child_pid = (int(value) for value in pid_file.read_text().split())
+    _wait_for_process_exit(parent_pid)
+    _wait_for_process_exit(child_pid)
+
+
+def test_ffmpeg_runner_graceful_cancel_terminates_process_group(tmp_path):
+    pid_file = tmp_path / "graceful-pids.txt"
+    token = _DeadlineCancellationToken(delay=0.2, force=False)
+
+    with cancellation_scope(token), pytest.raises(ExecutionCancelled):
+        ffmpeg_mod.FfmpegRunner(timeout_sec=10, cancel_grace_sec=1).run(
+            [sys.executable, "-c", _process_tree_script(pid_file, ignore_sigterm=False)]
+        )
+
+    _assert_process_tree_exited(pid_file)
+
+
+def test_ffmpeg_runner_kills_child_after_parent_exits_on_sigterm(tmp_path):
+    pid_file = tmp_path / "parent-exits-pids.txt"
+    token = _DeadlineCancellationToken(delay=0.2, force=False)
+
+    started = time.monotonic()
+    with cancellation_scope(token), pytest.raises(ExecutionCancelled):
+        ffmpeg_mod.FfmpegRunner(timeout_sec=10, cancel_grace_sec=0.1).run(
+            [
+                sys.executable,
+                "-c",
+                _process_tree_script(
+                    pid_file,
+                    ignore_sigterm=False,
+                    child_ignores_sigterm=True,
+                ),
+            ]
+        )
+
+    assert time.monotonic() - started < 1.0
+    _assert_process_tree_exited(pid_file)
+
+
+def test_ffmpeg_runner_checks_process_group_after_parent_pipes_close(tmp_path):
+    pid_file = tmp_path / "closed-pipes-pids.txt"
+    token = _DeadlineCancellationToken(delay=0.2, force=False)
+
+    with cancellation_scope(token), pytest.raises(ExecutionCancelled):
+        ffmpeg_mod.FfmpegRunner(timeout_sec=10, cancel_grace_sec=0.1).run(
+            [
+                sys.executable,
+                "-c",
+                _process_tree_script(
+                    pid_file,
+                    ignore_sigterm=False,
+                    child_ignores_sigterm=True,
+                    child_closes_stdio=True,
+                ),
+            ]
+        )
+
+    _assert_process_tree_exited(pid_file)
+
+
+def test_ffmpeg_runner_force_cancel_kills_and_reaps_process_group(tmp_path):
+    pid_file = tmp_path / "pids.txt"
+    token = _DeadlineCancellationToken(delay=0.2, force=True)
+
+    started = time.monotonic()
+    with cancellation_scope(token), pytest.raises(ExecutionCancelled):
+        ffmpeg_mod.FfmpegRunner(timeout_sec=10, cancel_grace_sec=5).run(
+            [sys.executable, "-c", _process_tree_script(pid_file, ignore_sigterm=True)]
+        )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0
+    _assert_process_tree_exited(pid_file)
+
+
+def test_ffmpeg_runner_force_escalation_interrupts_grace_period(tmp_path):
+    pid_file = tmp_path / "escalated-pids.txt"
+    token = _EscalatingCancellationToken(cancel_after=0.1, force_after=0.3)
+
+    started = time.monotonic()
+    with cancellation_scope(token), pytest.raises(ExecutionCancelled):
+        ffmpeg_mod.FfmpegRunner(timeout_sec=10, cancel_grace_sec=5).run(
+            [sys.executable, "-c", _process_tree_script(pid_file, ignore_sigterm=True)]
+        )
+
+    assert time.monotonic() - started < 1.0
+    _assert_process_tree_exited(pid_file)
+
+
+def test_ffmpeg_runner_timeout_kills_and_reaps_process_group(tmp_path):
+    pid_file = tmp_path / "timeout-pids.txt"
+
+    with pytest.raises(FfmpegCommandError) as excinfo:
+        ffmpeg_mod.FfmpegRunner(timeout_sec=0.2, cancel_grace_sec=0.05).run(
+            [sys.executable, "-c", _process_tree_script(pid_file, ignore_sigterm=True)]
+        )
+
+    assert excinfo.value.error_code.value == "provider.timeout"
+    _assert_process_tree_exited(pid_file)
+
+
+def test_ffmpeg_runner_reaps_process_group_when_cancellation_check_fails(tmp_path):
+    pid_file = tmp_path / "checker-failure-pids.txt"
+    token = _FailingCancellationToken(pid_file)
+
+    with cancellation_scope(token), pytest.raises(RuntimeError, match="backend failed"):
+        ffmpeg_mod.FfmpegRunner(timeout_sec=10).run(
+            [sys.executable, "-c", _process_tree_script(pid_file, ignore_sigterm=True)]
+        )
+
+    _assert_process_tree_exited(pid_file)
+
+
+def test_promote_staged_media_fsyncs_and_removes_part(tmp_path):
+    staged = tmp_path / "rendered.part.mp4"
+    ready = tmp_path / "rendered.mp4"
+    staged.write_bytes(b"validated-media")
+
+    promote_staged_media(staged, ready)
+
+    assert ready.read_bytes() == b"validated-media"
+    assert not staged.exists()
 
 
 def test_probe_media_parses_subtitle_image_and_bad_payloads(tmp_path, monkeypatch):
@@ -560,10 +866,9 @@ def test_cropdetect_and_embedded_portrait_detection(monkeypatch, tmp_path):
     source.write_bytes(b"video")
 
     monkeypatch.setattr(
-        ffmpeg_mod.subprocess,
+        ffmpeg_mod.FfmpegRunner,
         "run",
         lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0,
             stderr="crop=600:1080:660:0\ncrop=608:1078:656:2",
         ),
     )

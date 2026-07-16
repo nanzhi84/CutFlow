@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Literal, Protocol
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Iterator, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -46,6 +48,54 @@ class NodeExecutionError(Exception):
             retryable=retryable,
             details=details or {},
         )
+
+
+class ExecutionCancelled(BaseException):
+    """Cooperative cancellation raised after owned child processes are reaped.
+
+    Like ``asyncio.CancelledError``, this deliberately bypasses broad
+    ``except Exception`` fail-open and retry handlers.
+    """
+
+
+class CancellationToken(Protocol):
+    @property
+    def cancelled(self) -> bool:
+        ...
+
+    @property
+    def force(self) -> bool:
+        ...
+
+
+class _NeverCancelled:
+    @property
+    def cancelled(self) -> bool:
+        return False
+
+    @property
+    def force(self) -> bool:
+        return False
+
+
+_NEVER_CANCELLED = _NeverCancelled()
+_CANCELLATION_TOKEN: ContextVar[CancellationToken] = ContextVar(
+    "cutagent_cancellation_token",
+    default=_NEVER_CANCELLED,
+)
+
+
+def current_cancellation_token() -> CancellationToken:
+    return _CANCELLATION_TOKEN.get()
+
+
+@contextmanager
+def cancellation_scope(token: CancellationToken) -> Iterator[None]:
+    context_token = _CANCELLATION_TOKEN.set(token)
+    try:
+        yield
+    finally:
+        _CANCELLATION_TOKEN.reset(context_token)
 
 
 class NodeOutput(BaseModel):

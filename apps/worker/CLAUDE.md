@@ -29,3 +29,4 @@ Temporal worker 进程：连接 Temporal，注册数字人成片（digital-human
 - 设置经 `load_workflow_runtime_settings()`（`packages/core/workflow/runtime.py` 的 `WorkflowRuntimeSettings`）从 `WorkflowSettings`（`packages/core/config/settings.py`，`settings.workflow.*`）读取；env：`CUTAGENT_WORKFLOW_RUNTIME` + `CUTAGENT_TEMPORAL_ADDRESS`/`_NAMESPACE`/`_TASK_QUEUE`（默认 `127.0.0.1:7233` / `default` / `cutagent-production`）。
 - activity 执行用 `ThreadPoolExecutor(max_workers=8)`，activity 实现需线程安全。
 - task queue 两端必须一致：API 派发与 worker 消费的 `CUTAGENT_TEMPORAL_TASK_QUEUE` 不匹配则 run 永远 pending。
+- API 先在 SQL 行锁内把运行态写成 `cancelling`，再 signal Temporal；worker 的 activity 同时监听 Temporal cancel 与 SQL 取消标记，清理完子进程后才确认取消。恢复循环会重新 signal 仍处于 `cancelling` 的 run，不能用 workflow terminate 绕过清理。

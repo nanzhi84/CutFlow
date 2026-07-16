@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import re
 import shutil
+import signal
 import statistics
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -14,10 +18,15 @@ from typing import Sequence
 
 from packages.core.config import build_settings
 from packages.core.contracts import ErrorCode, MediaInfo
+from packages.core.observability import record_workflow_cancel_force_kill
+from packages.core.workflow import ExecutionCancelled, current_cancellation_token
 
 
 DEFAULT_TIMEOUT_SEC = 30
 VIDEO_PROCESS_TIMEOUT_SEC = 300
+PROCESS_POLL_INTERVAL_SEC = 0.1
+PROCESS_CANCEL_GRACE_SEC = 5.0
+MAX_CAPTURED_STDERR_CHARS = 16_000
 # Headroom factor applied to the size budget when deriving a target bitrate, so a
 # single-pass encode lands comfortably under the cap (leaving margin for the audio
 # track + container overhead). Mirrors the origin video_processor 0.95 margin.
@@ -60,6 +69,7 @@ UPLOAD_EMBEDDED_PORTRAIT_MIN_HEIGHT_RATIO = 0.88
 UPLOAD_EMBEDDED_PORTRAIT_MAX_ASPECT_RATIO = 0.75
 UPLOAD_EMBEDDED_PORTRAIT_MIN_MARGIN_RATIO = 0.1
 UPLOAD_EMBEDDED_PORTRAIT_MAX_VARIANCE_PX = 48
+logger = logging.getLogger(__name__)
 
 
 class FfmpegCommandError(RuntimeError):
@@ -70,11 +80,13 @@ class FfmpegCommandError(RuntimeError):
         error_code: ErrorCode = ErrorCode.render_failed,
         command: Sequence[str] | None = None,
         stderr: str = "",
+        returncode: int | None = None,
     ) -> None:
         super().__init__(message)
         self.error_code = error_code
         self.command = list(command or [])
         self.stderr = stderr
+        self.returncode = returncode
 
 
 @dataclass(frozen=True)
@@ -147,33 +159,196 @@ def _resolve_bin(configured: str | None, executable: str) -> str:
 
 
 class FfmpegRunner:
-    def __init__(self, *, timeout_sec: int = DEFAULT_TIMEOUT_SEC) -> None:
+    def __init__(
+        self,
+        *,
+        timeout_sec: float = DEFAULT_TIMEOUT_SEC,
+        cancel_grace_sec: float = PROCESS_CANCEL_GRACE_SEC,
+    ) -> None:
         self.timeout_sec = timeout_sec
+        self.cancel_grace_sec = max(0.0, float(cancel_grace_sec))
 
-    def run(self, args: Sequence[str], *, timeout_sec: int | None = None) -> subprocess.CompletedProcess[str]:
+    def run(
+        self,
+        args: Sequence[str],
+        *,
+        timeout_sec: float | None = None,
+        text: bool = True,
+    ) -> subprocess.CompletedProcess:
+        command = list(args)
+        timeout = self.timeout_sec if timeout_sec is None else float(timeout_sec)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=text,
+            start_new_session=os.name == "posix",
+        )
+        started_at = time.monotonic()
+        deadline = started_at + timeout
+        token = current_cancellation_token()
         try:
-            return subprocess.run(
-                list(args),
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout_sec or self.timeout_sec,
-            )
-        except subprocess.TimeoutExpired as exc:
+            while True:
+                if token.cancelled:
+                    force = token.force
+                    logger.info(
+                        "Media process cancellation requested",
+                        extra={
+                            "event": "media.process.cancel_requested",
+                            "pid": process.pid,
+                            "pgid": self._pgid(process),
+                            "cancel_mode": "force" if force else "graceful",
+                        },
+                    )
+                    self._terminate_process_group(
+                        process,
+                        grace_sec=0.0 if force else self.cancel_grace_sec,
+                        cancellation=True,
+                        started_at=started_at,
+                    )
+                    raise ExecutionCancelled("Media process cancelled.")
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _stdout, stderr = self._terminate_process_group(
+                        process,
+                        grace_sec=self.cancel_grace_sec,
+                        cancellation=False,
+                        started_at=started_at,
+                    )
+                    raise FfmpegCommandError(
+                        f"Media command timed out after {timeout:g}s.",
+                        error_code=ErrorCode.provider_timeout,
+                        command=command,
+                        stderr=_trim_stderr(stderr),
+                        returncode=process.returncode,
+                    )
+                try:
+                    stdout, stderr = process.communicate(
+                        timeout=min(PROCESS_POLL_INTERVAL_SEC, remaining)
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        except (ExecutionCancelled, FfmpegCommandError):
+            raise
+        except BaseException:
+            if process.poll() is None:
+                self._terminate_process_group(
+                    process,
+                    grace_sec=0.0,
+                    started_at=started_at,
+                )
+            raise
+
+        if process.returncode:
             raise FfmpegCommandError(
-                f"Media command timed out after {timeout_sec or self.timeout_sec}s.",
-                error_code=ErrorCode.provider_timeout,
-                command=args,
-                stderr=(exc.stderr or "") if isinstance(exc.stderr, str) else "",
-            ) from exc
-        except subprocess.CalledProcessError as exc:
-            stderr = exc.stderr or ""
-            raise FfmpegCommandError(
-                f"Media command failed with exit code {exc.returncode}.",
+                f"Media command failed with exit code {process.returncode}.",
                 error_code=ErrorCode.render_failed,
-                command=args,
-                stderr=stderr,
-            ) from exc
+                command=command,
+                stderr=_trim_stderr(stderr),
+                returncode=process.returncode,
+            )
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+    @staticmethod
+    def _pgid(process: subprocess.Popen) -> int | None:
+        return process.pid if os.name == "posix" else None
+
+    def _signal_process_group(self, process: subprocess.Popen, sig: signal.Signals) -> bool:
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, sig)
+            else:
+                if process.poll() is not None:
+                    return False
+                process.terminate() if sig == signal.SIGTERM else process.kill()
+        except ProcessLookupError:
+            return False
+        return True
+
+    @staticmethod
+    def _process_group_alive(process: subprocess.Popen) -> bool:
+        if os.name != "posix":
+            return process.poll() is None
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def _terminate_process_group(
+        self,
+        process: subprocess.Popen,
+        *,
+        grace_sec: float,
+        cancellation: bool = False,
+        started_at: float,
+    ) -> tuple[str | bytes | None, str | bytes | None]:
+        if self._signal_process_group(process, signal.SIGTERM):
+            logger.info(
+                "Sent SIGTERM to media process group",
+                extra={
+                    "event": "media.process.sigterm_sent",
+                    "pid": process.pid,
+                    "pgid": self._pgid(process),
+                },
+            )
+        if grace_sec > 0:
+            deadline = time.monotonic() + grace_sec
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    stdout, stderr = process.communicate(
+                        timeout=min(PROCESS_POLL_INTERVAL_SEC, remaining)
+                        if cancellation
+                        else remaining
+                    )
+                except subprocess.TimeoutExpired:
+                    if cancellation and current_cancellation_token().force:
+                        break
+                    continue
+                if not self._process_group_alive(process):
+                    self._log_reaped(process, started_at=started_at)
+                    return stdout, stderr
+                if cancellation and current_cancellation_token().force:
+                    break
+                time.sleep(min(PROCESS_POLL_INTERVAL_SEC, max(0.0, remaining)))
+        if self._signal_process_group(process, signal.SIGKILL):
+            if cancellation:
+                record_workflow_cancel_force_kill()
+            logger.info(
+                "Sent SIGKILL to media process group",
+                extra={
+                    "event": "media.process.sigkill_sent",
+                    "pid": process.pid,
+                    "pgid": self._pgid(process),
+                },
+            )
+        stdout, stderr = process.communicate()
+        self._log_reaped(process, started_at=started_at)
+        return stdout, stderr
+
+    @staticmethod
+    def _log_reaped(process: subprocess.Popen, *, started_at: float) -> None:
+        logger.info(
+            "Media process reaped",
+            extra={
+                "event": "media.process.reaped",
+                "pid": process.pid,
+                "returncode": process.returncode,
+                "elapsed_seconds": round(time.monotonic() - started_at, 3),
+            },
+        )
+
+
+def _trim_stderr(stderr: str | bytes | None) -> str:
+    value = stderr.decode("utf-8", "replace") if isinstance(stderr, bytes) else stderr or ""
+    if len(value) <= MAX_CAPTURED_STDERR_CHARS:
+        return value
+    return value[-MAX_CAPTURED_STDERR_CHARS:]
 
 
 def probe_media(path: str | Path) -> MediaInfo:
@@ -791,20 +966,14 @@ def _crop_sample_times(duration: float) -> list[float]:
 
 def _run_cropdetect(source: Path, sample_time: float) -> dict | None:
     try:
-        result = subprocess.run(
+        result = FfmpegRunner(timeout_sec=45).run(
             [
                 ffmpeg_bin(), "-hide_banner", "-nostdin", "-nostats",
                 "-ss", f"{sample_time:.3f}", "-i", str(source),
                 "-t", "0.6", "-vf", "cropdetect=24:16:0", "-f", "null", "-",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=45,
+            ]
         )
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if result.returncode != 0:
+    except (FfmpegCommandError, OSError):
         return None
     matches = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", result.stderr or "")
     if not matches:

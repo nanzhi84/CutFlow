@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
 from collections.abc import Sequence
 
 from packages.core.contracts import SpeechIslandV4
+from packages.media.video.ffmpeg import FfmpegCommandError, FfmpegRunner, ffmpeg_bin
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +169,7 @@ def _extract_pcm_s16le_mono(media_path: str, *, sample_rate: int) -> bytes:
     treats it as no speech.
     """
     cmd = [
-        "ffmpeg",
+        ffmpeg_bin(),
         "-hide_banner",
         "-nostats",
         "-loglevel",
@@ -188,16 +188,9 @@ def _extract_pcm_s16le_mono(media_path: str, *, sample_rate: int) -> bytes:
         "-",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=_PCM_TIMEOUT_SEC)
-    except Exception as exc:  # pragma: no cover - depends on local ffmpeg
+        result = FfmpegRunner(timeout_sec=_PCM_TIMEOUT_SEC).run(cmd, text=False)
+    except (FfmpegCommandError, OSError) as exc:  # pragma: no cover - local ffmpeg
         logger.warning("[vad] ffmpeg PCM extract failed: %s", exc)
-        return b""
-
-    if result.returncode != 0:
-        logger.warning(
-            "[vad] ffmpeg PCM extract non-zero (maybe no audio): %s",
-            (result.stderr or b"").decode("utf-8", "ignore")[:200],
-        )
         return b""
     return result.stdout or b""
 

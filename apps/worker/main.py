@@ -31,6 +31,7 @@ from packages.core.storage.sqlalchemy_uploads import SqlAlchemyUploadRepository
 from packages.core.workflow import load_workflow_runtime_settings
 from packages.core.workflow.temporal_adapter import (
     CASE_ADMISSION_POLL_SECONDS,
+    TEMPORAL_RPC_TIMEOUT,
     TemporalActivityContext,
     configure_temporal_activity_context,
     signal_case_admission_with_client,
@@ -154,10 +155,11 @@ async def _admission_recovery_loop(
                         extra={"event": "case_admission_recovery_failed", "case_id": case_id},
                         exc_info=True,
                     )
+            await _reconcile_cancelling_runs(client, production_repository)
         except Exception:
             logger.warning(
-                "Failed to scan admitted case runs",
-                extra={"event": "case_admission_scan_failed"},
+                "Failed to scan workflow recovery state",
+                extra={"event": "workflow_recovery_scan_failed"},
                 exc_info=True,
             )
         await asyncio.sleep(float(CASE_ADMISSION_POLL_SECONDS))
@@ -178,6 +180,33 @@ async def _upload_recovery_loop(
                 exc_info=True,
             )
         await asyncio.sleep(float(interval_seconds))
+
+
+async def _reconcile_cancelling_runs(
+    client: Client,
+    production_repository: SqlAlchemyProductionRepository,
+) -> None:
+    logger = logging.getLogger("cutagent.worker")
+    for run_id in production_repository.run_ids_with_cancelling(limit=100):
+        try:
+            handle = client.get_workflow_handle(run_id)
+            await handle.signal(
+                "cancel",
+                {
+                    "mode": production_repository.run_cancel_mode(run_id),
+                    "reason": "worker cancellation reconciliation",
+                },
+                rpc_timeout=TEMPORAL_RPC_TIMEOUT,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to reconcile cancelling workflow",
+                extra={
+                    "event": "workflow_cancellation_recovery_failed",
+                    "run_id": run_id,
+                },
+                exc_info=True,
+            )
 
 
 def main() -> None:

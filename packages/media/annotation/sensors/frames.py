@@ -10,10 +10,9 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
 import uuid
 
-from packages.media.video.ffmpeg import ffmpeg_bin
+from packages.media.video.ffmpeg import FfmpegCommandError, FfmpegRunner, ffmpeg_bin
 
 logger = logging.getLogger(__name__)
 
@@ -67,11 +66,9 @@ def extract_frame_at_time(
             "2",
             output_path,
         ]
-        completed = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=EXTRACT_TIMEOUT_SEC
-        )
-        return completed.returncode == 0 and os.path.exists(output_path)
-    except Exception as exc:  # pragma: no cover - depends on local ffmpeg
+        FfmpegRunner(timeout_sec=EXTRACT_TIMEOUT_SEC).run(cmd)
+        return os.path.exists(output_path)
+    except (FfmpegCommandError, OSError) as exc:  # pragma: no cover - local ffmpeg
         logger.warning("[frames] extract failed at %ss: %s", time_sec, exc)
         return False
 
@@ -141,17 +138,9 @@ def extract_frames_for_indices(
         output_pattern,
     ]
     try:
-        completed = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=BATCH_EXTRACT_TIMEOUT_SEC,
-        )
-    except Exception as exc:  # pragma: no cover - depends on local ffmpeg
+        FfmpegRunner(timeout_sec=BATCH_EXTRACT_TIMEOUT_SEC).run(cmd)
+    except (FfmpegCommandError, OSError) as exc:  # pragma: no cover - local ffmpeg
         logger.warning("[frames] batch extract failed: %s", exc)
-        return []
-    if completed.returncode != 0:
-        logger.warning("[frames] batch extract failed: %s", completed.stderr[-800:])
         return []
     paths = [
         os.path.join(temp_dir, f"{prefix}_{position:06d}.jpg")

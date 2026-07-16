@@ -9,6 +9,7 @@ from packages.core.contracts import ArtifactKind, ErrorCode
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.media.assets import store_file
 from packages.media.rendering import (
+    promote_staged_media,
     render_broll_montage,
     render_video_timeline,
     validate_rendered_output,
@@ -99,12 +100,13 @@ def run(ctx: NodeContext) -> NodeOutput:
         raise NodeExecutionError(ErrorCode.render_invalid_timeline, "Render plan has no frames.")
     try:
         with tempfile.TemporaryDirectory(prefix="cutagent-render-") as directory:
+            staged_path = Path(directory) / "rendered.part.mp4"
             output_path = Path(directory) / "rendered.mp4"
             broll_segments = _broll_segments_from_timeline(timeline, broll_plan, fps)
             if lipsync is not None:
                 render_video_timeline(
                     main_path=ctx.artifact_path(lipsync),
-                    output_path=output_path,
+                    output_path=staged_path,
                     broll_segments=broll_segments,
                     total_frames=total_frames,
                     width=width,
@@ -116,7 +118,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             elif broll_full_coverage_enabled(state.request):
                 render_broll_montage(
                     segments=broll_segments,
-                    output_path=output_path,
+                    output_path=staged_path,
                     total_frames=total_frames,
                     width=width,
                     height=height,
@@ -127,12 +129,13 @@ def run(ctx: NodeContext) -> NodeOutput:
             else:
                 state.require(ArtifactKind.video_lipsync)
             media_info = validate_rendered_output(
-                output_path,
+                staged_path,
                 expected_frames=total_frames,
                 expected_width=width,
                 expected_height=height,
                 expected_fps=fps,
             )
+            promote_staged_media(staged_path, output_path)
             stored = store_file(
                 ctx.object_store(),
                 output_path,

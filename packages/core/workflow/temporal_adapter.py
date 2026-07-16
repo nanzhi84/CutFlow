@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from datetime import timedelta
@@ -11,8 +12,13 @@ from typing import Any
 from temporalio import activity, workflow
 from temporalio.client import Client
 from temporalio.common import RetryPolicy as TemporalRetryPolicy
-from temporalio.exceptions import WorkflowAlreadyStartedError
+from temporalio.exceptions import (
+    ActivityError,
+    CancelledError as TemporalCancelledError,
+    WorkflowAlreadyStartedError,
+)
 from temporalio.service import RPCError
+from temporalio.workflow import ActivityCancellationType
 
 # Domain modules are data/typing + activity-side only; the workflow body never
 # calls their non-deterministic code paths, so they bypass sandbox validation.
@@ -27,6 +33,8 @@ with workflow.unsafe.imports_passed_through():
     from packages.core.contracts import ErrorCode, Job, RunStatus, WorkflowRun, WorkflowTemplate
     from packages.core.storage import Repository
     from packages.core.workflow.runtime import (
+        cancellation_scope,
+        ExecutionCancelled,
         NodeExecutionError,
         WorkflowRuntimeSettings,
         load_workflow_runtime_settings,
@@ -126,6 +134,8 @@ def temporal_activities() -> list:
 # of waiting out the multi-hour start_to_close_timeout.
 NODE_HEARTBEAT_INTERVAL_SECONDS = 20.0
 NODE_HEARTBEAT_TIMEOUT_SECONDS = 90
+CANCELLABLE_ACTIVITY_PATCH = "cancel-running-activity-v1"
+CANCELLATION_DB_POLL_SECONDS = 0.25
 
 # Control-plane (API request path) timeouts. The API creates/cancels runs by
 # talking to Temporal from a synchronous request handler, so every call MUST be
@@ -150,7 +160,9 @@ def _context() -> TemporalActivityContext:
 class DigitalHumanVideoWorkflow:
     def __init__(self) -> None:
         self.cancel_requested = False
+        self.cancel_mode = "graceful"
         self.current_status = RunStatus.admitted.value
+        self.current_activity = None
 
     @workflow.run
     async def run(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -178,7 +190,12 @@ class DigitalHumanVideoWorkflow:
             for node in nodes[start_index:]:
                 if self.cancel_requested:
                     return await self._cancel(run_id)
-                result = await workflow.execute_activity(
+                cancellation_type = (
+                    ActivityCancellationType.WAIT_CANCELLATION_COMPLETED
+                    if workflow.patched(CANCELLABLE_ACTIVITY_PATCH)
+                    else ActivityCancellationType.TRY_CANCEL
+                )
+                activity_handle = workflow.start_activity(
                     "run_node",
                     {"run_id": run_id, "node_id": node["node_id"]},
                     start_to_close_timeout=timedelta(seconds=node["timeout_seconds"]),
@@ -189,7 +206,23 @@ class DigitalHumanVideoWorkflow:
                     ),
                     heartbeat_timeout=timedelta(seconds=NODE_HEARTBEAT_TIMEOUT_SECONDS),
                     retry_policy=_retry_policy(node["retry_policy"]),
+                    cancellation_type=cancellation_type,
                 )
+                self.current_activity = activity_handle
+                try:
+                    result = await activity_handle
+                except asyncio.CancelledError:
+                    if self.cancel_requested:
+                        return await self._cancel(run_id)
+                    raise
+                except ActivityError as exc:
+                    if self.cancel_requested and isinstance(exc.__cause__, TemporalCancelledError):
+                        return await self._cancel(run_id)
+                    raise
+                finally:
+                    self.current_activity = None
+                if result.get("cancelled"):
+                    return await self._cancel(run_id)
                 self.current_status = str(result.get("run_status") or self.current_status)
                 if self.current_status in {
                     RunStatus.failed.value,
@@ -219,7 +252,12 @@ class DigitalHumanVideoWorkflow:
     @workflow.signal(name="cancel")
     async def cancel(self, payload: dict[str, Any] | None = None) -> None:
         self.cancel_requested = True
+        requested_mode = "force" if (payload or {}).get("mode") == "force" else "graceful"
+        if self.cancel_mode != "force":
+            self.cancel_mode = requested_mode
         self.current_status = RunStatus.cancelling.value
+        if self.current_activity is not None:
+            self.current_activity.cancel()
 
     @workflow.query(name="status")
     def status(self) -> str:
@@ -336,6 +374,8 @@ def apply_reuse_plan(payload: dict[str, Any]) -> dict[str, Any]:
         )
         _sync_if_configured(ctx, repository, run_id)
         return summary
+    except TemporalCancelledError:
+        raise
     except Exception:
         record_temporal_activity_failure()
         raise
@@ -375,6 +415,37 @@ def _start_node_heartbeat(run_id: str, node_id: str):
     return _stop
 
 
+class _TemporalCancellationToken:
+    def __init__(
+        self,
+        run_id: str,
+        production_repository: SqlAlchemyProductionRepository | None,
+    ) -> None:
+        self.run_id = run_id
+        self.production_repository = production_repository
+        self._mode: str | None = None
+        self._next_db_poll = 0.0
+
+    def _refresh_mode(self) -> None:
+        if self.production_repository is None:
+            return
+        now = time.monotonic()
+        if now < self._next_db_poll:
+            return
+        self._mode = self.production_repository.requested_run_cancel_mode(self.run_id)
+        self._next_db_poll = now + CANCELLATION_DB_POLL_SECONDS
+
+    @property
+    def cancelled(self) -> bool:
+        self._refresh_mode()
+        return activity.is_cancelled() or self._mode is not None
+
+    @property
+    def force(self) -> bool:
+        self._refresh_mode()
+        return self._mode == "force"
+
+
 @activity.defn(name="run_node")
 def run_node(payload: dict[str, Any]) -> dict[str, Any]:
     ctx = _context()
@@ -382,15 +453,36 @@ def run_node(payload: dict[str, Any]) -> dict[str, Any]:
     node_id = str(payload["node_id"])
     repository, runtime = _activity_runtime(ctx)
     if ctx.production_repository is not None:
+        # The workflow task may dispatch its first activity before the admission
+        # activity finishes its post-start status write. Make the activity-side
+        # transition idempotent so a live child process is never hidden behind
+        # durable ``admitted``; a cancellation that won the row lock remains final.
+        ctx.production_repository.mark_run_started(run_id)
         ctx.production_repository.hydrate_workflow_runtime_snapshot(repository, run_id)
     token = _bind_activity_context(repository, run_id, node_id=node_id)
     activity.heartbeat({"run_id": run_id, "node_id": node_id, "phase": "started"})
     stop_heartbeat = _start_node_heartbeat(run_id, node_id)
     try:
-        summary = runtime.run_node_activity(run_id, node_id)
-        _sync_if_configured(ctx, repository, run_id)
-        activity.heartbeat({"run_id": run_id, "node_id": node_id, "phase": "finished"})
-        return summary
+        cancellation_token = _TemporalCancellationToken(run_id, ctx.production_repository)
+        with cancellation_scope(cancellation_token), activity.shield_thread_cancel_exception():
+            summary = runtime.run_node_activity(run_id, node_id)
+            _sync_if_configured(ctx, repository, run_id)
+            activity.heartbeat({"run_id": run_id, "node_id": node_id, "phase": "finished"})
+            return summary
+    except ExecutionCancelled:
+        # The SQL fence can reach this thread before the SDK delivers its
+        # Activity cancel task. A normal cleanup acknowledgement is still safe:
+        # the Workflow signal owns the terminal transition and will call
+        # ``mark_run_cancelled`` only after this Activity has returned.
+        return {
+            "run_id": run_id,
+            "node_id": node_id,
+            "node_status": "cancelled",
+            "run_status": RunStatus.cancelling.value,
+            "cancelled": True,
+        }
+    except TemporalCancelledError:
+        raise
     except Exception:
         record_temporal_activity_failure()
         raise
@@ -569,7 +661,7 @@ def _bind_activity_context(repository: Repository, run_id: str, node_id: str | N
     return bind_observability_context(
         job_id=run.job_id if run is not None else None,
         run_id=run_id,
-        node_run_id=node_id,
+        node_id=node_id,
     )
 
 
@@ -590,9 +682,11 @@ class TemporalRuntimeAdapter:
         settings: WorkflowRuntimeSettings,
         *,
         repository: Repository | None = None,
+        production_repository: SqlAlchemyProductionRepository | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
+        self.production_repository = production_repository
         # A single connected client is reused across requests on a dedicated
         # background event loop. temporalio's Client is bound to the loop it was
         # connected on, so we own a persistent loop instead of spinning up a new
@@ -637,11 +731,31 @@ class TemporalRuntimeAdapter:
     def cancel_run(
         self, run_id: str, *, force: bool = False, reason: str | None = None
     ) -> WorkflowRun | None:
-        self._run(self._cancel_workflow(run_id, force=force, reason=reason))
-        if force:
-            self._mark_local_force_cancelled(run_id)
+        previous = self.repository.runs.get(run_id) if self.repository is not None else None
+        signal_force = force
+        if self.production_repository is not None:
+            requested = self.production_repository.request_run_cancellation(
+                run_id,
+                force=force,
+            )
+            if self.repository is not None:
+                self.repository.runs[run_id] = requested
+            if requested.status in {
+                RunStatus.succeeded,
+                RunStatus.failed,
+                RunStatus.cancelled,
+            }:
+                return requested
+            signal_force = self.production_repository.run_cancel_mode(run_id) == "force"
         else:
-            self._mark_local_cancelled(run_id)
+            if previous is not None and previous.status in {
+                RunStatus.succeeded,
+                RunStatus.failed,
+                RunStatus.cancelled,
+            }:
+                return previous
+            self._mark_local_cancelling(run_id)
+        self._run(self._cancel_workflow(run_id, force=signal_force, reason=reason))
         return self.repository.runs.get(run_id) if self.repository is not None else None
 
     async def _client(self) -> Client:
@@ -687,12 +801,14 @@ class TemporalRuntimeAdapter:
     async def _cancel_workflow(self, run_id: str, *, force: bool, reason: str | None) -> None:
         client = await self._client()
         handle = client.get_workflow_handle(run_id)
-        if force:
-            await handle.terminate(
-                reason=reason or "force cancel requested", rpc_timeout=TEMPORAL_RPC_TIMEOUT
-            )
-        else:
-            await handle.signal("cancel", {"reason": reason or ""}, rpc_timeout=TEMPORAL_RPC_TIMEOUT)
+        await handle.signal(
+            "cancel",
+            {
+                "mode": "force" if force else "graceful",
+                "reason": reason or "",
+            },
+            rpc_timeout=TEMPORAL_RPC_TIMEOUT,
+        )
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
         with self._lock:
@@ -748,28 +864,7 @@ class TemporalRuntimeAdapter:
             if thread is not None:
                 thread.join(timeout=5)
 
-    def _mark_local_force_cancelled(self, run_id: str) -> None:
-        if self.repository is None or run_id not in self.repository.runs:
-            return
-        from packages.core.contracts import JobStatus, utcnow
-
-        run = self.repository.runs[run_id]
-        if run.status not in {RunStatus.succeeded, RunStatus.failed, RunStatus.cancelled}:
-            self.repository.runs[run_id] = run.model_copy(
-                update={"status": RunStatus.cancelled, "finished_at": utcnow(), "updated_at": utcnow()}
-            )
-        job = self.repository.jobs.get(run.job_id)
-        if job is not None and job.status not in {
-            JobStatus.succeeded,
-            JobStatus.failed,
-            JobStatus.cancelled,
-            JobStatus.archived,
-        }:
-            self.repository.jobs[job.id] = job.model_copy(
-                update={"status": JobStatus.cancelled, "updated_at": utcnow()}
-            )
-
-    def _mark_local_cancelled(self, run_id: str) -> None:
+    def _mark_local_cancelling(self, run_id: str) -> None:
         if self.repository is None or run_id not in self.repository.runs:
             return
         from packages.core.contracts import utcnow
@@ -778,13 +873,14 @@ class TemporalRuntimeAdapter:
         if run.status in {RunStatus.succeeded, RunStatus.failed, RunStatus.cancelled}:
             return
         now = utcnow()
+        status = RunStatus.cancelling if run.status == RunStatus.running else RunStatus.cancelled
         self.repository.runs[run_id] = run.model_copy(
-            update={"status": RunStatus.cancelled, "finished_at": now, "updated_at": now}
+            update={
+                "status": status,
+                "finished_at": now if status == RunStatus.cancelled else None,
+                "updated_at": now,
+            }
         )
-        try:
-            self.repository.release_run_reservations(run_id=run_id, only_uncommitted=True)
-        except Exception:
-            return
 
 
 def _workflow_payload(

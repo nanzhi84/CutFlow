@@ -65,6 +65,7 @@ from packages.core.contracts import (
 )
 from packages.core.contracts.artifacts import CaptionCompositionPlanArtifact, ClipEmbeddingRecord
 from packages.core.observability.funnel import resolve_event_owner
+from packages.core.observability.telemetry import record_artifact_commit_skipped_cancelled
 from packages.core.storage import ObjectStore, Repository, get_object_store
 from packages.core.storage.database import (
     AnnotationRow,
@@ -157,6 +158,31 @@ _TERMINAL_RUN_STATUS_VALUES = {
     RunStatus.succeeded.value,
     RunStatus.failed.value,
     RunStatus.cancelled.value,
+}
+_CANCELLATION_FENCE_STATUS_VALUES = {
+    RunStatus.cancelling.value,
+    RunStatus.cancelled.value,
+}
+_COMMITTED_NODE_STATUS_VALUES = {
+    NodeStatus.succeeded.value,
+    NodeStatus.degraded.value,
+    NodeStatus.skipped.value,
+}
+_DELIVERY_ARTIFACT_KINDS = {
+    ArtifactKind.video_rendered,
+    ArtifactKind.video_final,
+    ArtifactKind.video_finished,
+    ArtifactKind.subtitle_ass,
+    ArtifactKind.cover_image,
+    ArtifactKind.cover_thumbnail,
+    ArtifactKind.publish_package,
+    ArtifactKind.editor_handoff,
+    ArtifactKind.jianying_draft,
+}
+_CANCELLATION_BLOCKED_OUTBOX_TOPICS = {
+    "ops.yield_funnel.event",
+    "workflow.finished_video.created",
+    "workflow.run.completed",
 }
 
 
@@ -481,22 +507,70 @@ class SqlAlchemyProductionRepository(BaseRepository):
         repository: Repository,
     ) -> None:
         with self.session_factory() as session:
-            session.merge(self._job_row(job))
+            durable_run = session.get(WorkflowRunRow, run.id, with_for_update=True)
+            cancellation_fence = bool(
+                durable_run is not None
+                and durable_run.status in _CANCELLATION_FENCE_STATUS_VALUES
+            )
+
+            durable_job = session.get(JobRow, job.id)
+            job_to_sync = self._preserve_durable_job(
+                durable_job,
+                job,
+                cancellation_fence=cancellation_fence,
+            )
+            session.merge(self._job_row(job_to_sync))
             session.flush()
 
-            run_artifacts = [artifact for artifact in repository.artifacts.values() if artifact.run_id == run.id]
+            node_runs = repository.node_runs.get(run.id, [])
+            blocked_output_ids: set[str] = set()
+            node_runs_to_sync: list[NodeRun] = []
+            for node_run in node_runs:
+                durable_node = session.get(NodeRunRow, node_run.id)
+                if (
+                    cancellation_fence
+                    and node_run.status.value in _COMMITTED_NODE_STATUS_VALUES
+                    and (
+                        durable_node is None
+                        or durable_node.status not in _COMMITTED_NODE_STATUS_VALUES
+                    )
+                ):
+                    blocked_output_ids.update(node_run.output_artifact_ids)
+                    continue
+                node_runs_to_sync.append(node_run)
+
+            run_artifacts = [
+                artifact
+                for artifact in repository.artifacts.values()
+                if artifact.run_id == run.id
+            ]
             for artifact in run_artifacts:
+                durable_artifact = session.get(ArtifactRow, artifact.id)
+                if (
+                    cancellation_fence
+                    and durable_artifact is None
+                    and (
+                        artifact.id in blocked_output_ids
+                        or artifact.kind in _DELIVERY_ARTIFACT_KINDS
+                    )
+                ):
+                    record_artifact_commit_skipped_cancelled()
+                    continue
                 session.merge(artifact_to_row(artifact))
             session.flush()
 
             run_to_sync = self._preserve_terminal_workflow_run(
-                session.get(WorkflowRunRow, run.id),
+                durable_run,
                 run,
             )
-            session.merge(self._workflow_run_row(run_to_sync))
+            run_row = self._workflow_run_row(run_to_sync)
+            if durable_run is not None:
+                run_row.cancel_mode = durable_run.cancel_mode
+                run_row.cancel_requested_at = durable_run.cancel_requested_at
+            session.merge(run_row)
             session.flush()
 
-            for node_run in repository.node_runs.get(run.id, []):
+            for node_run in node_runs_to_sync:
                 session.merge(self._node_run_row(node_run))
             session.flush()
 
@@ -529,13 +603,19 @@ class SqlAlchemyProductionRepository(BaseRepository):
 
             for script in repository.scripts.values():
                 if script.case_id == run.case_id:
+                    if cancellation_fence and session.get(ScriptVersionRow, script.id) is None:
+                        continue
                     session.merge(self._script_version_row(script))
             session.flush()
 
             finished_video_ids = set()
+            blocked_finished_video_ids = set()
             for finished in repository.finished_videos.values():
                 if finished.run_id == run.id:
                     existing = session.get(FinishedVideoRow, finished.id)
+                    if cancellation_fence and existing is None:
+                        blocked_finished_video_ids.add(finished.id)
+                        continue
                     owner_user_id = self._finished_video_owner_user_id(
                         session,
                         finished=finished,
@@ -562,19 +642,50 @@ class SqlAlchemyProductionRepository(BaseRepository):
 
             for version in repository.video_versions.values():
                 if version.finished_video_id in finished_video_ids:
+                    if cancellation_fence and session.get(VideoVersionRow, version.id) is None:
+                        continue
                     session.merge(self._video_version_row(version))
             session.flush()
 
+            run_finished_video_ids = finished_video_ids | blocked_finished_video_ids
+            blocked_publish_package_ids = set()
             for package in repository.publish_packages.values():
-                if package.source_finished_video_id in finished_video_ids:
+                if package.source_finished_video_id in run_finished_video_ids:
+                    if cancellation_fence and session.get(PublishPackageRow, package.id) is None:
+                        blocked_publish_package_ids.add(package.id)
+                        continue
                     session.merge(self._publish_package_row(package))
             session.flush()
 
             for event in repository.outbox.values():
                 if event.aggregate_type in {"run", "workflow_run"} and event.aggregate_id == run.id:
+                    payload = event.payload if isinstance(event.payload, dict) else {}
+                    if (
+                        cancellation_fence
+                        and session.get(OutboxEventRow, event.id) is None
+                        and (
+                            event.topic in _CANCELLATION_BLOCKED_OUTBOX_TOPICS
+                            or payload.get("status")
+                            in {
+                                RunStatus.succeeded.value,
+                                NodeStatus.succeeded.value,
+                                NodeStatus.degraded.value,
+                            }
+                            or payload.get("finished_video_id")
+                            in blocked_finished_video_ids
+                            or payload.get("publish_package_id")
+                            in blocked_publish_package_ids
+                        )
+                    ):
+                        continue
                     session.merge(self._outbox_event_row(event))
             for event in repository.yield_events.values():
                 if getattr(event, "run_id", None) == run.id:
+                    if (
+                        cancellation_fence
+                        and session.get(YieldFunnelEventRow, event.id) is None
+                    ):
+                        continue
                     owner_user_id = resolve_event_owner(
                         session,
                         run_id=getattr(event, "run_id", None),
@@ -593,10 +704,22 @@ class SqlAlchemyProductionRepository(BaseRepository):
                     )
             for entry in repository.selection_ledger.values():
                 if entry.run_id == run.id:
+                    if cancellation_fence and session.get(SelectionLedgerRow, entry.id) is None:
+                        continue
                     session.merge(self._selection_ledger_row(entry))
             self._expire_stale_selection_reservations(session)
             for reservation in repository.selection_reservations.values():
                 if reservation.run_id == run.id:
+                    if cancellation_fence:
+                        durable_reservation = session.get(
+                            SelectionReservationRow,
+                            reservation.id,
+                        )
+                        if durable_reservation is None or reservation.status not in {
+                            "released",
+                            "expired",
+                        }:
+                            continue
                     session.merge(self._selection_reservation_row(reservation))
             session.commit()
 
@@ -627,12 +750,62 @@ class SqlAlchemyProductionRepository(BaseRepository):
         )
 
     @staticmethod
+    def _preserve_durable_job(
+        existing: JobRow | None,
+        incoming: Job,
+        *,
+        cancellation_fence: bool,
+    ) -> Job:
+        if existing is None:
+            return incoming
+        if cancellation_fence:
+            preserved = SqlAlchemyProductionRepository._job_with_durable_state(
+                existing,
+                incoming,
+            )
+            if incoming.status == JobStatus.cancelled:
+                return preserved.model_copy(
+                    update={
+                        "status": JobStatus.cancelled,
+                        "updated_at": incoming.updated_at,
+                    }
+                )
+            return preserved
+        return incoming
+
+    @staticmethod
+    def _job_with_durable_state(existing: JobRow, incoming: Job) -> Job:
+        """Keep the locked row's lifecycle state without reparsing its request payload."""
+        return incoming.model_copy(
+            update={
+                "status": JobStatus(existing.status),
+                "active_run_id": existing.active_run_id,
+                "latest_finished_video_id": existing.latest_finished_video_id,
+                "schema_version": existing.schema_version,
+                "created_at": existing.created_at,
+                "updated_at": existing.updated_at,
+            }
+        )
+
+    @staticmethod
     def _preserve_terminal_workflow_run(
         existing: WorkflowRunRow | None,
         incoming: WorkflowRun,
     ) -> WorkflowRun:
         if existing is None:
             return incoming
+        if existing.status == RunStatus.cancelling.value:
+            if incoming.status == RunStatus.cancelled:
+                return incoming
+            return incoming.model_copy(
+                update={
+                    "status": RunStatus.cancelling,
+                    "finished_at": existing.finished_at,
+                    "public_report_artifact_id": existing.public_report_artifact_id,
+                    "debug_report_artifact_id": existing.debug_report_artifact_id,
+                    "updated_at": existing.updated_at or incoming.updated_at,
+                }
+            )
         if existing.status not in _TERMINAL_RUN_STATUS_VALUES:
             return incoming
         if incoming.status.value == existing.status:
@@ -1134,7 +1307,7 @@ class SqlAlchemyProductionRepository(BaseRepository):
         now = utcnow()
         with self.session_factory() as session:
             run_row = session.get(WorkflowRunRow, run_id, with_for_update=True)
-            if run_row is None:
+            if run_row is None or run_row.status != RunStatus.admitted.value:
                 return
             job_row = session.get(JobRow, run_row.job_id, with_for_update=True)
             run_row.status = RunStatus.running.value
@@ -1145,6 +1318,65 @@ class SqlAlchemyProductionRepository(BaseRepository):
                 job_row.active_run_id = run_row.id
                 job_row.updated_at = now
             session.commit()
+
+    def request_run_cancellation(self, run_id: str, *, force: bool) -> WorkflowRun:
+        """Persist the cancellation fence before signalling Temporal."""
+        now = utcnow()
+        with self.session_factory() as session:
+            run_row = session.get(WorkflowRunRow, run_id, with_for_update=True)
+            if run_row is None:
+                raise NodeExecutionError(ErrorCode.artifact_missing, f"Run {run_id} is missing.")
+            if run_row.status in _TERMINAL_RUN_STATUS_VALUES:
+                return workflow_run_row_to_contract(run_row)
+
+            run_row.cancel_mode = (
+                "force" if force or run_row.cancel_mode == "force" else "graceful"
+            )
+            run_row.cancel_requested_at = run_row.cancel_requested_at or now
+            run_row.updated_at = now
+            if run_row.status == RunStatus.running.value:
+                run_row.status = RunStatus.cancelling.value
+            elif run_row.status != RunStatus.cancelling.value:
+                run_row.status = RunStatus.cancelled.value
+                run_row.finished_at = now
+                job_row = session.get(JobRow, run_row.job_id, with_for_update=True)
+                if job_row is not None and job_row.status not in {
+                    JobStatus.succeeded.value,
+                    JobStatus.failed.value,
+                    JobStatus.cancelled.value,
+                    JobStatus.archived.value,
+                }:
+                    job_row.status = JobStatus.cancelled.value
+                    job_row.updated_at = now
+            session.commit()
+            return workflow_run_row_to_contract(run_row)
+
+    def run_cancel_mode(self, run_id: str) -> str:
+        return self.requested_run_cancel_mode(run_id) or "graceful"
+
+    def requested_run_cancel_mode(self, run_id: str) -> str | None:
+        with self.session_factory() as session:
+            row = session.execute(
+                select(WorkflowRunRow.status, WorkflowRunRow.cancel_mode).where(
+                    WorkflowRunRow.id == run_id
+                )
+            ).one_or_none()
+        if row is None or row.status not in _CANCELLATION_FENCE_STATUS_VALUES:
+            return None
+        if row.cancel_mode in {"graceful", "force"}:
+            return row.cancel_mode
+        return "graceful"
+
+    def run_ids_with_cancelling(self, *, limit: int = 100) -> list[str]:
+        with self.session_factory() as session:
+            return list(
+                session.scalars(
+                    select(WorkflowRunRow.id)
+                    .where(WorkflowRunRow.status == RunStatus.cancelling.value)
+                    .order_by(WorkflowRunRow.updated_at.asc())
+                    .limit(max(1, min(500, limit)))
+                )
+            )
 
     def _signed_run_thumbnail(self, fv_row) -> str | None:
         """Signed https URL for the Outputs card thumbnail. None when there is no
@@ -1292,13 +1524,9 @@ class SqlAlchemyProductionRepository(BaseRepository):
                     source_run = workflow_run_row_to_contract(source_row)
                     repository.runs[source_run.id] = source_run
                     run_ids.add(source_run.id)
-            # Deterministic order matters beyond presentation: the hydrated dicts are
-            # iterated last-write-wins by artifact kind in _state_from_persisted_artifacts,
-            # and that winner feeds node_run.input_manifest_hash -> the provider-call
-            # idempotency key. An unordered scan would let two hydrations of the same rows
-            # pick different winners (a run can hold several artifacts of one kind, e.g. a
-            # repair loop's per-attempt provider_raw_request), minting a different key on
-            # retry and re-submitting a paid call. (created_at, id) is a total order.
+            # Node order is part of resume state: when several committed outputs share an
+            # artifact kind, _state_from_persisted_artifacts applies each node's declared
+            # output ids in order and the final value feeds the next input manifest.
             node_runs = [
                 node_run_row_to_contract(row)
                 for row in session.scalars(
@@ -1320,21 +1548,18 @@ class SqlAlchemyProductionRepository(BaseRepository):
             referenced_artifact_ids = {
                 artifact_id
                 for node_run in node_runs
+                if node_run.status
+                in {NodeStatus.succeeded, NodeStatus.degraded, NodeStatus.skipped}
                 for artifact_id in node_run.output_artifact_ids
             }
-            artifact_filter = ArtifactRow.run_id.in_(run_ids)
             if referenced_artifact_ids:
-                artifact_filter = or_(
-                    artifact_filter,
-                    ArtifactRow.id.in_(referenced_artifact_ids),
-                )
-            for artifact in session.scalars(
-                select(ArtifactRow)
-                .where(artifact_filter)
-                .order_by(ArtifactRow.created_at.asc(), ArtifactRow.id.asc())
-            ):
-                contract = artifact_row_to_contract(artifact)
-                repository.artifacts[contract.id] = contract
+                for artifact in session.scalars(
+                    select(ArtifactRow)
+                    .where(ArtifactRow.id.in_(referenced_artifact_ids))
+                    .order_by(ArtifactRow.created_at.asc(), ArtifactRow.id.asc())
+                ):
+                    contract = artifact_row_to_contract(artifact)
+                    repository.artifacts[contract.id] = contract
 
     def hydrate_adopted_script(
         self, repository: Repository, script_version_id: str

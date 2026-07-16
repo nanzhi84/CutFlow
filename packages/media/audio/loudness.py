@@ -3,10 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import math
-import subprocess
 from pathlib import Path
 
-from packages.media.video.ffmpeg import ffmpeg_bin
+from packages.media.video.ffmpeg import FfmpegCommandError, FfmpegRunner, ffmpeg_bin
 
 logger = logging.getLogger("packages.media.audio.loudness")
 
@@ -43,8 +42,8 @@ def measure_loudness_lufs(media_path: str | Path) -> float | None:
         "-",
     ]
     try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=120)
-    except (OSError, subprocess.SubprocessError) as exc:
+        result = FfmpegRunner(timeout_sec=120).run(args)
+    except (FfmpegCommandError, OSError) as exc:
         logger.warning("[bgm] loudness probe failed for %s: %s", path, exc)
         return None
     data = _extract_loudnorm_json(f"{result.stdout or ''}\n{result.stderr or ''}")

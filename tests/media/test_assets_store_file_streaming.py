@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 
+import pytest
+
 from packages.core.storage.object_store import (
     LocalObjectStore,
     S3ObjectStore,
@@ -70,9 +72,14 @@ class FakeS3Client:
         self.download_fileobj_calls.append((Bucket, Key))
         Fileobj.write(self.objects[(Bucket, Key)])
 
-    def head_object(self, *, Bucket: str, Key: str) -> None:
+    def head_object(self, *, Bucket: str, Key: str) -> dict:
         if (Bucket, Key) not in self.objects:
             raise FakeS3Error("404")
+        payload = self.objects[(Bucket, Key)]
+        return {
+            "ContentLength": len(payload),
+            "Metadata": {"sha256": hashlib.sha256(payload).hexdigest()},
+        }
 
 
 def _make_s3_store(tmp_path) -> tuple[S3ObjectStore, FakeS3Client]:
@@ -102,11 +109,29 @@ def test_s3_store_file_uses_path_based_upload_not_full_buffer(tmp_path):
     upload_filename, bucket, key = client.upload_file_calls[0]
     assert upload_filename == str(source)
     assert (bucket, key) == (stored.ref.bucket, stored.ref.key)
+    assert client.extra_args[0]["Metadata"] == {"sha256": expected_sha}
     # The full-buffer (BytesIO) path was NOT used.
     assert client.upload_fileobj_calls == []
     # sha256/size computed by streaming off disk, not read_bytes().
     assert stored.sha256 == expected_sha
     assert stored.size_bytes == len(payload)
+
+
+def test_s3_store_file_rejects_remote_checksum_mismatch(tmp_path, monkeypatch):
+    store, client = _make_s3_store(tmp_path)
+    source = tmp_path / "corrupt.mp4"
+    source.write_bytes(b"local-content")
+    monkeypatch.setattr(
+        client,
+        "head_object",
+        lambda **_kwargs: {
+            "ContentLength": source.stat().st_size,
+            "Metadata": {"sha256": "wrong"},
+        },
+    )
+
+    with pytest.raises(OSError, match="size/checksum verification"):
+        store_file(store, source, purpose="generated-video")
 
 
 def test_s3_store_file_addressed_key_is_streamed_content_sha(tmp_path):

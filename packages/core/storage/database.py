@@ -307,6 +307,8 @@ class WorkflowRunRow(TimestampMixin, Base):
     experiment_assignment_id: Mapped[str | None] = mapped_column(String)
     public_report_artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id"))
     debug_report_artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id"))
+    cancel_mode: Mapped[str | None] = mapped_column(String)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

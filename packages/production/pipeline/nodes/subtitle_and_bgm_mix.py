@@ -21,7 +21,7 @@ from packages.core.contracts.artifacts import (
 )
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.media.assets import store_file
-from packages.media.rendering import validate_rendered_output
+from packages.media.rendering import promote_staged_media, validate_rendered_output
 from packages.media.video.ffmpeg import FfmpegCommandError, probe_audio_channels, probe_media
 from packages.production.pipeline._ffmpeg import (
     SfxMixEvent,
@@ -137,7 +137,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                         asset_id=asset_id,
                     )
                 )
-
+            staged_path = temp_dir / "final.part.mp4"
             output_path = temp_dir / "final.mp4"
             burn_subtitle_path = subtitle_path
             burn_fonts_dir = fonts_dir if resolved_font else None
@@ -155,7 +155,7 @@ def run(ctx: NodeContext) -> NodeOutput:
             render_kwargs = {
                 "rendered_path": ctx.artifact_path(rendered),
                 "audio_path": ctx.artifact_path(audio),
-                "output_path": output_path,
+                "output_path": staged_path,
                 "subtitle_path": burn_subtitle_path,
                 "bgm_path": bgm_path,
                 "bgm_volume": bgm_plan.volume if bgm_plan else state.request.bgm.volume,
@@ -200,12 +200,13 @@ def run(ctx: NodeContext) -> NodeOutput:
                     )
                 )
             media_info = validate_rendered_output(
-                output_path,
+                staged_path,
                 expected_frames=total_frames,
                 frame_count_message="Final video frame count does not match the timeline.",
             )
-            if probe_audio_channels(output_path) != 2:
+            if probe_audio_channels(staged_path) != 2:
                 raise FfmpegCommandError("Final mixed audio must be stereo.")
+            promote_staged_media(staged_path, output_path)
             final_stored = store_file(ctx.object_store(), output_path, purpose="generated-video")
             if subtitle_path is not None:
                 subtitle_stored = store_file(ctx.object_store(), subtitle_path, purpose="subtitles")
