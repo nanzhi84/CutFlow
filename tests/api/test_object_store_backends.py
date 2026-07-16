@@ -214,7 +214,7 @@ def test_s3_multipart_protocol_uses_authoritative_list_parts(tmp_path):
     uri = "s3://cutagent-demo/incoming/uploads/u1/large.ttf"
 
     upload_id = store.create_multipart_upload(uri, content_type="font/ttf")
-    signed = store.sign_upload_part(
+    store.sign_upload_part(
         uri, upload_id=upload_id, part_number=2, expires_in=timedelta(minutes=15)
     )
     parts = store.list_parts(uri, upload_id=upload_id)
@@ -224,7 +224,6 @@ def test_s3_multipart_protocol_uses_authoritative_list_parts(tmp_path):
     assert upload_id == "remote-upload-id"
     assert fake_client.multipart_uploads[0]["ContentType"] == "font/ttf"
     assert fake_client.presign_calls[-1][0] == "upload_part"
-    assert "PartNumber=2" not in signed.url  # fake URL is opaque; params are asserted below
     assert fake_client.presign_calls[-1][1]["PartNumber"] == 2
     assert parts == [
         MultipartPart(part_number=1, etag='"etag-1"', size_bytes=8),
