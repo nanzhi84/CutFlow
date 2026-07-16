@@ -11,7 +11,11 @@ from types import SimpleNamespace
 import pytest
 
 from packages.core.contracts import MediaInfo
-from packages.core.workflow import ExecutionCancelled, cancellation_scope
+from packages.core.workflow import (
+    ExecutionCancelled,
+    cancellation_scope,
+    current_cancellation_token,
+)
 from packages.media.rendering import promote_staged_media
 from packages.media.video import ffmpeg as ffmpeg_mod
 from packages.media.video.ffmpeg import (
@@ -274,6 +278,98 @@ class _FailingCancellationToken:
     @property
     def force(self) -> bool:
         return False
+
+
+def test_default_cancellation_token_is_inactive():
+    token = current_cancellation_token()
+
+    assert token.cancelled is False
+    assert token.force is False
+
+
+def test_ffmpeg_process_helpers_handle_platform_fallbacks(monkeypatch):
+    class FakeProcess:
+        pid = 12345
+
+        def __init__(self) -> None:
+            self.returncode = None
+            self.signals: list[str] = []
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.signals.append("terminate")
+
+        def kill(self) -> None:
+            self.signals.append("kill")
+
+    runner = ffmpeg_mod.FfmpegRunner()
+    process = FakeProcess()
+    monkeypatch.setattr(ffmpeg_mod.os, "name", "nt")
+
+    assert runner._pgid(process) is None
+    assert runner._process_group_alive(process)
+    assert runner._signal_process_group(process, ffmpeg_mod.signal.SIGTERM)
+    assert runner._signal_process_group(process, ffmpeg_mod.signal.SIGKILL)
+    assert process.signals == ["terminate", "kill"]
+
+    process.returncode = 0
+    assert not runner._process_group_alive(process)
+    assert not runner._signal_process_group(process, ffmpeg_mod.signal.SIGTERM)
+
+    def missing_process(_pid, _sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(ffmpeg_mod.os, "name", "posix")
+    monkeypatch.setattr(ffmpeg_mod.os, "killpg", missing_process)
+    assert not runner._signal_process_group(process, ffmpeg_mod.signal.SIGTERM)
+
+
+def test_ffmpeg_runner_trims_long_binary_stderr():
+    stderr = b"discarded-prefix" + b"x" * ffmpeg_mod.MAX_CAPTURED_STDERR_CHARS
+
+    assert ffmpeg_mod._trim_stderr(stderr) == "x" * ffmpeg_mod.MAX_CAPTURED_STDERR_CHARS
+
+
+def test_ffmpeg_force_termination_records_kill_and_reap(monkeypatch):
+    process = SimpleNamespace(
+        pid=12345,
+        returncode=-9,
+        communicate=lambda: ("stdout", "stderr"),
+    )
+    runner = ffmpeg_mod.FfmpegRunner()
+    signals = []
+    force_kills = []
+    reaped = []
+
+    monkeypatch.setattr(
+        runner,
+        "_signal_process_group",
+        lambda _process, sig: signals.append(sig) or True,
+    )
+    monkeypatch.setattr(
+        ffmpeg_mod,
+        "record_workflow_cancel_force_kill",
+        lambda: force_kills.append(True),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_log_reaped",
+        lambda _process, *, started_at: reaped.append(started_at),
+    )
+
+    output = runner._terminate_process_group(
+        process,
+        grace_sec=0,
+        cancellation=True,
+        started_at=42.0,
+    )
+
+    assert output == ("stdout", "stderr")
+    assert signals == [ffmpeg_mod.signal.SIGTERM, ffmpeg_mod.signal.SIGKILL]
+    assert force_kills == [True]
+    assert reaped == [42.0]
 
 
 def _wait_for_process_exit(pid: int, *, timeout: float = 2.0) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 
+import pytest
 from sqlalchemy import select
 
 from packages.core.contracts import (
@@ -31,9 +32,11 @@ from packages.core.storage.database import (
     OutboxEventRow,
     ProviderInvocationRow,
     PublishPackageRow,
+    SelectionReservationRow,
     WorkflowRunRow,
     YieldFunnelEventRow,
 )
+from packages.core.workflow import NodeExecutionError
 from packages.production import SqlAlchemyProductionRepository
 
 
@@ -297,6 +300,13 @@ def test_admitted_run_cancels_immediately_and_force_mode_is_sticky(db_session_fa
         assert durable_run.cancel_requested_at is not None
 
 
+def test_cancelling_missing_run_fails_explicitly(db_session_factory):
+    production = SqlAlchemyProductionRepository(db_session_factory)
+
+    with pytest.raises(NodeExecutionError, match="Run missing-run is missing"):
+        production.request_run_cancellation("missing-run", force=False)
+
+
 def test_cancelling_row_without_mode_defaults_to_graceful(db_session_factory):
     production = SqlAlchemyProductionRepository(db_session_factory)
     job, run = _job_and_run("legacy_cancel_mode")
@@ -308,6 +318,35 @@ def test_cancelling_row_without_mode_defaults_to_graceful(db_session_factory):
         session.commit()
 
     assert production.requested_run_cancel_mode(run.id) == "graceful"
+
+
+def test_cancellation_fence_allows_reservation_release_but_blocks_new_leases(
+    db_session_factory,
+):
+    production = SqlAlchemyProductionRepository(db_session_factory)
+    job, run = _job_and_run("reservation_cleanup")
+    runtime = Repository()
+    existing = runtime.reserve_selections(
+        case_id="case_demo",
+        run_id=run.id,
+        medium="portrait",
+        asset_ids=["asset_before_cancel"],
+    )[0]
+    production.sync_workflow_snapshot(job=job, run=run, repository=runtime)
+    production.request_run_cancellation(run.id, force=False)
+
+    runtime.release_run_reservations(run_id=run.id)
+    late = runtime.reserve_selections(
+        case_id="case_demo",
+        run_id=run.id,
+        medium="portrait",
+        asset_ids=["asset_after_cancel"],
+    )[0]
+    production.sync_workflow_snapshot(job=job, run=run, repository=runtime)
+
+    with db_session_factory() as session:
+        assert session.get(SelectionReservationRow, existing.id).status == "released"
+        assert session.get(SelectionReservationRow, late.id) is None
 
 
 def test_cancelled_terminal_state_cannot_be_reverted_by_stale_snapshot(db_session_factory):
