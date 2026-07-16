@@ -251,6 +251,7 @@ def test_committed_delivery_survives_later_cancellation_request(db_session_facto
 
     assert requested.status == RunStatus.cancelling
     assert production.run_cancel_mode(run.id) == "force"
+    assert run.id in production.run_ids_with_cancelling()
     with db_session_factory() as session:
         assert session.get(ArtifactRow, "art_cancel_fence_commit_first") is not None
         assert session.get(NodeRunRow, "nr_cancel_fence_commit_first") is not None
@@ -272,6 +273,41 @@ def test_committed_delivery_survives_later_cancellation_request(db_session_facto
             )
             is not None
         )
+
+
+def test_admitted_run_cancels_immediately_and_force_mode_is_sticky(db_session_factory):
+    production = SqlAlchemyProductionRepository(db_session_factory)
+    job, run = _job_and_run("admitted")
+    admitted_job = job.model_copy(update={"status": JobStatus.queued})
+    admitted_run = run.model_copy(update={"status": RunStatus.admitted})
+    _seed_running_run(production, admitted_job, admitted_run)
+
+    assert production.requested_run_cancel_mode(run.id) is None
+    cancelled = production.request_run_cancellation(run.id, force=True)
+    repeated = production.request_run_cancellation(run.id, force=False)
+
+    assert cancelled.status == RunStatus.cancelled
+    assert repeated.status == RunStatus.cancelled
+    assert production.run_cancel_mode(run.id) == "force"
+    assert production.requested_run_cancel_mode("missing-run") is None
+    with db_session_factory() as session:
+        assert session.get(JobRow, job.id).status == JobStatus.cancelled.value
+        durable_run = session.get(WorkflowRunRow, run.id)
+        assert durable_run.finished_at is not None
+        assert durable_run.cancel_requested_at is not None
+
+
+def test_cancelling_row_without_mode_defaults_to_graceful(db_session_factory):
+    production = SqlAlchemyProductionRepository(db_session_factory)
+    job, run = _job_and_run("legacy_cancel_mode")
+    _seed_running_run(production, job, run)
+    with db_session_factory() as session:
+        durable_run = session.get(WorkflowRunRow, run.id)
+        durable_run.status = RunStatus.cancelling.value
+        durable_run.cancel_mode = None
+        session.commit()
+
+    assert production.requested_run_cancel_mode(run.id) == "graceful"
 
 
 def test_cancelled_terminal_state_cannot_be_reverted_by_stale_snapshot(db_session_factory):

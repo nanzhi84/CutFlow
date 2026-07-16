@@ -620,8 +620,9 @@ def test_real_0057_to_0061_upgrade_keeps_historical_run_apis_readable(
             "sfx.asset_missing"
         ]
         with isolated_engine.connect() as connection:
-            assert connection.execute(text("select version_num from alembic_version")).scalar_one() == (
-                "0062_drop_v1_prompts"
+            assert (
+                connection.execute(text("select version_num from alembic_version")).scalar_one()
+                == "0063_workflow_cancel_request"
             )
     finally:
         if isolated_engine is not None:

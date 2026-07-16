@@ -261,6 +261,21 @@ class _EscalatingCancellationToken:
         return time.monotonic() >= self.force_deadline
 
 
+class _FailingCancellationToken:
+    def __init__(self, pid_file) -> None:
+        self.pid_file = pid_file
+
+    @property
+    def cancelled(self) -> bool:
+        if self.pid_file.exists():
+            raise RuntimeError("cancellation backend failed")
+        return False
+
+    @property
+    def force(self) -> bool:
+        return False
+
+
 def _wait_for_process_exit(pid: int, *, timeout: float = 2.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -401,6 +416,18 @@ def test_ffmpeg_runner_timeout_kills_and_reaps_process_group(tmp_path):
         )
 
     assert excinfo.value.error_code.value == "provider.timeout"
+    _assert_process_tree_exited(pid_file)
+
+
+def test_ffmpeg_runner_reaps_process_group_when_cancellation_check_fails(tmp_path):
+    pid_file = tmp_path / "checker-failure-pids.txt"
+    token = _FailingCancellationToken(pid_file)
+
+    with cancellation_scope(token), pytest.raises(RuntimeError, match="backend failed"):
+        ffmpeg_mod.FfmpegRunner(timeout_sec=10).run(
+            [sys.executable, "-c", _process_tree_script(pid_file, ignore_sigterm=True)]
+        )
+
     _assert_process_tree_exited(pid_file)
 
 
