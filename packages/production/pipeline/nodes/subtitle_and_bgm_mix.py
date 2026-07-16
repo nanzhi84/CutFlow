@@ -32,12 +32,14 @@ from packages.production.pipeline._font_metrics import load_font_metrics
 from packages.production.pipeline._fonts import ResolvedFont, is_font_collection, resolve_font_asset
 from packages.production.pipeline._node_context import NodeContext
 from packages.production.pipeline._run_state import degradation_notice
-from packages.production.pipeline._sfx_events import plan_emphasis_sfx_events
+from packages.production.pipeline._sfx_events import (
+    CaptionSfxEvent,
+    cooldown_caption_sfx_events,
+    plan_caption_sfx_events,
+)
 from packages.production.pipeline._subtitles import write_ass_subtitles
 
-_CAPTION_EMPHASIS_SFX_TAGS = frozenset(
-    {"caption_emphasis", "caption-emphasis", "light_pop", "light-pop"}
-)
+_SFX_CLASS_TAG_PREFIX = "sfx_class:"
 
 
 def run(ctx: NodeContext) -> NodeOutput:
@@ -143,31 +145,58 @@ def run(ctx: NodeContext) -> NodeOutput:
                 bgm_path = ctx.artifact_path(ctx.source_artifact_for_asset(bgm_asset_id))
 
             sfx_mix_events: list[SfxMixEvent] = []
-            selected_sfx_id = _select_emphasis_sfx_asset_id(
+            sfx_asset_ids_by_class = _select_caption_sfx_asset_ids(
                 ctx.repository.media_assets.values()
             )
-            for request in plan_emphasis_sfx_events(
+            missing_sfx_classes: set[str] = set()
+            sfx_requests = plan_caption_sfx_events(
                 caption_composition=composition,
+                sfx_asset_ids_by_class=sfx_asset_ids_by_class,
+            )
+            for request in sfx_requests:
+                if request.asset_id is not None:
+                    continue
+                if request.sfx_class in missing_sfx_classes:
+                    continue
+                missing_sfx_classes.add(request.sfx_class)
+                warnings.append(WarningCode.sfx_asset_missing)
+                degradations.append(
+                    degradation_notice(
+                        WarningCode.sfx_asset_missing,
+                        f"字幕动画音效类别（{request.sfx_class}）没有可用资产；已无声继续。",
+                        node_id=ctx.node_run.node_id,
+                        affects_true_yield=False,
+                    ).model_copy(
+                        update={"details": {"sfx_class": request.sfx_class}}
+                    )
+                )
+
+            resolved_sfx_paths, unreadable_sfx_asset_ids = _resolve_caption_sfx_paths(
+                ctx,
+                sfx_requests,
+            )
+            for asset_id in sorted(unreadable_sfx_asset_ids):
+                warnings.append(WarningCode.sfx_asset_missing)
+                degradations.append(
+                    degradation_notice(
+                        WarningCode.sfx_asset_missing,
+                        f"强调字幕音效资产（{asset_id}）无法读取；已无声继续。",
+                        node_id=ctx.node_run.node_id,
+                        affects_true_yield=False,
+                    )
+                )
+
+            for request in cooldown_caption_sfx_events(
+                sfx_requests,
                 duration=duration,
-                sfx_asset_id=selected_sfx_id,
+                playable_asset_ids=resolved_sfx_paths,
             ):
                 asset_id = request.asset_id
-                try:
-                    source_path = ctx.artifact_path(ctx.source_artifact_for_asset(asset_id))
-                except NodeExecutionError:
-                    warnings.append(WarningCode.sfx_asset_missing)
-                    degradations.append(
-                        degradation_notice(
-                            WarningCode.sfx_asset_missing,
-                            f"强调字幕音效资产（{asset_id}）无法读取；已无声继续。",
-                            node_id=ctx.node_run.node_id,
-                            affects_true_yield=False,
-                        )
-                    )
+                if asset_id is None:
                     continue
                 sfx_mix_events.append(
                     SfxMixEvent(
-                        path=Path(source_path),
+                        path=resolved_sfx_paths[asset_id],
                         start_ms=request.start_ms,
                         volume=request.volume,
                         asset_id=asset_id,
@@ -276,18 +305,45 @@ def run(ctx: NodeContext) -> NodeOutput:
     )
 
 
-def _select_emphasis_sfx_asset_id(assets) -> str | None:
-    """Select only an explicitly tagged light caption-emphasis sound."""
+def _select_caption_sfx_asset_ids(assets) -> dict[str, str]:
+    """Select the lexicographically first usable asset for each SFX class tag."""
 
+    selected: dict[str, str] = {}
     for asset in sorted(assets, key=lambda item: item.id):
         tags = {str(tag).strip().lower() for tag in asset.tags}
-        if (
-            asset.kind == "sfx"
-            and asset.usable
-            and tags.intersection(_CAPTION_EMPHASIS_SFX_TAGS)
-        ):
-            return str(asset.id)
-    return None
+        if asset.kind != "sfx" or not asset.usable:
+            continue
+        for tag in sorted(tags):
+            if tag.startswith(_SFX_CLASS_TAG_PREFIX):
+                sfx_class = tag.removeprefix(_SFX_CLASS_TAG_PREFIX).strip()
+                if sfx_class:
+                    selected.setdefault(sfx_class, str(asset.id))
+    return selected
+
+
+def _resolve_caption_sfx_paths(
+    ctx: NodeContext,
+    requests: list[CaptionSfxEvent],
+) -> tuple[dict[str, Path], set[str]]:
+    """Resolve and probe assigned SFX before they are allowed to consume cooldown."""
+
+    resolved: dict[str, Path] = {}
+    unreadable: set[str] = set()
+    for request in requests:
+        asset_id = request.asset_id
+        if asset_id is None or asset_id in resolved or asset_id in unreadable:
+            continue
+        try:
+            path = Path(ctx.artifact_path(ctx.source_artifact_for_asset(asset_id)))
+            media_info = probe_media(path)
+        except (NodeExecutionError, FfmpegCommandError, OSError):
+            unreadable.add(asset_id)
+            continue
+        if media_info.media_type != "audio":
+            unreadable.add(asset_id)
+            continue
+        resolved[asset_id] = path
+    return resolved, unreadable
 
 
 def _resolve_planned_font(

@@ -593,7 +593,7 @@ def test_ass_golden_uses_one_dialogue_per_run_and_no_legacy_geometry(tmp_path) -
         for line in dialogue
         if (match := re.search(r"\\pos\((\d+),(\d+)\)", line))
     ]
-    assert positions == [(472, 1565), (512, 1558), (568, 1565)]
+    assert positions == [(471, 1565), (511, 1558), (569, 1565)]
     rendered_text = "".join(re.sub(r"^.*?\}\s*", "", line) for line in dialogue)
     assert rendered_text == "普通强调收尾"
 

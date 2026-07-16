@@ -12,6 +12,7 @@ from packages.core.contracts.caption_policy import (
     CAPTION_LINE_HEIGHT_RATIO,
     CAPTION_MAX_WIDTH_RATIO,
 )
+from packages.core.contracts.caption_effects_policy import caption_effect_roles
 
 from packages.core.contracts import (
     ArtifactRef,
@@ -489,17 +490,34 @@ class BgmAgentDiagnosticsArtifact(ContractModel):
     provider_invocation_ids: list[str] = Field(default_factory=list)
 
 
+CaptionEffectId = Literal[
+    "none",
+    "soft_in",
+    "fade_through",
+    "wipe_reveal",
+    "slide_up_in",
+    "pop",
+    "pop_rotate",
+    "jelly_pop",
+    "drop_in",
+    "zoom_settle",
+]
+
+
 class CaptionRun(ContractModel):
     run_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
     role: Literal["normal", "emphasis"]
     hint_id: str | None = None
+    style_id: str | None = None
     token_ids: list[str] = Field(default_factory=list)
     char_span: tuple[int, int]
     enter_frame: int = Field(ge=0)
     exit_frame: int = Field(gt=0)
-    effect_id: Literal["none", "soft_in", "pop"] = "none"
+    effect_id: CaptionEffectId = "none"
     font_asset_id: str | None = None
+    char_enter_frames: list[int] | None = None
+    char_advances_px: list[float] | None = None
     advance_px: float = Field(ge=0.0)
     baseline_offset_px: float = Field(ge=0.0)
 
@@ -510,19 +528,34 @@ class CaptionRun(ContractModel):
             raise ValueError("caption run char_span must be a positive half-open range")
         if self.exit_frame <= self.enter_frame:
             raise ValueError("caption run exit_frame must be greater than enter_frame")
-        allowed = {"normal": {"none", "soft_in"}, "emphasis": {"none", "pop"}}
-        if self.effect_id not in allowed[self.role]:
+        if self.role not in caption_effect_roles(self.effect_id):
             raise ValueError(f"{self.role} caption run cannot use {self.effect_id}")
         if self.role == "emphasis" and not self.hint_id:
             raise ValueError("emphasis caption run requires hint_id")
         if self.role == "normal" and self.hint_id is not None:
             raise ValueError("normal caption run cannot carry hint_id")
+        if (self.char_enter_frames is None) != (self.char_advances_px is None):
+            raise ValueError("caption character timing and advances must be provided together")
+        if self.char_enter_frames is not None and self.char_advances_px is not None:
+            if len(self.char_enter_frames) != len(self.text):
+                raise ValueError("caption character timing must align with run text")
+            if len(self.char_advances_px) != len(self.text):
+                raise ValueError("caption character advances must align with run text")
+            if any(frame < self.enter_frame or frame >= self.exit_frame for frame in self.char_enter_frames):
+                raise ValueError("caption character timing must stay inside its run")
+            if self.char_enter_frames != sorted(self.char_enter_frames):
+                raise ValueError("caption character timing must be monotonic")
+            if any(advance < 0 for advance in self.char_advances_px):
+                raise ValueError("caption character advances must be non-negative")
+            if abs(sum(self.char_advances_px) - self.advance_px) > 0.51:
+                raise ValueError("caption character advances must sum to run advance")
         return self
 
 
 class CaptionLine(ContractModel):
     runs: list[CaptionRun] = Field(min_length=1)
     advance_px: float = Field(ge=0.0)
+    animation_headroom_px: float = Field(0.0, ge=0.0)
 
     @model_validator(mode="after")
     def validate_line(self) -> "CaptionLine":
