@@ -44,8 +44,16 @@ def upgrade() -> None:
         bind.execute(
             sa.text(
                 """
-                delete from prompt_versions
-                where prompt_template_id in ('prompt_huazi_subagent', 'prompt_postprocess_agent')
+                delete from prompt_versions version
+                where version.prompt_template_id in (
+                    'prompt_huazi_subagent',
+                    'prompt_postprocess_agent'
+                )
+                  and not exists (
+                      select 1
+                      from prompt_invocations invocation
+                      where invocation.prompt_version_id = version.id
+                  )
                 """
             )
         )
@@ -53,8 +61,23 @@ def upgrade() -> None:
         bind.execute(
             sa.text(
                 """
-                delete from prompt_templates
-                where id in ('prompt_huazi_subagent', 'prompt_postprocess_agent')
+                delete from prompt_templates template
+                where template.id in ('prompt_huazi_subagent', 'prompt_postprocess_agent')
+                  and not exists (
+                      select 1
+                      from prompt_versions version
+                      where version.prompt_template_id = template.id
+                  )
+                  and not exists (
+                      select 1
+                      from prompt_invocations invocation
+                      where invocation.prompt_template_id = template.id
+                  )
+                  and not exists (
+                      select 1
+                      from prompt_experiments experiment
+                      where experiment.prompt_template_id = template.id
+                  )
                 """
             )
         )

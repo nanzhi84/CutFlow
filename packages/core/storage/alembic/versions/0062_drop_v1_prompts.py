@@ -33,10 +33,42 @@ def upgrade() -> None:
         )
     if inspector.has_table("prompt_versions"):
         bind.execute(
-            sa.text("delete from prompt_versions where prompt_template_id = 'prompt_editing_agent'")
+            sa.text(
+                """
+                delete from prompt_versions version
+                where version.prompt_template_id = 'prompt_editing_agent'
+                  and not exists (
+                      select 1
+                      from prompt_invocations invocation
+                      where invocation.prompt_version_id = version.id
+                  )
+                """
+            )
         )
     if inspector.has_table("prompt_templates"):
-        bind.execute(sa.text("delete from prompt_templates where id = 'prompt_editing_agent'"))
+        bind.execute(
+            sa.text(
+                """
+                delete from prompt_templates template
+                where template.id = 'prompt_editing_agent'
+                  and not exists (
+                      select 1
+                      from prompt_versions version
+                      where version.prompt_template_id = template.id
+                  )
+                  and not exists (
+                      select 1
+                      from prompt_invocations invocation
+                      where invocation.prompt_template_id = template.id
+                  )
+                  and not exists (
+                      select 1
+                      from prompt_experiments experiment
+                      where experiment.prompt_template_id = template.id
+                  )
+                """
+            )
+        )
     if inspector.has_table("artifacts") and inspector.has_table("node_runs"):
         bind.execute(
             sa.text(

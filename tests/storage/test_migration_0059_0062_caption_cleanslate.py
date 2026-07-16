@@ -21,6 +21,7 @@ from packages.core.storage.database import (
     JobRow,
     NodeRunRow,
     PromptBindingRow,
+    PromptInvocationRow,
     PromptTemplateRow,
     PromptVersionRow,
     UserGenerationDefaultsRow,
@@ -393,6 +394,74 @@ def test_0061_drops_v1_prompts_and_v1_warning_codes_idempotently(
         assert node.degradations == [valid_degradation]
         assert report.payload["warnings"] == ["sfx.asset_missing"]
         assert report.payload["degradations"] == [valid_degradation]
+
+
+def test_retired_prompt_cleanup_preserves_historical_invocation_audit(
+    db_session_factory,
+) -> None:
+    engine = db_session_factory.kw["bind"]
+    retired_prompts = (
+        ("prompt_huazi_subagent", "prompt_huazi_subagent_v1"),
+        ("prompt_postprocess_agent", "prompt_postprocess_agent_v1"),
+        ("prompt_editing_agent", "prompt_editing_agent_v1"),
+    )
+
+    with db_session_factory() as session:
+        for template_id, version_id in retired_prompts:
+            if session.get(PromptTemplateRow, template_id) is None:
+                session.add(
+                    PromptTemplateRow(
+                        id=template_id,
+                        name="retired audit fixture",
+                        purpose="retired audit fixture",
+                        variables_schema_ref={"schema_id": "retired.variables"},
+                        output_schema_ref={"schema_id": "retired.output"},
+                        status="active",
+                    )
+                )
+                session.flush()
+            if session.get(PromptVersionRow, version_id) is None:
+                session.add(
+                    PromptVersionRow(
+                        id=version_id,
+                        prompt_template_id=template_id,
+                        content="retired audit fixture",
+                        status="published",
+                    )
+                )
+                session.flush()
+            session.add(
+                PromptBindingRow(
+                    id=f"pbd_audit_{template_id}",
+                    prompt_template_id=template_id,
+                    prompt_version_id=version_id,
+                    node_id="RetiredAuditFixture",
+                    priority=1,
+                )
+            )
+            session.add(
+                PromptInvocationRow(
+                    id=f"pri_audit_{template_id}",
+                    prompt_template_id=template_id,
+                    prompt_version_id=version_id,
+                    status="succeeded",
+                )
+            )
+        session.commit()
+
+    _upgrade(engine, "0061_caption_cleanslate_cleanup.py")
+    _upgrade(engine, "0062_drop_v1_prompts.py")
+
+    with db_session_factory() as session:
+        for template_id, version_id in retired_prompts:
+            assert session.get(PromptTemplateRow, template_id) is not None
+            assert session.get(PromptVersionRow, version_id) is not None
+            assert session.get(PromptInvocationRow, f"pri_audit_{template_id}") is not None
+            assert session.execute(
+                select(PromptBindingRow).where(
+                    PromptBindingRow.prompt_template_id == template_id
+                )
+            ).scalar_one_or_none() is None
 
 
 def test_historical_prompt_migrations_no_longer_read_mutable_seed_json() -> None:
