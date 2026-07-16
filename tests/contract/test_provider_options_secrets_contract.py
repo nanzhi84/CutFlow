@@ -112,6 +112,7 @@ def test_warning_code_is_single_spec_enum_and_degradation_notice_shape():
         # the LLM path is unavailable.
         "window_query.template_fallback",
         "font.metrics_fallback",
+        "font.glyph_fallback",
         "caption.composition_fallback",
         "bgm.planning_failed",
         "sfx.asset_missing",

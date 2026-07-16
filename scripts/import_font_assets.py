@@ -6,8 +6,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import shutil
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from packages.core.contracts import ArtifactKind, utcnow
@@ -22,7 +25,7 @@ class FontSpec:
     asset_id: str
     title: str
     filename: str
-    url: str
+    url: str | None
     sha256: str
     content_type: str
     family: str
@@ -31,6 +34,10 @@ class FontSpec:
     usages: tuple[str, ...]
     source_repo: str
     license_url: str
+    license: str
+    archive_url: str | None = None
+    archive_member: str | None = None
+    archive_sha256: str | None = None
 
 
 FONT_PACK: tuple[FontSpec, ...] = (
@@ -49,6 +56,7 @@ FONT_PACK: tuple[FontSpec, ...] = (
         usages=("normal_subtitle",),
         source_repo="https://github.com/notofonts/noto-cjk",
         license_url="https://github.com/notofonts/noto-cjk/blob/main/LICENSE",
+        license="OFL-1.1",
     ),
     FontSpec(
         asset_id="asset_font_noto_sans_cjk_sc_bold",
@@ -65,6 +73,7 @@ FONT_PACK: tuple[FontSpec, ...] = (
         usages=("normal_subtitle", "huazi"),
         source_repo="https://github.com/notofonts/noto-cjk",
         license_url="https://github.com/notofonts/noto-cjk/blob/main/LICENSE",
+        license="OFL-1.1",
     ),
     FontSpec(
         asset_id="asset_font_noto_serif_cjk_sc_regular",
@@ -81,6 +90,7 @@ FONT_PACK: tuple[FontSpec, ...] = (
         usages=("normal_subtitle",),
         source_repo="https://github.com/notofonts/noto-cjk",
         license_url="https://github.com/notofonts/noto-cjk/blob/main/LICENSE",
+        license="OFL-1.1",
     ),
     FontSpec(
         asset_id="asset_font_noto_serif_cjk_sc_bold",
@@ -97,6 +107,7 @@ FONT_PACK: tuple[FontSpec, ...] = (
         usages=("huazi",),
         source_repo="https://github.com/notofonts/noto-cjk",
         license_url="https://github.com/notofonts/noto-cjk/blob/main/LICENSE",
+        license="OFL-1.1",
     ),
     FontSpec(
         asset_id="asset_font_lxgw_wenkai_regular",
@@ -113,6 +124,135 @@ FONT_PACK: tuple[FontSpec, ...] = (
         usages=("huazi",),
         source_repo="https://github.com/lxgw/LxgwWenKai",
         license_url="https://github.com/lxgw/LxgwWenKai/blob/main/LICENSE",
+        license="OFL-1.1",
+    ),
+    FontSpec(
+        asset_id="asset_font_zcool_kuaile",
+        title="ZCOOL KuaiLe Regular",
+        filename="ZCOOLKuaiLe-Regular.ttf",
+        url="https://raw.githubusercontent.com/google/fonts/"
+        "26c5c976d82d50c24a8f0a7ac455e0a7c639c226/ofl/"
+        "zcoolkuaile/ZCOOLKuaiLe-Regular.ttf",
+        sha256="812a6fc1fe54b6d73a419245c32dfeba8aa33104d5be90d1cf6af082007cb71d",
+        content_type="font/ttf",
+        family="ZCOOL KuaiLe",
+        weight=400,
+        style="pop_round_handwritten",
+        usages=("huazi",),
+        source_repo="https://github.com/google/fonts",
+        license_url="https://github.com/google/fonts/blob/"
+        "26c5c976d82d50c24a8f0a7ac455e0a7c639c226/ofl/zcoolkuaile/OFL.txt",
+        license="OFL-1.1",
+    ),
+    FontSpec(
+        asset_id="asset_font_zcool_qingke_huangyou",
+        title="ZCOOL QingKe HuangYou Regular",
+        filename="ZCOOLQingKeHuangYou-Regular.ttf",
+        url="https://raw.githubusercontent.com/google/fonts/"
+        "26c5c976d82d50c24a8f0a7ac455e0a7c639c226/ofl/"
+        "zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf",
+        sha256="54f0c0df4308cd74cd0f2fd3494ae054dbc4a1fd6fa7d71f4807eb4cdd8b4136",
+        content_type="font/ttf",
+        family="ZCOOL QingKe HuangYou",
+        weight=400,
+        style="pop_rounded",
+        usages=("huazi",),
+        source_repo="https://github.com/google/fonts",
+        license_url="https://github.com/google/fonts/blob/"
+        "26c5c976d82d50c24a8f0a7ac455e0a7c639c226/ofl/"
+        "zcoolqingkehuangyou/OFL.txt",
+        license="OFL-1.1",
+    ),
+    FontSpec(
+        asset_id="asset_font_mashanzheng",
+        title="Ma Shan Zheng Regular",
+        filename="MaShanZheng-Regular.ttf",
+        url="https://raw.githubusercontent.com/google/fonts/"
+        "26c5c976d82d50c24a8f0a7ac455e0a7c639c226/ofl/"
+        "mashanzheng/MaShanZheng-Regular.ttf",
+        sha256="b844c59bf20bf530e41c20d6ff12b383b23a2e553b9b68cc89f070869213155d",
+        content_type="font/ttf",
+        family="Ma Shan Zheng",
+        weight=400,
+        style="brush_handwritten",
+        usages=("huazi",),
+        source_repo="https://github.com/google/fonts",
+        license_url="https://github.com/google/fonts/blob/"
+        "26c5c976d82d50c24a8f0a7ac455e0a7c639c226/ofl/mashanzheng/OFL.txt",
+        license="OFL-1.1",
+    ),
+    FontSpec(
+        asset_id="asset_font_zhimangxing",
+        title="Zhi Mang Xing Regular",
+        filename="ZhiMangXing-Regular.ttf",
+        url="https://raw.githubusercontent.com/google/fonts/"
+        "26c5c976d82d50c24a8f0a7ac455e0a7c639c226/ofl/"
+        "zhimangxing/ZhiMangXing-Regular.ttf",
+        sha256="644e0cae9b40f0b10ab729a01bd32032e3973bac22be3dccae01bf6ae7fde969",
+        content_type="font/ttf",
+        family="Zhi Mang Xing",
+        weight=400,
+        style="running_handwritten",
+        usages=("huazi",),
+        source_repo="https://github.com/google/fonts",
+        license_url="https://github.com/google/fonts/blob/"
+        "26c5c976d82d50c24a8f0a7ac455e0a7c639c226/ofl/zhimangxing/OFL.txt",
+        license="OFL-1.1",
+    ),
+    FontSpec(
+        asset_id="asset_font_longcang",
+        title="Long Cang Regular",
+        filename="LongCang-Regular.ttf",
+        url="https://raw.githubusercontent.com/google/fonts/"
+        "26c5c976d82d50c24a8f0a7ac455e0a7c639c226/ofl/"
+        "longcang/LongCang-Regular.ttf",
+        sha256="e5bf2c3f24ef2327c6f136d8f73e2f9dfdf44896fdbeb35a9515f44777bb91bc",
+        content_type="font/ttf",
+        family="Long Cang",
+        weight=400,
+        style="pen_handwritten",
+        usages=("huazi",),
+        source_repo="https://github.com/google/fonts",
+        license_url="https://github.com/google/fonts/blob/"
+        "26c5c976d82d50c24a8f0a7ac455e0a7c639c226/ofl/longcang/OFL.txt",
+        license="OFL-1.1",
+    ),
+    FontSpec(
+        asset_id="asset_font_smiley_sans",
+        title="Smiley Sans Oblique",
+        filename="SmileySans-Oblique.ttf",
+        url=None,
+        sha256="b447d7e781f08bc95c4c9f23ba71ed2b8ebb639aa7184485c71c4ca5afcd25c4",
+        content_type="font/ttf",
+        family="Smiley Sans Oblique",
+        weight=400,
+        style="modern_oblique",
+        usages=("huazi",),
+        source_repo="https://github.com/atelier-anchor/smiley-sans",
+        license_url="https://github.com/atelier-anchor/smiley-sans/blob/v2.0.1/LICENSE",
+        license="OFL-1.1",
+        archive_url="https://github.com/atelier-anchor/smiley-sans/releases/download/"
+        "v2.0.1/smiley-sans-v2.0.1.zip",
+        archive_member="SmileySans-Oblique.ttf",
+        archive_sha256="299c0be6c960ae37361762eca76f7d0cd516615435bb96c0d4b98a1e70178a07",
+    ),
+    FontSpec(
+        asset_id="asset_font_lxgw_marker",
+        title="LXGW Marker Gothic Regular",
+        filename="LXGWMarkerGothic-Regular.ttf",
+        url="https://raw.githubusercontent.com/lxgw/LxgwMarkerGothic/"
+        "8c45e4f1a347afc84d1db5b94449a9523da07331/fonts/ttf/"
+        "LXGWMarkerGothic-Regular.ttf",
+        sha256="9a1e46379442856b9fc64de1d9bd4120903780990e28d99fd6415cadee78a47d",
+        content_type="font/ttf",
+        family="LXGW Marker Gothic",
+        weight=400,
+        style="marker_rounded",
+        usages=("huazi",),
+        source_repo="https://github.com/lxgw/LxgwMarkerGothic",
+        license_url="https://github.com/lxgw/LxgwMarkerGothic/blob/"
+        "8c45e4f1a347afc84d1db5b94449a9523da07331/OFL.txt",
+        license="OFL-1.1",
     ),
 )
 
@@ -162,11 +302,50 @@ def _download(url: str, target: Path, *, expected_sha256: str, force: bool) -> N
     tmp.replace(target)
 
 
+def _materialize_font(spec: FontSpec, download_dir: Path, *, force: bool) -> Path:
+    target = download_dir / spec.filename
+    if target.exists() and not force and _file_sha256(target) == spec.sha256:
+        return target
+    if spec.archive_url is None:
+        if not spec.url:
+            raise RuntimeError(f"{spec.asset_id} has no direct font URL")
+        _download(spec.url, target, expected_sha256=spec.sha256, force=force)
+        return target
+    if not spec.archive_member or not spec.archive_sha256:
+        raise RuntimeError(f"{spec.asset_id} archive source is incomplete")
+
+    archive_name = Path(urlparse(spec.archive_url).path).name or f"{spec.asset_id}.zip"
+    archive_path = download_dir / "archives" / archive_name
+    _download(
+        spec.archive_url,
+        archive_path,
+        expected_sha256=spec.archive_sha256,
+        force=force,
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_suffix(target.suffix + ".part")
+    try:
+        with zipfile.ZipFile(archive_path) as archive, archive.open(spec.archive_member) as source:
+            with partial.open("wb") as output:
+                shutil.copyfileobj(source, output, length=1024 * 1024)
+        actual_sha256 = _file_sha256(partial)
+        if actual_sha256 != spec.sha256:
+            raise RuntimeError(
+                f"font integrity check failed for {target.name}: "
+                f"expected {spec.sha256}, got {actual_sha256}"
+            )
+        partial.replace(target)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
+    return target
+
+
 def _tags(spec: FontSpec) -> list[str]:
     tags = [
         "font",
         "starter_pack",
-        "license:OFL-1.1",
+        f"license:{spec.license}",
         "lang:zh-CN",
         f"family:{spec.family}",
         f"style:{spec.style}",
@@ -192,10 +371,11 @@ def _payload(spec: FontSpec, *, object_uri: str, size_bytes: int, sha256: str) -
             "weight": spec.weight,
             "style": spec.style,
             "usages": list(spec.usages),
-            "license": "OFL-1.1",
-            "source_url": spec.url,
+            "license": spec.license,
+            "source_url": spec.archive_url or spec.url,
             "source_repo": spec.source_repo,
             "license_url": spec.license_url,
+            "archive_member": spec.archive_member,
         },
     }
 
@@ -257,13 +437,7 @@ def import_fonts(*, download_dir: Path, force_download: bool) -> list[dict[str, 
     results: list[dict[str, str]] = []
     with session_factory() as session:
         for spec in FONT_PACK:
-            local_path = download_dir / spec.filename
-            _download(
-                spec.url,
-                local_path,
-                expected_sha256=spec.sha256,
-                force=force_download,
-            )
+            local_path = _materialize_font(spec, download_dir, force=force_download)
             stored = store_file(
                 store,
                 local_path,

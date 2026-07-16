@@ -8,6 +8,7 @@ from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 
 from packages.core.contracts import (
+    Artifact,
     ArtifactKind,
     DigitalHumanVideoRequest,
     ErrorCode,
@@ -16,6 +17,7 @@ from packages.core.contracts import (
     NodeRun,
     NodeStatus,
     RunStatus,
+    WarningCode,
     WorkflowRun,
 )
 from packages.core.contracts.artifacts import (
@@ -34,7 +36,7 @@ from packages.media.assets import store_file
 from packages.media.video.ffmpeg import FfmpegCommandError
 from packages.production.pipeline import digital_human as digital_human_module
 from packages.production.pipeline._node_context import NodeContext
-from packages.production.pipeline._fonts import ResolvedFont
+from packages.production.pipeline._fonts import DEFAULT_EMPHASIS_FONT_ASSET_ID, ResolvedFont
 from packages.production.pipeline._run_state import RunState
 from packages.production.pipeline._speech_timing import proportional_tokens
 from packages.production.pipeline.digital_human import LocalRuntimeAdapter
@@ -50,14 +52,16 @@ from packages.production.pipeline.nodes.subtitle_and_bgm_mix import (
 from packages.production.pipeline._sfx_events import plan_emphasis_sfx_events
 
 
-def _build_font(path: Path, family: str) -> None:
-    glyph_order = [".notdef", "A"]
+def _build_font(path: Path, family: str, *, characters: str = "A") -> None:
+    codepoints = sorted({ord(char) for char in characters})
+    glyph_names = {codepoint: f"uni{codepoint:04X}" for codepoint in codepoints}
+    glyph_order = [".notdef", *glyph_names.values()]
     empty = TTGlyphPen(None).glyph()
     font = FontBuilder(1000, isTTF=True)
     font.setupGlyphOrder(glyph_order)
-    font.setupCharacterMap({0x41: "A"})
+    font.setupCharacterMap(glyph_names)
     font.setupGlyf({name: empty for name in glyph_order})
-    font.setupHorizontalMetrics({".notdef": (600, 0), "A": (500, 0)})
+    font.setupHorizontalMetrics({name: (500, 0) for name in glyph_order})
     font.setupHorizontalHeader(ascent=800, descent=-200)
     font.setupNameTable({"familyName": family, "styleName": "Regular"})
     font.setupOS2(sTypoAscender=800, sTypoDescender=-200)
@@ -97,9 +101,10 @@ def _register_font(
     tmp_path: Path,
     asset_id: str,
     family: str,
+    characters: str = "A",
 ) -> None:
     path = tmp_path / f"{asset_id}.ttf"
-    _build_font(path, family)
+    _build_font(path, family, characters=characters)
     source = _stored_artifact(
         repository,
         object_store,
@@ -280,6 +285,102 @@ def test_caption_composition_rejects_an_invalid_input_artifact() -> None:
     assert exc.value.error.retryable is False
 
 
+def test_caption_node_ignores_creative_hints_when_emphasis_is_disabled(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    script = "普通字幕"
+    request = DigitalHumanVideoRequest(
+        case_id="case_caption_disabled",
+        script=script,
+        voice={"voice_id": "voice_sandbox"},
+        subtitle={
+            "enabled": True,
+            "normal_enabled": True,
+            "emphasis_enabled": False,
+            "font_id": "font_normal",
+        },
+        bgm={"enabled": False},
+        output={"width": 1080, "height": 1920, "fps": 30},
+    )
+    state = RunState(
+        request=request,
+        artifacts={
+            ArtifactKind.plan_timeline: SimpleNamespace(
+                payload={
+                    "fps": 30,
+                    "total_frames": 60,
+                    "tracks": [],
+                    "validation": {"valid": True},
+                }
+            ),
+            ArtifactKind.narration_units: SimpleNamespace(
+                payload={
+                    "source": "tts",
+                    "strict": True,
+                    "units": [
+                        {
+                            "unit_id": "unit_0001",
+                            "text": script,
+                            "start": 0.0,
+                            "end": 2.0,
+                            "confidence": 1.0,
+                        }
+                    ],
+                }
+            ),
+            ArtifactKind.audio_alignment: SimpleNamespace(
+                payload={
+                    "audio_artifact_id": "audio",
+                    "segments": [],
+                    "source": "tts",
+                    "tokens": [
+                        token.model_dump(mode="json")
+                        for token in proportional_tokens(script, start=0.0, end=2.0)
+                    ],
+                }
+            ),
+            ArtifactKind.creative_intent: SimpleNamespace(
+                payload={"emphasis": [{"phrase": "字幕", "display_mode": "inline"}]}
+            ),
+        },
+    )
+    metrics = SimpleNamespace(cell_height=1000, ascender=800)
+    resolved = ResolvedFont("Normal", tmp_path, tmp_path / "normal.ttf")
+    monkeypatch.setattr(
+        caption_composition_planning,
+        "_resolve_required_font",
+        lambda *_args, **_kwargs: resolved,
+    )
+    monkeypatch.setattr(caption_composition_planning, "load_font_metrics", lambda _path: metrics)
+    monkeypatch.setattr(
+        caption_composition_planning,
+        "make_text_measurer",
+        lambda *_args: (lambda text: len(text) * 10.0, "hmtx"),
+    )
+    monkeypatch.setattr(
+        caption_composition_planning,
+        "font_text_safety_report",
+        lambda *_args: caption_composition_planning.FontTextSafetyReport(),
+    )
+    ctx = SimpleNamespace(
+        state=state,
+        node_run=SimpleNamespace(node_id="CaptionCompositionPlanning"),
+        artifact=lambda kind, payload, schema: Artifact(
+            id="art_caption_disabled",
+            kind=kind,
+            payload=payload,
+            payload_schema=schema,
+        ),
+    )
+
+    output = caption_composition_planning.run(ctx)
+
+    assert output.status == NodeStatus.succeeded
+    assert output.artifacts[0].payload["emphasis_enabled"] is False
+    assert output.artifacts[0].payload["diagnostics"]["hints_total"] == 0
+
+
 def test_final_mix_rejects_an_invalid_composition_artifact() -> None:
     artifacts = {
         ArtifactKind.video_rendered: SimpleNamespace(),
@@ -307,14 +408,15 @@ def test_caption_composition_to_mix_roundtrip_is_shared_by_both_workflows(
     repository = Repository()
     object_store = LocalObjectStore(tmp_path / "objects")
     monkeypatch.setattr(digital_human_module, "get_object_store", lambda: object_store)
-    monkeypatch.setattr(caption_composition_planning, "font_text_safety_issue", lambda *_: None)
+    script = "普通字幕包含重点强调"
 
     _register_font(
         repository,
         object_store,
         tmp_path=tmp_path,
-        asset_id="font_normal",
+        asset_id=DEFAULT_EMPHASIS_FONT_ASSET_ID,
         family="Caption Normal",
+        characters=script,
     )
     _register_font(
         repository,
@@ -322,8 +424,8 @@ def test_caption_composition_to_mix_roundtrip_is_shared_by_both_workflows(
         tmp_path=tmp_path,
         asset_id="font_emphasis",
         family="Caption Emphasis",
+        characters=script.replace("点", ""),
     )
-
     rendered_path = tmp_path / "rendered.mp4"
     rendered_path.write_bytes(b"rendered fixture")
     audio_path = tmp_path / "voice.wav"
@@ -342,7 +444,6 @@ def test_caption_composition_to_mix_roundtrip_is_shared_by_both_workflows(
         kind=ArtifactKind.audio_tts,
         media_type="audio",
     )
-    script = "普通字幕包含重点强调"
     timeline = repository.create_artifact(
         kind=ArtifactKind.plan_timeline,
         payload_schema="TimelinePlanArtifact.v1",
@@ -404,7 +505,7 @@ def test_caption_composition_to_mix_roundtrip_is_shared_by_both_workflows(
             "enabled": True,
             "normal_enabled": True,
             "emphasis_enabled": True,
-            "font_id": "font_normal",
+            "font_id": DEFAULT_EMPHASIS_FONT_ASSET_ID,
             "emphasis_font_id": "font_emphasis",
             "font_size": 42,
             "emphasis_font_size": 46,
@@ -429,7 +530,7 @@ def test_caption_composition_to_mix_roundtrip_is_shared_by_both_workflows(
                 "emphasis_outline": 4,
             },
             "bgm": {"enabled": False},
-            "font_asset_id": "font_normal",
+            "font_asset_id": DEFAULT_EMPHASIS_FONT_ASSET_ID,
         },
         case_id="case_caption_roundtrip",
     )
@@ -472,6 +573,8 @@ def test_caption_composition_to_mix_roundtrip_is_shared_by_both_workflows(
             state=state,
         )
     )
+    assert caption_output.status == NodeStatus.degraded
+    assert caption_output.warnings == [WarningCode.font_glyph_fallback]
     composition = next(
         artifact
         for artifact in caption_output.artifacts
@@ -485,6 +588,13 @@ def test_caption_composition_to_mix_roundtrip_is_shared_by_both_workflows(
         for item in line["runs"]
         if item["role"] == "emphasis"
     ] == ["重点强调"]
+    assert [
+        item["font_asset_id"]
+        for cue in composition.payload["cues"]
+        for line in cue["lines"]
+        for item in line["runs"]
+        if item["role"] == "emphasis"
+    ] == [DEFAULT_EMPHASIS_FONT_ASSET_ID]
 
     if workflow_template_id == "digital_human_editing_agent_v2":
         bgm_output = bgm_agent_planning.run(
@@ -609,6 +719,7 @@ def test_caption_composition_to_mix_roundtrip_is_shared_by_both_workflows(
     if workflow_template_id == "digital_human_v2":
         assert "Style: Normal,Caption Normal" in str(captured["ass"])
         assert "Style: Emphasis,Caption Emphasis" in str(captured["ass"])
+        assert "\\fnCaption Normal\\b0" in str(captured["ass"])
         assert "重点强调" in str(captured["ass"])
     else:
         assert render_calls == 2

@@ -4934,7 +4934,7 @@ export interface components {
          * DegradationCode
          * @enum {string}
          */
-        DegradationCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "broll.insertions_dropped_geometry" | "media_selection_agent.deterministic_fallback" | "window_query.template_fallback" | "timestamp.estimated" | "font.metrics_fallback" | "caption.composition_fallback" | "tts.timing_unavailable" | "bgm.planning_failed" | "sfx.asset_missing" | "sfx.mix_failed";
+        DegradationCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "broll.insertions_dropped_geometry" | "media_selection_agent.deterministic_fallback" | "window_query.template_fallback" | "timestamp.estimated" | "font.metrics_fallback" | "font.glyph_fallback" | "caption.composition_fallback" | "tts.timing_unavailable" | "bgm.planning_failed" | "sfx.asset_missing" | "sfx.mix_failed";
         /** DegradationNotice */
         DegradationNotice: {
             code: components["schemas"]["WarningCode"];
@@ -9281,7 +9281,7 @@ export interface components {
          * WarningCode
          * @enum {string}
          */
-        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced" | "budget.exceeded" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "media_selection_agent.deterministic_fallback" | "media_selection_agent.llm_repair" | "media_selection_agent.local_constraint_repair" | "broll.insertions_dropped_geometry" | "window_query.template_fallback" | "font.metrics_fallback" | "caption.composition_fallback" | "tts.timing_unavailable" | "bgm.planning_failed" | "sfx.asset_missing" | "sfx.mix_failed";
+        WarningCode: "broll.skipped_no_material" | "bgm.skipped_library_unannotated" | "font.default_used" | "cover.frame_fallback" | "timestamp.estimated" | "cost.unpriced" | "budget.exceeded" | "lipsync.fallback_used" | "bgm.loudness_probe_failed" | "font.resolution_failed" | "subtitle.burn_skipped" | "media_selection_agent.deterministic_fallback" | "media_selection_agent.llm_repair" | "media_selection_agent.local_constraint_repair" | "broll.insertions_dropped_geometry" | "window_query.template_fallback" | "font.metrics_fallback" | "font.glyph_fallback" | "caption.composition_fallback" | "tts.timing_unavailable" | "bgm.planning_failed" | "sfx.asset_missing" | "sfx.mix_failed";
         /** WorkflowRun */
         WorkflowRun: {
             /** Id */

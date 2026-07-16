@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
-from packages.core.contracts.artifacts import CaptionCompositionPlanArtifact, StylePlanArtifact
+from packages.core.contracts.artifacts import (
+    CaptionCompositionPlanArtifact,
+    CaptionRun,
+    StylePlanArtifact,
+)
 from packages.production.pipeline._fonts import is_ass_bold_weight
 
 _ASS_MARGIN_L = 80
@@ -33,6 +38,7 @@ def write_ass_subtitles(
     emphasis_font_name: str,
     font_weight: int = 400,
     emphasis_font_weight: int = 400,
+    font_overrides: Mapping[str, tuple[str, int]] | None = None,
 ) -> list[str]:
     """Write one Dialogue per CaptionRun; line breaks and x positions are preplanned."""
 
@@ -91,7 +97,19 @@ def write_ass_subtitles(
         cue_lines = cue.lines
         for line_index, line in enumerate(cue_lines):
             advance = line.advance_px
-            x = anchor_x - advance / 2.0
+            first_font_id = _run_font_asset_id(line.runs[0], caption_composition)
+            last_font_id = _run_font_asset_id(line.runs[-1], caption_composition)
+            left_overhang = caption_composition.diagnostics.font_horizontal_left_overhang_px.get(
+                first_font_id or "",
+                0.0,
+            )
+            right_overhang = (
+                caption_composition.diagnostics.font_horizontal_right_overhang_px.get(
+                    last_font_id or "",
+                    0.0,
+                )
+            )
+            x = anchor_x - (advance + right_overhang - left_overhang) / 2.0
             baseline = baseline_y - (len(cue_lines) - line_index - 1) * line_height
             for run in line.runs:
                 text = ass_escape(run.text)
@@ -99,6 +117,26 @@ def write_ass_subtitles(
                 role = "Emphasis" if run.role == "emphasis" else "Normal"
                 top_y = baseline - run.baseline_offset_px
                 tags = ["\\an7", f"\\pos({round(x)},{round(top_y)})"]
+                planned_font_asset_id = (
+                    caption_composition.emphasis_font_asset_id
+                    if run.role == "emphasis"
+                    else caption_composition.normal_font_asset_id
+                )
+                if run.font_asset_id and run.font_asset_id != planned_font_asset_id:
+                    override = (font_overrides or {}).get(run.font_asset_id)
+                    if override is None:
+                        raise ValueError(
+                            f"caption run font override is unresolved: {run.font_asset_id}"
+                        )
+                    override_name = override[0].replace(",", " ").strip()
+                    if not override_name or any(char in override_name for char in "{}\\"):
+                        raise ValueError("resolved caption run font family name is invalid")
+                    tags.extend(
+                        [
+                            f"\\fn{override_name}",
+                            "\\b1" if is_ass_bold_weight(override[1]) else "\\b0",
+                        ]
+                    )
                 effect = run.effect_id
                 if effect == "soft_in":
                     tags.append("\\fad(120,0)")
@@ -121,6 +159,17 @@ def write_ass_subtitles(
                 x += run_advance
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return []
+
+
+def _run_font_asset_id(
+    run: CaptionRun,
+    composition: CaptionCompositionPlanArtifact,
+) -> str | None:
+    if run.font_asset_id:
+        return run.font_asset_id
+    if run.role == "emphasis":
+        return composition.emphasis_font_asset_id
+    return composition.normal_font_asset_id
 
 
 def _style_row(

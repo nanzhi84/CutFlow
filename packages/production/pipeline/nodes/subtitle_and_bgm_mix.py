@@ -92,6 +92,39 @@ def run(ctx: NodeContext) -> NodeOutput:
                     )
                 else:
                     resolved_emphasis_font = resolved_font
+                override_fonts: dict[str, tuple[str, int]] = {}
+                override_font_ids = sorted(
+                    {
+                        run.font_asset_id
+                        for cue in composition.cues
+                        for line in cue.lines
+                        for run in line.runs
+                        if run.font_asset_id
+                        and run.font_asset_id
+                        != (
+                            composition.emphasis_font_asset_id
+                            if run.role == "emphasis"
+                            else composition.normal_font_asset_id
+                        )
+                    }
+                )
+                for asset_id in override_font_ids:
+                    override_font = (
+                        resolved_font
+                        if asset_id == composition.normal_font_asset_id
+                        else resolved_emphasis_font
+                        if asset_id == composition.emphasis_font_asset_id
+                        else _resolve_planned_font(
+                            ctx,
+                            font_asset_id=asset_id,
+                            runtime_dir=fonts_dir,
+                            label="逐条回退字幕",
+                        )
+                    )
+                    override_fonts[asset_id] = (
+                        override_font.family_name,
+                        override_font.weight_class,
+                    )
                 write_ass_subtitles(
                     subtitle_path,
                     style=style,
@@ -100,6 +133,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                     emphasis_font_name=resolved_emphasis_font.family_name,
                     font_weight=resolved_font.weight_class,
                     emphasis_font_weight=resolved_emphasis_font.weight_class,
+                    font_overrides=override_fonts,
                 )
 
             bgm_path = None
