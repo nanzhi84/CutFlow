@@ -112,18 +112,6 @@ def _get_detector(score_threshold: float):
     return det
 
 
-def face_detector_available(*, score_threshold: float = _DEFAULT_SCORE) -> bool:
-    """Whether the bundled YuNet detector can be constructed in this process.
-
-    ``detect_faces`` intentionally fails open to an empty list, which is correct for
-    annotation gates but cannot tell a safety planner whether ``[]`` means "no face"
-    or "detector unavailable".  Caption placement uses this explicit capability
-    probe so it never treats missing detection as proof that an anchor is safe.
-    """
-
-    return _get_detector(score_threshold) is not None
-
-
 def detect_faces(
     image,
     *,
