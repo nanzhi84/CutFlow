@@ -70,6 +70,54 @@ SFX_PACK: tuple[SfxSpec, ...] = (
         archive_member="Audio/impactPunch_heavy_002.ogg",
         source_page="https://kenney.nl/assets/impact-sounds",
     ),
+    SfxSpec(
+        asset_id="asset_sfx_pop_soft",
+        title="Caption Pop Soft",
+        sfx_class="pop",
+        archive_url=_INTERFACE_ARCHIVE,
+        archive_member="Audio/select_001.ogg",
+        source_page="https://kenney.nl/assets/interface-sounds",
+    ),
+    SfxSpec(
+        asset_id="asset_sfx_pop_bright",
+        title="Caption Pop Bright",
+        sfx_class="pop",
+        archive_url=_INTERFACE_ARCHIVE,
+        archive_member="Audio/click_002.ogg",
+        source_page="https://kenney.nl/assets/interface-sounds",
+    ),
+    SfxSpec(
+        asset_id="asset_sfx_ding_soft",
+        title="Caption Ding Soft",
+        sfx_class="ding",
+        archive_url=_INTERFACE_ARCHIVE,
+        archive_member="Audio/confirmation_002.ogg",
+        source_page="https://kenney.nl/assets/interface-sounds",
+    ),
+    SfxSpec(
+        asset_id="asset_sfx_whoosh_fast",
+        title="Caption Whoosh Fast",
+        sfx_class="whoosh",
+        archive_url=_INTERFACE_ARCHIVE,
+        archive_member="Audio/scroll_003.ogg",
+        source_page="https://kenney.nl/assets/interface-sounds",
+    ),
+    SfxSpec(
+        asset_id="asset_sfx_rise",
+        title="Caption Rise",
+        sfx_class="rise",
+        archive_url=_INTERFACE_ARCHIVE,
+        archive_member="Audio/maximize_003.ogg",
+        source_page="https://kenney.nl/assets/interface-sounds",
+    ),
+    SfxSpec(
+        asset_id="asset_sfx_sparkle",
+        title="Caption Sparkle",
+        sfx_class="sparkle",
+        archive_url=_IMPACT_ARCHIVE,
+        archive_member="Audio/impactGlass_light_002.ogg",
+        source_page="https://kenney.nl/assets/impact-sounds",
+    ),
 )
 
 
@@ -153,6 +201,18 @@ def _payload(spec: SfxSpec, *, object_uri: str, size_bytes: int, sha256: str) ->
     }
 
 
+def _tags(spec: SfxSpec) -> list[str]:
+    return sorted(
+        {
+            "sfx",
+            "caption_emphasis",
+            "caption_liveliness_v3",
+            "license:CC0-1.0",
+            f"sfx_class:{spec.sfx_class}",
+        }
+    )
+
+
 def _upsert(session, spec: SfxSpec, *, object_uri: str, size_bytes: int, sha256: str):
     asset = session.get(MediaAssetRow, spec.asset_id)
     artifact = session.get(ArtifactRow, asset.source_artifact_id) if asset else None
@@ -178,9 +238,7 @@ def _upsert(session, spec: SfxSpec, *, object_uri: str, size_bytes: int, sha256:
         artifact.size_bytes = size_bytes
         artifact.payload = payload
         artifact.updated_at = utcnow()
-    tags = sorted(
-        {"sfx", "caption_liveliness_v3", "license:CC0-1.0", f"sfx_class:{spec.sfx_class}"}
-    )
+    tags = _tags(spec)
     if asset is None:
         asset = MediaAssetRow(
             id=spec.asset_id,
