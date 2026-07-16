@@ -635,15 +635,6 @@ def _str_or_none(value: Any) -> str | None:
     return text or None
 
 
-def _int_or_none(value: Any) -> int | None:
-    if value is None:
-        return None
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return None
-
-
 def _explicit_video_tracks(
     source: JianyingDraftInput,
     draft_dir: Path,
