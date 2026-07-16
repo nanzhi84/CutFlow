@@ -35,6 +35,8 @@ def _intent_to_artifact(output: dict, script: str) -> CreativeIntentArtifact:
     if normalized_bgm_mood:
         intent = {**intent, "bgm_mood": normalized_bgm_mood}
     emphasis: list[EmphasisHint] = []
+    hero_count = 0
+    strong_count = 0
     raw_emphasis = intent.get("emphasis")
     if isinstance(raw_emphasis, list):
         for item in raw_emphasis:
@@ -43,6 +45,7 @@ def _intent_to_artifact(output: dict, script: str) -> CreativeIntentArtifact:
             phrase = _clean_phrase(item.get("phrase"))
             priority = item.get("priority", 50)
             display_mode = item.get("display_mode", "inline")
+            intensity = item.get("intensity", "normal")
             if (
                 phrase is None
                 or phrase not in script
@@ -52,11 +55,24 @@ def _intent_to_artifact(output: dict, script: str) -> CreativeIntentArtifact:
                 or display_mode not in {"inline", "whole_cue"}
             ):
                 continue
+            if intensity not in {"normal", "strong", "hero"}:
+                intensity = "normal"
+            if intensity == "hero":
+                if hero_count >= 1:
+                    intensity = "normal"
+                else:
+                    hero_count += 1
+            elif intensity == "strong":
+                if strong_count >= 3:
+                    intensity = "normal"
+                else:
+                    strong_count += 1
             emphasis.append(
                 EmphasisHint(
                     phrase=phrase,
                     priority=priority,
                     display_mode=display_mode,
+                    intensity=intensity,
                 )
             )
             if len(emphasis) >= _MAX_EMPHASIS:

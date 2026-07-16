@@ -24523,6 +24523,17 @@
             ],
             "title": "Emphasis Primary Color"
           },
+          "emphasis_style_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emphasis Style Id"
+          },
           "position": {
             "anyOf": [
               {

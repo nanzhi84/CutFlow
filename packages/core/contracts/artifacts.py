@@ -100,6 +100,7 @@ class EmphasisHint(ContractModel):
     phrase: str = Field(min_length=1)
     priority: int = Field(50, ge=0, le=100)
     display_mode: Literal["inline", "whole_cue"] = "inline"
+    intensity: Literal["normal", "strong", "hero"] = "normal"
 
 
 class CreativeIntentArtifact(ContractModel):
@@ -516,6 +517,8 @@ class CaptionRun(ContractModel):
     exit_frame: int = Field(gt=0)
     effect_id: CaptionEffectId = "none"
     font_asset_id: str | None = None
+    requested_font_asset_id: str | None = None
+    font_size: int | None = Field(None, gt=0)
     char_enter_frames: list[int] | None = None
     char_advances_px: list[float] | None = None
     advance_px: float = Field(ge=0.0)
@@ -682,6 +685,10 @@ class CaptionCompositionPlanArtifact(ContractModel):
     emphasis_font_asset_id: str | None = None
     normal_font_size: int = Field(gt=0)
     emphasis_font_size: int = Field(gt=0)
+    emphasis_primary_color_override: str | None = Field(
+        None,
+        pattern=r"^#[0-9A-Fa-f]{6}$",
+    )
     cues: list[CaptionCue] = Field(default_factory=list)
     diagnostics: CaptionCompositionDiagnostics = Field(
         default_factory=CaptionCompositionDiagnostics

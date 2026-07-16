@@ -449,6 +449,10 @@ def test_build_text_segments_from_caption_composition_exports_run_semantics():
                                     "enter_frame": 9,
                                     "exit_frame": 30,
                                     "effect_id": "pop",
+                                    "style_id": "blue_burst",
+                                    "font_asset_id": "font_fallback",
+                                    "requested_font_asset_id": "font_blue_burst",
+                                    "font_size": 90,
                                     "advance_px": 96,
                                     "baseline_offset_px": 55,
                                 },
@@ -467,10 +471,13 @@ def test_build_text_segments_from_caption_composition_exports_run_semantics():
     assert segments[0].transform_x == pytest.approx(-0.0888889)
     assert segments[1].transform_x == pytest.approx(0.037037, abs=1e-6)
     assert segments[0].transform_y == pytest.approx(-0.6633, abs=1e-3)
-    assert segments[1].transform_y == pytest.approx(-0.6602, abs=1e-3)
-    assert [segment.font_size_px for segment in segments] == [64, 72]
+    assert segments[1].transform_y == pytest.approx(-0.6696, abs=1e-3)
+    assert [segment.font_size_px for segment in segments] == [64, 90]
     assert segments[1].hint_id == "hint_0001"
     assert segments[1].effect_id == "pop"
+    assert segments[1].style_id == "blue_burst"
+    assert segments[1].font_asset_id == "font_fallback"
+    assert segments[1].requested_font_asset_id == "font_blue_burst"
 
 
 def test_build_video_segments_from_plans_reads_legacy_broll_segments():

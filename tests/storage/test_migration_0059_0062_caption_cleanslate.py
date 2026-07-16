@@ -56,7 +56,7 @@ def _upgrade(engine, filename: str) -> None:
 def test_caption_cleanslate_migrations_form_the_single_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert script.get_heads() == ["0063_workflow_cancel_request"]
+    assert script.get_heads() == ["0064_caption_style_intensity"]
     assert script.get_revision("0059_bgm_agent_prompt").down_revision == (
         "0058_resumable_uploads"
     )
@@ -691,7 +691,7 @@ def test_real_0057_to_0061_upgrade_keeps_historical_run_apis_readable(
         with isolated_engine.connect() as connection:
             assert (
                 connection.execute(text("select version_num from alembic_version")).scalar_one()
-                == "0063_workflow_cancel_request"
+                == "0064_caption_style_intensity"
             )
     finally:
         if isolated_engine is not None:

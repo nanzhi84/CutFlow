@@ -11,7 +11,7 @@ def test_migration_revision_is_single_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     migration = script.get_revision(REVISION)
 
-    assert script.get_heads() == [REVISION]
+    assert script.get_heads() == ["0064_caption_style_intensity"]
     assert migration is not None
     assert migration.down_revision == "0062_drop_v1_prompts"
     assert len(REVISION) <= 32

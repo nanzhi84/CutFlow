@@ -44,7 +44,7 @@ PATH_VALUES = {
     "asset_id": "asset_broll_demo",
     "voice_id": "voice_sandbox",
     "template_id": "prompt_creative_intent",
-    "version_id": "prompt_creative_intent_v1",
+    "version_id": "prompt_creative_intent_v2",
     "profile_id": "runninghub.heygem.default",
     "catalog_id": "price_sandbox",
     "binding_id": "prompt_binding_global_intent",

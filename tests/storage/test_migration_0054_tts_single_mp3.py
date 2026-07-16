@@ -35,7 +35,7 @@ def test_migration_revision_preserves_single_head() -> None:
     heads = script.get_heads()
     migration = script.get_revision(REVISION)
 
-    assert heads == ["0063_workflow_cancel_request"]
+    assert heads == ["0064_caption_style_intensity"]
     assert migration is not None
     assert migration.down_revision == "0053_postprocess_local_solver"
     assert len(REVISION) <= 32

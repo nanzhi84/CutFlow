@@ -67,6 +67,9 @@ class JianyingTextSegment:
     hint_id: str | None = None
     line_index: int = 0
     effect_id: str | None = None
+    style_id: str | None = None
+    font_asset_id: str | None = None
+    requested_font_asset_id: str | None = None
     advance_px: float = 0.0
     baseline_offset_px: float = 0.0
     font_size_px: float = 0.0
@@ -197,9 +200,12 @@ def build_text_segments_from_narration(
                 )
                 for run in line.runs:
                     font_size = (
-                        caption_composition.emphasis_font_size
-                        if run.role == "emphasis"
-                        else caption_composition.normal_font_size
+                        run.font_size
+                        or (
+                            caption_composition.emphasis_font_size
+                            if run.role == "emphasis"
+                            else caption_composition.normal_font_size
+                        )
                     )
                     transform_x = max(
                         -1.0,
@@ -219,6 +225,9 @@ def build_text_segments_from_narration(
                             hint_id=run.hint_id,
                             line_index=line_index,
                             effect_id=run.effect_id,
+                            style_id=run.style_id,
+                            font_asset_id=run.font_asset_id,
+                            requested_font_asset_id=run.requested_font_asset_id,
                             advance_px=run.advance_px,
                             baseline_offset_px=run.baseline_offset_px,
                             font_size_px=font_size,
@@ -861,6 +870,12 @@ def _text_segment_effects(segment: JianyingTextSegment) -> dict[str, Any] | None
         payload["baseline_offset_px"] = segment.baseline_offset_px
     if segment.font_size_px > 0:
         payload["font_size_px"] = segment.font_size_px
+    if segment.style_id:
+        payload["style_id"] = segment.style_id
+    if segment.font_asset_id:
+        payload["font_asset_id"] = segment.font_asset_id
+    if segment.requested_font_asset_id:
+        payload["requested_font_asset_id"] = segment.requested_font_asset_id
     return payload
 
 

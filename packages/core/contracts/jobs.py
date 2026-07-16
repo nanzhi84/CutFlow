@@ -81,6 +81,7 @@ class SubtitleOptions(ContractModel):
     font_size: int | None = None
     emphasis_font_size: int | None = None
     emphasis_primary_color: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    emphasis_style_id: str | None = None
     position: dict[str, float] | None = None
 
     @model_validator(mode="before")

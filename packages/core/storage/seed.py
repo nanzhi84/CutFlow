@@ -27,11 +27,9 @@ from packages.core.storage.repository import Repository
 LOCAL_AUTH_SEED_USER_IDS = {"usr_admin", "usr_viewer"}
 LOCAL_AUTH_SEED_REGISTRATION_CODE_IDS = {"reg_seed_local_admin"}
 _SYNCABLE_PROMPT_VERSION_IDS = {
-    "prompt_creative_intent_v1",
     "prompt_window_query_v1",
     "prompt_bgm_agent_v1",
 }
-_CREATIVE_INTENT_RUNS_MARKER = "display_mode"
 _BGM_AGENT_BOUNDARY_MARKER = "只能输出 bgm_id 和 analysis"
 
 
@@ -365,17 +363,12 @@ def _needs_prompt_version_sync(existing: PromptVersionRow) -> bool:
                 "scene_hint",
             )
         )
-    if existing.id == "prompt_creative_intent_v1":
-        content = existing.content or ""
-        return "bgm_mood" not in content or _CREATIVE_INTENT_RUNS_MARKER not in content
     if existing.id == "prompt_bgm_agent_v1":
         return _BGM_AGENT_BOUNDARY_MARKER not in (existing.content or "")
     return False
 
 
 def _prompt_sync_changelog(version_id: str) -> str:
-    if version_id == "prompt_creative_intent_v1":
-        return "Synced built-in CreativeIntent inline caption Run contract."
     if version_id == "prompt_window_query_v1":
         return "Synced built-in WindowQueryPlanning prompt contract."
     return "Synced built-in BgmAgentPlanning ID-only contract."

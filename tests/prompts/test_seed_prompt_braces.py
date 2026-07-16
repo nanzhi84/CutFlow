@@ -49,7 +49,7 @@ def _format_fields(content: str) -> set[str]:
 def test_production_seed_prompts_only_use_declared_format_variables():
     repository = Repository()
     cases = {
-        "prompt_creative_intent_v1": {"script": "示例脚本"},
+        "prompt_creative_intent_v2": {"script": "示例脚本"},
         "prompt_case_agent_script_v1": {"brief": "示例 brief", "memories": "示例记忆"},
         "prompt_vlm_annotation_v1": {"asset_id": "asset_1", "asset_kind": "video"},
     }
@@ -88,7 +88,7 @@ def test_prompt_group_seed_does_not_change_existing_bindings():
     expected_bindings = {
         "prompt_binding_global_intent": (
             "prompt_creative_intent",
-            "prompt_creative_intent_v1",
+            "prompt_creative_intent_v2",
             "ResolveCreativeIntent",
         ),
         "prompt_binding_vlm_annotation": (
@@ -226,7 +226,7 @@ def test_prompt_template_view_exposes_seed_variable_hints():
 
 
 def test_creative_intent_seed_prompt_requests_top_level_contract():
-    content = Repository().prompt_versions["prompt_creative_intent_v1"].content
+    content = Repository().prompt_versions["prompt_creative_intent_v2"].content
 
     assert content.count("{script}") == 1
     assert "hook" in content

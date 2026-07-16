@@ -33,7 +33,7 @@ def test_migration_revision_chains_to_current_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     migration = script.get_revision(REVISION)
 
-    assert script.get_heads() == ["0063_workflow_cancel_request"]
+    assert script.get_heads() == ["0064_caption_style_intensity"]
     assert migration is not None
     assert migration.down_revision == "0056_media_prompt_domains"
     assert len(REVISION) <= 32
