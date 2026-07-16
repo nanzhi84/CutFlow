@@ -246,7 +246,14 @@ def test_local_cancelling_does_not_rewrite_terminal_runs() -> None:
     assert repo.jobs[job.id].status == c.JobStatus.succeeded
 
 
-def test_cancel_does_not_signal_when_sql_commit_already_finished_run(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "terminal_status",
+    [c.RunStatus.succeeded, c.RunStatus.failed, c.RunStatus.cancelled],
+)
+def test_cancel_does_not_signal_when_sql_commit_already_terminal(
+    monkeypatch,
+    terminal_status: c.RunStatus,
+) -> None:
     job, run = _job_and_run()
     repo = Repository()
     repo.jobs[job.id] = job
@@ -256,7 +263,7 @@ def test_cancel_does_not_signal_when_sql_commit_already_finished_run(monkeypatch
         def request_run_cancellation(self, run_id: str, *, force: bool):
             assert run_id == run.id
             assert force is False
-            return run.model_copy(update={"status": c.RunStatus.succeeded})
+            return run.model_copy(update={"status": terminal_status})
 
     adapter = ta.TemporalRuntimeAdapter(
         WorkflowRuntimeSettings(runtime="temporal"),
@@ -271,8 +278,8 @@ def test_cancel_does_not_signal_when_sql_commit_already_finished_run(monkeypatch
 
     result = adapter.cancel_run(run.id)
 
-    assert result.status == c.RunStatus.succeeded
-    assert repo.runs[run.id].status == c.RunStatus.succeeded
+    assert result.status == terminal_status
+    assert repo.runs[run.id].status == terminal_status
 
 
 def test_sql_cancel_uses_durable_state_when_api_cache_is_stale(monkeypatch) -> None:

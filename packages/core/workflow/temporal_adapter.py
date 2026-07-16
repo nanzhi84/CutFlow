@@ -740,7 +740,11 @@ class TemporalRuntimeAdapter:
             )
             if self.repository is not None:
                 self.repository.runs[run_id] = requested
-            if requested.status in {RunStatus.succeeded, RunStatus.failed}:
+            if requested.status in {
+                RunStatus.succeeded,
+                RunStatus.failed,
+                RunStatus.cancelled,
+            }:
                 return requested
             signal_force = self.production_repository.run_cancel_mode(run_id) == "force"
         else:
