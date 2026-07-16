@@ -266,6 +266,12 @@ _REQUEST_OPTION_FIELD_CONSUMERS = {
         "emphasis_primary_color": (
             ("packages/production/pipeline/_materialize.py", "request.subtitle.emphasis_primary_color"),
         ),
+        "emphasis_style_id": (
+            (
+                "packages/production/pipeline/nodes/caption_composition_planning.py",
+                "state.request.subtitle.emphasis_style_id",
+            ),
+        ),
         "position": (
             ("packages/production/pipeline/_materialize.py", "request.subtitle.position"),
         ),

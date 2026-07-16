@@ -37,7 +37,10 @@ from packages.production.pipeline._sfx_events import (
     cooldown_caption_sfx_events,
     plan_caption_sfx_events,
 )
-from packages.production.pipeline._subtitles import write_ass_subtitles
+from packages.production.pipeline._subtitles import (
+    planned_emphasis_font_asset_id,
+    write_ass_subtitles,
+)
 
 _SFX_CLASS_TAG_PREFIX = "sfx_class:"
 
@@ -104,10 +107,22 @@ def run(ctx: NodeContext) -> NodeOutput:
                         if run.font_asset_id
                         and run.font_asset_id
                         != (
-                            composition.emphasis_font_asset_id
+                            planned_emphasis_font_asset_id(run.style_id, composition)
+                            if run.role == "emphasis" and run.style_id
+                            else composition.emphasis_font_asset_id
                             if run.role == "emphasis"
                             else composition.normal_font_asset_id
                         )
+                    }
+                    | {
+                        planned_emphasis_font_asset_id(run.style_id, composition)
+                        for cue in composition.cues
+                        for line in cue.lines
+                        for run in line.runs
+                        if run.role == "emphasis"
+                        and run.style_id
+                        and planned_emphasis_font_asset_id(run.style_id, composition)
+                        != composition.emphasis_font_asset_id
                     }
                 )
                 for asset_id in override_font_ids:

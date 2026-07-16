@@ -60,7 +60,7 @@ def test_migration_revision_is_in_current_single_head_chain() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     migration = script.get_revision(REVISION)
 
-    assert script.get_heads() == ["0063_workflow_cancel_request"]
+    assert script.get_heads() == ["0064_caption_style_intensity"]
     assert migration is not None
     assert migration.down_revision == "0057_drop_provider_retry_policy"
     assert len(REVISION) <= 32

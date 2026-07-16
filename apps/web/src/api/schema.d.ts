@@ -8846,6 +8846,8 @@ export interface components {
             emphasis_font_size?: number | null;
             /** Emphasis Primary Color */
             emphasis_primary_color?: string | null;
+            /** Emphasis Style Id */
+            emphasis_style_id?: string | null;
             /** Position */
             position?: {
                 [key: string]: number;

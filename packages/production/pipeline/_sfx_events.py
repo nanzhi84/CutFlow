@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from packages.core.contracts.artifacts import CaptionCompositionPlanArtifact
 from packages.production.pipeline._caption_effects import caption_effect
+from packages.production.pipeline._emphasis_styles import emphasis_style
 
 _COOLDOWN_MS = 180
 
@@ -33,7 +34,8 @@ def plan_caption_sfx_events(
             line_level_classes: set[str] = set()
             for run in line.runs:
                 effect = caption_effect(run.effect_id)
-                sfx_class = effect.sfx_class
+                style = emphasis_style(run.style_id) if run.style_id else None
+                sfx_class = style.sfx_class if style is not None else effect.sfx_class
                 if sfx_class is None:
                     continue
                 if effect.needs_char_timing:
@@ -45,7 +47,7 @@ def plan_caption_sfx_events(
                         asset_id=sfx_asset_ids_by_class.get(sfx_class),
                         sfx_class=sfx_class,
                         start_ms=round(run.enter_frame * 1000 / fps),
-                        volume=0.48,
+                        volume=style.sfx_volume if style is not None else 0.48,
                         source_run_id=run.run_id,
                     )
                 )

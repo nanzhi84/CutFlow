@@ -82,6 +82,7 @@ def test_seed_provider_profiles_and_prompt_binding_are_ready_for_workflow():
     seedream_profile = next(row for row in rows if row.id == "volcengine.seedream.prod")
     assert seedream_profile.default_options["size"] == "1440x2560"
     assert "prompt_creative_intent_v1" in prompt_versions
+    assert "prompt_creative_intent_v2" in prompt_versions
     assert "prompt_case_agent_script_v1" in prompt_versions
     assert "prompt_vlm_annotation_v1" in prompt_versions
     assert "prompt_window_query_v1" in prompt_versions
@@ -129,8 +130,8 @@ def test_seed_database_syncs_bgm_agent_boundary_contract():
     assert "字幕、强调、字体、颜色、坐标、时间线和音效不属于你的职责" in stale.content
 
 
-def test_seed_database_syncs_creative_intent_caption_run_contract():
-    current = next(
+def test_seed_database_preserves_published_creative_intent_v1():
+    current_v1 = next(
         row
         for row in seed_rows()
         if isinstance(row, PromptVersionRow) and row.id == "prompt_creative_intent_v1"
@@ -138,14 +139,12 @@ def test_seed_database_syncs_creative_intent_caption_run_contract():
     stale = PromptVersionRow(
         id="prompt_creative_intent_v1",
         prompt_template_id="prompt_creative_intent",
-        content=current.content.replace("display_mode", "legacy_mode"),
+        content="historical immutable prompt",
         status="published",
     )
     session = _FakeSeedSession([stale])
 
-    inserted = seed_database(session, rows=[current])
+    inserted = seed_database(session, rows=[current_v1])
 
     assert inserted == 0
-    assert stale.content == current.content
-    assert "display_mode" in stale.content
-    assert "emphasis：对象数组，可为空 []" in stale.content
+    assert stale.content == "historical immutable prompt"

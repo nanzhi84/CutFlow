@@ -21,7 +21,7 @@
 
 - 默认存储后端是 `sqlalchemy`。
 - Alembic 迁移只在 `packages/core/storage/alembic/versions/`。
-- 当前单一 migration head 是 `0063_workflow_cancel_request`。
+- 当前单一 migration head 是 `0064_caption_style_intensity`。
 - `memory` 后端保留给测试和 demo。
 
 ## M3 · 工作流运行时

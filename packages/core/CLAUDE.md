@@ -15,7 +15,7 @@
 - `config/settings.py` — `build_settings()`/`Settings`（按域分组，frozen，含 `UploadSettings`/`ObjectStoreSettings`）、`sandbox_fallback_allowed()`；`CUTAGENT_*` env 在调用时读取，无模块级单例。
 - `config/preflight.py` — `validate_startup_settings()` / `format_preflight_report()`，API/worker 生产启动前 fail closed，`scripts/preflight.py`/`scripts/ci_preflight_gate.sh` 复用同一逻辑。
 - `storage/database.py` / `repository.py` / `bootstrap.py` — ORM 后端 / 运行态内存 `Repository`(**仅工作流单次 run 的临时 run-state,非存储后端;已不能当存储后端用**) / 按 `storage.backend`(sqlalchemy|postgres,memory 已移除并显式拒绝) 选型。
-- `storage/alembic/versions/` — 0001..0063（单一 head `0063_workflow_cancel_request`），仓库内**唯一**的 Alembic 迁移目录；近期 `0049…0050` 补 provider 调用幂等与可恢复结果，`0052` 增加列表缩略图，`0053…0057` 收束生产 prompt/配置，`0058` 增加可恢复上传，`0059…0062` 收敛字幕组合与 BGM Agent，`0063` 持久化 run 取消模式与请求时间。
+- `storage/alembic/versions/` — 0001..0064（单一 head `0064_caption_style_intensity`），仓库内**唯一**的 Alembic 迁移目录；近期 `0049…0050` 补 provider 调用幂等与可恢复结果，`0052` 增加列表缩略图，`0053…0057` 收束生产 prompt/配置，`0058` 增加可恢复上传，`0059…0062` 收敛字幕组合与 BGM Agent，`0063` 持久化 run 取消模式与请求时间，`0064` 发布花字强度语义。
 - `storage/seed.py` / `seed_media.py` / `provider_seed.py` — 用户/注册码、媒体、provider 配置 seed。
 - `storage/secret_store.py` — `SecretStore` 协议 + `LocalSecretStore`；自 `0017` 起做 **Fernet 信封加密**（`envelope_prefix = "fernet:v1:"`，key 来源 `CUTAGENT_SECRET_ENCRYPTION_KEY`，缺省落盘 `.db_encryption_key`），密钥不入 env/Settings。
 - `storage/` 其余基建：对象存储 `object_store.py` / `tiered_object_store.py`（local/S3/tiered/materials bucket，支持 signed GET、presigned PUT、HEAD、copy、CORS）；SQLAlchemy 后端实现 `sqlalchemy_secrets.py` / `sqlalchemy_uploads.py` / `sqlalchemy_idempotency.py`；`selection_ledger.py`（选材账本，确定性近期降权）、`row_mapper.py`（ORM 行 ↔ 契约映射）。
@@ -32,7 +32,7 @@
 - 上传契约在 `contracts/media.py`：小文件使用 `PrepareUploadResponse.put_url`，multipart 分片 URL 由 parts/sign 临时签发；`UploadSession.upload_url` 只是 legacy/object-uri mirror，不得作为访问或上传 URL。
 - 状态变更一律走 `assert_transition()`，禁止绕过状态机直接改 status。
 - 密钥只存 `SecretStore`/`ProviderProfile`，**永不**进 env 或 `Settings`（settings 仅放 infra/policy）。
-- 所有 Alembic revision 只能放在 `storage/alembic/versions/`，保持单一 head（当前 `0063`）；链中存在过 merge revision（`0014` 合并两支）。revision id 受 `alembic_version` 列 VARCHAR(32) 限制，命名须 ≤32 字符。
+- 所有 Alembic revision 只能放在 `storage/alembic/versions/`，保持单一 head（当前 `0064`）；链中存在过 merge revision（`0014` 合并两支）。revision id 受 `alembic_version` 列 VARCHAR(32) 限制，命名须 ≤32 字符。
 - 配置经 `build_settings()` 取快照（frozen、调用时读 env），勿引入缓存单例。
 
 ## 测试

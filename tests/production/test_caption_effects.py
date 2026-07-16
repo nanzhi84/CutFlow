@@ -272,7 +272,7 @@ def test_late_wipe_character_has_a_visible_libass_frame(tmp_path) -> None:
         emphasis_font_name="Arial",
     )
 
-    assert "Dialogue: 0,0:00:00.95,0:00:01.00" in subtitle_path.read_text(
+    assert "Dialogue: 1,0:00:00.95,0:00:01.00" in subtitle_path.read_text(
         encoding="utf-8"
     )
     result = FfmpegRunner(timeout_sec=30).run(
@@ -533,10 +533,9 @@ def test_contract_rejects_effects_that_are_not_allowed_for_the_run_role() -> Non
         )
 
 
-def test_zoom_settle_requires_whole_cue_display_mode() -> None:
+def test_zoom_settle_is_valid_for_inline_brand_style() -> None:
     script = "重点"
-    with pytest.raises(ValueError, match="requires whole_cue"):
-        build_caption_composition(
+    plan = build_caption_composition(
             script=script,
             units=[
                 NarrationUnit(
@@ -567,5 +566,9 @@ def test_zoom_settle_requires_whole_cue_display_mode() -> None:
             timing_source="native",
             normal_metrics_source="hmtx",
             emphasis_metrics_source="hmtx",
-            emphasis_effect_ids=["zoom_settle"],
-        )
+        emphasis_effect_ids=["zoom_settle"],
+    )
+
+    run = plan.cues[0].lines[0].runs[0]
+    assert run.role == "emphasis"
+    assert run.effect_id == "zoom_settle"

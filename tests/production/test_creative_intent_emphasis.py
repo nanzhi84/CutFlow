@@ -58,8 +58,18 @@ def test_intent_to_artifact_accepts_only_exact_typed_script_phrases():
             "beats": ["a"],
             "bgm_mood": "高能推进",
             "emphasis": [
-                {"phrase": "限时五折", "priority": 90, "display_mode": "inline"},
-                {"phrase": "最后一天", "priority": 70, "display_mode": "whole_cue"},
+                {
+                    "phrase": "限时五折",
+                    "priority": 90,
+                    "display_mode": "inline",
+                    "intensity": "hero",
+                },
+                {
+                    "phrase": "最后一天",
+                    "priority": 70,
+                    "display_mode": "whole_cue",
+                    "intensity": "invalid",
+                },
                 {"phrase": "限时五折", "priority": 20, "display_mode": "inline"},
                 {"phrase": "脚本没有", "priority": 100, "display_mode": "inline"},
                 {"phrase": "限时五折", "priority": True, "display_mode": "inline"},
@@ -78,6 +88,7 @@ def test_intent_to_artifact_accepts_only_exact_typed_script_phrases():
         ("最后一天", 70, "whole_cue"),
         ("限时五折", 20, "inline"),
     ]
+    assert [item.intensity for item in artifact.emphasis] == ["hero", "normal", "normal"]
 
 
 def test_intent_to_artifact_preserves_order_and_caps_hint_count():
@@ -98,6 +109,37 @@ def test_intent_to_artifact_preserves_order_and_caps_hint_count():
     )
 
     assert [item.phrase for item in artifact.emphasis] == phrases[:_MAX_EMPHASIS]
+
+
+def test_intent_to_artifact_enforces_intensity_cardinality() -> None:
+    phrases = [f"短语{i}" for i in range(8)]
+    artifact = _intent_to_artifact(
+        {
+            "intent": {
+                "emphasis": [
+                    {
+                        "phrase": phrase,
+                        "priority": 50,
+                        "display_mode": "inline",
+                        "intensity": "hero" if index < 2 else "strong",
+                    }
+                    for index, phrase in enumerate(phrases)
+                ]
+            }
+        },
+        "，".join(phrases),
+    )
+
+    assert [item.intensity for item in artifact.emphasis] == [
+        "hero",
+        "normal",
+        "strong",
+        "strong",
+        "strong",
+        "normal",
+        "normal",
+        "normal",
+    ]
 
 
 def test_intent_to_artifact_missing_hints_defaults_to_empty():
@@ -178,5 +220,7 @@ def test_creative_intent_prompt_requests_caption_run_semantics():
     assert "phrase" in content
     assert "priority" in content
     assert "display_mode" in content
+    assert "intensity" in content
+    assert "hero 最多 1 个" in content
     assert "inline" in content
     assert "whole_cue" in content

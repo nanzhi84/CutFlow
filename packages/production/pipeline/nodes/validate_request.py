@@ -9,6 +9,7 @@ from packages.core.contracts import (
 )
 from packages.core.workflow import NodeExecutionError, NodeOutput
 from packages.production.pipeline._node_context import NodeContext
+from packages.production.pipeline._emphasis_styles import EMPHASIS_STYLES
 from packages.production.pipeline.nodes._broll_policy import broll_full_coverage_enabled
 
 
@@ -44,6 +45,14 @@ def run(ctx: NodeContext) -> NodeOutput:
         raise NodeExecutionError(
             ErrorCode.validation_invalid_options,
             "B-roll must be enabled when broll.mode is full_coverage.",
+        )
+    if (
+        request.subtitle.emphasis_style_id is not None
+        and request.subtitle.emphasis_style_id not in EMPHASIS_STYLES
+    ):
+        raise NodeExecutionError(
+            ErrorCode.validation_invalid_options,
+            f"Unknown emphasis style: {request.subtitle.emphasis_style_id}.",
         )
     artifact = ctx.artifact(
         ArtifactKind.validated_production_spec,

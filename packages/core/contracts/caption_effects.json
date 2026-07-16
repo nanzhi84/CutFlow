@@ -1,6 +1,6 @@
 {
   "none": {"roles": ["normal", "emphasis"]},
-  "soft_in": {"roles": ["normal"]},
+  "soft_in": {"roles": ["normal", "emphasis"]},
   "fade_through": {"roles": ["normal"]},
   "wipe_reveal": {"roles": ["normal"]},
   "slide_up_in": {"roles": ["normal", "emphasis"]},
