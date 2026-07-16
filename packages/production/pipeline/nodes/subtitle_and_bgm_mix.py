@@ -98,6 +98,8 @@ def run(ctx: NodeContext) -> NodeOutput:
                     caption_composition=composition,
                     font_name=resolved_font.family_name,
                     emphasis_font_name=resolved_emphasis_font.family_name,
+                    font_weight=resolved_font.weight_class,
+                    emphasis_font_weight=resolved_emphasis_font.weight_class,
                 )
 
             bgm_path = None

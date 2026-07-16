@@ -15,6 +15,7 @@ from packages.production.pipeline._fonts import (
     _read_family_builtin,
     _stage_sfnt_font,
     caption_font_asset_ids,
+    distinct_font_assets_have_ambiguous_ass_style,
     distinct_font_assets_share_family,
     is_font_collection,
     resolve_font_asset,
@@ -22,7 +23,12 @@ from packages.production.pipeline._fonts import (
 )
 
 
-def _build_font(path: Path, family: str = "Caption Test") -> None:
+def _build_font(
+    path: Path,
+    family: str = "Caption Test",
+    *,
+    weight_class: int = 400,
+) -> None:
     glyph_order = [".notdef", "A"]
     empty = TTGlyphPen(None).glyph()
     font = FontBuilder(1000, isTTF=True)
@@ -31,8 +37,14 @@ def _build_font(path: Path, family: str = "Caption Test") -> None:
     font.setupGlyf({name: empty for name in glyph_order})
     font.setupHorizontalMetrics({".notdef": (600, 0), "A": (500, 0)})
     font.setupHorizontalHeader(ascent=800, descent=-200)
-    font.setupNameTable({"familyName": family, "styleName": "Regular"})
-    font.setupOS2(sTypoAscender=800, sTypoDescender=-200)
+    font.setupNameTable(
+        {"familyName": family, "styleName": "Bold" if weight_class >= 600 else "Regular"}
+    )
+    font.setupOS2(
+        sTypoAscender=800,
+        sTypoDescender=-200,
+        usWeightClass=weight_class,
+    )
     font.setupPost()
     font.save(str(path))
 
@@ -69,6 +81,7 @@ def test_caption_font_pair_defaults_and_explicit_selection() -> None:
 def test_distinct_font_assets_detect_ambiguous_family_and_collections(tmp_path) -> None:
     shared = ResolvedFont("Shared Family", tmp_path, tmp_path / "body.ttf")
     same = ResolvedFont("shared family", tmp_path, tmp_path / "display.ttf")
+    bold = ResolvedFont("shared family", tmp_path, tmp_path / "bold.ttf", 700)
     other = ResolvedFont("Other Family", tmp_path, tmp_path / "display.otf")
     collection = ResolvedFont("Collection", tmp_path, tmp_path / "display.ttc")
 
@@ -76,6 +89,14 @@ def test_distinct_font_assets_detect_ambiguous_family_and_collections(tmp_path) 
     assert distinct_font_assets_share_family("body", shared, "body", same) is False
     assert distinct_font_assets_share_family("body", shared, "display", other) is False
     assert distinct_font_assets_share_family("body", shared, "display", None) is False
+    assert (
+        distinct_font_assets_have_ambiguous_ass_style("body", shared, "display", same)
+        is True
+    )
+    assert (
+        distinct_font_assets_have_ambiguous_ass_style("body", shared, "bold", bold)
+        is False
+    )
     assert is_font_collection(collection) is True
     assert is_font_collection(other) is False
     assert is_font_collection(None) is False
@@ -91,9 +112,20 @@ def test_resolve_subtitle_font_stages_content_addressed_native_font(tmp_path) ->
 
     assert first is not None and second is not None
     assert first.family_name == "Brand Sans"
+    assert first.weight_class == 400
     assert first.source_path == second.source_path
     assert first.source_path.name.startswith("font-")
     assert first.source_path.read_bytes() == source.read_bytes()
+
+
+def test_resolve_subtitle_font_reads_bold_weight(tmp_path) -> None:
+    source = tmp_path / "brand-bold.ttf"
+    _build_font(source, "Brand Sans", weight_class=700)
+
+    resolved = resolve_subtitle_font(font_path=source, runtime_dir=tmp_path / "runtime")
+
+    assert resolved is not None
+    assert resolved.weight_class == 700
 
 
 def test_same_named_fonts_remain_distinct_by_content(tmp_path) -> None:

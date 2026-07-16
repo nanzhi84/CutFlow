@@ -572,6 +572,8 @@ def test_ass_golden_uses_one_dialogue_per_run_and_no_legacy_geometry(tmp_path) -
         caption_composition=plan,
         font_name="Normal Face",
         emphasis_font_name="Emphasis Face",
+        font_weight=400,
+        emphasis_font_weight=700,
     )
     content = output.read_text(encoding="utf-8")
     dialogue = [line for line in content.splitlines() if line.startswith("Dialogue:")]
@@ -579,7 +581,8 @@ def test_ass_golden_uses_one_dialogue_per_run_and_no_legacy_geometry(tmp_path) -
     assert len(dialogue) == 3
     assert "Style: Normal,Normal Face,64" in content
     assert "Style: Emphasis,Emphasis Face,72" in content
-    assert re.search(r"Style: Emphasis,.*,&H00[0-9A-F]{6},.*?,0,0,0,0,100", content)
+    assert re.search(r"Style: Normal,.*,&H00[0-9A-F]{6},.*?,0,0,0,0,100", content)
+    assert re.search(r"Style: Emphasis,.*,&H00[0-9A-F]{6},.*?,-1,0,0,0,100", content)
     assert "\\fscx105\\fscy105" in content
     assert "\\fscx220" not in content
     assert "\\move(" not in content

@@ -2,6 +2,7 @@ import { Eye, Info, Trash2, Type } from "lucide-react";
 import type { MaterialUsageRankingItem, MediaAssetRecord } from "../../api/client";
 import { formatRelativeTime, shortId } from "../../lib/format";
 import { annotationStatusLabels, annotationTone, fontFamilyName } from "./libraryModel";
+import { fontAssetWeight } from "./fontFamilyModel";
 import { FontFaceStyle } from "./FontFaceStyle";
 
 type FontAssetCardProps = {
@@ -16,6 +17,7 @@ type FontAssetCardProps = {
 
 export function FontAssetCard({ asset, usage, previewUrl, domId, highlighted, onLoadPreview, onDetail }: FontAssetCardProps) {
   const family = fontFamilyName(asset.id);
+  const weight = fontAssetWeight(asset);
   return (
     <article
       id={domId}
@@ -23,7 +25,9 @@ export function FontAssetCard({ asset, usage, previewUrl, domId, highlighted, on
         highlighted ? "border-accent ring-2 ring-accent/60" : "border-border/80"
       }`}
     >
-      {previewUrl ? <FontFaceStyle assetId={asset.id} url={previewUrl} /> : null}
+      {previewUrl ? (
+        <FontFaceStyle assetId={asset.id} url={previewUrl} weight={weight} />
+      ) : null}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <span className={`badge ${annotationTone(asset.annotation_status)}`}>{annotationStatusLabels[asset.annotation_status]}</span>
@@ -40,7 +44,10 @@ export function FontAssetCard({ asset, usage, previewUrl, domId, highlighted, on
         </span>
       </div>
       <div className="mt-4 rounded-2xl border border-border/70 bg-surface p-4">
-        <p className="text-2xl leading-snug text-text-primary" style={previewUrl ? { fontFamily: family } : undefined}>
+        <p
+          className="text-2xl leading-snug text-text-primary"
+          style={previewUrl ? { fontFamily: family, fontWeight: weight } : undefined}
+        >
           树影字幕 Aa 123
         </p>
         <p className="mt-2 text-xs text-text-secondary">实时字体预览</p>

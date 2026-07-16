@@ -35,7 +35,7 @@ from packages.production.pipeline._font_metrics import (
 from packages.production.pipeline._fonts import (
     DEFAULT_FONT_SENTINEL,
     caption_font_asset_ids,
-    distinct_font_assets_share_family,
+    distinct_font_assets_have_ambiguous_ass_style,
     is_font_collection,
     resolve_font_asset,
 )
@@ -158,7 +158,7 @@ def run(ctx: NodeContext) -> NodeOutput:
                         f"无法读取强调字幕字体（{emphasis_font_id}）的字形度量。",
                         retryable=False,
                     )
-            if distinct_font_assets_share_family(
+            if distinct_font_assets_have_ambiguous_ass_style(
                 normal_font_id,
                 normal_font,
                 emphasis_font_id,
@@ -166,8 +166,8 @@ def run(ctx: NodeContext) -> NodeOutput:
             ):
                 raise NodeExecutionError(
                     ErrorCode.render_subtitle_failed,
-                    "普通字幕与强调字幕选择了同一字体家族的不同文件；"
-                    "请改用不同家族或同一个字体资产。",
+                    "普通字幕与强调字幕选择了同一字体家族中无法由 ASS 区分的两个字重；"
+                    "请选择常规与粗体组合，或使用同一个字体资产。",
                     retryable=False,
                 )
         normal_measure, normal_source = make_text_measurer(normal_metrics, normal_font_size)

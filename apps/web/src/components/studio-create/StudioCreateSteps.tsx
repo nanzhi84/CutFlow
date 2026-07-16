@@ -15,6 +15,15 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type MediaAssetRecord } from "../../api/client";
 import { FontFaceStyle } from "../library/FontFaceStyle";
+import {
+  faceForWeight,
+  familyForAsset,
+  fontAssetFamily,
+  fontAssetWeight,
+  fontWeightLabel,
+  groupFontFamilies,
+  type FontFamilyOption,
+} from "../library/fontFamilyModel";
 import { fontFamilyName, voiceDisplayLabel } from "../library/libraryModel";
 import { toDisplayUrl } from "../../lib/url";
 import {
@@ -57,26 +66,32 @@ type SubtitleFontLabels = {
   emphasis: string;
 };
 
+const DEFAULT_NORMAL_FONT_ASSET_ID = "asset_font_noto_serif_cjk_sc_regular";
+const DEFAULT_EMPHASIS_FONT_ASSET_ID = "asset_font_noto_sans_cjk_sc_bold";
+
 function fontLabelFor(fonts: MediaAssetRecord[], fontId: string, fallback: string) {
   if (!fontId) return fallback;
   const font = fonts.find((item) => item.id === fontId);
-  return font?.title ?? shortAssetId(fontId);
+  return font
+    ? `${fontAssetFamily(font)} ${fontWeightLabel(fontAssetWeight(font))}`
+    : shortAssetId(fontId);
 }
 
 function useSubtitleFontLabels(form: FormState): SubtitleFontLabels {
   const fontsQuery = useQuery({
     queryKey: ["studio-create", "font-assets"],
     queryFn: () => api.mediaAssets.list({ limit: 200, kind: "font" }),
-    enabled:
-      form.contentMode !== "seedance" &&
-      subtitleLayersEnabled(form) &&
-      (Boolean(form.subtitleFontId) || Boolean(form.emphasisFontId)),
+    enabled: form.contentMode !== "seedance" && subtitleLayersEnabled(form),
   });
   const fonts = (fontsQuery.data?.items ?? []).map((item) => item.asset);
-  const normal = fontLabelFor(fonts, form.subtitleFontId, "默认字体");
+  const normalId = form.subtitleFontId || DEFAULT_NORMAL_FONT_ASSET_ID;
+  const emphasisId =
+    form.emphasisFontId ||
+    (form.subtitleFontId ? form.subtitleFontId : DEFAULT_EMPHASIS_FONT_ASSET_ID);
+  const normal = fontLabelFor(fonts, normalId, "系统默认");
   return {
     normal,
-    emphasis: form.emphasisFontId ? fontLabelFor(fonts, form.emphasisFontId, "默认字体") : normal,
+    emphasis: fontLabelFor(fonts, emphasisId, "系统默认"),
   };
 }
 
@@ -92,14 +107,12 @@ function captionConfigSummary(form: FormState, fontLabels: SubtitleFontLabels) {
 }
 
 const normalCaptionPreviewStyle = {
-  fontWeight: 400,
   color: "#FFFFFF",
   outlineColor: "#000000",
   outline: 4,
 };
 
 const emphasisCaptionPreviewStyle = {
-  fontWeight: 400,
   outlineColor: "#000000",
   outline: 4,
 };
@@ -321,10 +334,42 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
     () => (fontsQuery.data?.items ?? []).map((item) => item.asset),
     [fontsQuery.data?.items],
   );
-  const selectedSubtitleFont = fonts.find((font) => font.id === form.subtitleFontId) ?? null;
-  const selectedEmphasisFont = form.emphasisFontId ? fonts.find((font) => font.id === form.emphasisFontId) ?? null : null;
+  const fontFamilies = useMemo(() => groupFontFamilies(fonts), [fonts]);
+  const effectiveSubtitleFontId =
+    form.subtitleFontId || DEFAULT_NORMAL_FONT_ASSET_ID;
+  const effectiveEmphasisFontId =
+    form.emphasisFontId ||
+    (form.subtitleFontId
+      ? form.subtitleFontId
+      : DEFAULT_EMPHASIS_FONT_ASSET_ID);
+  const selectedSubtitleFont =
+    fonts.find((font) => font.id === effectiveSubtitleFontId) ?? null;
+  const selectedEmphasisFont =
+    fonts.find((font) => font.id === effectiveEmphasisFontId) ?? null;
+  const selectedSubtitleFamily = familyForAsset(fontFamilies, selectedSubtitleFont?.id);
+  const selectedEmphasisFamily = familyForAsset(fontFamilies, selectedEmphasisFont?.id);
   const subtitlePreviewUrl = useFontPreviewUrl(selectedSubtitleFont);
   const emphasisPreviewUrl = useFontPreviewUrl(selectedEmphasisFont);
+
+  function selectNormalFamily(familyKey: string) {
+    const family = fontFamilies.find((item) => item.key === familyKey);
+    if (!family) {
+      setField("subtitleFontId", "");
+      return;
+    }
+    const preferredWeight = selectedSubtitleFont ? fontAssetWeight(selectedSubtitleFont) : 400;
+    setField("subtitleFontId", faceForWeight(family, preferredWeight).asset.id);
+  }
+
+  function selectEmphasisFamily(familyKey: string) {
+    const family = fontFamilies.find((item) => item.key === familyKey);
+    if (!family) {
+      setField("emphasisFontId", "");
+      return;
+    }
+    const preferredWeight = selectedEmphasisFont ? fontAssetWeight(selectedEmphasisFont) : 700;
+    setField("emphasisFontId", faceForWeight(family, preferredWeight).asset.id);
+  }
 
   if (form.contentMode === "seedance") {
     return (
@@ -365,12 +410,16 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
                   </h3>
                   <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_92px]">
                     <label>
-                      <span>字体</span>
-                      <select value={form.subtitleFontId} onChange={(event) => setField("subtitleFontId", event.target.value)}>
-                        <option value="">默认字体</option>
-                        {fonts.map((font) => (
-                          <option value={font.id} key={font.id}>
-                            {font.title}
+                      <span>字体家族</span>
+                      <select
+                        aria-label="普通字幕字体家族"
+                        value={selectedSubtitleFamily?.key ?? ""}
+                        onChange={(event) => selectNormalFamily(event.target.value)}
+                      >
+                        <option value="">系统默认</option>
+                        {fontFamilies.map((family) => (
+                          <option value={family.key} key={family.key}>
+                            {family.family}
                           </option>
                         ))}
                       </select>
@@ -386,6 +435,12 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
                       />
                     </label>
                   </div>
+                  <FontWeightPicker
+                    label="普通字幕字重"
+                    family={selectedSubtitleFamily}
+                    selectedAssetId={selectedSubtitleFont?.id ?? null}
+                    onChange={(assetId) => setField("subtitleFontId", assetId)}
+                  />
                   <label>
                     <span>位置</span>
                     <div className="flex items-center gap-3">
@@ -412,12 +467,16 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
                   </h3>
                   <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_92px]">
                     <label>
-                      <span>字体</span>
-                      <select value={form.emphasisFontId} onChange={(event) => setField("emphasisFontId", event.target.value)}>
-                        <option value="">跟随普通字幕</option>
-                        {fonts.map((font) => (
-                          <option value={font.id} key={font.id}>
-                            {font.title}
+                      <span>字体家族</span>
+                      <select
+                        aria-label="强调文字字体家族"
+                        value={selectedEmphasisFamily?.key ?? ""}
+                        onChange={(event) => selectEmphasisFamily(event.target.value)}
+                      >
+                        <option value="">系统默认</option>
+                        {fontFamilies.map((family) => (
+                          <option value={family.key} key={family.key}>
+                            {family.family}
                           </option>
                         ))}
                       </select>
@@ -433,6 +492,12 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
                       />
                     </label>
                   </div>
+                  <FontWeightPicker
+                    label="强调文字字重"
+                    family={selectedEmphasisFamily}
+                    selectedAssetId={selectedEmphasisFont?.id ?? null}
+                    onChange={(assetId) => setField("emphasisFontId", assetId)}
+                  />
                   <label>
                     <span>颜色</span>
                     <div className="flex flex-wrap items-center gap-2 py-1 pl-1">
@@ -489,6 +554,46 @@ export function PostProcessStep({ form, setField }: { form: FormState; setField:
       <div className="grid gap-3 pt-2 md:grid-cols-2">
         <BgmControlPanel form={form} setField={setField} />
         <CoverModePanel value={form.coverMode} onChange={(value) => setField("coverMode", value)} />
+      </div>
+    </div>
+  );
+}
+
+function FontWeightPicker({
+  label,
+  family,
+  selectedAssetId,
+  onChange,
+}: {
+  label: string;
+  family: FontFamilyOption | null;
+  selectedAssetId: string | null;
+  onChange: (assetId: string) => void;
+}) {
+  if (!family) return null;
+  return (
+    <div className="grid gap-1.5">
+      <span className="text-sm font-medium text-text-primary">字重</span>
+      <div className="flex flex-wrap gap-1 rounded-lg bg-surface-hover p-1" role="group" aria-label={label}>
+        {family.faces.map((face) => {
+          const selected = face.asset.id === selectedAssetId;
+          return (
+            <button
+              type="button"
+              key={face.asset.id}
+              onClick={() => onChange(face.asset.id)}
+              aria-pressed={selected}
+              title={`${fontAssetFamily(face.asset)} · ${face.weight}`}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                selected
+                  ? "bg-white text-text-primary shadow-sm"
+                  : "text-text-secondary hover:bg-white/60 hover:text-text-primary"
+              }`}
+            >
+              {fontWeightLabel(face.weight)} · {face.weight}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -618,15 +723,19 @@ function CaptionPreview({
   const showEmphasis = effectiveEmphasisEnabled(form);
   const normalFamily = selectedSubtitleFont && subtitlePreviewUrl ? fontFamilyName(selectedSubtitleFont.id) : undefined;
   const emphasisFamily = selectedEmphasisFont && emphasisPreviewUrl ? fontFamilyName(selectedEmphasisFont.id) : normalFamily;
+  const normalWeight = selectedSubtitleFont ? fontAssetWeight(selectedSubtitleFont) : 400;
+  const emphasisWeight = selectedEmphasisFont ? fontAssetWeight(selectedEmphasisFont) : normalWeight;
   const normalSize = Math.max(12, Math.min(96, form.subtitleSize));
   const emphasisSize = Math.max(12, Math.min(120, form.emphasisSize));
   const normalPreviewSize = subtitlePreviewSvgFontSize(normalSize);
   const emphasisPreviewSize = subtitlePreviewSvgFontSize(emphasisSize);
   return (
     <div className="grid gap-2">
-      {selectedSubtitleFont && subtitlePreviewUrl ? <FontFaceStyle assetId={selectedSubtitleFont.id} url={subtitlePreviewUrl} /> : null}
+      {selectedSubtitleFont && subtitlePreviewUrl ? (
+        <FontFaceStyle assetId={selectedSubtitleFont.id} url={subtitlePreviewUrl} weight={normalWeight} />
+      ) : null}
       {selectedEmphasisFont && emphasisPreviewUrl && selectedEmphasisFont.id !== selectedSubtitleFont?.id ? (
-        <FontFaceStyle assetId={selectedEmphasisFont.id} url={emphasisPreviewUrl} />
+        <FontFaceStyle assetId={selectedEmphasisFont.id} url={emphasisPreviewUrl} weight={emphasisWeight} />
       ) : null}
       {showEmphasis ? (
         <div className="mx-auto flex rounded-lg bg-surface-hover p-1 text-xs">
@@ -668,7 +777,7 @@ function CaptionPreview({
                     style={{
                       fontFamily: normalFamily,
                       fontSize: normalPreviewSize,
-                      fontWeight: normalCaptionPreviewStyle.fontWeight,
+                      fontWeight: normalWeight,
                       fill: normalCaptionPreviewStyle.color,
                       stroke: normalCaptionPreviewStyle.outlineColor,
                       strokeWidth: normalCaptionPreviewStyle.outline,
@@ -682,7 +791,7 @@ function CaptionPreview({
                   style={showEmphasis ? {
                     fontFamily: emphasisFamily,
                     fontSize: emphasisPreviewSize,
-                    fontWeight: emphasisCaptionPreviewStyle.fontWeight,
+                    fontWeight: emphasisWeight,
                     fill: form.emphasisColor,
                     stroke: emphasisCaptionPreviewStyle.outlineColor,
                     strokeWidth: emphasisCaptionPreviewStyle.outline,

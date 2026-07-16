@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from packages.core.contracts.artifacts import CaptionCompositionPlanArtifact, StylePlanArtifact
+from packages.production.pipeline._fonts import is_ass_bold_weight
 
 _ASS_MARGIN_L = 80
 _ASS_MARGIN_R = 80
@@ -30,6 +31,8 @@ def write_ass_subtitles(
     caption_composition: CaptionCompositionPlanArtifact,
     font_name: str,
     emphasis_font_name: str,
+    font_weight: int = 400,
+    emphasis_font_weight: int = 400,
 ) -> list[str]:
     """Write one Dialogue per CaptionRun; line breaks and x positions are preplanned."""
 
@@ -68,6 +71,7 @@ def write_ass_subtitles(
             primary=subtitle.primary_color,
             outline_color=subtitle.outline_color,
             outline=subtitle.outline,
+            font_weight=font_weight,
         ),
         _style_row(
             "Emphasis",
@@ -76,6 +80,7 @@ def write_ass_subtitles(
             primary=subtitle.emphasis_primary_color,
             outline_color=subtitle.emphasis_outline_color,
             outline=subtitle.emphasis_outline,
+            font_weight=emphasis_font_weight,
         ),
         "",
         "[Events]",
@@ -126,11 +131,13 @@ def _style_row(
     primary: object,
     outline_color: object,
     outline: object,
+    font_weight: int,
 ) -> str:
+    bold = -1 if is_ass_bold_weight(font_weight) else 0
     return (
         f"Style: {name},{font_name},{font_size},{_ass_color(primary, '#FFFFFF')},"
         f"&H000000FF,{_ass_color(outline_color, '#000000')},&H64000000,"
-        f"0,0,0,0,100,100,0,0,1,{_ass_outline(outline)},0,7,"
+        f"{bold},0,0,0,100,100,0,0,1,{_ass_outline(outline)},0,7,"
         f"{_ASS_MARGIN_L},{_ASS_MARGIN_R},0,1"
     )
 

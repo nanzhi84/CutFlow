@@ -54,6 +54,7 @@ class ResolvedFont:
     family_name: str
     fonts_dir: Path
     source_path: Path
+    weight_class: int = 400
 
 
 def caption_font_asset_ids(
@@ -91,10 +92,9 @@ def distinct_font_assets_share_family(
 ) -> bool:
     """Whether two distinct files would be ambiguous to libass by family.
 
-    ASS selects a face by family plus style flags, not by our asset id. Exposing
-    two distinct assets with the same family in one fontsdir can therefore make
-    libass render a different face from the file whose hmtx table the planner
-    measured. V2 captions fail closed on this condition.
+    ASS selects a face by family plus style flags, not by our asset id. Callers
+    use this family match together with the faces' weight classes to distinguish
+    a valid regular/bold pair from an ambiguous pair in the same ASS style bucket.
     """
 
     return bool(
@@ -106,6 +106,41 @@ def distinct_font_assets_share_family(
         and normal_font.family_name.strip().casefold()
         == emphasis_font.family_name.strip().casefold()
     )
+
+
+def distinct_font_assets_have_ambiguous_ass_style(
+    normal_asset_id: str | None,
+    normal_font: ResolvedFont | None,
+    emphasis_asset_id: str | None,
+    emphasis_font: ResolvedFont | None,
+) -> bool:
+    """Whether libass cannot distinguish two same-family files by style.
+
+    ASS exposes a bold switch rather than an arbitrary OpenType weight axis. Two
+    files in the same family are therefore safe when one is a regular face and
+    the other is a bold face; two regular-like or two bold-like files remain
+    ambiguous because libass may choose a different file from the one measured
+    during caption planning.
+    """
+
+    return bool(
+        distinct_font_assets_share_family(
+            normal_asset_id,
+            normal_font,
+            emphasis_asset_id,
+            emphasis_font,
+        )
+        and normal_font is not None
+        and emphasis_font is not None
+        and is_ass_bold_weight(normal_font.weight_class)
+        == is_ass_bold_weight(emphasis_font.weight_class)
+    )
+
+
+def is_ass_bold_weight(weight_class: int) -> bool:
+    """Map an OpenType weight class to the binary ASS bold style flag."""
+
+    return int(weight_class) >= 600
 
 
 def is_font_collection(font: ResolvedFont | None) -> bool:
@@ -177,7 +212,12 @@ def resolve_subtitle_font(
     if "," in family or "\n" in family or "\r" in family:
         logger.warning("[fonts] selected font %s has an ASS-unsafe family name; ignoring", source)
         return None
-    return ResolvedFont(family_name=family, fonts_dir=runtime_dir, source_path=target)
+    return ResolvedFont(
+        family_name=family,
+        fonts_dir=runtime_dir,
+        source_path=target,
+        weight_class=_read_weight_class(target),
+    )
 
 
 def _stage_sfnt_font(source: Path, runtime_dir: Path) -> Path | None:
@@ -269,6 +309,25 @@ def _read_family_name(path: Path) -> str | None:
     if name:
         return name
     return _read_family_builtin(path)
+
+
+def _read_weight_class(path: Path) -> int:
+    """Read the OpenType OS/2 weight class, falling back to regular."""
+
+    try:
+        from fontTools.ttLib import TTFont
+    except Exception:  # pragma: no cover - fontTools is a runtime dependency
+        return 400
+    try:
+        font = TTFont(str(path), fontNumber=0, lazy=True)
+        try:
+            value = int(getattr(font["OS/2"], "usWeightClass", 400))
+            return min(1000, max(1, value))
+        finally:
+            font.close()
+    except Exception as exc:  # pragma: no cover - corrupt font edge
+        logger.warning("[fonts] fontTools could not read weight from %s: %s", path, exc)
+        return 400
 
 
 def _read_family_with_fonttools(path: Path) -> str | None:
