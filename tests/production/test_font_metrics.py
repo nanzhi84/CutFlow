@@ -13,6 +13,7 @@ from packages.production.pipeline._font_metrics import (
     char_advance_px,
     fallback_char_px,
     font_text_safety_issue,
+    font_text_safety_report,
     load_font_metrics,
     make_text_measurer,
 )
@@ -87,10 +88,16 @@ def test_char_advance_px_cmap_miss_reserves_full_rendered_cell(font_path: Path) 
 
 
 def test_font_text_safety_rejects_missing_glyph(font_path: Path) -> None:
+    report = font_text_safety_report(font_path, ["丁"])
+
     assert font_text_safety_issue(font_path, ["丁"]) == "missing_glyph:U+4E01"
+    assert report.missing_codepoints == (0x4E01,)
+    assert report.blocking_issue(allow_missing_glyphs=True) is None
 
 
-def test_font_text_safety_rejects_horizontal_ink_overhang(tmp_path: Path) -> None:
+def test_font_text_safety_reports_horizontal_ink_overhang_as_layout_margin(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "overhang.ttf"
     pen = TTGlyphPen(None)
     pen.moveTo((-100, 0))
@@ -111,7 +118,12 @@ def test_font_text_safety_rejects_horizontal_ink_overhang(tmp_path: Path) -> Non
     fb.setupPost()
     fb.save(str(path))
 
-    assert font_text_safety_issue(path, ["f"]) == "horizontal_ink_overhang:U+0066"
+    report = font_text_safety_report(path, ["f"])
+
+    assert font_text_safety_issue(path, ["f"]) is None
+    assert report.horizontal_left_overhang_units == 100
+    assert report.horizontal_right_overhang_units == 100
+    assert report.horizontal_overhang_px(50) == pytest.approx(10)
 
 
 def test_load_font_metrics_returns_none_on_corrupt_file(tmp_path: Path) -> None:

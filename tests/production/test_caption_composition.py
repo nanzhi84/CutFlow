@@ -598,6 +598,91 @@ def test_ass_golden_uses_one_dialogue_per_run_and_no_legacy_geometry(tmp_path) -
     assert rendered_text == "普通强调收尾"
 
 
+def test_per_hint_font_metrics_and_ass_override_are_kept_explicit(tmp_path) -> None:
+    script = "甲乙丙丁"
+    plan = build_caption_composition(
+        script=script,
+        units=_units(script),
+        tokens=_tokens(script),
+        hints=[EmphasisHint(phrase="乙"), EmphasisHint(phrase="丁")],
+        fps=30,
+        total_frames=120,
+        width=1080,
+        height=1920,
+        band=CaptionBand(),
+        normal_enabled=True,
+        emphasis_enabled=True,
+        normal_font_asset_id="font_normal",
+        emphasis_font_asset_id="font_decorative",
+        normal_font_size=64,
+        emphasis_font_size=72,
+        normal_measure=lambda text: len(text) * 10,
+        emphasis_measure=lambda text: len(text) * 20,
+        normal_baseline_offset=48,
+        emphasis_baseline_offset=55,
+        timing_source="native",
+        normal_metrics_source="hmtx",
+        emphasis_metrics_source="hmtx",
+        emphasis_font_asset_ids=["font_decorative", "font_fallback"],
+        emphasis_measures_by_asset={
+            "font_decorative": lambda text: len(text) * 20,
+            "font_fallback": lambda text: len(text) * 12,
+        },
+        emphasis_baseline_offsets_by_asset={
+            "font_decorative": 55,
+            "font_fallback": 51,
+        },
+        font_horizontal_overhang_px={"font_decorative": 3.0, "font_fallback": 2.0},
+        layout_horizontal_overhang_px=3.0,
+    )
+
+    emphasis_runs = [run for run in _runs(plan) if run.role == "emphasis"]
+    assert [run.font_asset_id for run in emphasis_runs] == [
+        "font_decorative",
+        "font_fallback",
+    ]
+    assert [run.advance_px for run in emphasis_runs] == [20.0, 12.0]
+    assert [run.baseline_offset_px for run in emphasis_runs] == [55.0, 51.0]
+    assert plan.diagnostics.font_horizontal_overhang_px == {
+        "font_decorative": 3.0,
+        "font_fallback": 2.0,
+    }
+
+    output = tmp_path / "font-override.ass"
+    write_ass_subtitles(
+        output,
+        style=StylePlanArtifact.model_validate({"subtitle": {}}),
+        caption_composition=plan,
+        font_name="Normal Face",
+        emphasis_font_name="Decorative Face",
+        font_overrides={"font_fallback": ("Fallback Face", 700)},
+    )
+    content = output.read_text(encoding="utf-8")
+    assert "\\fnFallback Face\\b1" in content
+
+
+def test_ass_centers_asymmetric_ink_bounds_inside_the_caption_band(tmp_path) -> None:
+    plan = _build("普通", emphasis_enabled=False)
+    plan.diagnostics.font_horizontal_left_overhang_px = {"font_normal": 8.0}
+    plan.diagnostics.font_horizontal_right_overhang_px = {"font_normal": 0.0}
+    output = tmp_path / "asymmetric-overhang.ass"
+
+    write_ass_subtitles(
+        output,
+        style=StylePlanArtifact.model_validate({"subtitle": {}}),
+        caption_composition=plan,
+        font_name="Normal Face",
+        emphasis_font_name="Normal Face",
+    )
+
+    dialogue = next(
+        line
+        for line in output.read_text(encoding="utf-8").splitlines()
+        if line.startswith("Dialogue:")
+    )
+    assert "\\pos(524," in dialogue
+
+
 def test_ass_writer_requires_resolved_fonts_and_rejects_invalid_hex() -> None:
     plan = _build("普通字幕")
 

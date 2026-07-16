@@ -499,6 +499,7 @@ class CaptionRun(ContractModel):
     enter_frame: int = Field(ge=0)
     exit_frame: int = Field(gt=0)
     effect_id: Literal["none", "soft_in", "pop"] = "none"
+    font_asset_id: str | None = None
     advance_px: float = Field(ge=0.0)
     baseline_offset_px: float = Field(ge=0.0)
 
@@ -619,6 +620,9 @@ class CaptionCompositionDiagnostics(ContractModel):
     timing_source: Literal["native", "asr_anchored", "interpolated"] = "interpolated"
     font_metrics_source: Literal["hmtx", "eaw_fallback"] = "hmtx"
     emphasis_font_metrics_source: Literal["hmtx", "eaw_fallback"] = "hmtx"
+    font_horizontal_overhang_px: dict[str, float] = Field(default_factory=dict)
+    font_horizontal_left_overhang_px: dict[str, float] = Field(default_factory=dict)
+    font_horizontal_right_overhang_px: dict[str, float] = Field(default_factory=dict)
     merged_units: int = Field(0, ge=0)
     split_cues: int = Field(0, ge=0)
     units_unmatched: int = Field(0, ge=0)

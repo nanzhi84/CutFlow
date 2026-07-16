@@ -5,7 +5,7 @@ from __future__ import annotations
 import itertools
 import re
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from packages.core.contracts import SpeechTokenTiming
@@ -59,6 +59,7 @@ class _BoundHint:
     start: int
     end: int
     order: int
+    font_asset_id: str | None = None
 
 
 @dataclass
@@ -92,6 +93,13 @@ def build_caption_composition(
     timing_source: str,
     normal_metrics_source: str,
     emphasis_metrics_source: str,
+    emphasis_font_asset_ids: list[str | None] | None = None,
+    emphasis_measures_by_asset: Mapping[str, Callable[[str], float]] | None = None,
+    emphasis_baseline_offsets_by_asset: Mapping[str, float] | None = None,
+    font_horizontal_overhang_px: Mapping[str, float] | None = None,
+    font_horizontal_left_overhang_px: Mapping[str, float] | None = None,
+    font_horizontal_right_overhang_px: Mapping[str, float] | None = None,
+    layout_horizontal_overhang_px: float = 0.0,
 ) -> CaptionCompositionPlanArtifact:
     """Compile one authoritative caption artifact without inspecting video pixels."""
 
@@ -100,6 +108,9 @@ def build_caption_composition(
         font_metrics_source=normal_metrics_source,
         emphasis_font_metrics_source=emphasis_metrics_source,
         hints_total=len(hints) if emphasis_enabled else 0,
+        font_horizontal_overhang_px=dict(font_horizontal_overhang_px or {}),
+        font_horizontal_left_overhang_px=dict(font_horizontal_left_overhang_px or {}),
+        font_horizontal_right_overhang_px=dict(font_horizontal_right_overhang_px or {}),
     )
     if not normal_enabled:
         return CaptionCompositionPlanArtifact(
@@ -118,7 +129,18 @@ def build_caption_composition(
         )
 
     cues = _merge_cues(_locate_units(script, units, diagnostics), script, diagnostics)
-    bound = _bind_hints(script, hints if emphasis_enabled else [], diagnostics)
+    enabled_hints = hints if emphasis_enabled else []
+    if (
+        emphasis_font_asset_ids is not None
+        and len(emphasis_font_asset_ids) != len(enabled_hints)
+    ):
+        raise ValueError("emphasis_font_asset_ids must align with enabled emphasis hints")
+    bound = _bind_hints(
+        script,
+        enabled_hints,
+        diagnostics,
+        font_asset_ids=emphasis_font_asset_ids,
+    )
     timed_hints: list[_BoundHint] = []
     for hint in bound:
         phrase_end = hint.start + len(hint.phrase)
@@ -130,7 +152,9 @@ def build_caption_composition(
             CaptionTokenFallback(hint_ids=[hint.hint_id], phrase=hint.phrase)
         )
     by_cue = _resolve_hints_by_cue(cues, timed_hints, script, diagnostics)
-    max_width = width * band.max_width_ratio
+    max_width = width * band.max_width_ratio - max(0.0, layout_horizontal_overhang_px)
+    if max_width <= 0:
+        raise ValueError("caption horizontal overhang leaves no usable layout width")
     laid_out: list[tuple[_LaidOutCue, list[_BoundHint]]] = []
     for cue_index, cue in enumerate(cues):
         cue_hints = by_cue.get(cue_index, [])
@@ -141,6 +165,7 @@ def build_caption_composition(
             tokens=tokens,
             normal_measure=normal_measure,
             emphasis_measure=emphasis_measure,
+            emphasis_measures_by_asset=emphasis_measures_by_asset,
             max_width=max_width,
             diagnostics=diagnostics,
         )
@@ -160,6 +185,7 @@ def build_caption_composition(
                 tokens=tokens,
                 normal_measure=normal_measure,
                 emphasis_measure=emphasis_measure,
+                emphasis_measures_by_asset=emphasis_measures_by_asset,
                 max_width=max_width,
                 diagnostics=diagnostics,
             )
@@ -176,8 +202,10 @@ def build_caption_composition(
             total_frames=total_frames,
             normal_measure=normal_measure,
             emphasis_measure=emphasis_measure,
+            emphasis_measures_by_asset=emphasis_measures_by_asset,
             normal_baseline_offset=normal_baseline_offset,
             emphasis_baseline_offset=emphasis_baseline_offset,
+            emphasis_baseline_offsets_by_asset=emphasis_baseline_offsets_by_asset,
         )
         for index, (item, item_hints) in enumerate(laid_out)
     ]
@@ -312,7 +340,11 @@ def _merge_cues(
 
 
 def _bind_hints(
-    script: str, hints: list[EmphasisHint], diagnostics: CaptionCompositionDiagnostics
+    script: str,
+    hints: list[EmphasisHint],
+    diagnostics: CaptionCompositionDiagnostics,
+    *,
+    font_asset_ids: list[str | None] | None = None,
 ) -> list[_BoundHint]:
     occupied_by_phrase: dict[str, list[tuple[int, int]]] = {}
     result: list[_BoundHint] = []
@@ -349,6 +381,7 @@ def _bind_hints(
                 start=match[0],
                 end=match[1],
                 order=order,
+                font_asset_id=font_asset_ids[order] if font_asset_ids is not None else None,
             )
         )
     return result
@@ -375,6 +408,7 @@ def _resolve_hints_by_cue(
                 start=item.start,
                 end=_extend_run_end(script, item.end, limit=cue.char_end),
                 order=item.order,
+                font_asset_id=item.font_asset_id,
             )
             for item in exact_candidates
         ]
@@ -392,6 +426,7 @@ def _resolve_hints_by_cue(
                     start=cue.char_start,
                     end=cue.char_end,
                     order=chosen.order,
+                    font_asset_id=chosen.font_asset_id,
                 )
             ]
             continue
@@ -420,6 +455,7 @@ def _layout_cue(
     emphasis_measure: Callable[[str], float],
     max_width: float,
     diagnostics: CaptionCompositionDiagnostics,
+    emphasis_measures_by_asset: Mapping[str, Callable[[str], float]] | None = None,
     depth: int = 0,
 ) -> tuple[list[_LaidOutCue], bool]:
     lines = _choose_lines(
@@ -429,6 +465,7 @@ def _layout_cue(
         tokens=tokens,
         normal_measure=normal_measure,
         emphasis_measure=emphasis_measure,
+        emphasis_measures_by_asset=emphasis_measures_by_asset,
         max_width=max_width,
     )
     if lines is not None:
@@ -444,6 +481,7 @@ def _layout_cue(
             tokens=tokens,
             normal_measure=normal_measure,
             emphasis_measure=emphasis_measure,
+            emphasis_measures_by_asset=emphasis_measures_by_asset,
             max_width=float("inf"),
         ) or [(cue.char_start, cue.char_end)]
         return [_LaidOutCue(cue=cue, lines=relaxed, omitted=_omitted_breaks(cue, relaxed, script))], False
@@ -459,6 +497,7 @@ def _layout_cue(
         tokens=tokens,
         normal_measure=normal_measure,
         emphasis_measure=emphasis_measure,
+        emphasis_measures_by_asset=emphasis_measures_by_asset,
         max_width=max_width,
         diagnostics=diagnostics,
         depth=depth + 1,
@@ -470,6 +509,7 @@ def _layout_cue(
         tokens=tokens,
         normal_measure=normal_measure,
         emphasis_measure=emphasis_measure,
+        emphasis_measures_by_asset=emphasis_measures_by_asset,
         max_width=max_width,
         diagnostics=diagnostics,
         depth=depth + 1,
@@ -485,6 +525,7 @@ def _choose_lines(
     tokens: list[SpeechTokenTiming],
     normal_measure: Callable[[str], float],
     emphasis_measure: Callable[[str], float],
+    emphasis_measures_by_asset: Mapping[str, Callable[[str], float]] | None,
     max_width: float,
 ) -> list[tuple[int, int]] | None:
     protected = _protected_spans(cue, script, hints, tokens)
@@ -509,6 +550,7 @@ def _choose_lines(
                     hints=hints,
                     normal_measure=normal_measure,
                     emphasis_measure=emphasis_measure,
+                    emphasis_measures_by_asset=emphasis_measures_by_asset,
                 )
                 for start, end in spans
             ]
@@ -617,8 +659,10 @@ def _materialize_cue(
     total_frames: int,
     normal_measure: Callable[[str], float],
     emphasis_measure: Callable[[str], float],
+    emphasis_measures_by_asset: Mapping[str, Callable[[str], float]] | None,
     normal_baseline_offset: float,
     emphasis_baseline_offset: float,
+    emphasis_baseline_offsets_by_asset: Mapping[str, float] | None,
 ) -> CaptionCue:
     cue = item.cue
     start_frame = min(total_frames, max(0, round(cue.start * fps)))
@@ -665,13 +709,27 @@ def _materialize_cue(
                 else line_enter
             )
             text = script[segment_start:segment_end]
-            measure = emphasis_measure if role == "emphasis" else normal_measure
+            measure = (
+                _emphasis_measure(hint, emphasis_measure, emphasis_measures_by_asset)
+                if role == "emphasis"
+                else normal_measure
+            )
+            emphasis_baseline = (
+                emphasis_baseline_offsets_by_asset.get(
+                    hint.font_asset_id, emphasis_baseline_offset
+                )
+                if hint is not None
+                and hint.font_asset_id
+                and emphasis_baseline_offsets_by_asset is not None
+                else emphasis_baseline_offset
+            )
             runs.append(
                 CaptionRun(
                     run_id=f"cue_{index + 1:04d}_run_{run_counter:03d}",
                     text=text,
                     role=role,
                     hint_id=hint.hint_id if hint else None,
+                    font_asset_id=hint.font_asset_id if hint else None,
                     token_ids=[token.token_id for token in run_tokens if token.token_id],
                     char_span=(segment_start - cue.char_start, segment_end - cue.char_start),
                     enter_frame=max(start_frame, min(end_frame - 1, enter_frame)),
@@ -679,7 +737,7 @@ def _materialize_cue(
                     effect_id="pop" if role == "emphasis" else "soft_in",
                     advance_px=round(measure(text), 3),
                     baseline_offset_px=round(
-                        emphasis_baseline_offset if role == "emphasis" else normal_baseline_offset,
+                        emphasis_baseline if role == "emphasis" else normal_baseline_offset,
                         3,
                     ),
                 )
@@ -711,17 +769,32 @@ def _mixed_width(
     hints: list[_BoundHint],
     normal_measure: Callable[[str], float],
     emphasis_measure: Callable[[str], float],
+    emphasis_measures_by_asset: Mapping[str, Callable[[str], float]] | None,
 ) -> float:
     whole = next((item for item in hints if item.display_mode == "whole_cue"), None)
     if whole is not None:
-        return emphasis_measure(script[start:end])
+        return _emphasis_measure(whole, emphasis_measure, emphasis_measures_by_asset)(
+            script[start:end]
+        )
     cursor = start
     width = 0.0
     for hint in [item for item in hints if start <= item.start and item.end <= end]:
         width += normal_measure(script[cursor : hint.start])
-        width += emphasis_measure(script[hint.start : hint.end])
+        width += _emphasis_measure(hint, emphasis_measure, emphasis_measures_by_asset)(
+            script[hint.start : hint.end]
+        )
         cursor = hint.end
     return width + normal_measure(script[cursor:end])
+
+
+def _emphasis_measure(
+    hint: _BoundHint | None,
+    default: Callable[[str], float],
+    by_asset: Mapping[str, Callable[[str], float]] | None,
+) -> Callable[[str], float]:
+    if hint is not None and hint.font_asset_id and by_asset is not None:
+        return by_asset.get(hint.font_asset_id, default)
+    return default
 
 
 def _token_inside(token: SpeechTokenTiming, start: int, end: int) -> bool:
