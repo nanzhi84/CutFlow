@@ -10,6 +10,10 @@ from packages.core.contracts.artifacts import (
     CaptionRun,
     StylePlanArtifact,
 )
+from packages.production.pipeline._caption_effects import (
+    CaptionEffectRenderContext,
+    caption_effect,
+)
 from packages.production.pipeline._fonts import is_ass_bold_weight
 
 _ASS_MARGIN_L = 80
@@ -40,7 +44,7 @@ def write_ass_subtitles(
     emphasis_font_weight: int = 400,
     font_overrides: Mapping[str, tuple[str, int]] | None = None,
 ) -> list[str]:
-    """Write one Dialogue per CaptionRun; line breaks and x positions are preplanned."""
+    """Write registered effect fragments; line breaks and x positions are preplanned."""
 
     subtitle = style.subtitle
     resolved_font = font_name.replace(",", " ").strip()
@@ -109,56 +113,79 @@ def write_ass_subtitles(
                     0.0,
                 )
             )
-            x = anchor_x - (advance + right_overhang - left_overhang) / 2.0
+            cursor_x = anchor_x - (
+                advance + line.animation_headroom_px + right_overhang - left_overhang
+            ) / 2.0
             baseline = baseline_y - (len(cue_lines) - line_index - 1) * line_height
             for run in line.runs:
-                text = ass_escape(run.text)
                 run_advance = run.advance_px
+                effect = caption_effect(run.effect_id)
+                left_headroom, right_headroom = effect.headroom_sides_px(run_advance)
+                x = cursor_x + left_headroom
                 role = "Emphasis" if run.role == "emphasis" else "Normal"
                 top_y = baseline - run.baseline_offset_px
-                tags = ["\\an7", f"\\pos({round(x)},{round(top_y)})"]
-                planned_font_asset_id = (
-                    caption_composition.emphasis_font_asset_id
-                    if run.role == "emphasis"
-                    else caption_composition.normal_font_asset_id
+                font_tags = _run_font_override_tags(
+                    run,
+                    caption_composition,
+                    font_overrides,
                 )
-                if run.font_asset_id and run.font_asset_id != planned_font_asset_id:
-                    override = (font_overrides or {}).get(run.font_asset_id)
-                    if override is None:
-                        raise ValueError(
-                            f"caption run font override is unresolved: {run.font_asset_id}"
-                        )
-                    override_name = override[0].replace(",", " ").strip()
-                    if not override_name or any(char in override_name for char in "{}\\"):
-                        raise ValueError("resolved caption run font family name is invalid")
-                    tags.extend(
-                        [
-                            f"\\fn{override_name}",
-                            "\\b1" if is_ass_bold_weight(override[1]) else "\\b0",
-                        ]
+                fragments = effect.render(
+                    CaptionEffectRenderContext(
+                        text=run.text,
+                        x=x,
+                        y=top_y,
+                        start_ms=round(run.enter_frame * 1000 / fps),
+                        end_ms=round(run.exit_frame * 1000 / fps),
+                        frame_duration_ms=1000 / fps,
+                        char_enter_ms=(
+                            tuple(round(frame * 1000 / fps) for frame in run.char_enter_frames)
+                            if run.char_enter_frames is not None
+                            else None
+                        ),
+                        char_advances_px=(
+                            tuple(run.char_advances_px)
+                            if run.char_advances_px is not None
+                            else None
+                        ),
                     )
-                effect = run.effect_id
-                if effect == "soft_in":
-                    tags.append("\\fad(120,0)")
-                elif effect == "pop":
-                    tags.extend(
-                        [
-                            "\\fscx85\\fscy85",
-                            "\\t(0,120,\\fscx105\\fscy105)",
-                            "\\t(120,240,\\fscx100\\fscy100)",
-                        ]
-                    )
-                start = run.enter_frame / fps
-                end = run.exit_frame / fps
-                if end > start:
+                )
+                for fragment in fragments:
+                    if fragment.end_ms <= fragment.start_ms:
+                        continue
                     lines.append(
-                        f"Dialogue: 0,{ass_time(start)},{ass_time(end)},{role},,0,0,0,,"
-                        + "{" + "".join(tags) + "}"
-                        + text
+                        "Dialogue: 0,"
+                        f"{ass_time(fragment.start_ms / 1000)},"
+                        f"{ass_time(fragment.end_ms / 1000)},{role},,0,0,0,,"
+                        + "{" + "".join((*fragment.tags, *font_tags)) + "}"
+                        + ass_escape(fragment.text)
                     )
-                x += run_advance
+                cursor_x += left_headroom + run_advance + right_headroom
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return []
+
+
+def _run_font_override_tags(
+    run: CaptionRun,
+    composition: CaptionCompositionPlanArtifact,
+    font_overrides: Mapping[str, tuple[str, int]] | None,
+) -> tuple[str, ...]:
+    planned_font_asset_id = (
+        composition.emphasis_font_asset_id
+        if run.role == "emphasis"
+        else composition.normal_font_asset_id
+    )
+    if not run.font_asset_id or run.font_asset_id == planned_font_asset_id:
+        return ()
+    override = (font_overrides or {}).get(run.font_asset_id)
+    if override is None:
+        raise ValueError(f"caption run font override is unresolved: {run.font_asset_id}")
+    override_name = override[0].replace(",", " ").strip()
+    if not override_name or any(char in override_name for char in "{}\\"):
+        raise ValueError("resolved caption run font family name is invalid")
+    return (
+        f"\\fn{override_name}",
+        "\\b1" if is_ass_bold_weight(override[1]) else "\\b0",
+    )
 
 
 def _run_font_asset_id(

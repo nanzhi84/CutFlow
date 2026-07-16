@@ -330,7 +330,8 @@ def run(ctx: NodeContext) -> NodeOutput:
             )
         max_ink_width = width * band.max_width_ratio
         if any(
-            line.advance_px + layout_overhang > max_ink_width + 1e-6
+            line.advance_px + line.animation_headroom_px + layout_overhang
+            > max_ink_width + 1e-6
             for cue in plan.cues
             for line in cue.lines
         ):

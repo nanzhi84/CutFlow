@@ -46,10 +46,15 @@ from packages.production.pipeline.nodes import (
     subtitle_and_bgm_mix,
 )
 from packages.production.pipeline.nodes.subtitle_and_bgm_mix import (
+    _resolve_caption_sfx_paths,
     _resolve_planned_font,
-    _select_emphasis_sfx_asset_id,
+    _select_caption_sfx_asset_ids,
 )
-from packages.production.pipeline._sfx_events import plan_emphasis_sfx_events
+from packages.production.pipeline._sfx_events import (
+    CaptionSfxEvent,
+    cooldown_caption_sfx_events,
+    plan_caption_sfx_events,
+)
 
 
 def _build_font(path: Path, family: str, *, characters: str = "A") -> None:
@@ -122,26 +127,26 @@ def _register_font(
     )
 
 
-def test_emphasis_sfx_selection_requires_an_explicit_light_caption_tag() -> None:
+def test_caption_sfx_selection_requires_an_explicit_class_tag() -> None:
     assets = [
         MediaAssetRecord(id="sfx_a", title="Heavy impact", kind="sfx", tags=["impact"]),
         MediaAssetRecord(id="sfx_b", title="Whoosh", kind="sfx", tags=["whoosh"]),
     ]
 
-    assert _select_emphasis_sfx_asset_id(assets) is None
+    assert _select_caption_sfx_asset_ids(assets) == {}
 
     assets.append(
         MediaAssetRecord(
             id="sfx_c",
             title="Light pop",
             kind="sfx",
-            tags=["caption_emphasis", "light_pop"],
+            tags=["caption_emphasis", "sfx_class:pop"],
         )
     )
-    assert _select_emphasis_sfx_asset_id(assets) == "sfx_c"
+    assert _select_caption_sfx_asset_ids(assets) == {"pop": "sfx_c"}
 
 
-def test_emphasis_sfx_events_are_frame_synchronous_cooled_down_and_bounded() -> None:
+def test_caption_sfx_events_are_frame_synchronous_cooled_down_and_bounded() -> None:
     runs = [
         CaptionRun(
             run_id=f"run_{index:02d}",
@@ -196,24 +201,206 @@ def test_emphasis_sfx_events_are_frame_synchronous_cooled_down_and_bounded() -> 
         ],
     )
 
-    assert (
-        plan_emphasis_sfx_events(
-            caption_composition=composition,
-            duration=10,
-            sfx_asset_id=None,
-        )
-        == []
-    )
-    events = plan_emphasis_sfx_events(
+    missing_events = plan_caption_sfx_events(
         caption_composition=composition,
+        sfx_asset_ids_by_class={},
+    )
+    assert len(missing_events) == 1
+    assert all(event.asset_id is None and event.sfx_class == "pop" for event in missing_events)
+
+    planned = plan_caption_sfx_events(
+        caption_composition=composition,
+        sfx_asset_ids_by_class={"pop": "sfx_light"},
+    )
+    events = cooldown_caption_sfx_events(
+        planned,
         duration=0,
-        sfx_asset_id="sfx_light",
+        playable_asset_ids={"sfx_light"},
     )
 
     assert len(events) == 4
     assert [event.start_ms for event in events] == [0, 200, 400, 600]
     assert all(event.asset_id == "sfx_light" for event in events)
+    assert all(event.sfx_class == "pop" for event in events)
     assert all(event.volume == 0.48 for event in events)
+
+
+def test_missing_sfx_class_does_not_consume_playable_event_cooldown() -> None:
+    runs = [
+        CaptionRun(
+            run_id="run_missing_pop",
+            text="甲",
+            role="emphasis",
+            hint_id="hint_pop",
+            char_span=(0, 1),
+            enter_frame=0,
+            exit_frame=30,
+            effect_id="pop",
+            advance_px=20,
+            baseline_offset_px=55,
+        ),
+        CaptionRun(
+            run_id="run_playable_ding",
+            text="乙",
+            role="emphasis",
+            hint_id="hint_ding",
+            char_span=(1, 2),
+            enter_frame=1,
+            exit_frame=30,
+            effect_id="zoom_settle",
+            advance_px=20,
+            baseline_offset_px=55,
+        ),
+    ]
+    composition = CaptionCompositionPlanArtifact(
+        fps=30,
+        width=1080,
+        height=1920,
+        normal_enabled=True,
+        emphasis_enabled=True,
+        band=CaptionBand(),
+        normal_font_asset_id="font_normal",
+        emphasis_font_asset_id="font_emphasis",
+        normal_font_size=64,
+        emphasis_font_size=72,
+        cues=[
+            CaptionCue(
+                cue_id="cue_1",
+                text="甲乙",
+                start_frame=0,
+                end_frame=30,
+                spoken_span=CaptionFrameSpan(start_frame=0, end_frame=30),
+                display_span=CaptionFrameSpan(start_frame=0, end_frame=30),
+                source_unit_ids=["unit_1"],
+                lines=[CaptionLine(runs=runs, advance_px=40)],
+            )
+        ],
+    )
+
+    events = plan_caption_sfx_events(
+        caption_composition=composition,
+        sfx_asset_ids_by_class={"ding": "sfx_ding"},
+    )
+
+    assert [
+        (event.sfx_class, event.asset_id, event.start_ms) for event in events
+    ] == [
+        ("pop", None, 0),
+        ("ding", "sfx_ding", 33),
+    ]
+
+    assigned = plan_caption_sfx_events(
+        caption_composition=composition,
+        sfx_asset_ids_by_class={"pop": "sfx_broken", "ding": "sfx_ding"},
+    )
+    playable = cooldown_caption_sfx_events(
+        assigned,
+        duration=1,
+        playable_asset_ids={"sfx_ding"},
+    )
+    assert [
+        (event.sfx_class, event.asset_id, event.start_ms) for event in playable
+    ] == [("ding", "sfx_ding", 33)]
+
+
+def test_corrupt_sfx_is_excluded_before_neighboring_event_cooldown(
+    tmp_path,
+    media_fixture_factory,
+) -> None:
+    broken = tmp_path / "broken-sfx.ogg"
+    broken.write_bytes(b"not an audio stream")
+    valid = media_fixture_factory.audio(
+        duration_sec=0.2,
+        filename="valid-ding.wav",
+    )
+    paths = {"sfx_broken": broken, "sfx_ding": valid}
+    ctx = SimpleNamespace(
+        source_artifact_for_asset=lambda asset_id: asset_id,
+        artifact_path=lambda artifact_id: paths[artifact_id],
+    )
+    requests = [
+        CaptionSfxEvent(
+            asset_id="sfx_broken",
+            sfx_class="pop",
+            start_ms=0,
+            volume=0.48,
+            source_run_id="run_pop",
+        ),
+        CaptionSfxEvent(
+            asset_id="sfx_ding",
+            sfx_class="ding",
+            start_ms=33,
+            volume=0.48,
+            source_run_id="run_ding",
+        ),
+    ]
+
+    resolved, unreadable = _resolve_caption_sfx_paths(ctx, requests)
+    selected = cooldown_caption_sfx_events(
+        requests,
+        duration=1,
+        playable_asset_ids=resolved,
+    )
+
+    assert unreadable == {"sfx_broken"}
+    assert resolved == {"sfx_ding": valid}
+    assert [(event.asset_id, event.start_ms) for event in selected] == [
+        ("sfx_ding", 33)
+    ]
+
+
+def test_wipe_reveal_sfx_fires_only_once_per_caption_line() -> None:
+    composition = CaptionCompositionPlanArtifact(
+        fps=30,
+        width=1080,
+        height=1920,
+        normal_enabled=True,
+        emphasis_enabled=False,
+        band=CaptionBand(),
+        normal_font_asset_id="font_normal",
+        emphasis_font_asset_id=None,
+        normal_font_size=64,
+        emphasis_font_size=72,
+        cues=[
+            CaptionCue(
+                cue_id="cue_0001",
+                text="甲乙",
+                start_frame=0,
+                end_frame=30,
+                spoken_span=CaptionFrameSpan(start_frame=0, end_frame=30),
+                display_span=CaptionFrameSpan(start_frame=0, end_frame=30),
+                source_unit_ids=["unit_0001"],
+                lines=[
+                    CaptionLine(
+                        runs=[
+                            CaptionRun(
+                                run_id=f"run_{index}",
+                                text=char,
+                                role="normal",
+                                char_span=(index, index + 1),
+                                enter_frame=index * 9,
+                                exit_frame=30,
+                                effect_id="wipe_reveal",
+                                char_enter_frames=[index * 9],
+                                char_advances_px=[20],
+                                advance_px=20,
+                                baseline_offset_px=48,
+                            )
+                            for index, char in enumerate("甲乙")
+                        ],
+                        advance_px=40,
+                    )
+                ],
+            )
+        ],
+    )
+
+    events = plan_caption_sfx_events(
+        caption_composition=composition,
+        sfx_asset_ids_by_class={"whoosh": "sfx_whoosh"},
+    )
+
+    assert [(event.sfx_class, event.start_ms) for event in events] == [("whoosh", 0)]
 
 
 def test_planned_font_fails_closed(tmp_path, monkeypatch) -> None:
@@ -621,7 +808,7 @@ def test_caption_composition_to_mix_roundtrip_is_shared_by_both_workflows(
             id="sfx_broken",
             title="Broken light pop",
             kind="sfx",
-            tags=["caption_emphasis", "light_pop"],
+            tags=["caption_emphasis", "sfx_class:pop"],
             source_artifact_id="art_missing_sfx",
             usable=True,
         )
@@ -639,7 +826,7 @@ def test_caption_composition_to_mix_roundtrip_is_shared_by_both_workflows(
             id="sfx_light",
             title="Light pop",
             kind="sfx",
-            tags=["caption_emphasis", "light_pop"],
+            tags=["caption_emphasis", "sfx_class:pop"],
             source_artifact_id=sfx_source.id,
             usable=True,
         )
@@ -692,7 +879,11 @@ def test_caption_composition_to_mix_roundtrip_is_shared_by_both_workflows(
     monkeypatch.setattr(
         subtitle_and_bgm_mix,
         "probe_media",
-        lambda _path: MediaInfo(media_type="subtitle", codec="ass", format="ass"),
+        lambda path: MediaInfo(
+            media_type="audio" if Path(path).suffix == ".wav" else "subtitle",
+            codec="pcm_s16le" if Path(path).suffix == ".wav" else "ass",
+            format="wav" if Path(path).suffix == ".wav" else "ass",
+        ),
     )
 
     mixed = subtitle_and_bgm_mix.run(

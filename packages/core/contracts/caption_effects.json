@@ -1,0 +1,12 @@
+{
+  "none": {"roles": ["normal", "emphasis"]},
+  "soft_in": {"roles": ["normal"]},
+  "fade_through": {"roles": ["normal"]},
+  "wipe_reveal": {"roles": ["normal"]},
+  "slide_up_in": {"roles": ["normal", "emphasis"]},
+  "pop": {"roles": ["emphasis"]},
+  "pop_rotate": {"roles": ["emphasis"]},
+  "jelly_pop": {"roles": ["emphasis"]},
+  "drop_in": {"roles": ["emphasis"]},
+  "zoom_settle": {"roles": ["emphasis"]}
+}

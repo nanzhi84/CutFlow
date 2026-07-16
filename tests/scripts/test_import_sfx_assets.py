@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from packages.production.pipeline.nodes.subtitle_and_bgm_mix import (
-    _select_emphasis_sfx_asset_id,
+    _select_caption_sfx_asset_ids,
 )
 from scripts import import_sfx_assets
 
@@ -122,7 +122,7 @@ def test_caption_sfx_pack_contains_ten_unique_cc0_assets() -> None:
     assert all("license:CC0-1.0" in import_sfx_assets._tags(spec) for spec in specs)
 
 
-def test_caption_sfx_assets_are_visible_to_the_emphasis_selector() -> None:
+def test_caption_sfx_assets_are_visible_to_the_class_selector() -> None:
     for spec in import_sfx_assets.SFX_PACK:
         tags = import_sfx_assets._tags(spec)
         asset = SimpleNamespace(
@@ -134,4 +134,6 @@ def test_caption_sfx_assets_are_visible_to_the_emphasis_selector() -> None:
 
         assert "caption_emphasis" in tags
         assert f"sfx_class:{spec.sfx_class}" in tags
-        assert _select_emphasis_sfx_asset_id([asset]) == spec.asset_id
+        assert _select_caption_sfx_asset_ids([asset]) == {
+            spec.sfx_class: spec.asset_id
+        }
