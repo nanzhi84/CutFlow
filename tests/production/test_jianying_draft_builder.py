@@ -14,7 +14,6 @@ from packages.production.jianying_draft import (
     JianyingTextSegment,
     JianyingVideoSegment,
     _frame_from_payload,
-    _int_or_none,
     _broll_segments,
     _explicit_audio_tracks,
     _explicit_video_tracks,
@@ -625,9 +624,6 @@ def test_jianying_input_normalizers_cover_invalid_and_fallback_shapes(tmp_path):
     assert _frame_from_payload({"seconds": 0.5}, "frame", "seconds", 30) == 15
     assert _frame_from_payload({}, "frame", "seconds", 30, {"start": 0.25}, "start") == 8
     assert _frame_from_payload({}, "frame", "seconds", 30) == 0
-    assert _int_or_none(None) is None
-    assert _int_or_none(-2) == 0
-    assert _int_or_none("bad") is None
 
     segment = JianyingVideoSegment(
         track_name="主视频",

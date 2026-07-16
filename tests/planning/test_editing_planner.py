@@ -26,10 +26,7 @@ from packages.planning.editing import (
     build_narration_units_from_asr,
     frame_index,
     plan_boundary_timeline,
-    quantize_boundary,
     slice_source_window,
-    slice_windows,
-    to_seconds,
 )
 from packages.planning.editing.frame_grid import TIMELINE_FPS
 from packages.planning.editing.packing import assign_boundary_windows_for_chunks
@@ -49,41 +46,6 @@ def test_frame_index_half_boundary_differs_from_round() -> None:
 
 def test_frame_index_never_negative() -> None:
     assert frame_index(-5.0) == 0
-
-
-def test_quantize_boundary_round_trips_to_grid() -> None:
-    for k in range(0, 200):
-        t = k / TIMELINE_FPS
-        assert frame_index(quantize_boundary(t)) == k
-        assert to_seconds(k) == pytest.approx(k / TIMELINE_FPS)
-
-
-def test_slice_windows_are_contiguous_exact_no_overlap() -> None:
-    # Boundaries deliberately off-grid so quantization is actually exercised.
-    boundaries = [0.0, 1.04, 2.96, 4.0, 7.51]
-    windows = slice_windows(boundaries)
-    assert len(windows) == 4
-    for prev, nxt in zip(windows, windows[1:]):
-        # the junction frame is shared: prev ends where next starts (no overlap, no gap)
-        assert prev.end_frame == nxt.start_frame
-    for window in windows:
-        # each window is exactly B - A frames
-        assert window.length_frames == window.end_frame - window.start_frame
-        assert window.length_frames >= 1
-    # each window's frame span equals the quantized boundary span
-    frames = [frame_index(b) for b in boundaries]
-    for window, (a, b) in zip(windows, zip(frames, frames[1:])):
-        assert window.start_frame == a
-        assert window.end_frame == b
-
-
-def test_slice_windows_drops_subframe_window_preserving_total() -> None:
-    # 1.0 -> 1.01 is < 1 frame apart; the degenerate window is dropped and folded.
-    windows = slice_windows([0.0, 1.0, 1.01, 2.0])
-    assert len(windows) == 2
-    assert windows[0].start_frame == 0 and windows[0].end_frame == 30
-    assert windows[1].start_frame == 30 and windows[1].end_frame == 60
-    assert windows[-1].end_frame == frame_index(2.0)
 
 
 def test_slice_source_window_exact_length() -> None:

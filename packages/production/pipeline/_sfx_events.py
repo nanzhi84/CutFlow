@@ -14,7 +14,6 @@ _COOLDOWN_MS = 180
 class EmphasisSfxEvent:
     asset_id: str
     start_ms: int
-    priority: int
     volume: float
     source_run_id: str
 
@@ -38,7 +37,6 @@ def plan_emphasis_sfx_events(
                     EmphasisSfxEvent(
                         asset_id=sfx_asset_id,
                         start_ms=round(run.enter_frame * 1000 / fps),
-                        priority=50,
                         volume=0.48,
                         source_run_id=run.run_id,
                     )

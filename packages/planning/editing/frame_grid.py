@@ -42,22 +42,11 @@ def to_seconds(frame: int) -> float:
     return int(frame) / TIMELINE_FPS
 
 
-def quantize_boundary(t: float) -> float:
-    """Snap a time boundary onto the 30fps grid (returns the exact ``k/30`` float).
-
-    Deliberately does NOT round to 3 decimals afterwards: 0.0333 differs from 1/30
-    by 3e-4, and a second rounding would push the boundary off the grid. We store
-    the full-precision ``k/30``; :func:`frame_index` still recovers ``k`` losslessly.
-    """
-    return frame_index(t) / TIMELINE_FPS
-
-
 @dataclass(frozen=True)
 class FrameWindow:
     """A half-open frame window ``[start_frame, end_frame)`` on the single grid.
 
-    ``length_frames == end_frame - start_frame`` exactly. Adjacent windows produced
-    by :func:`slice_windows` satisfy ``prev.end_frame == next.start_frame``.
+    ``length_frames == end_frame - start_frame`` exactly.
     """
 
     start_frame: int
@@ -66,32 +55,6 @@ class FrameWindow:
     @property
     def length_frames(self) -> int:
         return self.end_frame - self.start_frame
-
-
-def slice_windows(boundaries_seconds: list[float]) -> list[FrameWindow]:
-    """Turn a sorted boundary list into exact, contiguous frame windows.
-
-    Each input boundary is quantized to a single grid frame index ONCE; window i is
-    ``[frame(b_i), frame(b_{i+1}))``. Because window i's end frame is literally
-    window i+1's start frame, adjacent windows never overlap and never duplicate a
-    frame. Windows that quantize to < 1 frame (degenerate) are dropped and their
-    span is absorbed by the following window (its start pulls back to the dropped
-    boundary's frame), so total length is preserved.
-    """
-    if len(boundaries_seconds) < 2:
-        return []
-    frames = [frame_index(b) for b in boundaries_seconds]
-    windows: list[FrameWindow] = []
-    pending_start = frames[0]
-    for end_frame in frames[1:]:
-        end_frame = max(pending_start, end_frame)
-        if end_frame - pending_start < 1:
-            # Degenerate (< 1 frame): drop it; its span folds into the next window
-            # (pending_start unchanged so the next real boundary starts here).
-            continue
-        windows.append(FrameWindow(start_frame=pending_start, end_frame=end_frame))
-        pending_start = end_frame
-    return windows
 
 
 def slice_source_window(

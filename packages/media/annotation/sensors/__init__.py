@@ -20,17 +20,10 @@ from .faces import (
     count_faces_in_image,
     detect_faces,
     detect_faces_strict,
-    face_detector_available,
     max_faces_in_frame_paths,
     reset_detector_cache,
 )
 from .frames import extract_frame_at_time, extract_frames_for_times
-from .scene_text import (
-    SceneTextDetectionError,
-    SceneTextDetectorUnavailable,
-    detect_scene_text_strict,
-    scene_text_detector_available,
-)
 from .motion import (
     classify_window,
     detect_motion_events,
@@ -57,15 +50,10 @@ __all__ = [
     "count_faces_in_image",
     "detect_faces",
     "detect_faces_strict",
-    "face_detector_available",
     "max_faces_in_frame_paths",
     "reset_detector_cache",
     "extract_frame_at_time",
     "extract_frames_for_times",
-    "SceneTextDetectionError",
-    "SceneTextDetectorUnavailable",
-    "detect_scene_text_strict",
-    "scene_text_detector_available",
     "detect_shot_cuts",
     "detect_speech_islands",
     "merge_speech_probabilities",

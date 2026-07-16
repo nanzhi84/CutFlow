@@ -18,9 +18,7 @@ from packages.planning.editing.frame_grid import (
     TIMELINE_FPS,
     FrameWindow,
     frame_index,
-    quantize_boundary,
     slice_source_window,
-    slice_windows,
     to_seconds,
 )
 from packages.planning.editing.narration import (
@@ -50,8 +48,6 @@ __all__ = [
     "FrameWindow",
     "frame_index",
     "to_seconds",
-    "quantize_boundary",
-    "slice_windows",
     "slice_source_window",
     # narration splitter
     "SpokenSegment",
