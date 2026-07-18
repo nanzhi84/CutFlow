@@ -488,15 +488,6 @@ def materialize_style_from_selection(
     requested_font_id = _str_or_none(request.subtitle.font_id)
     requested_emphasis_font_id = _str_or_none(request.subtitle.emphasis_font_id)
     font_asset_id = _selected_font_id(requested_font_id)
-    if normal_subtitle_enabled and not requested_font_id:
-        warnings.append(WarningCode.font_default_used)
-        degradations.append(
-            DegradationNotice(
-                code=WarningCode.font_default_used,
-                message="未选择字幕字体包，已使用默认字体。",
-                affects_true_yield=False,
-            )
-        )
 
     requested_bgm_id = bgm_id if strict_bgm_selection else (bgm_id or request.bgm.bgm_id)
     selected_bgm = None

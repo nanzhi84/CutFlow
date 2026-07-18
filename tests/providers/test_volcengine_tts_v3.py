@@ -409,6 +409,8 @@ def test_async_icl2_submits_polls_downloads_and_stores_one_original_mp3(
             operation="speech",
             text="你好世界",
             voice_id="S_UDXV2pG62",
+            volume=1.0,
+            emotion="neutral",
         ),
         ctx,
     )
@@ -755,7 +757,7 @@ def test_gateway_object_store_failure_after_acceptance_keeps_task_and_never_resu
     assert store.load_by_key(key).status is ProviderStatus.succeeded
 
 
-def test_async_icl2_maps_speed_to_integer_rate(tmp_path, tiny_mp3) -> None:
+def test_async_icl2_maps_voice_controls_to_audio_params(tmp_path, tiny_mp3) -> None:
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -774,10 +776,75 @@ def test_async_icl2_maps_speed_to_integer_rate(tmp_path, tiny_mp3) -> None:
         tmp_path, options={"api_version": "v3", "resource_id": "seed-icl-2.0"}
     )
     provider.invoke_with_context(
-        _call(ctx, text="你好", voice_id="S_UDXV2pG62", speed=1.5), ctx
+        _call(
+            ctx,
+            text="你好",
+            voice_id="S_UDXV2pG62",
+            speed=1.5,
+            volume=1.35,
+            emotion="happy",
+        ),
+        ctx,
     )
 
-    assert captured["body"]["req_params"]["audio_params"]["speech_rate"] == 50
+    audio_params = captured["body"]["req_params"]["audio_params"]
+    assert audio_params["speech_rate"] == 50
+    assert audio_params["loudness_rate"] == 35
+    assert audio_params["emotion"] == "happy"
+
+
+@pytest.mark.parametrize(
+    ("volume", "expected_rate"),
+    [(0.5, -50), (1.0, None), (2.0, 100)],
+)
+def test_async_icl2_maps_supported_volume_boundaries(
+    tmp_path, tiny_mp3, volume, expected_rate
+) -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "open.volcengineapi.com" in url:
+            return _list_api_keys_response()
+        if url.endswith("/submit"):
+            captured["body"] = json.loads(request.content)
+            return _submit_response()
+        if url.endswith("/query"):
+            return _query_response(2)
+        return httpx.Response(200, content=tiny_mp3)
+
+    provider = VolcengineTTSProvider(_client(handler))
+    ctx = _context(
+        tmp_path, options={"api_version": "v3", "resource_id": "seed-icl-2.0"}
+    )
+
+    provider.invoke_with_context(
+        _call(ctx, text="你好", voice_id="S_UDXV2pG62", volume=volume), ctx
+    )
+
+    audio_params = captured["body"]["req_params"]["audio_params"]
+    if expected_rate is None:
+        assert "loudness_rate" not in audio_params
+    else:
+        assert audio_params["loudness_rate"] == expected_rate
+
+
+@pytest.mark.parametrize("volume", [0.0, 0.25])
+def test_async_icl2_rejects_volume_below_vendor_floor(tmp_path, volume) -> None:
+    provider = VolcengineTTSProvider(
+        _client(lambda request: pytest.fail(f"unexpected request: {request.url}"))
+    )
+    ctx = _context(
+        tmp_path, options={"api_version": "v3", "resource_id": "seed-icl-2.0"}
+    )
+
+    with pytest.raises(ProviderRuntimeError) as excinfo:
+        provider.invoke_with_context(
+            _call(ctx, text="你好", voice_id="S_UDXV2pG62", volume=volume), ctx
+        )
+
+    assert excinfo.value.code == ErrorCode.provider_unsupported_option
+    assert "volume below 0.5" in str(excinfo.value)
 
 
 def test_async_icl2_task_failure_is_not_silently_retried(tmp_path) -> None:

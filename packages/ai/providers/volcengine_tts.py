@@ -346,6 +346,23 @@ class VolcengineTTSProvider:
         speed = float(call.input.get("speed") or option(context, "speed", 1.0))
         if abs(speed - 1.0) > 1e-6:
             audio_params["speech_rate"] = max(-50, min(100, round((speed - 1.0) * 100)))
+        requested_volume = call.input.get("volume")
+        volume = float(
+            requested_volume if requested_volume is not None else option(context, "volume", 1.0)
+        )
+        if volume < 0.5:
+            raise ProviderRuntimeError(
+                ErrorCode.provider_unsupported_option,
+                "Volcengine TTS v3 cannot represent volume below 0.5.",
+            )
+        if abs(volume - 1.0) > 1e-6:
+            audio_params["loudness_rate"] = max(
+                -50,
+                min(100, round((volume - 1.0) * 100)),
+            )
+        emotion = str(call.input.get("emotion") or "").strip()
+        if emotion and emotion != "neutral":
+            audio_params["emotion"] = emotion
         payload = {
             "user": {"uid": str(option(context, "uid", "cutagent"))},
             "unique_id": request_id,

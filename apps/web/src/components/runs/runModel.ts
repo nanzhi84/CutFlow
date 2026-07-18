@@ -204,7 +204,7 @@ export function confirmButtonText(action: PendingAction | null) {
 export function warningLabel(value: string) {
   if (value === "broll.skipped_no_material") return "B-roll 素材不足，已跳过插入";
   if (value === "bgm.skipped_library_unannotated") return "BGM 库未完成标注，已跳过配乐";
-  if (value === "font.default_used") return "指定字体不可用，已使用默认字体";
+  if (value === "font.default_used") return "未选择字幕字体，已使用默认字体";
   if (value === "cover.frame_fallback") return "封面生成降级为取帧";
   if (value === "timestamp.estimated") return "部分时间戳为系统估算";
   if (value === "cost.unpriced") return "部分供应商费用未定价";

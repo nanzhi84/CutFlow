@@ -43,8 +43,28 @@ function durationText(node?: NodeRun): string | null {
   return `${Math.floor(seconds / 60)}m${Math.round(seconds % 60)}s`;
 }
 
+type NodeIssueMessage = { key: string; message: string };
+
+function nodeIssueMessages(node?: NodeRun): NodeIssueMessage[] {
+  if (!node) return [];
+  const degradations = node.degradations ?? [];
+  const degradationCodes = new Set(degradations.map((notice) => notice.code));
+  return [
+    ...degradations.map((notice, index) => ({
+      key: `degradation-${index}`,
+      message: notice.message,
+    })),
+    ...(node.warnings ?? [])
+      .filter((warning) => !degradationCodes.has(warning))
+      .map((warning, index) => ({
+        key: `warning-${warning}-${index}`,
+        message: warningLabel(warning),
+      })),
+  ];
+}
+
 function issueCount(node?: NodeRun, badges: NodePipelineBadge[] = []): number {
-  const nodeIssues = node ? (node.warnings ?? []).length + (node.degradations ?? []).length + (node.error ? 1 : 0) : 0;
+  const nodeIssues = nodeIssueMessages(node).length + (node?.error ? 1 : 0);
   const providerIssues = badges
     .filter((badge) => badge.tone === "warning")
     .reduce((total, badge) => total + (badge.count && badge.count > 0 ? badge.count : 1), 0);
@@ -135,9 +155,10 @@ export function NodePipeline({
 function NodeDetailCard({ item, badges }: { item: NodeTimelineItem; badges: NodePipelineBadge[] }) {
   const node = item.node;
   const error = node?.error;
+  const nodeWarnings = nodeIssueMessages(node);
   const warningBadges = badges.filter((badge) => badge.tone === "warning");
   const infoBadges = badges.filter((badge) => badge.tone !== "warning");
-  const hasWarnings = Boolean(node && ((node.warnings ?? []).length > 0 || (node.degradations ?? []).length > 0)) || warningBadges.length > 0;
+  const hasWarnings = nodeWarnings.length > 0 || warningBadges.length > 0;
   const hasError = Boolean(error);
   return (
     <div className="grid h-[13rem] grid-rows-[auto_auto_minmax(0,1fr)] gap-3 overflow-hidden rounded-2xl border border-border/70 bg-white/60 p-4">
@@ -186,11 +207,8 @@ function NodeDetailCard({ item, badges }: { item: NodeTimelineItem; badges: Node
                 {badge.detail ? `：${badge.detail}` : ""}
               </p>
             ))}
-            {(node?.warnings ?? []).map((warning) => (
-              <p key={warning}>{warningLabel(warning)}</p>
-            ))}
-            {(node?.degradations ?? []).map((notice) => (
-              <p key={`${notice.code}-${notice.node_id ?? ""}`}>{notice.message || warningLabel(notice.code)}</p>
+            {nodeWarnings.map((issue) => (
+              <p key={issue.key}>{issue.message}</p>
             ))}
           </div>
         ) : null}

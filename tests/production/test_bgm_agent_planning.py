@@ -255,6 +255,29 @@ def test_bgm_agent_success_persists_provider_evidence_and_selected_segment(tmp_p
     assert invocation.response_artifact_id
 
 
+def test_bgm_agent_does_not_report_default_caption_font_as_bgm_degradation(tmp_path) -> None:
+    candidate_id = stable_bgm_candidate_id(_material_candidate())
+    ctx, _ = _ctx(
+        tmp_path,
+        outputs=[{"bgm_id": candidate_id, "analysis": "温暖口播匹配"}],
+    )
+    ctx.state.request = ctx.state.request.model_copy(
+        update={
+            "subtitle": ctx.state.request.subtitle.model_copy(
+                update={"enabled": True, "normal_enabled": True, "font_id": None}
+            )
+        }
+    )
+
+    output = bgm_agent_planning.run(ctx)
+
+    assert output.status == NodeStatus.succeeded
+    assert output.warnings == []
+    assert output.degradations == []
+    style = next(item for item in output.artifacts if item.kind == ArtifactKind.plan_style)
+    assert style.payload["font"]["font_id"] == "case_default_font"
+
+
 def test_bgm_agent_repairs_unknown_id_then_succeeds(tmp_path) -> None:
     candidate_id = stable_bgm_candidate_id(_material_candidate())
     ctx, provider = _ctx(
